@@ -223,7 +223,8 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Copy `src`'s contents into the just-created, empty `dst`, removing `dst`
 /// again if the copy fails part-way.
 fn fill_new_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if let Err(copy_error) = copy_dir_contents(src, dst) {
+    let mut folders = Vec::new();
+    if let Err(copy_error) = copy_dir_contents(src, dst, &mut folders) {
         return match std::fs::remove_dir_all(dst) {
             Ok(()) => Err(copy_error),
             Err(cleanup_error) => Err(std::io::Error::new(
@@ -235,27 +236,33 @@ fn fill_new_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
             )),
         };
     }
-    copy_dir_metadata(src, dst);
+    folders.push((src.to_path_buf(), dst.to_path_buf()));
+    apply_dir_metadata(&folders);
     Ok(())
 }
 
-/// Give the filled copy `dst` the permissions and modification time of
-/// `src`, as `fs::copy` does for files: a private 0700 folder must not come
-/// out 0755, and a duplicate keeps its date. Runs after the contents are
-/// in, so a read-only mode cannot block the copy and the writes do not
-/// bump the restored time. Best effort, like the file metadata.
-fn copy_dir_metadata(src: &Path, dst: &Path) {
-    let Ok(metadata) = std::fs::metadata(src) else {
-        return;
-    };
-    if let Err(error) = std::fs::set_permissions(dst, metadata.permissions()) {
-        log::debug!(target: "commander::fs_util", "could not copy mode to {}: {error}", dst.display());
-    }
-    let Ok(modified) = metadata.modified() else {
-        return;
-    };
-    if let Err(error) = open_dir_for_times(dst).and_then(|dir| dir.set_modified(modified)) {
-        log::debug!(target: "commander::fs_util", "could not copy mtime to {}: {error}", dst.display());
+/// Give each copied folder the permissions and modification time of its
+/// source, as `fs::copy` does for files: a private 0700 folder must not come
+/// out 0755, and a duplicate keeps its date. `folders` is in post-order
+/// (children before their parent), so a parent's restored time is not
+/// bumped by later work inside it. This runs only once the whole tree has
+/// copied: a read-only source folder applied early would make a failed
+/// copy's cleanup unable to remove its children. Best effort, like the
+/// file metadata.
+fn apply_dir_metadata(folders: &[(PathBuf, PathBuf)]) {
+    for (src, dst) in folders {
+        let Ok(metadata) = std::fs::metadata(src) else {
+            continue;
+        };
+        if let Err(error) = std::fs::set_permissions(dst, metadata.permissions()) {
+            log::debug!(target: "commander::fs_util", "could not copy mode to {}: {error}", dst.display());
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if let Err(error) = open_dir_for_times(dst).and_then(|dir| dir.set_modified(modified)) {
+            log::debug!(target: "commander::fs_util", "could not copy mtime to {}: {error}", dst.display());
+        }
     }
 }
 
@@ -277,7 +284,14 @@ fn open_dir_for_times(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// Copy `src`'s contents into the existing `dst`, recording every nested
+/// folder (post-order) in `folders` for [`apply_dir_metadata`]. The caller
+/// cleans up on error.
+fn copy_dir_contents(
+    src: &Path,
+    dst: &Path,
+    folders: &mut Vec<(PathBuf, PathBuf)>,
+) -> std::io::Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let source = entry.path();
@@ -286,7 +300,9 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
         if file_type.is_symlink() {
             copy_symlink(&source, &destination)?;
         } else if file_type.is_dir() {
-            copy_dir_all(&source, &destination)?;
+            std::fs::create_dir(&destination)?;
+            copy_dir_contents(&source, &destination, folders)?;
+            folders.push((source, destination));
         } else if file_type.is_file() {
             std::fs::copy(source, destination)?;
         }
@@ -827,6 +843,71 @@ mod tests {
         let metadata = std::fs::metadata(copy.join("private")).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
         assert_eq!(metadata.modified().unwrap(), stamp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn folder_modes_wait_until_the_whole_tree_has_copied() {
+        use std::os::unix::fs::PermissionsExt;
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.file("locked/a.txt", "1");
+        let locked = src.path().join("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let copy = dst.path().join("copy");
+        std::fs::create_dir(&copy).unwrap();
+        let mut folders = Vec::new();
+        copy_dir_contents(src.path(), &copy, &mut folders).unwrap();
+        // Still writable here, so a failure in a later sibling could clean up.
+        let mode = std::fs::metadata(copy.join("locked"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o200, 0);
+        assert_eq!(folders, vec![(locked.clone(), copy.join("locked"))]);
+
+        apply_dir_metadata(&folders);
+        let mode = std::fs::metadata(copy.join("locked"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o555);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(copy.join("locked"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_copy_cleans_up_after_a_read_only_subfolder() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+        if unsafe { libc::geteuid() } == 0 {
+            // Root ignores both the unreadable file and the read-only folder.
+            return;
+        }
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        // Several read-only folders make it likely that at least one is
+        // copied before the unreadable file fails, whatever the dir order.
+        for index in 0..8 {
+            src.file(&format!("locked{index}/a.txt"), "1");
+            let locked = src.path().join(format!("locked{index}"));
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let unreadable = src.file("secret.txt", "x");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let copy = dst.path().join("copy");
+        let result = copy_dir_all(src.path(), &copy);
+
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        for index in 0..8 {
+            let locked = src.path().join(format!("locked{index}"));
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let error = result.unwrap_err();
+        assert!(!error.to_string().contains("cleanup failed"), "{error}");
+        assert!(!copy.exists());
     }
 
     #[test]
