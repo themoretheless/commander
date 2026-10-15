@@ -1416,21 +1416,19 @@ impl Workspace {
         let right = self.right.current_path.clone();
         let left_filter = self.left.search_query().to_string();
         let right_filter = self.right.search_query().to_string();
-        let _profile = crate::workspace_profile::capture(crate::workspace_profile::CaptureParams {
-            name: "default".to_string(),
-            left_root: &left,
-            right_root: &right,
-            left_filter,
-            right_filter,
-            durability: self.durability_profile,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            trusted_command_templates: Vec::new(),
-        });
-        self.emit_ui_request(UiRequest::Notice {
-            message: "Saved workspace profile \"default\"".to_string(),
-            error: false,
-        });
+        let (message, error) =
+            crate::workspace_profile::capture_and_save(crate::workspace_profile::CaptureParams {
+                name: "default".to_string(),
+                left_root: &left,
+                right_root: &right,
+                left_filter,
+                right_filter,
+                durability: self.durability_profile,
+                name_policy: self.name_policy,
+                symlink_policy: self.symlink_policy,
+                trusted_command_templates: Vec::new(),
+            });
+        self.emit_ui_request(UiRequest::Notice { message, error });
     }
 
     fn apply_workspace_profile(&mut self) {
