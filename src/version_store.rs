@@ -357,6 +357,7 @@ fn preserve_at_inner(
                 &loaded.manifest,
                 &mut loaded.gate,
                 retention,
+                store_quota(),
                 record.created_at_secs,
             );
         }
@@ -505,6 +506,7 @@ fn prune_manifest(
     manifest: &VersionManifest,
     gate: &mut crate::persistence::StoreGate,
     policy: VersionRetentionPolicy,
+    quota: VersionStoreQuota,
     now_secs: u64,
 ) {
     let (retained, mut expired) = retained_records(&manifest.records, policy, now_secs);
@@ -544,7 +546,7 @@ fn prune_manifest(
         &ordered,
         &working.blobs,
         &working.payload_files,
-        store_quota(),
+        quota,
     ) {
         if let Some(record) = working.records.iter().find(|r| r.key.0 == key).cloned() {
             crate::version_dedup::release_payload_refs(
@@ -1746,6 +1748,61 @@ mod tests {
 
         let manifest = load_manifest(&versions);
         assert_eq!(manifest.records.len(), 3);
+        assert!(!created[0].stored.exists());
+        assert!(created[1..].iter().all(|record| record.stored.exists()));
+    }
+
+    #[test]
+    fn quota_overflow_evicts_the_oldest_version_after_manifest_commit() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let mut created = Vec::new();
+        for index in 0..3 {
+            let original = temp.file(
+                &format!("file-{index}.txt"),
+                &format!("{index}").repeat(100),
+            );
+            let operation = OperationId(format!("quota-{index}"));
+            created.push(
+                preserve_at(
+                    &versions,
+                    &original,
+                    &operation,
+                    operation.step_key(0, &original),
+                    VersionRetentionPolicy::Forever,
+                )
+                .unwrap()
+                .unwrap(),
+            );
+        }
+        // prune_manifest evicts in (created_at_secs, key) order.
+        created.sort_by(|a, b| {
+            a.created_at_secs
+                .cmp(&b.created_at_secs)
+                .then_with(|| a.key.0.cmp(&b.key.0))
+        });
+        let mut loaded = load_manifest_with(manifest_persist(), &versions);
+        assert_eq!(loaded.manifest.records.len(), 3);
+
+        prune_manifest(
+            manifest_persist(),
+            &versions,
+            &loaded.manifest,
+            &mut loaded.gate,
+            VersionRetentionPolicy::Forever,
+            VersionStoreQuota { max_bytes: 200 },
+            created[2].created_at_secs,
+        );
+
+        let manifest = load_manifest(&versions);
+        let mut kept = manifest.records.clone();
+        kept.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+        let mut expected = created[1..].to_vec();
+        expected.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+        assert_eq!(kept, expected);
+        assert!(!manifest.identities.contains_key(&created[0].key.0));
+        assert!(!manifest.payload_files.contains_key(&created[0].key.0));
+        assert_eq!(manifest.blobs.len(), 2);
         assert!(!created[0].stored.exists());
         assert!(created[1..].iter().all(|record| record.stored.exists()));
     }
