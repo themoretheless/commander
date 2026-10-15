@@ -281,6 +281,45 @@ fn name_column_width(layout: crate::accessibility::FileRowLayout, inline_compare
     }
 }
 
+/// What a primary pointer click on a file row does to the selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowClick {
+    /// Move the cursor only.
+    Plain,
+    /// Cmd-click (Ctrl elsewhere): flip the row in or out of the selection.
+    Toggle,
+    /// Shift-click: add every row from the cursor to the clicked row.
+    Range,
+}
+
+fn row_click_kind(modifiers: egui::Modifiers) -> RowClick {
+    if modifiers.shift {
+        RowClick::Range
+    } else if modifiers.command {
+        RowClick::Toggle
+    } else {
+        RowClick::Plain
+    }
+}
+
+/// Filtered indices a Shift-click selects: from the cursor row to the
+/// clicked row, both inclusive. Cursors count the ".." row as 0, so a
+/// cursor on ".." starts the range at the first file row.
+fn click_range(cursor: usize, clicked: usize) -> std::ops::RangeInclusive<usize> {
+    let anchor = cursor.max(1);
+    let clicked = clicked.max(1);
+    anchor.min(clicked) - 1..=anchor.max(clicked) - 1
+}
+
+/// Whether a dragged set may be dropped into the folder `target`. A folder
+/// cannot take itself or one of its ancestors, so it must not light up as
+/// a target while the overlay says the move is impossible.
+fn accepts_row_drop(target: &std::path::Path, dragged: &[PathBuf]) -> bool {
+    !dragged
+        .iter()
+        .any(|source| crate::fs_util::is_within_or_equal(target, source))
+}
+
 /// Spoken label of the ".." row. Like file rows it says "State: cursor"
 /// while the keyboard cursor sits on it.
 fn parent_row_label(is_cursor: bool) -> &'static str {
@@ -521,6 +560,21 @@ impl App {
                             t.bg_hover.linear_multiply(0.3),
                         );
                     }
+                    // Dropping onto ".." moves into the parent folder. During
+                    // a drag only the dragged row counts as hovered, so test
+                    // the pointer position instead.
+                    if dragging
+                        && up_row.contains_pointer()
+                        && let Some(parent) = panel.current_path.parent().map(PathBuf::from)
+                    {
+                        ui.painter().rect_stroke(
+                            up_row.rect,
+                            CornerRadius::ZERO,
+                            Stroke::new(2.0_f32, t.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                        panel.drag.set_drop_target(parent);
+                    }
                 }
 
                 // Cached filtered view: indices into panel.entries.
@@ -585,6 +639,8 @@ impl App {
                 let mut open_path: Option<std::path::PathBuf> = None;
                 let mut drag_anchor: Option<std::path::PathBuf> = None;
                 let mut pending_drop_target: Option<std::path::PathBuf> = None;
+                let mut pending_toggle: Option<std::path::PathBuf> = None;
+                let mut pending_range: Option<std::ops::RangeInclusive<usize>> = None;
                 let mut scrolled = false;
 
                 // One immutable metrics snapshot for the frame. Warm frames
@@ -1052,6 +1108,17 @@ impl App {
                     } else if row_resp.clicked() {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
+                        // Modifiers only count for real pointer clicks; a
+                        // Space/Enter on the focused row is not a Shift-click.
+                        if row_resp.clicked_by(egui::PointerButton::Primary) {
+                            match row_click_kind(ui.input(|input| input.modifiers)) {
+                                RowClick::Plain => {}
+                                RowClick::Toggle => pending_toggle = Some(entry.path.clone()),
+                                RowClick::Range => {
+                                    pending_range = Some(click_range(cursor, row_cursor));
+                                }
+                            }
+                        }
                     }
 
                     // Drag start — selection resolved after the loop
@@ -1060,8 +1127,15 @@ impl App {
                         drag_anchor = Some(entry.path.clone());
                     }
 
-                    // Drop target highlight — show when dragging over a directory
-                    if row_resp.hovered() && dragging && entry.is_dir {
+                    // Drop target highlight — show when dragging over a
+                    // directory that can take the dragged set. During a drag
+                    // only the dragged row counts as hovered, so test the
+                    // pointer position instead.
+                    if row_resp.contains_pointer()
+                        && dragging
+                        && entry.is_dir
+                        && accepts_row_drop(&entry.path, panel.drag.entries())
+                    {
                         pending_drop_target = Some(entry.path.clone());
                         ui.painter().rect_stroke(
                             full_rect,
@@ -1079,6 +1153,20 @@ impl App {
                 }
 
                 // Apply the interactions recorded during the loop.
+                if let Some(range) = pending_range {
+                    let entries = panel.entries();
+                    let paths: Vec<PathBuf> = filtered
+                        .get(range)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|&index| entries.get(index))
+                        .map(|entry| entry.path.clone())
+                        .collect();
+                    panel.extend_selection(paths);
+                }
+                if let Some(path) = pending_toggle {
+                    panel.toggle_select(path);
+                }
                 if let Some(c) = pending_cursor {
                     panel.set_cursor(c);
                 }
@@ -1349,12 +1437,12 @@ fn highlight_name_job(
 #[cfg(test)]
 mod tests {
     use super::{
-        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, compare_marker,
-        cursor_chevron_fits, cursor_row_to_reveal, drop_target_writable, empty_state,
-        folder_changed, grid_row_index, highlight_name_job, map_ranges_to_display,
-        name_char_budget, name_column_width, parent_row_label, row_content_height,
-        row_spoken_label, selection_size_label, selection_summary_with, visible_rows,
-        visible_selection_summary,
+        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
+        click_range, compare_marker, cursor_chevron_fits, cursor_row_to_reveal,
+        drop_target_writable, empty_state, folder_changed, grid_row_index, highlight_name_job,
+        map_ranges_to_display, name_char_budget, name_column_width, parent_row_label,
+        row_click_kind, row_content_height, row_spoken_label, selection_size_label,
+        selection_summary_with, visible_rows, visible_selection_summary,
     };
 
     #[test]
@@ -1615,5 +1703,40 @@ mod tests {
             .map(|section| section.format.underline != egui::Stroke::NONE)
             .collect();
         assert_eq!(underlines, vec![false, true, false]);
+    }
+
+    #[test]
+    fn click_modifiers_pick_the_selection_gesture() {
+        let mut modifiers = egui::Modifiers::NONE;
+        assert_eq!(row_click_kind(modifiers), RowClick::Plain);
+        modifiers.command = true;
+        assert_eq!(row_click_kind(modifiers), RowClick::Toggle);
+        modifiers.shift = true;
+        assert_eq!(row_click_kind(modifiers), RowClick::Range);
+    }
+
+    #[test]
+    fn shift_click_range_spans_cursor_to_clicked_row() {
+        // Cursor rows are 1-based (0 is ".."); ranges are filtered indices.
+        assert_eq!(click_range(2, 5), 1..=4);
+        assert_eq!(click_range(5, 2), 1..=4);
+        assert_eq!(click_range(3, 3), 2..=2);
+        // From "..", the range starts at the first file row.
+        assert_eq!(click_range(0, 3), 0..=2);
+    }
+
+    #[test]
+    fn dragged_folder_is_not_its_own_drop_target() {
+        let temp = crate::testutil::TempDir::new();
+        let folder = temp.path().join("folder");
+        let inner = folder.join("inner");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&inner).expect("mkdir inner");
+        std::fs::create_dir(&other).expect("mkdir other");
+        let dragged = vec![folder.clone()];
+        assert!(!accepts_row_drop(&folder, &dragged));
+        assert!(!accepts_row_drop(&inner, &dragged));
+        assert!(accepts_row_drop(&other, &dragged));
+        assert!(accepts_row_drop(&folder, &[]));
     }
 }
