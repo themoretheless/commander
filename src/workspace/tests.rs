@@ -1465,6 +1465,43 @@ fn create_symlinks_links_the_selection_into_the_inactive_panel() {
 }
 
 #[test]
+fn create_hardlinks_numbers_a_collision_before_the_extension() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("photo.jpg", "pixels");
+    r.file("photo.jpg", "other");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(file);
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 1);
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("photo link 2.jpg")).unwrap(),
+        "pixels"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn create_hardlinks_keeps_a_non_utf8_name() {
+    use std::os::unix::ffi::OsStrExt;
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let name = std::ffi::OsStr::from_bytes(b"caf\xe9.txt");
+    let source = l.path().join(name);
+    std::fs::write(&source, "bytes").unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(source);
+
+    let report = fileops::create_hardlinks(&mut ws);
+
+    assert_eq!(report.created, 1, "{:?}", report.errors);
+    assert_eq!(
+        std::fs::read_to_string(r.path().join(name)).unwrap(),
+        "bytes"
+    );
+}
+
+#[test]
 fn create_hardlinks_refuses_folders_and_counts_partial_failure() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let file = l.file("data.bin", "payload");
@@ -1506,6 +1543,11 @@ fn create_links_is_refused_while_mutations_are_blocked() {
 
     assert_eq!(report.created, 0);
     assert_eq!(report.errors.len(), 1);
+    assert!(
+        report.errors[0].contains("Safe-state review"),
+        "{:?}",
+        report.errors
+    );
     assert!(!r.path().join("data.bin").exists());
 }
 
