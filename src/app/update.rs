@@ -518,6 +518,43 @@ fn selection_hud_head(
     head
 }
 
+/// The selection HUD's first line: counts, total and average size, and for
+/// two or more items the largest and oldest names, cut to keep their
+/// extension.
+fn selection_headline(
+    s: &crate::selection_summary::SelectionSummary,
+    elsewhere: usize,
+    other_folders: usize,
+) -> String {
+    let mut head = selection_hud_head(s.count, s.dir_count, elsewhere, other_folders);
+    if s.total_bytes > 0 {
+        head.push_str(&format!(
+            " \u{00b7} {}",
+            crate::panel::format_size(s.total_bytes)
+        ));
+    }
+    if let Some(avg) = average_file_size(s) {
+        head.push_str(&format!(" \u{00b7} avg {}", crate::panel::format_size(avg)));
+    }
+    // Largest/oldest are only meaningful once more than one item is picked.
+    if s.count >= 2 {
+        let short = |name| crate::display_name::truncate_preserving_extension(name, 18);
+        if let Some((name, sz)) = &s.largest
+            && *sz > 0
+        {
+            head.push_str(&format!(
+                " \u{00b7} largest {} ({})",
+                short(name),
+                crate::panel::format_size(*sz)
+            ));
+        }
+        if let Some((name, _)) = &s.oldest {
+            head.push_str(&format!(" \u{00b7} oldest {}", short(name)));
+        }
+    }
+    head
+}
+
 /// Where the egui fallback context menu opens: below the row for a
 /// keyboard invocation (its anchor is the row rect relative to `origin`, the
 /// viewport's top-left), otherwise at the pointer.
@@ -1576,40 +1613,7 @@ impl App {
         let s = crate::selection_summary::summarize(&selected);
         let t = self.colors;
 
-        let mut head = selection_hud_head(s.count, s.dir_count, elsewhere, other_folders);
-        if s.total_bytes > 0 {
-            head.push_str(&format!(
-                " \u{00b7} {}",
-                crate::panel::format_size(s.total_bytes)
-            ));
-        }
-        if let Some(avg) = average_file_size(&s) {
-            head.push_str(&format!(" \u{00b7} avg {}", crate::panel::format_size(avg)));
-        }
-        // Largest/oldest are only meaningful once more than one item is picked.
-        if s.count >= 2 {
-            let short = |name: &str| -> String {
-                const MAX: usize = 18;
-                if name.chars().count() > MAX {
-                    let head: String = name.chars().take(MAX - 1).collect();
-                    format!("{head}\u{2026}")
-                } else {
-                    name.to_string()
-                }
-            };
-            if let Some((name, sz)) = &s.largest
-                && *sz > 0
-            {
-                head.push_str(&format!(
-                    " \u{00b7} largest {} ({})",
-                    short(name),
-                    crate::panel::format_size(*sz)
-                ));
-            }
-            if let Some((name, _)) = &s.oldest {
-                head.push_str(&format!(" \u{00b7} oldest {}", short(name)));
-            }
-        }
+        let head = selection_headline(&s, elsewhere, other_folders);
         let breakdown: String = s
             .kinds
             .iter()
@@ -2443,8 +2447,8 @@ mod tests {
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
     use super::{
-        command_shortcut, copied_paths_label, delete_outcome_toast, selection_hud_head,
-        undo_receipt, undo_recorded_toast,
+        clipped_label, command_shortcut, copied_paths_label, delete_outcome_toast,
+        selection_headline, selection_hud_head, undo_receipt, undo_recorded_toast,
     };
     use super::{drag_path_rejection, finish_drop, sources_already_in};
     use super::{
@@ -3000,6 +3004,64 @@ mod tests {
             to: PathBuf::from("/a/y"),
         };
         assert_eq!(undo_recorded_toast(&rename), "Renamed 1 item");
+    }
+
+    #[test]
+    fn selection_headline_sums_and_names_the_extremes() {
+        use crate::selection_summary::SelectionSummary;
+        use std::time::SystemTime;
+        let single = SelectionSummary {
+            count: 1,
+            total_bytes: 2_048,
+            largest: Some(("only.txt".into(), 2_048)),
+            oldest: Some(("only.txt".into(), SystemTime::UNIX_EPOCH)),
+            ..SelectionSummary::default()
+        };
+        // One item: no average and no largest/oldest.
+        let line = selection_headline(&single, 0, 0);
+        assert!(line.starts_with("1 item \u{00b7} "), "{line}");
+        assert!(!line.contains("avg") && !line.contains("largest"), "{line}");
+
+        let many = SelectionSummary {
+            count: 3,
+            dir_count: 1,
+            total_bytes: 3_000,
+            largest: Some(("a-very-long-holiday-video.mov".into(), 2_000)),
+            oldest: Some(("notes.txt".into(), SystemTime::UNIX_EPOCH)),
+            ..SelectionSummary::default()
+        };
+        let line = selection_headline(&many, 2, 1);
+        assert!(line.starts_with("3 items + 2 in 1 other folder"), "{line}");
+        assert!(line.contains("1 folder"), "{line}");
+        // Two files share the bytes; the folder does not count.
+        assert!(line.contains(" \u{00b7} avg 1.5 KB"), "{line}");
+        assert!(
+            line.contains("largest a-very-long-h\u{2026}.mov ("),
+            "{line}"
+        );
+        assert!(line.ends_with(" \u{00b7} oldest notes.txt"), "{line}");
+
+        // A zero-byte largest entry is not named.
+        let empty_files = SelectionSummary {
+            count: 2,
+            largest: Some(("empty".into(), 0)),
+            ..SelectionSummary::default()
+        };
+        assert_eq!(selection_headline(&empty_files, 0, 0), "2 items");
+    }
+
+    #[test]
+    fn clipped_labels_count_chars_and_mark_the_cut() {
+        assert_eq!(clipped_label("Downloads", 9), "Downloads");
+        assert_eq!(clipped_label("Downloads", 8), "Downl...");
+        assert_eq!(
+            clipped_label("\u{65e5}\u{672c}\u{8a9e}\u{30d5}\u{30a9}", 4),
+            "\u{65e5}..."
+        );
+        assert_eq!(clipped_label("", 3), "");
+        // Below the ellipsis' own width only the marker is left.
+        assert_eq!(clipped_label("abcdef", 2), "...");
+        assert_eq!(clipped_label("abcdef", 0), "...");
     }
 
     #[test]

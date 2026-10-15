@@ -393,15 +393,9 @@ fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<
     }
 }
 
-/// A name cut to the footer's fixed budget.
-fn footer_name(name: &str) -> String {
-    const MAX: usize = 16;
-    if name.chars().count() > MAX {
-        let head: String = name.chars().take(MAX - 1).collect();
-        format!("{head}\u{2026}")
-    } else {
-        name.to_string()
-    }
+/// A name cut to the footer's fixed budget, keeping its extension.
+fn footer_name(name: &str) -> std::borrow::Cow<'_, str> {
+    crate::display_name::truncate_preserving_extension(name, 16)
 }
 
 /// The footer's folder extremes: the short text, and the full names for
@@ -1983,8 +1977,9 @@ mod tests {
         let long = "a-very-long-file-name-indeed.bin";
         let (short, full) =
             folder_extremes(Some((long, 10)), Some("old.log")).expect("something to show");
+        // The cut keeps the extension, which says what kind of file it is.
         assert!(
-            short.contains("largest a-very-long-fil\u{2026} (10 B)"),
+            short.contains("largest a-very-long\u{2026}.bin (10 B)"),
             "{short}"
         );
         assert!(short.ends_with("  |  oldest old.log"), "{short}");
