@@ -2742,6 +2742,95 @@ mod tests {
     }
 
     #[test]
+    fn moved_source_cleanup_restores_a_source_that_changed() {
+        let root = TempDir::new();
+        let path = root.file("a.txt", "before");
+        let expected = PathIdentity::observe(&path).unwrap();
+        std::fs::write(&path, "changed after the copy").unwrap();
+
+        let error = cleanup_moved_source(
+            &path,
+            &expected,
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("source changed while it was quarantined"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "changed after the copy"
+        );
+        assert!(hidden_entries(root.path()).is_empty());
+    }
+
+    #[test]
+    fn moved_dir_cleanup_proves_nested_content_before_deleting() {
+        let root = TempDir::new();
+        let dir = root.dir("folder");
+        let nested = root.file("folder/a.txt", "aaaa");
+        let expected = PathIdentity::observe_deep(&dir).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&nested, "bbbb").unwrap();
+
+        let error = cleanup_moved_source(
+            &dir,
+            &expected,
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("source changed"), "{error}");
+        assert_eq!(std::fs::read_to_string(&nested).unwrap(), "bbbb");
+        assert!(hidden_entries(root.path()).is_empty());
+    }
+
+    #[test]
+    fn moved_dir_cleanup_matches_a_deep_proof_with_a_deep_observation() {
+        let root = TempDir::new();
+        let dir = root.dir("folder");
+        root.file("folder/a.txt", "aaaa");
+        let expected = PathIdentity::observe_deep(&dir).unwrap();
+
+        cleanup_moved_source(
+            &dir,
+            &expected,
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        )
+        .unwrap();
+
+        assert!(!dir.exists());
+        assert!(hidden_entries(root.path()).is_empty());
+    }
+
+    #[test]
+    fn overwrite_quarantine_restores_a_destination_that_changed() {
+        let root = TempDir::new();
+        let dest = root.file("dest.txt", "reviewed");
+        let expected = PathIdentity::observe(&dest).unwrap();
+        std::fs::write(&dest, "rewritten after review").unwrap();
+        let backup = root.path().join(".dest.txt.cmdr-tmp.0");
+
+        let error = quarantine_expected_path(&dest, &backup, &expected).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("changed during the commit fence"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "rewritten after review"
+        );
+        assert!(!backup.exists());
+    }
+
+    #[test]
     fn rollback_refuses_a_placement_outside_its_container() {
         let root = TempDir::new();
         let container = root.dir("Gathered");
