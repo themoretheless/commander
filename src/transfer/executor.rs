@@ -905,7 +905,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 }
 
                 match &result {
-                    Ok(outcome) => base_bytes += outcome.bytes,
+                    Ok(outcome) => base_bytes = base_bytes.saturating_add(outcome.bytes),
                     Err(e) => {
                         let checkpoint = (!renamed && !entry.is_dir)
                             .then(|| {
@@ -1035,6 +1035,11 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                             );
                         }
                         crate::volume_profile::invalidate(target_profile.volume_id);
+                        // The failed entry is finished: count its planned size,
+                        // as a skipped entry does, so the next entry's progress
+                        // does not restart below what was already reported.
+                        base_bytes = attempt_base.saturating_add(this_size);
+                        crate::lock_util::recover(&progress).copied_bytes = base_bytes;
                     }
                 }
 
@@ -1427,7 +1432,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 {
                     let mut s = crate::lock_util::recover(&progress);
                     s.files_done += 1;
-                    s.record_sample();
+                    s.maybe_sample();
                 }
                 notify();
             }
@@ -2326,6 +2331,56 @@ mod tests {
             state.errors
         );
         assert!(!target.path().join("vanishing.txt").exists());
+    }
+
+    #[test]
+    fn a_failed_entry_still_counts_toward_the_byte_total() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let first = source.file("a-fails.txt", "first entry");
+        let second = source.file("b-copies.txt", "second");
+
+        let state = run_with_backends(
+            spec(
+                TransferKind::Copy,
+                vec![entry_for(&first), entry_for(&second)],
+                target.path(),
+            ),
+            scripted(|request| {
+                if request.source.ends_with("a-fails.txt") {
+                    request.progress.complete_file(request.base_bytes, 3);
+                    return Err(std::io::Error::other("fixture write failed"));
+                }
+                copy_stage(request)
+            }),
+        );
+
+        assert_eq!(state.errors.len(), 1, "{:?}", state.errors);
+        assert_eq!(state.files_done, 2);
+        assert_eq!(state.total_bytes, 17);
+        assert_eq!(state.copied_bytes, state.total_bytes);
+    }
+
+    #[test]
+    fn many_small_entries_do_not_flood_the_speed_window() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let entries = (0..200)
+            .map(|index| entry_for(&source.file(&format!("{index}.txt"), "x")))
+            .collect();
+
+        let state = run_with_backends(
+            spec(TransferKind::Copy, entries, target.path()),
+            scripted(copy_stage),
+        );
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(state.files_done, 200);
+        // Entries are sampled at the same rate-limited cadence as bytes, so
+        // the speed window keeps covering wall time, not the last 120 files.
+        assert!(
+            state.speed_samples.len() < 60,
+            "{} samples",
+            state.speed_samples.len()
+        );
     }
 
     #[test]
