@@ -156,6 +156,11 @@ struct ProgressSnapshot {
     finished: bool,
     cancelled: bool,
     stopped: bool,
+    has_errors: bool,
+    integrity_failures: Vec<ClassifiedFailure>,
+    /// Whether the full lists below were captured. They are cloned only for
+    /// a snapshot that may retire the transfer, not on every frame's poll.
+    retained: bool,
     errors: Vec<String>,
     failures: Vec<ClassifiedFailure>,
     placements: Vec<(PathBuf, PathBuf)>,
@@ -163,11 +168,15 @@ struct ProgressSnapshot {
 
 impl ProgressSnapshot {
     const fn clean(&self) -> bool {
-        self.finished && self.errors.is_empty() && !self.cancelled && !self.stopped
+        self.finished && !self.has_errors && !self.cancelled && !self.stopped
     }
 
     const fn closes_automatically(&self) -> bool {
-        self.finished && (self.cancelled || self.stopped || self.errors.is_empty())
+        Self::closes(self.finished, self.cancelled, self.stopped, self.has_errors)
+    }
+
+    const fn closes(finished: bool, cancelled: bool, stopped: bool, has_errors: bool) -> bool {
+        finished && (cancelled || stopped || !has_errors)
     }
 }
 
@@ -362,7 +371,10 @@ impl TransferQueueController {
         }
     }
 
-    fn snapshot_active(&mut self) -> Option<ProgressSnapshot> {
+    /// Read the active progress under one lock. The full error, failure and
+    /// placement lists are cloned only when `retiring` (dismiss) or when this
+    /// snapshot closes the transfer automatically.
+    fn snapshot_active(&mut self, retiring: bool) -> Option<ProgressSnapshot> {
         let mut should_cancel = false;
         let snapshot = {
             let active = self.active.as_mut()?;
@@ -387,14 +399,38 @@ impl TransferQueueController {
                 active.identity_failure = Some(failure);
                 should_cancel = true;
             }
+            let has_errors = !progress.errors.is_empty();
+            let retained = retiring
+                || ProgressSnapshot::closes(
+                    progress.finished,
+                    progress.cancelled,
+                    progress.stopped,
+                    has_errors,
+                );
             ProgressSnapshot {
                 operation_id: progress.operation_id.clone(),
                 finished: progress.finished,
                 cancelled: progress.cancelled,
                 stopped: progress.stopped,
-                errors: progress.errors.clone(),
-                failures: progress.failures.clone(),
-                placements: if progress.finished {
+                has_errors,
+                integrity_failures: progress
+                    .failures
+                    .iter()
+                    .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
+                    .cloned()
+                    .collect(),
+                retained,
+                errors: if retained {
+                    progress.errors.clone()
+                } else {
+                    Vec::new()
+                },
+                failures: if retained {
+                    progress.failures.clone()
+                } else {
+                    Vec::new()
+                },
+                placements: if retained && progress.finished {
                     progress.placements.clone()
                 } else {
                     Vec::new()
@@ -528,10 +564,11 @@ impl TransferQueueController {
                 "Running queue row rejected its terminal transition",
             ));
         }
-        let integrity_uncertain = snapshot
-            .failures
-            .iter()
-            .any(|failure| failure.class == FailureClass::IntegrityUncertain);
+        debug_assert!(
+            snapshot.retained,
+            "retirement needs the full progress lists"
+        );
+        let integrity_uncertain = !snapshot.integrity_failures.is_empty();
         let history = Self::history_outcome(
             active.history,
             snapshot.clean(),
@@ -551,7 +588,7 @@ impl TransferQueueController {
     }
 
     pub(super) fn poll(&mut self) -> PollOutcome {
-        let Some(snapshot) = self.snapshot_active() else {
+        let Some(snapshot) = self.snapshot_active(false) else {
             return PollOutcome::default();
         };
         let active = self
@@ -589,12 +626,7 @@ impl TransferQueueController {
         }
 
         debug_assert_eq!(snapshot.operation_id.as_ref(), Some(&operation_id));
-        let integrity_failures = snapshot
-            .failures
-            .iter()
-            .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
-            .cloned()
-            .collect::<Vec<_>>();
+        let integrity_failures = snapshot.integrity_failures.clone();
         if !integrity_failures.is_empty() {
             self.request_cancel();
             self.cancel_waiting();
@@ -621,7 +653,7 @@ impl TransferQueueController {
         } else if snapshot.cancelled {
             self.cancel_waiting();
             TransferTerminalState::Cancelled
-        } else if snapshot.errors.is_empty() {
+        } else if !snapshot.has_errors {
             TransferTerminalState::Done
         } else {
             TransferTerminalState::Failed
@@ -662,7 +694,9 @@ impl TransferQueueController {
         if active_job_id != job_id {
             return Err(DismissRejection::JobMismatch);
         }
-        let snapshot = self.snapshot_active().ok_or(DismissRejection::NoActive)?;
+        let snapshot = self
+            .snapshot_active(true)
+            .ok_or(DismissRejection::NoActive)?;
         if !snapshot.finished {
             return Err(DismissRejection::NotFinished);
         }
@@ -671,12 +705,7 @@ impl TransferQueueController {
             .as_ref()
             .expect("snapshot preserves the active transfer");
         let operation_id = active.operation_id.clone();
-        let review_failures = snapshot
-            .failures
-            .iter()
-            .filter(|failure| failure.class == FailureClass::IntegrityUncertain)
-            .cloned()
-            .collect::<Vec<_>>();
+        let review_failures = snapshot.integrity_failures.clone();
         let has_review_failures = !review_failures.is_empty();
         if has_review_failures && self.reviewed_safe_operation.as_ref() != Some(&operation_id) {
             self.cancel_waiting();
@@ -686,7 +715,7 @@ impl TransferQueueController {
         }
         if active.identity_failure.is_none()
             && !has_review_failures
-            && (snapshot.errors.is_empty() || snapshot.cancelled || snapshot.stopped)
+            && (!snapshot.has_errors || snapshot.cancelled || snapshot.stopped)
         {
             return Err(DismissRejection::NotRetainedError);
         }
@@ -1635,5 +1664,39 @@ mod tests {
         assert_eq!(order(&controller), vec![running_id, first_id, second_id]);
         controller.move_job(second_id, 5);
         assert_eq!(order(&controller), vec![running_id, first_id, second_id]);
+    }
+
+    #[test]
+    fn retained_error_polls_without_copying_its_lists_until_dismissed() {
+        let mut controller = TransferQueueController::default();
+        let job_id = controller.enqueue(spec("retained-lists"), HistoryIntent::None);
+        let (_, progress) = launch(&mut controller);
+        {
+            let mut progress = crate::lock_util::recover(&progress);
+            for index in 0..3 {
+                progress.errors.push(format!("error {index}"));
+                progress.failures.push(ClassifiedFailure::message(
+                    FailureClass::Blocked,
+                    Some(PathBuf::from(format!("/blocked-{index}"))),
+                    "blocked",
+                ));
+            }
+            progress.finished = true;
+        }
+
+        let snapshot = controller.snapshot_active(false).expect("active");
+        assert!(snapshot.has_errors);
+        assert!(!snapshot.retained);
+        assert!(snapshot.errors.is_empty() && snapshot.failures.is_empty());
+        let live = controller.poll();
+        assert!(
+            live.retirement.is_none(),
+            "a retained error waits for dismiss"
+        );
+
+        let retirement = controller.dismiss(job_id).expect("dismiss retires");
+        assert_eq!(retirement.report.errors.len(), 3);
+        assert_eq!(retirement.report.failures.len(), 3);
+        assert_eq!(retirement.report.terminal, TransferTerminalState::Failed);
     }
 }
