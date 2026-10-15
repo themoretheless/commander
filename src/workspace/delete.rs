@@ -147,8 +147,10 @@ impl DeleteController {
         }
     }
 
+    /// Trash one item on the caller's thread (Trash redo). An adapter panic
+    /// is reported as indeterminate instead of unwinding into the UI.
     pub(super) fn trash_one(&self, target: &TrashTarget) -> TrashItemOutcome {
-        self.port.move_to_trash(target)
+        guarded_move_to_trash(self.port.as_ref(), target)
     }
 
     pub(super) const fn is_active(&self) -> bool {
@@ -425,18 +427,7 @@ fn process_ready_target(
             None,
         );
     }
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.port.move_to_trash(target)
-    }))
-    .unwrap_or_else(|_| {
-        TrashItemOutcome::Indeterminate(NativeFailure {
-            kind: NativeFailureKind::Unknown,
-            message: format!(
-                "Trash adapter panicked while processing {}",
-                target.path.display()
-            ),
-        })
-    });
+    let outcome = guarded_move_to_trash(runtime.port, target);
     if matches!(
         outcome,
         TrashItemOutcome::Missing | TrashItemOutcome::StaleBinding
@@ -463,6 +454,21 @@ fn process_ready_target(
             (outcome, record)
         }
     }
+}
+
+/// Call the Trash port, turning an adapter panic into an indeterminate
+/// result: the item may or may not have reached the Trash.
+fn guarded_move_to_trash(port: &dyn TrashPort, target: &TrashTarget) -> TrashItemOutcome {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| port.move_to_trash(target)))
+        .unwrap_or_else(|_| {
+            TrashItemOutcome::Indeterminate(NativeFailure {
+                kind: NativeFailureKind::Unknown,
+                message: format!(
+                    "Trash adapter panicked while processing {}",
+                    target.path.display()
+                ),
+            })
+        })
 }
 
 fn discard_rejected_version(
@@ -1376,5 +1382,16 @@ mod tests {
         assert_eq!(outcome.failed, 0);
         assert_eq!(std::fs::read_to_string(first).unwrap(), "one");
         assert_eq!(std::fs::read_to_string(second).unwrap(), "two");
+    }
+
+    #[test]
+    fn single_item_trash_reports_an_adapter_panic_as_indeterminate() {
+        let temp = TempDir::new();
+        let path = temp.file("redo.txt", "value");
+        let controller = DeleteController::new(Arc::new(PanickingTrash));
+
+        let outcome = controller.trash_one(&target(path));
+
+        assert!(matches!(outcome, TrashItemOutcome::Indeterminate(_)));
     }
 }
