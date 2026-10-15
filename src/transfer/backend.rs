@@ -79,9 +79,12 @@ impl BackendPlanner {
         let force_resumable = input.source_size.is_some_and(|size| {
             input.resumable_capable && input.slow_link && size >= crate::delta_copy::DELTA_MIN_BYTES
         });
+        // Symlinks returned above, so the policy only matters for folders,
+        // whose native copy cannot follow or skip links inside the tree. A
+        // plain file keeps its clone/native path under every policy.
         let force_buffered = input.bandwidth_limited
             || force_resumable
-            || input.symlink_policy != SymlinkPolicy::Preserve;
+            || (input.is_dir && input.symlink_policy != SymlinkPolicy::Preserve);
         if !input.is_dir
             && input.resume_layout.is_none()
             && !force_resumable
@@ -413,7 +416,7 @@ impl BufferedBackend for ProductionBuffered {
 
         let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(request.rule);
         let bytes = if request.is_dir {
-            let workers = crate::transfer_tuning::snapshot(request.profile).concurrency;
+            let workers = request.tuning.concurrency;
             if workers > 1
                 && request.rule.max_bytes_per_second.is_none()
                 && request.symlink_policy == SymlinkPolicy::Preserve
@@ -501,7 +504,7 @@ fn sync_staged_artifact(staging: &Path) -> std::io::Result<()> {
             children.sort_by_key(|entry| entry.file_name());
             pending.extend(children.into_iter().rev().map(|entry| entry.path()));
         } else if metadata.is_file() {
-            std::fs::File::open(&path)?.sync_data()?;
+            sync_staged_file(&path)?;
         }
     }
     for directory in directories.into_iter().rev() {
@@ -511,6 +514,42 @@ fn sync_staged_artifact(staging: &Path) -> std::io::Result<()> {
         let _ = directory;
     }
     crate::fs_util::sync_parent_namespace(staging)
+}
+
+/// Flush a staged file's data. Windows' `FlushFileBuffers` needs a writable
+/// handle, so a read-only open there always failed. A staged file that
+/// inherited the source's read-only attribute refuses a writable open, so the
+/// attribute is cleared for the sync and put back afterwards; a failed sync
+/// still fails closed.
+fn sync_staged_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)?.sync_data()
+    }
+    #[cfg(not(unix))]
+    {
+        let open_writable = || std::fs::OpenOptions::new().write(true).open(path);
+        let refused = match open_writable() {
+            Ok(file) => return file.sync_data(),
+            Err(error) if error.kind() != std::io::ErrorKind::PermissionDenied => {
+                return Err(error);
+            }
+            Err(error) => error,
+        };
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        if !permissions.readonly() {
+            return Err(refused);
+        }
+        // Only reached off Unix, where this clears the read-only attribute
+        // rather than granting world write.
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions.clone())?;
+        let synced = open_writable().and_then(|file| file.sync_data());
+        permissions.set_readonly(true);
+        let _ = std::fs::set_permissions(path, permissions);
+        synced
+    }
 }
 
 #[cfg(test)]
@@ -542,6 +581,28 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn staged_sync_handles_read_only_files_and_keeps_the_attribute() {
+        // A read-only source makes a read-only staged file; on Windows the
+        // sync used to fail for it because FlushFileBuffers needs a
+        // writable handle.
+        let tmp = crate::testutil::TempDir::new();
+        let staging = tmp.dir("staged");
+        let file = staging.join("object");
+        std::fs::write(&file, b"packed").unwrap();
+        let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&file, permissions.clone()).unwrap();
+
+        sync_staged_artifact(&staging).unwrap();
+
+        assert!(std::fs::metadata(&file).unwrap().permissions().readonly());
+        assert_eq!(std::fs::read(&file).unwrap(), b"packed");
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&file, permissions).unwrap();
+    }
+
+    #[test]
     fn selector_matrix_preserves_native_and_buffered_forcing_rules() {
         let native = base_input(CopyMethod::Native);
         assert_eq!(
@@ -556,14 +617,19 @@ mod tests {
             .unwrap(),
             BackendPlan::Buffered
         );
-        assert_eq!(
-            BackendPlanner::select(PlanInput {
-                symlink_policy: SymlinkPolicy::Follow,
-                ..native
-            })
-            .unwrap(),
-            BackendPlan::Buffered
-        );
+        for policy in [SymlinkPolicy::Follow, SymlinkPolicy::Skip] {
+            assert_eq!(
+                BackendPlanner::select(PlanInput {
+                    is_dir: true,
+                    source_size: None,
+                    symlink_policy: policy,
+                    ..native
+                })
+                .unwrap(),
+                BackendPlan::Buffered,
+                "{policy:?} folder"
+            );
+        }
         assert_eq!(
             BackendPlanner::select(base_input(CopyMethod::Buffered)).unwrap(),
             BackendPlan::Buffered
@@ -641,5 +707,93 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn non_preserve_policies_keep_native_for_plain_files() {
+        for policy in [SymlinkPolicy::Follow, SymlinkPolicy::Skip] {
+            assert_eq!(
+                BackendPlanner::select(PlanInput {
+                    symlink_policy: policy,
+                    ..base_input(CopyMethod::Native)
+                })
+                .unwrap(),
+                BackendPlan::NativeClone,
+                "{policy:?} file"
+            );
+        }
+        assert_eq!(
+            BackendPlanner::select(PlanInput {
+                is_dir: true,
+                source_size: None,
+                ..base_input(CopyMethod::Native)
+            })
+            .unwrap(),
+            BackendPlan::NativeClone
+        );
+    }
+
+    struct NoCheckpoints;
+
+    impl CheckpointSink for NoCheckpoints {
+        fn publish(&mut self, _checkpoint: ResumeCheckpoint) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn buffered_folder_copy_uses_the_requested_worker_count() {
+        let tmp = crate::testutil::TempDir::new();
+        let source = tmp.dir("src");
+        for index in 0..4 {
+            tmp.file(&format!("src/{index}.txt"), "x");
+        }
+        let profile = crate::volume_profile::profile(tmp.path());
+        let live = crate::transfer_tuning::snapshot(&profile);
+        // Ask for a worker count the live snapshot would not pick.
+        let requested = if live.concurrency > 1 { 1 } else { 3 };
+        let state = Arc::new(std::sync::Mutex::new(super::super::TransferProgress::new(
+            4, 1,
+        )));
+        let progress = BackendProgress::new(Arc::clone(&state));
+        let staging = tmp.path().join("staging");
+
+        ProductionBuffered
+            .stage(
+                StageRequest {
+                    source: &source,
+                    is_dir: true,
+                    staging: &staging,
+                    progress: &progress,
+                    base_bytes: 0,
+                    profile: &profile,
+                    rule: VolumeRule::default(),
+                    tuning: TuningSnapshot {
+                        concurrency: requested,
+                        ..live
+                    },
+                    basis: None,
+                    resume: None,
+                    symlink_policy: SymlinkPolicy::Preserve,
+                    durability: DurabilityProfile::Fast,
+                },
+                &mut NoCheckpoints,
+            )
+            .unwrap();
+
+        assert_eq!(crate::lock_util::recover(&state).peak_workers, requested);
+        assert_eq!(std::fs::read_to_string(staging.join("3.txt")).unwrap(), "x");
+    }
+
+    #[test]
+    fn verified_receipt_syncs_a_staged_tree() {
+        let tmp = crate::testutil::TempDir::new();
+        let staging = tmp.dir("staging");
+        tmp.file("staging/a.txt", "a");
+        tmp.file("staging/nested/b.txt", "b");
+        let receipt =
+            receipt(&staging, 2, FastPath::Buffered, DurabilityProfile::Verified).unwrap();
+        assert!(receipt.durable);
+        assert_eq!(receipt.bytes, 2);
     }
 }
