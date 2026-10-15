@@ -816,6 +816,23 @@ mod tests {
         assert_eq!(index.overview_computations(), 3);
     }
 
+    #[test]
+    fn display_size_uses_measured_sizes_for_folders_only() {
+        let index = SizeIndex::new(PathBuf::from("/root"));
+        let file = entry(Path::new("/root/a.txt"), false, 42);
+        let dir = entry(Path::new("/root/sub"), true, 0);
+        let pending = entry(Path::new("/root/pending"), true, 0);
+        index.insert_for_test(dir.path.clone(), 9000, 1);
+        // A measured size under a file's path never replaces its own size.
+        index.insert_for_test(file.path.clone(), 7, 0);
+
+        let snapshot = index.snapshot();
+        assert_eq!(snapshot.display_size(&file), 42);
+        assert_eq!(snapshot.display_size(&dir), 9000);
+        // An unmeasured folder reads as 0 (draws no bar).
+        assert_eq!(snapshot.display_size(&pending), 0);
+    }
+
     fn profile_for(
         backend: crate::volume_profile::BackendKind,
         workers: usize,

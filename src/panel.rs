@@ -50,8 +50,8 @@ pub use visit::{
     RecentMatch, RecentOrder, VISITED_CAP, VisitStats, VisitUsage, push_visit, rank_visited,
     record_visit, restore_visit_snapshot, visit_snapshot, visited_paths,
 };
-use watcher::DirectoryWatcherState;
 pub use watcher::WATCHER_RETRY_BACKOFF;
+use watcher::{DirectoryWatcherState, ReconciliationTicket};
 
 const DEFAULT_VISIBLE_ROWS: usize = 32;
 
@@ -102,22 +102,13 @@ const fn watcher_provenance(recovered_gap: bool) -> crate::change_provenance::Ch
     }
 }
 
-/// Classify a directory read for UI messaging. `is_empty` is whether the
-/// listing came back with zero entries.
-#[cfg(test)]
-pub fn classify_dir(path: &Path, is_empty: bool) -> DirStatus {
-    match fs::read_dir(path) {
-        Ok(_) => {
-            if is_empty {
-                DirStatus::Empty
-            } else {
-                DirStatus::Listed
-            }
-        }
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => DirStatus::Gone,
-            _ => DirStatus::Denied,
-        },
+/// Why a directory could not be opened, for UI messaging. A path that names
+/// a file is no folder to show, like a gone one; anything else is treated
+/// as unreadable.
+fn status_for_read_error(error: &std::io::Error) -> DirStatus {
+    match error.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => DirStatus::Gone,
+        _ => DirStatus::Denied,
     }
 }
 
@@ -432,17 +423,6 @@ fn drop_nested_picks(entries: Vec<FileEntry>) -> Vec<FileEntry> {
         .into_iter()
         .filter(|entry| !entry.path.ancestors().skip(1).any(|a| folders.contains(a)))
         .collect()
-}
-
-/// Size used for the occupancy bar: a file's own size, or a directory's
-/// resolved recursive size (0 while it is still being measured).
-#[cfg(test)]
-pub fn entry_display_size(entry: &FileEntry, dir_sizes: &HashMap<PathBuf, u64>) -> u64 {
-    if entry.is_dir {
-        dir_sizes.get(&entry.path).copied().unwrap_or(0)
-    } else {
-        entry.size
-    }
 }
 
 /// Wake-up callback into the UI (e.g. a repaint request). Panels never
@@ -785,9 +765,7 @@ impl PanelState {
         self.publish_complete_listing(entries, candidate);
         self.sizes.bind(&path);
         self.watcher.ensure_binding(&path);
-        let listing_binding = self.listing.binding().to_path_buf();
-        self.watcher.acknowledge_snapshot(ticket, &listing_binding);
-        self.refresh_sizes(true);
+        self.commit_snapshot(ticket, true);
         ViewApplyOutcome::Applied
     }
 
@@ -829,9 +807,7 @@ impl PanelState {
         self.watcher.ensure_binding(&path);
         let ticket = self.watcher.snapshot_ticket();
         if self.reload_entries() {
-            let listing_binding = self.listing.binding().to_path_buf();
-            self.watcher.acknowledge_snapshot(ticket, &listing_binding);
-            self.refresh_sizes(true);
+            self.commit_snapshot(ticket, true);
             self.apply_pending_focus(focus);
         } else {
             self.watcher.defer_snapshot(ticket.as_ref());
@@ -885,10 +861,7 @@ impl PanelState {
         }
         let applied = self.apply_directory_read(ready.read);
         if applied {
-            let listing_binding = self.listing.binding().to_path_buf();
-            self.watcher
-                .acknowledge_snapshot(ready.ticket, &listing_binding);
-            self.refresh_sizes(ready.forced_sizes);
+            self.commit_snapshot(ready.ticket, ready.forced_sizes);
             self.apply_pending_focus(ready.focus);
             if let Some(recovered_gap) = ready.watcher_gap {
                 self.change_provenance
@@ -902,6 +875,15 @@ impl PanelState {
             let _ = ready.focus;
         }
         applied
+    }
+
+    /// A complete listing was published: acknowledge the watcher snapshot it
+    /// answers (against the binding the rows now belong to) and re-plan
+    /// folder sizes for it. `forced_sizes` lets expensive folders re-walk.
+    fn commit_snapshot(&mut self, ticket: Option<ReconciliationTicket>, forced_sizes: bool) {
+        let listing_binding = self.listing.binding().to_path_buf();
+        self.watcher.acknowledge_snapshot(ticket, &listing_binding);
+        self.refresh_sizes(forced_sizes);
     }
 
     fn apply_pending_focus(&mut self, focus: PendingFocus) {
@@ -1025,11 +1007,8 @@ impl PanelState {
                 return self.poll_listing_results();
             }
             if self.reload_entries() {
-                let listing_binding = self.listing.binding().to_path_buf();
-                self.watcher
-                    .acknowledge_snapshot(Some(ticket), &listing_binding);
                 // Watcher-driven: expensive folders are not re-walked.
-                self.refresh_sizes(false);
+                self.commit_snapshot(Some(ticket), false);
                 self.change_provenance.record(source);
                 crate::watcher_health::record_listing_reconciliation(outcome.recovered_gap);
                 return true;
@@ -1082,18 +1061,7 @@ impl PanelState {
     pub(super) fn read_dir(path: &Path, show_hidden: bool) -> DirectoryRead {
         let entries = match fs::read_dir(path) {
             Ok(entries) => entries,
-            Err(error) => {
-                // A path that names a file is no folder to show, like a gone one.
-                let status = if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) {
-                    DirStatus::Gone
-                } else {
-                    DirStatus::Denied
-                };
-                return DirectoryRead::Incomplete(status);
-            }
+            Err(error) => return DirectoryRead::Incomplete(status_for_read_error(&error)),
         };
         Self::read_dir_entries(entries, show_hidden)
     }
@@ -2969,29 +2937,56 @@ mod tests {
         assert_eq!(names, vec!["file1.txt", "file2.txt", "file10.txt"]);
     }
 
+    #[test]
+    fn read_errors_map_to_gone_or_denied() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::NotFound)),
+            DirStatus::Gone
+        );
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::NotADirectory)),
+            DirStatus::Gone
+        );
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::PermissionDenied)),
+            DirStatus::Denied
+        );
+        // Anything else (an I/O error on a dying disk) is unreadable too.
+        assert_eq!(
+            status_for_read_error(&Error::other("io")),
+            DirStatus::Denied
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn classify_dir_distinguishes_empty_denied_gone() {
+    fn read_dir_distinguishes_empty_denied_gone() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = TempDir::new();
+        let status = |path: &Path| {
+            let mut panel = PanelState::new(path.to_path_buf());
+            panel.refresh();
+            panel.dir_status()
+        };
 
-        let empty = tmp.dir("empty");
-        assert_eq!(classify_dir(&empty, true), DirStatus::Empty);
+        assert_eq!(status(&tmp.dir("empty")), DirStatus::Empty);
 
         let full = tmp.dir("full");
         tmp.file("full/x.txt", "x");
-        assert_eq!(classify_dir(&full, false), DirStatus::Listed);
+        assert_eq!(status(&full), DirStatus::Listed);
 
-        assert_eq!(
-            classify_dir(&tmp.path().join("nope"), true),
-            DirStatus::Gone
-        );
+        assert_eq!(status(&tmp.path().join("nope")), DirStatus::Gone);
+        assert_eq!(status(&tmp.file("file.txt", "f")), DirStatus::Gone);
 
         let denied = tmp.dir("denied");
         std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let status = classify_dir(&denied, true);
+        let readable = std::fs::read_dir(&denied).is_ok(); // root ignores modes
+        let result = status(&denied);
         let _ = std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755));
-        assert_eq!(status, DirStatus::Denied);
+        if !readable {
+            assert_eq!(result, DirStatus::Denied);
+        }
     }
 
     #[test]
@@ -3354,20 +3349,6 @@ mod tests {
         assert_eq!(p.mask_match_count("pdf"), 1);
         p.select_by_mask("pdf");
         assert_eq!(p.selected_count(), 1);
-    }
-
-    #[test]
-    fn entry_display_size_uses_dir_sizes_for_folders() {
-        let file = entry("a.txt", false, 42);
-        let dir = entry("sub", true, 0);
-        let mut sizes = HashMap::new();
-        sizes.insert(dir.path.clone(), 9000u64);
-
-        assert_eq!(entry_display_size(&file, &sizes), 42);
-        assert_eq!(entry_display_size(&dir, &sizes), 9000);
-        // Unmeasured dir reads as 0 (draws no bar).
-        let other = entry("pending", true, 0);
-        assert_eq!(entry_display_size(&other, &sizes), 0);
     }
 
     #[test]

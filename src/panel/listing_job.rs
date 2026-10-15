@@ -490,10 +490,9 @@ mod tests {
                 job.drive(&workload, Arc::clone(&notify), |path, _show_hidden| {
                     match std::fs::read_dir(path) {
                         Ok(_) => DirectoryRead::Complete(Vec::new()),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            DirectoryRead::Incomplete(DirStatus::Gone)
+                        Err(error) => {
+                            DirectoryRead::Incomplete(super::super::status_for_read_error(&error))
                         }
-                        Err(_) => DirectoryRead::Incomplete(DirStatus::Denied),
                     }
                 });
                 if let Some(ready) = job.take_ready() {
