@@ -22,6 +22,9 @@ pub struct PersistenceHealth {
     pub unreadable_stores: u64,
     pub save_failures: u64,
     pub durability_warnings: u64,
+    /// Data a store no longer references that could not be removed. Kept
+    /// apart from `save_failures` because the save itself succeeded.
+    pub cleanup_failures: u64,
     pub last_issue: Option<String>,
 }
 
@@ -1467,7 +1470,22 @@ fn publish_issue(health: &mut PersistenceHealth) {
     health.issue_generation = previous.saturating_add(1);
     if let Some(issue) = &health.last_issue {
         log::warn!(target: "commander::persistence", "{issue}");
+        #[cfg(test)]
+        THREAD_ISSUES.with(|issues| issues.borrow_mut().push(issue.clone()));
     }
+}
+
+// Issues published by the current thread, so a test can see what its own
+// call reported even while parallel tests overwrite the shared `last_issue`.
+#[cfg(test)]
+thread_local! {
+    static THREAD_ISSUES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn take_thread_issues() -> Vec<String> {
+    THREAD_ISSUES.with(|issues| std::mem::take(&mut *issues.borrow_mut()))
 }
 
 pub fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
@@ -1577,7 +1595,7 @@ pub fn record_json_save_failure(store: &'static str, error: &JsonSaveError) {
 /// disk (outside quota accounting) until removed by hand.
 pub fn record_cleanup_failure(store: &'static str, source: &io::Error) {
     let mut health = crate::lock_util::recover(health_state());
-    health.save_failures = health.save_failures.saturating_add(1);
+    health.cleanup_failures = health.cleanup_failures.saturating_add(1);
     health.last_issue = Some(format!(
         "{store}: could not remove expired data ({:?}); it remains on disk",
         source.kind()
@@ -1829,6 +1847,27 @@ mod tests {
         let blocked = load_issue_text("Version manifest", LoadIssue::Blocked);
         assert!(blocked.contains("changes are blocked"), "{blocked}");
         assert!(!blocked.contains("defaults are active"), "{blocked}");
+    }
+
+    #[test]
+    fn item_store_load_reports_malformed_and_unreadable_files_distinctly() {
+        let temp = TempDir::new();
+        let malformed = temp.file("items.json", "not json");
+        take_thread_issues();
+        assert!(load_item_store::<Item>(&malformed, "Smart folders").is_empty());
+        assert_eq!(
+            take_thread_issues(),
+            vec!["Smart folders: file is malformed; defaults are active".to_string()]
+        );
+
+        // Bytes that are not UTF-8 cannot be read as text.
+        let unreadable = temp.path().join("binary.json");
+        std::fs::write(&unreadable, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(load_item_store::<Item>(&unreadable, "Smart folders").is_empty());
+        assert_eq!(
+            take_thread_issues(),
+            vec!["Smart folders: settings could not be read; defaults are active".to_string()]
+        );
     }
 
     #[test]
