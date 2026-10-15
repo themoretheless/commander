@@ -230,4 +230,33 @@ mod tests {
         assert_eq!(delete_count(&[g(2), g(3)]), 1 + 2);
         assert_eq!(delete_count(&[]), 0);
     }
+
+    #[test]
+    fn keep_oldest_ties_and_all_unknown_keep_the_first_file() {
+        let tied = DupGroup {
+            size: 10,
+            files: vec![
+                key("/new.txt", 10, 1, Some(300)),
+                key("/first-old.txt", 10, 1, Some(100)),
+                key("/unknown.txt", 10, 1, None),
+                key("/second-old.txt", 10, 1, Some(100)),
+            ],
+        };
+        assert_eq!(default_keep(&tied, KeepPolicy::KeepOldest), 1);
+        let unknown = DupGroup {
+            size: 10,
+            files: vec![
+                key("/b.txt", 10, 1, None),
+                key("/a.txt", 10, 1, None),
+                key("/c.txt", 10, 1, None),
+            ],
+        };
+        assert_eq!(default_keep(&unknown, KeepPolicy::KeepOldest), 0);
+        // A known mtime beats every unknown one, wherever it sits.
+        let last_known = DupGroup {
+            size: 10,
+            files: vec![key("/b.txt", 10, 1, None), key("/a.txt", 10, 1, Some(5))],
+        };
+        assert_eq!(default_keep(&last_known, KeepPolicy::KeepOldest), 1);
+    }
 }
