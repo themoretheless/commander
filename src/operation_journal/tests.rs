@@ -2624,3 +2624,41 @@ fn finishing_as_completed_reproves_every_completed_effect() {
     );
     finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
 }
+
+#[test]
+fn duplicate_completion_must_match_the_recorded_proof() {
+    use crate::transfer_tuning::FastPath;
+    let temp = TempDir::new();
+    let (record, destination) = completed_created_copy(&temp, "duplicate");
+    let step = &record.steps[0];
+    let proof = step.destination_after.clone().unwrap();
+
+    check_duplicate_completion(step, &destination, &proof, Some(FastPath::Buffered)).unwrap();
+    check_duplicate_completion(step, &destination, &proof, None).unwrap();
+
+    let conflicts = [
+        check_duplicate_completion(step, &destination, &proof, Some(FastPath::Clone)),
+        check_duplicate_completion(
+            step,
+            &temp.path().join("elsewhere.txt"),
+            &proof,
+            Some(FastPath::Buffered),
+        ),
+        {
+            std::fs::write(&destination, "changed").unwrap();
+            let changed = PathIdentity::observe_deep(&destination).unwrap();
+            check_duplicate_completion(step, &destination, &changed, None)
+        },
+    ];
+    for conflict in conflicts {
+        assert!(conflict.unwrap_err().contains("immutable proof"));
+    }
+
+    let mut unproved = step.clone();
+    unproved.destination_after = None;
+    assert!(
+        check_duplicate_completion(&unproved, &destination, &proof, None)
+            .unwrap_err()
+            .contains("no immutable effect proof")
+    );
+}

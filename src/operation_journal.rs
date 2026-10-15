@@ -1502,19 +1502,7 @@ pub fn mark_completed(
         let step = step_mut(&mut operation.steps, key)?;
 
         if step.status == StepStatus::Completed {
-            let existing = step
-                .destination_after
-                .as_ref()
-                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
-            if step.landing.as_deref() != Some(destination)
-                || step.fast_path != Some(fast_path)
-                || !existing.same_binding(&destination_after)
-            {
-                return Err(format!(
-                    "Duplicate completion for step {} conflicts with its immutable proof",
-                    key.0
-                ));
-            }
+            check_duplicate_completion(step, destination, &destination_after, Some(fast_path))?;
             return Ok(step.replacement.clone());
         }
         if operation.status != OperationStatus::Running {
@@ -1561,6 +1549,31 @@ pub fn mark_completed(
         let backup = PathIdentity::observe_deep(&replacement.path)
             .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))?;
         release_overwrite_backup(operation_id, key, &replacement, &backup)?;
+    }
+    Ok(())
+}
+
+/// A repeated completion of an already completed step must match the
+/// immutable proof the first completion recorded. `fast_path` is compared
+/// only when the caller knows it (recovery promotions do not).
+fn check_duplicate_completion(
+    step: &OperationStep,
+    landing: &Path,
+    destination_after: &PathIdentity,
+    fast_path: Option<crate::transfer_tuning::FastPath>,
+) -> Result<(), String> {
+    let existing = step
+        .destination_after
+        .as_ref()
+        .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
+    if step.landing.as_deref() != Some(landing)
+        || fast_path.is_some_and(|fast_path| step.fast_path != Some(fast_path))
+        || !existing.same_binding(destination_after)
+    {
+        return Err(format!(
+            "Duplicate completion for step {} conflicts with its immutable proof",
+            step.key.0
+        ));
     }
     Ok(())
 }
@@ -1947,19 +1960,7 @@ fn complete_interrupted_overwrite_placement(
             ));
         }
         if step.status == StepStatus::Completed {
-            let existing = step
-                .destination_after
-                .as_ref()
-                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
-            if step.landing.as_deref() != Some(landing.as_path())
-                || !existing.same_binding(&destination_after)
-            {
-                return Err(format!(
-                    "Duplicate completion for step {} conflicts with its immutable proof",
-                    key.0
-                ));
-            }
-            return Ok(());
+            return check_duplicate_completion(step, &landing, &destination_after, None);
         }
         step.status = step
             .status
@@ -2097,19 +2098,7 @@ fn complete_interrupted_placement(
             ));
         }
         if step.status == StepStatus::Completed {
-            let existing = step
-                .destination_after
-                .as_ref()
-                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
-            if step.landing.as_deref() != Some(landing)
-                || !existing.same_binding(&destination_after)
-            {
-                return Err(format!(
-                    "Duplicate completion for step {} conflicts with its immutable proof",
-                    key.0
-                ));
-            }
-            return Ok(());
+            return check_duplicate_completion(step, landing, &destination_after, None);
         }
         step.status = step
             .status
