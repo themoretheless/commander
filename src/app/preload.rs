@@ -217,4 +217,29 @@ mod tests {
         assert_eq!(unique.len(), order.len());
         assert_eq!(order[0], 11);
     }
+
+    #[test]
+    fn long_lists_are_capped_around_the_visible_window() {
+        let order = prioritized_indices(5_000, 2_000, 10, 2_005);
+        let unique: std::collections::HashSet<_> = order.iter().copied().collect();
+
+        assert_eq!(order.len(), PRELOAD_SCAN_ROWS);
+        assert_eq!(unique.len(), order.len());
+        assert_eq!(order[0], 2_005);
+        // The cap keeps the rows nearest the window, alternating both ways,
+        // not the first thousand rows of the list.
+        assert!(order.iter().all(|&index| (1_500..2_510).contains(&index)));
+        assert!(unique.contains(&1_999) && unique.contains(&2_010));
+    }
+
+    #[test]
+    fn a_window_at_the_end_still_expands_backwards() {
+        let order = prioritized_indices(100, 95, 10, 99);
+
+        assert_eq!(order.len(), 100);
+        assert_eq!(&order[..5], &[99, 98, 97, 96, 95]);
+        // Nothing lies after the list, so the rest walks back from the window.
+        assert_eq!(&order[5..8], &[94, 93, 92]);
+        assert_eq!(order.last(), Some(&0));
+    }
 }

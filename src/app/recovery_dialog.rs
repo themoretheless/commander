@@ -1422,4 +1422,50 @@ mod tests {
         deliver(&mut state, vec![record("op-a"), record("op-b")]);
         assert_eq!(state.selected, Some(record("op-b").id));
     }
+
+    #[test]
+    fn a_failed_scan_clears_the_lists_and_the_selection() {
+        let mut state = RecoveryState::default();
+        deliver(&mut state, vec![record("op-a")]);
+        assert_eq!(state.selected, Some(record("op-a").id));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        state.scanning = true;
+        state.scan_rx = Some(receiver);
+        // Nothing yet: still scanning, the old inventory stays.
+        state.poll_scan();
+        assert!(state.scanning && state.scan_rx.is_some());
+        assert_eq!(state.operations.len(), 1);
+
+        sender
+            .send(RecoveryScanResult {
+                inventory: Err("journal unreadable".to_string()),
+            })
+            .unwrap();
+        state.poll_scan();
+        assert!(!state.scanning && state.scan_rx.is_none());
+        assert_eq!(state.error.as_deref(), Some("journal unreadable"));
+        assert!(state.operations.is_empty() && state.orphans.is_empty());
+        // The old selection is not shown against an inventory that failed.
+        assert_eq!(state.selected, None);
+    }
+
+    #[test]
+    fn a_scan_worker_that_dies_reports_it_and_stops_scanning() {
+        let mut state = RecoveryState::default();
+        deliver(&mut state, vec![record("op-a")]);
+        let (sender, receiver) = std::sync::mpsc::channel::<RecoveryScanResult>();
+        drop(sender);
+        state.scanning = true;
+        state.scan_rx = Some(receiver);
+        state.poll_scan();
+        assert!(!state.scanning && state.scan_rx.is_none());
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Recovery scan stopped unexpectedly")
+        );
+        // The last good inventory stays listed.
+        assert_eq!(state.selected, Some(record("op-a").id));
+        assert_eq!(state.operations.len(), 1);
+    }
 }
