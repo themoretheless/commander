@@ -208,6 +208,16 @@ impl App {
         (unresolved > 0).then_some(ActivityLine::Errors(unresolved))
     }
 
+    /// Retire the finished transfer and start the next queued one, keeping
+    /// its terminal report. Just clearing `active_transfer` would strand the
+    /// job Running and wedge the queue.
+    fn dismiss_finished_transfer(&mut self, ctx: &egui::Context) {
+        let c = ctx.clone();
+        if let Ok(report) = self.ws.try_dismiss_transfer(move || c.request_repaint()) {
+            self.capture_terminal_report(report, super::frame_millis(ctx));
+        }
+    }
+
     /// The strip's Details button; true when it was clicked.
     fn activity_details_button(&self, ui: &mut egui::Ui) -> bool {
         ui.add(super::dialog_button(
@@ -256,11 +266,7 @@ impl App {
                 meta.push_str(&format!("  \u{00b7}  {}/s", format_size(line.speed as u64)));
             }
             if let Some(eta) = line.eta.filter(|eta| *eta > 0.0) {
-                meta.push_str(&format!(
-                    "  \u{00b7}  {}:{:02} left",
-                    (eta / 60.0) as u64,
-                    (eta % 60.0) as u64
-                ));
+                meta.push_str(&format!("  \u{00b7}  {} left", format_eta(eta)));
             }
             ui.label(egui::RichText::new(meta).size(11.0).color(t.text_muted));
         }
@@ -286,13 +292,7 @@ impl App {
                     ))
                     .clicked()
                 {
-                    let c = ctx.clone();
-                    if let Ok(report) = self.ws.try_dismiss_transfer(move || c.request_repaint()) {
-                        self.capture_terminal_report(
-                            report,
-                            (ctx.input(|input| input.time) * 1_000.0) as u64,
-                        );
-                    }
+                    self.dismiss_finished_transfer(&ctx);
                 }
             } else {
                 let stop = crate::operation_view::CancellationAction::StopAfterCurrentFile;
@@ -558,10 +558,8 @@ impl App {
                     ui.add_space(16.0);
                 }
                 if let Some(eta) = eta.filter(|eta| *eta > 0.0 && !finished) {
-                    let mins = (eta / 60.0) as u64;
-                    let secs = (eta % 60.0) as u64;
                     ui.label(
-                        egui::RichText::new(format!("{} ETA: {}:{:02}", phase.label(), mins, secs))
+                        egui::RichText::new(format!("{} ETA: {}", phase.label(), format_eta(eta)))
                             .size(11.0)
                             .color(t.text_muted),
                     );
@@ -658,16 +656,7 @@ impl App {
                     ))
                     .clicked()
                 {
-                    // Retire the finished job and start the next queued one;
-                    // just clearing active_transfer would strand the job
-                    // Running and wedge the queue.
-                    let c = ctx.clone();
-                    if let Ok(report) = self.ws.try_dismiss_transfer(move || c.request_repaint()) {
-                        self.capture_terminal_report(
-                            report,
-                            (ctx.input(|input| input.time) * 1_000.0) as u64,
-                        );
-                    }
+                    self.dismiss_finished_transfer(ctx);
                 }
             } else {
                 ui.horizontal(|ui| {
@@ -898,6 +887,18 @@ fn progress_info(label: &str, fraction: Option<f32>) -> egui::WidgetInfo {
 }
 
 /// The strip's thin progress bar.
+/// A remaining-time estimate as m:ss, or h:mm:ss from an hour up so a long
+/// job does not read as "125:03". Fractional seconds truncate.
+fn format_eta(secs: f64) -> String {
+    let total = secs as u64;
+    let (hours, mins, secs) = (total / 3600, total / 60 % 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{mins:02}:{secs:02}")
+    } else {
+        format!("{mins}:{secs:02}")
+    }
+}
+
 fn strip_bar(ui: &mut egui::Ui, t: &ThemeColors, label: &str, fraction: Option<f32>) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(140.0, 4.0), Sense::hover());
     ui.painter()
@@ -1149,11 +1150,23 @@ fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
 mod tests {
     use super::{
         BackgroundTransfer, FileLine, TransferLine, announce, background_transfer_text,
-        caption_on_fill, delta_text, file_line, graph_speeds, labeled_error_rows,
+        caption_on_fill, delta_text, file_line, format_eta, graph_speeds, labeled_error_rows,
         operations_panel_hint, phase_progress_text, phase_row, requeued_text, review_text,
         right_aligned_in_reading_order, speed_text, strip_bar, transfer_status_text,
     };
     use crate::operation::{ClassifiedFailure, FailureClass};
+
+    #[test]
+    fn eta_shows_minutes_below_an_hour_and_hours_from_one_up() {
+        assert_eq!(format_eta(0.4), "0:00");
+        assert_eq!(format_eta(59.9), "0:59");
+        assert_eq!(format_eta(61.0), "1:01");
+        assert_eq!(format_eta(3599.0), "59:59");
+        assert_eq!(format_eta(3600.0), "1:00:00");
+        assert_eq!(format_eta(7_503.0), "2:05:03");
+        // A wild estimate saturates instead of wrapping or panicking.
+        assert!(format_eta(1e30).ends_with(":15"));
+    }
 
     #[test]
     fn error_labels_skip_errors_without_a_classified_failure() {

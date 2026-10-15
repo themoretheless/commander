@@ -1008,7 +1008,7 @@ impl App {
         if let Some(operation_id) = rollback {
             match self.ws.rollback_recovery(&operation_id) {
                 Ok(plan) => {
-                    let now_millis = (ctx.input(|input| input.time) * 1_000.0) as u64;
+                    let now_millis = super::frame_millis(ctx);
                     self.assistive_timeline.note_recovery(
                         Some(operation_id.clone()),
                         format!(
@@ -1049,7 +1049,7 @@ impl App {
                 Ok(count) => {
                     let message = resume_message(count);
                     state.rescan_after_resume = true;
-                    let now_millis = (ctx.input(|input| input.time) * 1_000.0) as u64;
+                    let now_millis = super::frame_millis(ctx);
                     self.assistive_timeline.note_recovery(
                         Some(operation_id.clone()),
                         message.clone(),

@@ -149,6 +149,18 @@ pub struct VisualQaSeed {
     pub show_tree: bool,
 }
 
+/// Frame time in whole milliseconds, the clock receipts, timeline entries and
+/// failure notices are stamped with.
+pub fn frame_millis(ctx: &egui::Context) -> u64 {
+    secs_to_millis(ctx.input(|input| input.time))
+}
+
+/// Seconds of egui time as whole milliseconds. The cast saturates, so a
+/// negative or NaN time reads as 0 rather than wrapping.
+pub fn secs_to_millis(secs: f64) -> u64 {
+    (secs * 1_000.0) as u64
+}
+
 /// The frame every dialog and sheet draws: panel fill, `margin` points of
 /// padding and a one-point border.
 pub fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
@@ -1052,5 +1064,19 @@ impl App {
     /// current folder (a click must not do this; see `tree_expand_to_path`).
     pub(crate) fn tree_reveal_path(&mut self, path: &std::path::Path) {
         tree::expand_through(&mut self.tree_expanded, path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::secs_to_millis;
+
+    #[test]
+    fn frame_seconds_convert_to_whole_millis_and_clamp_at_zero() {
+        assert_eq!(secs_to_millis(0.0), 0);
+        assert_eq!(secs_to_millis(1.2345), 1_234);
+        assert_eq!(secs_to_millis(-3.0), 0);
+        assert_eq!(secs_to_millis(f64::NAN), 0);
+        assert_eq!(secs_to_millis(f64::INFINITY), u64::MAX);
     }
 }

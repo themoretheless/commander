@@ -1108,7 +1108,7 @@ impl App {
             let outcome = self.ws.poll_transfer(move || c.request_repaint());
             let now = ctx.input(|input| input.time);
             if let Some(report) = outcome.terminal {
-                self.capture_terminal_report(report, (now * 1_000.0) as u64);
+                self.capture_terminal_report(report, super::secs_to_millis(now));
             }
             if outcome.undo_recorded {
                 // A clean move just finished: raise an undoable toast and
@@ -1203,7 +1203,7 @@ impl App {
                     .map(|failure| failure.message.clone())
                     .collect(),
                 failures: outcome.failures,
-                created_at_millis: (now * 1_000.0) as u64,
+                created_at_millis: super::secs_to_millis(now),
             });
         }
     }
