@@ -102,17 +102,22 @@ fn copy_bytes(
             crate::transfer::check_cancelled(state)?;
             #[cfg(target_os = "linux")]
             if kernel_copy {
-                match copy_range_chunk(&input, &output, CHUNK)? {
+                match copy_range_chunk(&input, &output, CHUNK) {
                     // A zero before any byte may be a pseudo-file whose size
                     // the kernel cannot see; let read() decide EOF.
-                    Some(0) if copied == 0 => kernel_copy = false,
-                    Some(0) => break,
-                    Some(n) => {
+                    Ok(Some(0)) if copied == 0 => kernel_copy = false,
+                    Ok(Some(0)) => break,
+                    Ok(Some(n)) => {
                         copied = copied.saturating_add(n as u64);
                         report(copied);
                         continue;
                     }
-                    None => kernel_copy = false,
+                    Ok(None) => kernel_copy = false,
+                    // Nothing has been written yet, so any unexpected errno
+                    // (EOVERFLOW, EIO from FUSE, ...) gets the read/write
+                    // loop the copy used before the kernel path existed.
+                    Err(_) if copied == 0 => kernel_copy = false,
+                    Err(error) => return Err(error),
                 }
             }
             if buf.is_empty() {
@@ -468,6 +473,35 @@ mod tests {
         let copied = fs::read_to_string(&dst).unwrap();
         assert!(copied.starts_with("Name:"), "{copied}");
         assert_eq!(outcome.bytes, copied.len() as u64);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_copy_moves_bytes_between_regular_files() {
+        // Pins that the copy_file_range path itself runs (not just the
+        // read/write fallback) for two regular files on one filesystem.
+        let tmp = TempDir::new();
+        let src = tmp.path().join("src.bin");
+        let bytes: Vec<u8> = (0..70_000).map(|i| (i % 253) as u8).collect();
+        fs::write(&src, &bytes).unwrap();
+        let dst = tmp.path().join("dst.bin");
+        let input = fs::File::open(&src).unwrap();
+        let output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dst)
+            .unwrap();
+        let mut total = 0usize;
+        while let Some(n) = copy_range_chunk(&input, &output, CHUNK).unwrap() {
+            if n == 0 {
+                break;
+            }
+            total += n;
+        }
+        assert!(total > 0, "copy_file_range copied nothing");
+        assert_eq!(total, bytes.len());
+        drop(output);
+        assert_eq!(fs::read(&dst).unwrap(), bytes);
     }
 
     #[test]
