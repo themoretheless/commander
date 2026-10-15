@@ -130,12 +130,12 @@ mod appkit {
                         .arg(path),
                     format!("Opening {} with {application:?}", path.display()),
                 ),
-                OpenRequest::QuickLook(path) => spawn_reaped(
+                OpenRequest::QuickLook(path) => spawn_reaped_logging_failure(
                     std::process::Command::new("qlmanage")
                         .arg("-p")
                         .arg(path)
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null()),
+                        .stdout(std::process::Stdio::null()),
+                    format!("Quick Look for {}", path.display()),
                 ),
                 OpenRequest::GetInfo(path) => spawn_reaped_logging_failure(
                     std::process::Command::new("osascript")
@@ -166,30 +166,9 @@ mod appkit {
 #[cfg(target_os = "macos")]
 pub use appkit::{MacOsClipboard, MacOsOpener};
 
-/// Launch a helper process without leaving a zombie: dropping a `Child` does
-/// not reap it, so a detached thread waits for it to exit.
-#[cfg(any(target_os = "macos", test))]
-fn spawn_reaped(command: &mut std::process::Command) -> std::io::Result<()> {
-    spawn_reaped_with_handle(command).map(drop)
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn spawn_reaped_with_handle(
-    command: &mut std::process::Command,
-) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
-    let mut child = command.spawn()?;
-    // The process is already running; if no reaper thread can start, the
-    // launch still succeeded and only the exit status goes uncollected.
-    Ok(std::thread::Builder::new()
-        .name("child-reaper".to_string())
-        .spawn(move || {
-            let _ = child.wait();
-        })
-        .ok())
-}
-
-/// Launch a helper like [`spawn_reaped`], but have the reaper log a failed
-/// exit with the helper's stderr: the launch itself is reported as accepted,
+/// Launch a helper without leaving a zombie (dropping a `Child` does not
+/// reap it, so a detached thread waits for it), and have that reaper log a
+/// failed exit with the helper's stderr: the launch itself is reported as accepted,
 /// so without this a helper that fails (Finder automation denied, disk full)
 /// leaves no trace. `what` names the operation and its path.
 pub fn spawn_reaped_logging_failure(
@@ -621,9 +600,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn spawned_helpers_are_reaped() {
-        let handle = spawn_reaped_with_handle(&mut std::process::Command::new("true"))
-            .unwrap()
-            .expect("reaper thread starts");
+        let handle = spawn_reaped_reporting(
+            &mut std::process::Command::new("true"),
+            "true".to_string(),
+            |message| panic!("a clean exit is not a failure: {message}"),
+        )
+        .unwrap()
+        .expect("reaper thread starts");
         // The reaper finishes only after wait() has collected the child.
         handle.join().unwrap();
     }
