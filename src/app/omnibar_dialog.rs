@@ -17,7 +17,7 @@ pub struct OmnibarState {
     pub(crate) pending_go: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum OmniRow {
     Folder {
         path: std::path::PathBuf,
@@ -41,6 +41,32 @@ fn home_relative_display(path: &std::path::Path, home: Option<&std::path::Path>)
         Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => path.display().to_string(),
     }
+}
+
+/// Jump-mode rows: pinned folders, then visited folders not already listed,
+/// then `commands` ranked command rows.
+fn jump_rows(
+    pinned: impl IntoIterator<Item = std::path::PathBuf>,
+    visited: impl IntoIterator<Item = std::path::PathBuf>,
+    commands: usize,
+) -> Vec<OmniRow> {
+    let mut rows: Vec<OmniRow> = pinned
+        .into_iter()
+        .map(|path| OmniRow::Folder { path, pinned: true })
+        .collect();
+    for path in visited {
+        if !rows
+            .iter()
+            .any(|row| matches!(row, OmniRow::Folder { path: listed, .. } if *listed == path))
+        {
+            rows.push(OmniRow::Folder {
+                path,
+                pinned: false,
+            });
+        }
+    }
+    rows.extend((0..commands).map(OmniRow::Command));
+    rows
 }
 
 /// Move the selection one step, skipping rows that cannot run, and never
@@ -197,10 +223,7 @@ impl App {
                 let state = self.ui.modals.palette_input.as_mut().unwrap();
                 if state.probe.is_none() {
                     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-                    let id = {
-                        self.ui.transient_nonce = self.ui.transient_nonce.wrapping_add(1);
-                        self.ui.transient_nonce
-                    };
+                    let id = self.issue_transient_nonce();
                     let state = self.ui.modals.palette_input.as_mut().unwrap();
                     state.probe = Some(crate::path_probe::PathProbeController::new(
                         id,
@@ -261,24 +284,18 @@ impl App {
         let mut rows: Vec<OmniRow> = Vec::new();
         match mode {
             OmnibarMode::Jump(q) => {
-                for (_, path) in self.palette_bookmark_matches(q).into_iter().take(5) {
-                    rows.push(OmniRow::Folder { path, pinned: true });
-                }
                 let (visited, stats) = crate::panel::visit_snapshot();
-                for item in crate::panel::rank_visited(&visited, q, self.recent_order, &stats)
-                    .into_iter()
-                    .take(if q.is_empty() { 8 } else { 6 })
-                {
-                    if !rows.iter().any(
-                        |row| matches!(row, OmniRow::Folder { path, .. } if *path == item.path),
-                    ) {
-                        rows.push(OmniRow::Folder {
-                            path: item.path,
-                            pinned: false,
-                        });
-                    }
-                }
-                rows.extend((0..matches.len()).map(OmniRow::Command));
+                rows = jump_rows(
+                    self.palette_bookmark_matches(q)
+                        .into_iter()
+                        .take(5)
+                        .map(|(_, path)| path),
+                    crate::panel::rank_visited(&visited, q, self.recent_order, &stats)
+                        .into_iter()
+                        .take(if q.is_empty() { 8 } else { 6 })
+                        .map(|item| item.path),
+                    matches.len(),
+                );
             }
             OmnibarMode::Command(_) => rows.extend((0..matches.len()).map(OmniRow::Command)),
             OmnibarMode::Path(_) | OmnibarMode::Search(_) | OmnibarMode::Shell(_) => {}
@@ -837,18 +854,12 @@ impl App {
             ..Default::default()
         };
         job.append(lead, 0.0, fmt(t.text_muted));
-        let mut buf = [0u8; 4];
-        for (idx, ch) in m.label.chars().enumerate() {
-            let hit = m.matched.iter().any(|&(s, e)| idx >= s && idx < e);
-            let color = if !enabled {
-                t.text_muted
-            } else if hit {
-                t.accent
-            } else {
-                t.text_primary
-            };
-            job.append(ch.encode_utf8(&mut buf), 0.0, fmt(color));
-        }
+        let (plain, hit) = if enabled {
+            (t.text_primary, t.accent)
+        } else {
+            (t.text_muted, t.text_muted)
+        };
+        super::file_list::append_highlighted(&mut job, m.label, &m.matched, &fmt(plain), &fmt(hit));
         job
     }
 }
@@ -879,8 +890,9 @@ fn picked_count(panel: &PanelState) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        OmnibarMode, command_rows_shown, copy_preview, copy_style, home_relative_display,
-        input_accessible_label, path_submit, picked_count, saved_searches_label, step_selection,
+        OmniRow, OmnibarMode, command_rows_shown, copy_preview, copy_style, home_relative_display,
+        input_accessible_label, jump_rows, path_submit, picked_count, saved_searches_label,
+        step_selection,
     };
 
     #[test]
@@ -942,6 +954,30 @@ mod tests {
             home_relative_display(Path::new("/srv"), None),
             Path::new("/srv").display().to_string()
         );
+    }
+
+    #[test]
+    fn jump_rows_list_pinned_then_unpinned_visits_then_commands() {
+        use std::path::PathBuf;
+        let folder = |path: &str, pinned| OmniRow::Folder {
+            path: PathBuf::from(path),
+            pinned,
+        };
+        let rows = jump_rows(
+            [PathBuf::from("/work")],
+            ["/work", "/music", "/music"].map(PathBuf::from),
+            2,
+        );
+        assert_eq!(
+            rows,
+            vec![
+                folder("/work", true),
+                folder("/music", false),
+                OmniRow::Command(0),
+                OmniRow::Command(1),
+            ]
+        );
+        assert_eq!(jump_rows([], [], 0), Vec::new());
     }
 
     #[test]
