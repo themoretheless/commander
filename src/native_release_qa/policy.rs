@@ -617,6 +617,79 @@ mod tests {
     }
 
     #[test]
+    fn popup_matrix_fails_without_a_size_displays_or_unique_ids() {
+        let size = PopupSize {
+            width: 200.0,
+            height: 100.0,
+        };
+        let topology = mixed_topology();
+        let unsized_check = popup_placement_matrix(&topology, None);
+        assert_eq!(unsized_check.status, CheckStatus::Failed);
+        assert!(unsized_check.detail.contains("size was unavailable"));
+        let empty = popup_placement_matrix(&[], Some(size));
+        assert_eq!(empty.status, CheckStatus::Failed);
+        assert_eq!(empty.detail, "no NSScreen topology");
+        let mut duplicated = topology.clone();
+        duplicated[2].id = duplicated[0].id.clone();
+        let duplicate = popup_placement_matrix(&duplicated, Some(size));
+        assert_eq!(duplicate.status, CheckStatus::Failed);
+        assert!(duplicate.detail.contains("duplicate display identifiers"));
+        let mut blank = topology;
+        blank[1].id = " ".to_string();
+        assert_eq!(
+            popup_placement_matrix(&blank, Some(size)).status,
+            CheckStatus::Failed
+        );
+    }
+
+    #[test]
+    fn mixed_scale_check_blocks_without_both_scales_on_two_displays() {
+        let topology = mixed_topology();
+        // One display cannot be mixed-scale even when it is 1x.
+        let single = mixed_scale_topology(&topology[..1]);
+        assert_eq!(single.status, CheckStatus::Blocked);
+        assert_eq!(single.detail, "1 display(s), has_1x=true, has_2x=false");
+        // Two Retina displays lack the 1x half.
+        assert_eq!(
+            mixed_scale_topology(&topology[1..]).status,
+            CheckStatus::Blocked
+        );
+        assert_eq!(mixed_scale_topology(&[]).status, CheckStatus::Blocked);
+    }
+
+    #[test]
+    fn otherwise_valid_attestation_reports_each_case_status() {
+        let binding = QaSubjectBinding {
+            commit: "a".repeat(40),
+            binary_blake3: "b".repeat(64),
+            topology_fingerprint: "c".repeat(64),
+        };
+        let now = 1_000_000;
+        let mut valid = attestation_template(&binding);
+        valid.completed_at_unix = now;
+        valid.reviewer = "Release QA".to_string();
+        for case in &mut valid.cases {
+            case.status = CheckStatus::Passed;
+            case.notes = "checked".to_string();
+        }
+        for (status, expected) in [
+            (CheckStatus::NotRun, CheckStatus::Blocked),
+            (CheckStatus::Blocked, CheckStatus::Blocked),
+            (CheckStatus::Failed, CheckStatus::Failed),
+        ] {
+            let mut attestation = valid.clone();
+            attestation.cases[2].status = status;
+            let evidence = validate_attestation(&attestation, &binding, now);
+            assert_eq!(evidence.status, expected, "{status:?}");
+            assert!(
+                evidence.detail.starts_with(REQUIRED_MANUAL_CASES[2]),
+                "{}",
+                evidence.detail
+            );
+        }
+    }
+
+    #[test]
     fn attestation_parser_denies_unknown_fields() {
         let binding = QaSubjectBinding {
             commit: "a".repeat(40),

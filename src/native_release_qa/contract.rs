@@ -345,3 +345,60 @@ pub(super) struct NativeReleaseEvidence {
     pub verdict: NativeVerdict,
     pub reasons: Vec<String>,
 }
+
+#[cfg(all(test, feature = "visual-qa"))]
+mod tests {
+    use super::*;
+
+    fn parse(arguments: &[&str]) -> Result<NativeQaRequest, String> {
+        NativeQaRequest::parse(arguments.iter().map(|argument| (*argument).to_string()))
+    }
+
+    #[test]
+    fn qa_request_parses_modes_and_flags() {
+        let default = parse(&[]).unwrap();
+        assert_eq!(default.mode, NativeQaMode::Diagnostic);
+        assert_eq!(
+            default.output_root,
+            PathBuf::from("target/native-release-qa")
+        );
+        assert_eq!(default.attestation, None);
+
+        let strict = parse(&["strict", "--output", "out", "--attestation", "a.json"]).unwrap();
+        assert_eq!(strict.mode, NativeQaMode::Strict);
+        assert_eq!(strict.output_root, PathBuf::from("out"));
+        assert_eq!(strict.attestation, Some(PathBuf::from("a.json")));
+
+        // A leading flag means the mode was left out, not misspelled.
+        let flag_first = parse(&["--output", "elsewhere"]).unwrap();
+        assert_eq!(flag_first.mode, NativeQaMode::Diagnostic);
+        assert_eq!(flag_first.output_root, PathBuf::from("elsewhere"));
+        assert_eq!(
+            parse(&["diagnostic"]).unwrap().mode,
+            NativeQaMode::Diagnostic
+        );
+    }
+
+    #[test]
+    fn qa_request_rejects_unknown_modes_flags_and_missing_values() {
+        let error = parse(&["release"]).unwrap_err();
+        assert!(error.contains("unknown native release QA mode"), "{error}");
+        assert_eq!(
+            parse(&["strict", "--output"]).unwrap_err(),
+            "--output requires a path"
+        );
+        assert_eq!(
+            parse(&["--attestation"]).unwrap_err(),
+            "--attestation requires a path"
+        );
+        assert_eq!(
+            parse(&["strict", "--verbose"]).unwrap_err(),
+            "unknown native release QA argument: --verbose"
+        );
+        // The mode is only accepted first.
+        assert_eq!(
+            parse(&["--output", "out", "strict"]).unwrap_err(),
+            "unknown native release QA argument: strict"
+        );
+    }
+}
