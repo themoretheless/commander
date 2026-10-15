@@ -143,6 +143,31 @@ pub struct Session {
     pub name_policy: crate::filesystem_policy::NamePolicy,
     #[serde(default)]
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    /// Folders expanded in the folder tree, at most [`TREE_EXPANDED_CAP`].
+    /// Missing folders are harmless: the tree only walks folders it lists.
+    #[serde(default)]
+    pub tree_expanded: Vec<PathBuf>,
+}
+
+/// Most expanded tree folders a session keeps.
+pub const TREE_EXPANDED_CAP: usize = 256;
+
+/// The expanded-folder set as persisted: shallowest folders first (they
+/// matter most for restoring the visible tree), then by path, capped at
+/// [`TREE_EXPANDED_CAP`]. The order is deterministic so an unchanged tree
+/// writes an unchanged session.
+pub fn persisted_tree_expanded<'a>(
+    expanded: impl IntoIterator<Item = &'a PathBuf>,
+) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = expanded.into_iter().cloned().collect();
+    paths.sort_by(|a, b| {
+        a.components()
+            .count()
+            .cmp(&b.components().count())
+            .then_with(|| a.cmp(b))
+    });
+    paths.truncate(TREE_EXPANDED_CAP);
+    paths
 }
 
 /// Serde default for booleans that should restore as `true` (the live
@@ -319,6 +344,7 @@ mod tests {
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            tree_expanded: vec![PathBuf::from("/a"), PathBuf::from("/a/b")],
         }
     }
 
@@ -355,6 +381,20 @@ mod tests {
     }
 
     #[test]
+    fn tree_expansion_persists_shallow_folders_first_and_capped() {
+        let mut expanded: std::collections::HashSet<PathBuf> = (0..TREE_EXPANDED_CAP + 10)
+            .map(|index| PathBuf::from(format!("/deep/a/f{index}")))
+            .collect();
+        expanded.insert(PathBuf::from("/deep"));
+        expanded.insert(PathBuf::from("/deep/a"));
+        let persisted = persisted_tree_expanded(&expanded);
+        assert_eq!(persisted.len(), TREE_EXPANDED_CAP);
+        assert_eq!(persisted[0], PathBuf::from("/deep"));
+        assert_eq!(persisted[1], PathBuf::from("/deep/a"));
+        assert_eq!(persisted, persisted_tree_expanded(&expanded));
+    }
+
+    #[test]
     fn recent_history_defaults_when_absent() {
         let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
         let mut val = serde_json::to_value(&s).unwrap();
@@ -366,7 +406,9 @@ mod tests {
         obj.remove("version_retention");
         obj.remove("name_policy");
         obj.remove("symlink_policy");
+        obj.remove("tree_expanded");
         let back: Session = serde_json::from_value(val).unwrap();
+        assert!(back.tree_expanded.is_empty());
         assert!(back.recent_paths.is_empty());
         assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
         assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);

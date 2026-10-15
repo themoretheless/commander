@@ -858,6 +858,13 @@ impl App {
         crate::version_store::set_store_quota(crate::operation::VersionStoreQuota::default());
         let mut app = Self {
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
+            tree_expanded: session.as_ref().map_or_else(Default::default, |s| {
+                s.tree_expanded
+                    .iter()
+                    .take(crate::session::TREE_EXPANDED_CAP)
+                    .cloned()
+                    .collect()
+            }),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
@@ -1128,6 +1135,7 @@ impl App {
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
             name_policy: self.ws.name_policy,
             symlink_policy: self.ws.symlink_policy,
+            tree_expanded: crate::session::persisted_tree_expanded(&self.tree_expanded),
         }
     }
 
