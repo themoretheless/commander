@@ -386,6 +386,16 @@ mod tests {
     }
 
     #[test]
+    fn submitted_detail_counts_hidden_names_and_source_folders() {
+        let paths = ["/one/a", "/one/b", "/one/c", "/two/d", "/two/e"].map(PathBuf::from);
+        let summary = SubmittedSummary::capture("Copy", &paths, PathBuf::from("/target"));
+        assert_eq!(summary.detail(), "a, b, c +2 more from 2 source folders");
+
+        let root = SubmittedSummary::capture("Copy", &[PathBuf::from("/")], PathBuf::from("/t"));
+        assert_eq!(root.detail(), "/ from unknown source");
+    }
+
+    #[test]
     fn failure_inbox_deduplicates_an_attempt_but_keeps_retries_of_the_same_operation() {
         let operation_id = OperationId("op-1".to_string());
         let first_attempt = crate::operation::TransferAttemptId::new();
