@@ -2485,7 +2485,7 @@ fn restore_version_item(step: &OperationStep, effect: &Path) -> RepairItem {
         action: if has_version {
             "Restore replaced local version"
         } else {
-            "Replaced original was not preserved; inspect manually"
+            "No preserved version of the replaced original was found; inspect manually"
         }
         .to_string(),
         automatic: has_version,

@@ -1859,7 +1859,8 @@ fn repair_plan_keeps_a_replaced_copy_destination_manual_without_a_version() {
         plan.remaining,
         vec![RepairItem {
             path: destination,
-            action: "Replaced original was not preserved; inspect manually".to_string(),
+            action: "No preserved version of the replaced original was found; inspect manually"
+                .to_string(),
             automatic: false,
         }]
     );
@@ -1900,7 +1901,8 @@ fn repair_plan_lists_the_version_restore_of_an_overwriting_move() {
             move_back,
             RepairItem {
                 path: destination,
-                action: "Replaced original was not preserved; inspect manually".to_string(),
+                action: "No preserved version of the replaced original was found; inspect manually"
+                    .to_string(),
                 automatic: false,
             },
         ]
