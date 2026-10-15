@@ -149,6 +149,33 @@ pub struct VisualQaSeed {
     pub show_tree: bool,
 }
 
+/// Frame time in whole milliseconds, the clock receipts, timeline entries and
+/// failure notices are stamped with.
+pub fn frame_millis(ctx: &egui::Context) -> u64 {
+    secs_to_millis(ctx.input(|input| input.time))
+}
+
+/// Seconds of egui time as whole milliseconds. The cast saturates, so a
+/// negative or NaN time reads as 0 rather than wrapping.
+pub fn secs_to_millis(secs: f64) -> u64 {
+    (secs * 1_000.0) as u64
+}
+
+/// Everything a worker channel holds right now, and whether its sender is
+/// gone. Events sent before the disconnect are still returned.
+pub fn drain_events<T>(
+    mut try_recv: impl FnMut() -> Result<T, std::sync::mpsc::TryRecvError>,
+) -> (Vec<T>, bool) {
+    let mut events = Vec::new();
+    loop {
+        match try_recv() {
+            Ok(event) => events.push(event),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return (events, false),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return (events, true),
+        }
+    }
+}
+
 /// The frame every dialog and sheet draws: panel fill, `margin` points of
 /// padding and a one-point border.
 pub fn dialog_frame(t: ThemeColors, margin: i8) -> Frame {
@@ -377,7 +404,6 @@ pub struct FindState {
     pub run: Option<crate::search::SearchRun>,
     pub generation: u64,
     pub ran: bool,
-    pub searching: bool,
     pub scanned: usize,
     pub matched: usize,
     pub elapsed: std::time::Duration,
@@ -439,7 +465,6 @@ impl Default for FindState {
             run: None,
             generation: 0,
             ran: false,
-            searching: false,
             scanned: 0,
             matched: 0,
             elapsed: std::time::Duration::ZERO,
@@ -463,6 +488,12 @@ impl Default for FindState {
 }
 
 impl FindState {
+    /// A search is in flight exactly while its run is held; completion,
+    /// cancellation and a dead worker all drop it.
+    pub(crate) const fn searching(&self) -> bool {
+        self.run.is_some()
+    }
+
     /// Build the query the current fields describe.
     pub(crate) fn build_query(&self) -> Result<crate::query::Query, crate::query::QueryError> {
         crate::query::Query::parse(&self.expression, self.mode)
@@ -672,6 +703,41 @@ pub struct RepairLoadResult {
     pub versions: Result<Vec<crate::version_store::VersionRecord>, String>,
 }
 
+/// What a constructor supplies to [`App::assemble`]: the workspace, the
+/// injected ports and the stores it loaded.
+struct AppParts {
+    ws: Workspace,
+    context_menu: Rc<dyn crate::ports::ContextMenuPort>,
+    clipboard: Rc<dyn crate::ports::ClipboardPort>,
+    opener: Rc<dyn crate::ports::OpenerPort>,
+    workload: crate::workload::WorkloadHandle,
+    directory_probe: std::sync::Arc<dyn crate::pathname::DirectoryProbePort>,
+    persistence: std::sync::Arc<dyn crate::persistence::Persist>,
+    session_gate: crate::persistence::StoreGate,
+    ui_scale: f32,
+    theme_mode: ThemeMode,
+    accessibility_preferences: crate::accessibility::Preferences,
+    image_cache: crate::image_cache::ImageCache,
+    content_index: crate::content_index::ContentIndex,
+    recovery: RecoveryState,
+    project_collections: crate::collections::ProjectCollections,
+}
+
+/// The panels' start folders. Launch paths win over the restored ones, and a
+/// single launch path opens in both panels so the right one does not show an
+/// unrelated restored folder beside it.
+fn resolve_start_paths(
+    restored: (PathBuf, PathBuf),
+    launch: crate::launch::LaunchPaths,
+) -> (PathBuf, PathBuf) {
+    match (launch.left, launch.right) {
+        (Some(left), Some(right)) => (left, right),
+        (Some(left), None) => (left.clone(), left),
+        (None, Some(right)) => (restored.0, right),
+        (None, None) => restored,
+    }
+}
+
 impl App {
     pub(crate) fn new(
         cc: &eframe::CreationContext<'_>,
@@ -730,20 +796,13 @@ impl App {
         apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
         startup.checkpoint(crate::measurement::StartupPhase::Appearance);
 
-        let (mut left, mut right) = session
-            .as_ref()
-            .map(|s| s.sanitized_paths(&home))
-            .unwrap_or_else(|| (home.clone(), home.clone()));
-        let launch_left = launch.left;
-        let launch_right = launch.right;
-        if let Some(path) = launch_left.clone() {
-            left = path;
-        }
-        if let Some(path) = launch_right {
-            right = path;
-        } else if launch_left.is_some() {
-            right = left.clone();
-        }
+        let (left, right) = resolve_start_paths(
+            session
+                .as_ref()
+                .map(|s| s.sanitized_paths(&home))
+                .unwrap_or_else(|| (home.clone(), home.clone())),
+            launch,
+        );
         let views = session
             .as_ref()
             .map(crate::session::Session::view_configs)
@@ -784,63 +843,41 @@ impl App {
         startup.checkpoint(crate::measurement::StartupPhase::StoreLoad);
         crate::version_store::set_store_quota(crate::operation::VersionStoreQuota::default());
         let mut app = Self {
-            ws,
-            ui: ui_state::UiState::default(),
-            context_menu,
-            clipboard,
-            opener,
-            workload,
-            directory_probe,
-            persistence,
-            session_gate,
-            ui_scale,
-            theme_mode: mode,
-            colors: ThemeColors::for_preferences(mode, accessibility_preferences),
-            accessibility_preferences,
-            prev_window_width: 0.0,
-            image_cache,
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
-            tree_expanded: std::collections::HashSet::new(),
-            tree_children_cache: std::collections::HashMap::new(),
-            drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
             show_key_bar: session.as_ref().is_some_and(|s| s.show_key_bar),
-            fallback_menu: None,
-            show_operations_center: false,
-            operations_tab: OperationsTab::default(),
-            operations_search: String::new(),
-            operation_failures: crate::operation_view::FailureInbox::default(),
-            assistive_timeline: crate::assistive_timeline::AssistiveTimeline::default(),
-            failure_notice_seen: std::collections::HashSet::new(),
             recent_order: session
                 .as_ref()
                 .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
-            search_engine: crate::search::SearchEngine::default(),
             search_history: session
                 .as_ref()
                 .map(|s| s.search_history.clone())
                 .unwrap_or_default(),
-            content_index,
-            toasts: crate::toasts::ToastQueue::default(),
-            receipts: crate::receipts::ReceiptLog::default(),
-            recovery,
             palette_usage: session
                 .as_ref()
                 .map(|s| s.palette_usage.clone())
                 .unwrap_or_default(),
             palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
-            smart_folders: None,
-            project_collections,
-            command_templates: None,
-            compare_cache: None,
-            confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: Some(startup),
-            show_developer_panel: false,
-            developer_notice: None,
-            developer_store_usage: developer_panel::StoreUsageCache::default(),
-            persistence_issue_seen: 0,
+            ..Self::assemble(AppParts {
+                ws,
+                context_menu,
+                clipboard,
+                opener,
+                workload,
+                directory_probe,
+                persistence,
+                session_gate,
+                ui_scale,
+                theme_mode: mode,
+                accessibility_preferences,
+                image_cache,
+                content_index,
+                recovery,
+                project_collections,
+            })
         };
         if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
@@ -874,27 +911,74 @@ impl App {
             persistence.clone(),
         );
         Self {
+            show_tree: seed.show_tree,
+            show_size_bars: true,
+            persistence_issue_seen: crate::persistence::issue_generation(),
+            ..Self::assemble(AppParts {
+                ws,
+                context_menu,
+                clipboard,
+                opener,
+                workload: crate::workload::global_handle(),
+                directory_probe: std::sync::Arc::new(crate::pathname::FsDirectoryProbe),
+                persistence,
+                session_gate: crate::persistence::StoreGate::missing(),
+                ui_scale: seed.ui_scale,
+                theme_mode: seed.theme_mode,
+                accessibility_preferences: seed.accessibility_preferences,
+                image_cache: crate::image_cache::ImageCache::new(),
+                content_index: crate::content_index::ContentIndex::empty(
+                    crate::workload::global_handle(),
+                ),
+                recovery: RecoveryState::default(),
+                project_collections: crate::collections::ProjectCollections::default(),
+            })
+        }
+    }
+
+    /// An App over `parts` with every view toggle, cache, log and transient
+    /// surface at its empty default; each constructor overrides what its
+    /// launch restores.
+    fn assemble(parts: AppParts) -> Self {
+        let AppParts {
+            ws,
+            context_menu,
+            clipboard,
+            opener,
+            workload,
+            directory_probe,
+            persistence,
+            session_gate,
+            ui_scale,
+            theme_mode,
+            accessibility_preferences,
+            image_cache,
+            content_index,
+            recovery,
+            project_collections,
+        } = parts;
+        Self {
             ws,
             ui: ui_state::UiState::default(),
             context_menu,
             clipboard,
             opener,
-            workload: crate::workload::global_handle(),
-            directory_probe: std::sync::Arc::new(crate::pathname::FsDirectoryProbe),
+            workload,
+            directory_probe,
             persistence,
-            session_gate: crate::persistence::StoreGate::missing(),
-            ui_scale: seed.ui_scale,
-            theme_mode: seed.theme_mode,
-            colors: ThemeColors::for_preferences(seed.theme_mode, seed.accessibility_preferences),
-            accessibility_preferences: seed.accessibility_preferences,
+            session_gate,
+            ui_scale,
+            theme_mode,
+            colors: ThemeColors::for_preferences(theme_mode, accessibility_preferences),
+            accessibility_preferences,
             prev_window_width: 0.0,
-            image_cache: crate::image_cache::ImageCache::new(),
-            show_tree: seed.show_tree,
+            image_cache,
+            show_tree: false,
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
             drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
-            show_size_bars: true,
+            show_size_bars: false,
             show_compare: false,
             show_key_bar: false,
             fallback_menu: None,
@@ -907,16 +991,14 @@ impl App {
             recent_order: crate::panel::RecentOrder::Frecency,
             search_engine: crate::search::SearchEngine::default(),
             search_history: crate::search::QueryHistory::default(),
-            content_index: crate::content_index::ContentIndex::empty(
-                crate::workload::global_handle(),
-            ),
+            content_index,
             toasts: crate::toasts::ToastQueue::default(),
             receipts: crate::receipts::ReceiptLog::default(),
-            recovery: RecoveryState::default(),
+            recovery,
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 0,
             smart_folders: None,
-            project_collections: crate::collections::ProjectCollections::default(),
+            project_collections,
             command_templates: None,
             compare_cache: None,
             confirm_cache: confirm_dialog::ConfirmCache::default(),
@@ -924,7 +1006,7 @@ impl App {
             show_developer_panel: false,
             developer_notice: None,
             developer_store_usage: developer_panel::StoreUsageCache::default(),
-            persistence_issue_seen: crate::persistence::issue_generation(),
+            persistence_issue_seen: 0,
         }
     }
 
@@ -1052,5 +1134,60 @@ impl App {
     /// current folder (a click must not do this; see `tree_expand_to_path`).
     pub(crate) fn tree_reveal_path(&mut self, path: &std::path::Path) {
         tree::expand_through(&mut self.tree_expanded, path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{drain_events, resolve_start_paths, secs_to_millis};
+    use crate::launch::LaunchPaths;
+    use std::path::PathBuf;
+
+    #[test]
+    fn draining_keeps_events_sent_before_a_disconnect() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert_eq!(drain_events(|| rx.try_recv()), (Vec::<u8>::new(), false));
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        assert_eq!(drain_events(|| rx.try_recv()), (vec![1, 2], false));
+        tx.send(3).unwrap();
+        drop(tx);
+        assert_eq!(drain_events(|| rx.try_recv()), (vec![3], true));
+        assert_eq!(drain_events(|| rx.try_recv()), (Vec::new(), true));
+    }
+
+    #[test]
+    fn launch_paths_override_the_restored_start_folders() {
+        let restored = || (PathBuf::from("/saved/l"), PathBuf::from("/saved/r"));
+        let launch = |left: Option<&str>, right: Option<&str>| LaunchPaths {
+            left: left.map(PathBuf::from),
+            right: right.map(PathBuf::from),
+        };
+        assert_eq!(
+            resolve_start_paths(restored(), launch(None, None)),
+            restored()
+        );
+        // One argument opens in both panels instead of beside a stale folder.
+        assert_eq!(
+            resolve_start_paths(restored(), launch(Some("/a"), None)),
+            (PathBuf::from("/a"), PathBuf::from("/a"))
+        );
+        assert_eq!(
+            resolve_start_paths(restored(), launch(Some("/a"), Some("/b"))),
+            (PathBuf::from("/a"), PathBuf::from("/b"))
+        );
+        assert_eq!(
+            resolve_start_paths(restored(), launch(None, Some("/b"))),
+            (PathBuf::from("/saved/l"), PathBuf::from("/b"))
+        );
+    }
+
+    #[test]
+    fn frame_seconds_convert_to_whole_millis_and_clamp_at_zero() {
+        assert_eq!(secs_to_millis(0.0), 0);
+        assert_eq!(secs_to_millis(1.2345), 1_234);
+        assert_eq!(secs_to_millis(-3.0), 0);
+        assert_eq!(secs_to_millis(f64::NAN), 0);
+        assert_eq!(secs_to_millis(f64::INFINITY), u64::MAX);
     }
 }

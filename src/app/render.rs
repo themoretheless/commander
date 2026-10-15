@@ -209,6 +209,28 @@ fn facet_chip(ui: &mut egui::Ui, label: &str, active: bool, t: &ThemeColors) -> 
     response
 }
 
+/// The kind chips, one exclusive group.
+const KIND_CHIPS: [(&str, KindFacet); 5] = [
+    ("Folders", KindFacet::Folders),
+    ("Images", KindFacet::Images),
+    ("Docs", KindFacet::Docs),
+    ("Archives", KindFacet::Archives),
+    ("Code", KindFacet::Code),
+];
+
+/// The minimum-size chips, one exclusive group.
+const SIZE_CHIPS: [(&str, u64); 2] = [(">1MB", 1 << 20), (">100MB", 100 << 20)];
+
+/// Pick `value` in an exclusive chip group, or clear the group when it is
+/// already the pick.
+fn toggle_choice<T: PartialEq>(slot: &mut Option<T>, value: T) {
+    *slot = if slot.as_ref() == Some(&value) {
+        None
+    } else {
+        Some(value)
+    };
+}
+
 /// A modification-age chip: "within the last N days" (max age) or "older
 /// than N days" (min age).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -506,36 +528,18 @@ impl App {
                     };
 
                     let f = &mut facets;
-                    // Kind chips (mutually exclusive: clicking the active one clears it).
-                    for (label, kind) in [
-                        ("Folders", KindFacet::Folders),
-                        ("Images", KindFacet::Images),
-                        ("Docs", KindFacet::Docs),
-                        ("Archives", KindFacet::Archives),
-                        ("Code", KindFacet::Code),
-                    ] {
+                    // Kind and size chips are each one exclusive group:
+                    // clicking the active one clears it.
+                    for (label, kind) in KIND_CHIPS {
                         if chip(ui, label, f.kind == Some(kind)) {
-                            f.kind = if f.kind == Some(kind) {
-                                None
-                            } else {
-                                Some(kind)
-                            };
+                            toggle_choice(&mut f.kind, kind);
                         }
                     }
                     ui.add_space(6.0);
-                    if chip(ui, ">1MB", f.min_size == Some(1 << 20)) {
-                        f.min_size = if f.min_size == Some(1 << 20) {
-                            None
-                        } else {
-                            Some(1 << 20)
-                        };
-                    }
-                    if chip(ui, ">100MB", f.min_size == Some(100 << 20)) {
-                        f.min_size = if f.min_size == Some(100 << 20) {
-                            None
-                        } else {
-                            Some(100 << 20)
-                        };
+                    for (label, bytes) in SIZE_CHIPS {
+                        if chip(ui, label, f.min_size == Some(bytes)) {
+                            toggle_choice(&mut f.min_size, bytes);
+                        }
                     }
                     ui.add_space(6.0);
                     for (label, hover, age) in AGE_CHIPS {
@@ -1230,6 +1234,21 @@ mod tests {
         assert_eq!(facets.min_age_days, None);
         // Clicking the active chip clears the group.
         toggle_age_chip(&mut facets, AgeChip::Within(1));
+        assert_eq!(facets, FacetSet::default());
+    }
+
+    #[test]
+    fn exclusive_chips_switch_and_clear() {
+        let mut facets = FacetSet::default();
+        toggle_choice(&mut facets.min_size, SIZE_CHIPS[0].1);
+        assert_eq!(facets.min_size, Some(1 << 20));
+        // Another chip of the group replaces the pick instead of adding.
+        toggle_choice(&mut facets.min_size, SIZE_CHIPS[1].1);
+        assert_eq!(facets.min_size, Some(100 << 20));
+        toggle_choice(&mut facets.min_size, SIZE_CHIPS[1].1);
+        assert_eq!(facets.min_size, None);
+        toggle_choice(&mut facets.kind, KindFacet::Images);
+        toggle_choice(&mut facets.kind, KindFacet::Images);
         assert_eq!(facets, FacetSet::default());
     }
 

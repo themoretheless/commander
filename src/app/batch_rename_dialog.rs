@@ -393,19 +393,8 @@ impl App {
                             true,
                         );
                         // apply_batch_rename just pushed this run onto the
-                        // undo stack; reuse it for the receipt so the undo
-                        // affordance stays exactly in sync with Cmd+Z.
-                        if let Some(a) = self.ws.top_undo_action()
-                            && let Some(jump_to) = a.jump_to()
-                        {
-                            self.receipts.push(crate::receipts::Receipt {
-                                verb: a.verb(),
-                                item_count: a.item_count(),
-                                timestamp: now,
-                                jump_to,
-                                undo_action: Some(a.clone()),
-                            });
-                        }
+                        // undo stack.
+                        self.push_receipt_for_top_undo(now);
                     }
                 }
                 Err(msg) => {
@@ -474,6 +463,85 @@ mod tests {
         );
         let good = ValidatedBatchRename::build(&context, RenameRule::default());
         assert_eq!(good.regex_error, None);
+    }
+
+    fn context(targets: &[&str], siblings: &[&str]) -> BatchRenameContext {
+        BatchRenameContext {
+            panel: ActivePanel::Left,
+            dir: PathBuf::from("/fixture"),
+            targets: targets.iter().map(ToString::to_string).collect(),
+            existing: targets
+                .iter()
+                .chain(siblings)
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn chained_rename_onto_a_name_being_vacated_is_applicable() {
+        // "f" -> "f1" lands on a name that "f1" -> "f12" vacates.
+        let rule = RenameRule {
+            numbering: Some(crate::rename::Numbering {
+                start: 1,
+                step: 1,
+                pad: 0,
+            }),
+            ..RenameRule::default()
+        };
+        let validation = ValidatedBatchRename::build(&context(&["f", "f1"], &[]), rule);
+        assert_eq!(validation.will_change, 2);
+        assert!(validation.applicable);
+        assert_eq!(validation.block_reason, None);
+    }
+
+    #[test]
+    fn no_op_rule_is_not_applicable_and_gives_no_reason() {
+        let validation =
+            ValidatedBatchRename::build(&context(&["a.txt", "b.txt"], &[]), RenameRule::default());
+        assert_eq!(validation.will_change, 0);
+        assert!(!validation.applicable);
+        assert_eq!(validation.block_reason, None);
+        assert_eq!(validation.rule_for_submit(true), None);
+    }
+
+    #[test]
+    fn collisions_block_with_the_conflicting_name() {
+        let to_b = RenameRule {
+            find: "a".to_string(),
+            replace: "b".to_string(),
+            ..RenameRule::default()
+        };
+        // Onto a batch member that keeps its name.
+        let batch = ValidatedBatchRename::build(&context(&["a.md", "b.md"], &[]), to_b.clone());
+        assert!(!batch.applicable);
+        assert!(
+            batch
+                .block_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("b.md")),
+            "{:?}",
+            batch.block_reason
+        );
+        // Onto an untouched sibling, compared case-insensitively.
+        let sibling = ValidatedBatchRename::build(&context(&["a.md"], &["B.MD"]), to_b);
+        assert!(!sibling.applicable);
+        assert!(sibling.block_reason.is_some());
+    }
+
+    #[test]
+    fn invalid_target_names_block_before_ordering() {
+        let rule = RenameRule {
+            find: "a".to_string(),
+            replace: "/".to_string(),
+            ..RenameRule::default()
+        };
+        let validation = ValidatedBatchRename::build(&context(&["a.txt"], &[]), rule);
+        assert!(!validation.applicable);
+        assert_eq!(
+            validation.block_reason.as_deref(),
+            Some("Fix the invalid names to continue")
+        );
     }
 
     #[test]

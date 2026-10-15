@@ -10,7 +10,7 @@ use crate::accessibility::{
 use crate::command::{Command, KeyCode, KeyPress, map_keys};
 
 /// Seconds of idle after which the type-ahead buffer expires.
-const TYPE_AHEAD_IDLE: f64 = 1.5;
+pub(super) const TYPE_AHEAD_IDLE: f64 = 1.5;
 
 /// Seconds a purely numeric buffer waits for a `j`/`k` before it is taken
 /// as a name ("2024") and jumps.

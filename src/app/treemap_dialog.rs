@@ -74,26 +74,15 @@ impl App {
     }
 
     fn poll_disk_usage_scan(&mut self) {
-        let mut events = Vec::new();
-        let mut disconnected = false;
-        if let Some(run) = self
+        let (events, disconnected) = self
             .ui
             .tools
             .treemap
             .as_ref()
             .and_then(|state| state.run.as_ref())
-        {
-            loop {
-                match run.try_recv() {
-                    Ok(event) => events.push(event),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-        }
+            .map_or_else(Default::default, |run| {
+                super::drain_events(|| run.try_recv())
+            });
         if let Some(state) = self.ui.tools.treemap.as_mut() {
             for event in events {
                 match event {
@@ -151,7 +140,7 @@ impl App {
         self.poll_disk_usage_scan();
 
         let t = self.colors;
-        let dark = (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
+        let dark = t.is_dark();
         let window_open = true;
         let mut stop = false;
         let mut rescan = false;

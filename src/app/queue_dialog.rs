@@ -149,7 +149,7 @@ impl App {
                     summary: active.submitted,
                     errors: progress.errors.clone(),
                     failures: progress.failures.clone(),
-                    created_at_millis: (ctx.input(|input| input.time) * 1_000.0) as u64,
+                    created_at_millis: super::frame_millis(ctx),
                 })
             })
         });
@@ -223,7 +223,7 @@ impl App {
                 }
                 if let Some(active) = self.ws.active_transfer_view() {
                     let progress = crate::lock_util::recover(&active.progress);
-                    let now_millis = (ui.input(|input| input.time) * 1_000.0) as u64;
+                    let now_millis = super::frame_millis(ui.ctx());
                     if let Some(reason) = progress.pause_reason.as_ref() {
                         self.assistive_timeline.note_pause(
                             Some(active.operation_id.clone()),

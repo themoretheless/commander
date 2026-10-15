@@ -330,27 +330,39 @@ mod tests {
 
     #[test]
     fn sort_header_publishes_direction_as_button_semantics() {
-        let ctx = egui::Context::default();
-        ctx.enable_accesskit();
-        let output =
-            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
-                sort_header(ui, "Name", Some(SortOrder::Asc), egui::Color32::WHITE);
-            }));
+        // Unsorted takes its own path (no indicator is painted), so every
+        // state is checked at the widget level, not only through the label.
+        for (order, expected) in [
+            (None, "Name, not sorted; activate to sort"),
+            (
+                Some(SortOrder::Asc),
+                "Name, sorted ascending; activate to sort descending",
+            ),
+            (
+                Some(SortOrder::Desc),
+                "Name, sorted descending; activate to sort ascending",
+            ),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let output =
+                crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                    sort_header(ui, "Name", order, egui::Color32::WHITE);
+                }));
 
-        let update = output
-            .platform_output
-            .accesskit_update
-            .expect("headless AccessKit output");
-        let button = update
-            .nodes
-            .iter()
-            .map(|(_, node)| node)
-            .find(|node| node.role() == egui::accesskit::Role::Button)
-            .expect("sort button node");
-        assert_eq!(
-            button.label(),
-            Some("Name, sorted ascending; activate to sort descending")
-        );
+            let update = output
+                .platform_output
+                .accesskit_update
+                .expect("headless AccessKit output");
+            let buttons: Vec<_> = update
+                .nodes
+                .iter()
+                .map(|(_, node)| node)
+                .filter(|node| node.role() == egui::accesskit::Role::Button)
+                .collect();
+            assert_eq!(buttons.len(), 1, "{order:?}");
+            assert_eq!(buttons[0].label(), Some(expected), "{order:?}");
+        }
     }
 
     #[test]

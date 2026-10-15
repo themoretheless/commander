@@ -29,6 +29,12 @@ pub struct ThemeColors {
 }
 
 impl ThemeColors {
+    /// Whether this is a dark palette, judged by the panel background, so a
+    /// view can pick the matching toned file-kind palette.
+    pub const fn is_dark(&self) -> bool {
+        (self.bg_panel.r() as u16 + self.bg_panel.g() as u16 + self.bg_panel.b() as u16) < 384
+    }
+
     pub const fn for_preferences(
         mode: ThemeMode,
         preferences: crate::accessibility::Preferences,
@@ -211,6 +217,14 @@ fn theme_style(mode: ThemeMode, preferences: crate::accessibility::Preferences) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_palette_knows_whether_it_is_dark() {
+        assert!(!ThemeColors::light().is_dark());
+        assert!(!ThemeColors::high_contrast_light().is_dark());
+        assert!(ThemeColors::dark().is_dark());
+        assert!(ThemeColors::high_contrast_dark().is_dark());
+    }
 
     fn hex(color: Color32) -> String {
         format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b())

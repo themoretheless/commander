@@ -281,6 +281,17 @@ fn highlighted_policy(
     policy == saved.unwrap_or(crate::conflict::RelationPolicy::KeepBoth)
 }
 
+/// The conflicting names, and the file kind a saved conflict rule is keyed
+/// by: the first conflict's extension, or "other" when there is none.
+fn conflict_rule_key(conflicts: &[crate::conflict::Conflict]) -> (Vec<String>, String) {
+    let names: Vec<String> = conflicts.iter().map(|c| c.name.clone()).collect();
+    let kind = names.first().map_or_else(
+        || "other".into(),
+        |name| crate::conflict_rules::ConflictRuleBook::kind_for_name(name),
+    );
+    (names, kind)
+}
+
 /// Dry run is offered for Delete/Move, but never while conflict-policy
 /// buttons are shown: those buttons start the real transfer.
 fn dry_run_supported(is_delete: bool, title: &str, has_conflicts: bool) -> bool {
@@ -380,6 +391,77 @@ fn source_header<'a>(
                     .join("\n"),
             ),
         ),
+    }
+}
+
+/// How the will-it-fit line reads, which picks its color.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FitTone {
+    /// Still measuring.
+    Pending,
+    /// The transfer fits (or needs no space).
+    Fits,
+    /// It cannot start: the size is unknown or the destination is too small.
+    Blocked,
+    /// Free space is unknown; the user may continue anyway.
+    Unverified,
+}
+
+/// The confirm dialog's will-it-fit line. A size failure wins over
+/// everything; a free-space figure that saturated is only a lower bound, so
+/// it reads "at least".
+fn fit_message(
+    ready: bool,
+    over: bool,
+    need: Option<u64>,
+    free: Option<&crate::ports::SpaceProbeOutcome>,
+    no_extra_space: bool,
+    size_failure: Option<&crate::ports::NativeFailure>,
+) -> (String, FitTone) {
+    if let Some(failure) = size_failure {
+        return (unavailable_size_message(failure), FitTone::Blocked);
+    }
+    if !ready {
+        return (
+            "Calculating size and available space...".to_string(),
+            FitTone::Pending,
+        );
+    }
+    if no_extra_space {
+        return (
+            "No extra space needed (same volume)".to_string(),
+            FitTone::Fits,
+        );
+    }
+    match (need, free) {
+        (
+            Some(need),
+            Some(crate::ports::SpaceProbeOutcome::Known {
+                bytes: free,
+                precision,
+            }),
+        ) => {
+            if over {
+                return (not_enough_space_message(need, *free), FitTone::Blocked);
+            }
+            let at_least = match precision {
+                crate::ports::SpacePrecision::SaturatedLowerBound => "at least ",
+                crate::ports::SpacePrecision::Exact => "",
+            };
+            (
+                format!(
+                    "Fits: {} into {at_least}{} free",
+                    format_size(need),
+                    format_size(*free)
+                ),
+                FitTone::Fits,
+            )
+        }
+        (_, Some(crate::ports::SpaceProbeOutcome::Unknown(failure))) => (
+            unavailable_space_message(Some(failure)),
+            FitTone::Unverified,
+        ),
+        _ => (unavailable_space_message(None), FitTone::Unverified),
     }
 }
 
@@ -651,47 +733,19 @@ impl App {
                 // Will-it-fit guard.
                 if let Some((ready, over, need, free, no_extra_space, size_failure)) = &fit {
                     ui.add_space(2.0);
-                    let (msg, color) = if let Some(failure) = size_failure {
-                        (unavailable_size_message(failure), t.accent_red)
-                    } else if !ready {
-                        (
-                            "Calculating size and available space...".to_string(),
-                            t.text_muted,
-                        )
-                    } else if *no_extra_space {
-                        ("No extra space needed (same volume)".to_string(), t.accent)
-                    } else if let (
-                        Some(need),
-                        Some(crate::ports::SpaceProbeOutcome::Known {
-                            bytes: free,
-                            precision,
-                        }),
-                    ) = (need, free)
-                    {
-                        let approximate =
-                            matches!(precision, crate::ports::SpacePrecision::SaturatedLowerBound);
-                        if *over {
-                            (not_enough_space_message(*need, *free), t.accent_red)
-                        } else {
-                            let message = if approximate {
-                                format!(
-                                    "Fits: {} into at least {} free",
-                                    format_size(*need),
-                                    format_size(*free)
-                                )
-                            } else {
-                                format!(
-                                    "Fits: {} into {} free",
-                                    format_size(*need),
-                                    format_size(*free)
-                                )
-                            };
-                            (message, t.accent)
-                        }
-                    } else if let Some(crate::ports::SpaceProbeOutcome::Unknown(failure)) = free {
-                        (unavailable_space_message(Some(failure)), t.accent_warning)
-                    } else {
-                        (unavailable_space_message(None), t.accent_warning)
+                    let (msg, tone) = fit_message(
+                        *ready,
+                        *over,
+                        *need,
+                        free.as_ref(),
+                        *no_extra_space,
+                        size_failure.as_ref(),
+                    );
+                    let color = match tone {
+                        FitTone::Pending => t.text_muted,
+                        FitTone::Fits => t.accent,
+                        FitTone::Blocked => t.accent_red,
+                        FitTone::Unverified => t.accent_warning,
                     };
                     ui.label(egui::RichText::new(msg).size(11.0).color(color));
                 }
@@ -723,39 +777,28 @@ impl App {
                         ui.add_space(4.0);
                     }
 
-                    {
-                        let left_root = self.ws.left.current_path.clone();
-                        let right_root = self.ws.right.current_path.clone();
-                        let names: Vec<String> =
-                            rich_conflicts.iter().map(|c| c.name.clone()).collect();
-                        let kind = names
-                            .first()
-                            .map(|name| {
-                                crate::conflict_rules::ConflictRuleBook::kind_for_name(name)
-                            })
-                            .unwrap_or_else(|| "other".into());
-                        if let Some(preview) = crate::conflict_rules::preview_for(
-                            &left_root,
-                            &right_root,
-                            &kind,
+                    let (names, kind) = conflict_rule_key(&rich_conflicts);
+                    if let Some(preview) = crate::conflict_rules::preview_for(
+                        &self.ws.left.current_path,
+                        &self.ws.right.current_path,
+                        &kind,
+                        &names,
+                        5,
+                    ) {
+                        ui.label(egui::RichText::new(preview).size(11.0).color(t.text_muted));
+                        ui.add_space(4.0);
+                    } else if !names.is_empty() {
+                        let sample = crate::conflict_rules::ConflictRuleBook::sample_preview(
+                            crate::conflict_rules::StoredRelationPolicy::KeepBoth,
                             &names,
                             5,
-                        ) {
-                            ui.label(egui::RichText::new(preview).size(11.0).color(t.text_muted));
-                            ui.add_space(4.0);
-                        } else if !names.is_empty() {
-                            let sample = crate::conflict_rules::ConflictRuleBook::sample_preview(
-                                crate::conflict_rules::StoredRelationPolicy::KeepBoth,
-                                &names,
-                                5,
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("Sample before apply: {sample}"))
-                                    .size(11.0)
-                                    .color(t.text_muted),
-                            );
-                            ui.add_space(4.0);
-                        }
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("Sample before apply: {sample}"))
+                                .size(11.0)
+                                .color(t.text_muted),
+                        );
+                        ui.add_space(4.0);
                     }
 
                     use crate::conflict::RelationPolicy;
@@ -764,13 +807,15 @@ impl App {
                         conflict_policy_enabled(preflight_blocked, mutations_blocked);
                     // A saved rule for this folder pair and file kind takes
                     // the highlighted (accent) button from Keep Both.
-                    let saved_policy = rich_conflicts.first().and_then(|c| {
+                    let saved_policy = if names.is_empty() {
+                        None
+                    } else {
                         crate::conflict_rules::saved_policy(
                             &self.ws.left.current_path,
                             &self.ws.right.current_path,
-                            &crate::conflict_rules::ConflictRuleBook::kind_for_name(&c.name),
+                            &kind,
                         )
-                    });
+                    };
                     ui.horizontal_wrapped(|ui| {
                         let mut btn = |ui: &mut egui::Ui, label: &str, fill, fg, policy| {
                             let mut button =
@@ -817,29 +862,12 @@ impl App {
                         );
                     });
                     if let Some(policy) = chosen {
-                        {
-                            let left_root = self.ws.left.current_path.clone();
-                            let right_root = self.ws.right.current_path.clone();
-                            let names: Vec<String> =
-                                rich_conflicts.iter().map(|c| c.name.clone()).collect();
-                            let kind = names
-                                .first()
-                                .map(|name| {
-                                    crate::conflict_rules::ConflictRuleBook::kind_for_name(name)
-                                })
-                                .unwrap_or_else(|| "other".into());
-                            let _ = crate::conflict_rules::ConflictRuleBook::sample_preview(
-                                policy.into(),
-                                &names,
-                                5,
-                            );
-                            crate::conflict_rules::upsert(crate::conflict_rules::ConflictRule {
-                                left_root,
-                                right_root,
-                                file_kind: kind,
-                                policy: policy.into(),
-                            });
-                        }
+                        crate::conflict_rules::upsert(crate::conflict_rules::ConflictRule {
+                            left_root: self.ws.left.current_path.clone(),
+                            right_root: self.ws.right.current_path.clone(),
+                            file_kind: kind,
+                            policy: policy.into(),
+                        });
                         let pending_len = |ws: &crate::workspace::Workspace| match &ws.pending_op {
                             Some(PendingOp::Transfer(tr)) => tr.entries.len(),
                             _ => 0,
@@ -860,13 +888,10 @@ impl App {
                                     )) += dropped;
                                 });
                             }
-                            let still_overflows = matches!(
-                                &self.ws.pending_op,
-                                Some(PendingOp::Transfer(tr)) if tr.overflows()
-                            );
-                            if !still_overflows {
-                                self.confirm_or_explain(ctx);
-                            }
+                            // Resolving restarts the space probe; the transfer
+                            // starts itself once the probe proves it fits
+                            // (start_when_ready), so there is nothing to
+                            // confirm here.
                         } else {
                             // Nothing left to transfer (everything skipped).
                             self.toast(
@@ -1412,23 +1437,7 @@ impl App {
             egui::ComboBox::from_id_salt(("volume_quiet_hours", profile.volume_id))
                 .selected_text(quiet_hours_label(selected.quiet_hours))
                 .show_ui(ui, |ui| {
-                    for (hours, label) in [
-                        (None, "No quiet hours"),
-                        (
-                            Some(crate::transfer_tuning::QuietHours {
-                                start_hour: 22,
-                                end_hour: 7,
-                            }),
-                            "Quiet 22:00-07:00",
-                        ),
-                        (
-                            Some(crate::transfer_tuning::QuietHours {
-                                start_hour: 0,
-                                end_hour: 6,
-                            }),
-                            "Quiet 00:00-06:00",
-                        ),
-                    ] {
+                    for (hours, label) in QUIET_HOUR_PRESETS {
                         ui.selectable_value(&mut selected.quiet_hours, hours, label);
                     }
                 })
@@ -1654,34 +1663,47 @@ fn bandwidth_label(limit: Option<u64>) -> String {
     )
 }
 
-const fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) -> &'static str {
-    match hours {
-        None => "No quiet hours",
+/// The quiet-hours choices the per-volume combo offers, with their labels.
+const QUIET_HOUR_PRESETS: [(Option<crate::transfer_tuning::QuietHours>, &str); 3] = [
+    (None, "No quiet hours"),
+    (
         Some(crate::transfer_tuning::QuietHours {
             start_hour: 22,
             end_hour: 7,
-        }) => "Quiet 22:00-07:00",
+        }),
+        "Quiet 22:00-07:00",
+    ),
+    (
         Some(crate::transfer_tuning::QuietHours {
             start_hour: 0,
             end_hour: 6,
-        }) => "Quiet 00:00-06:00",
-        Some(_) => "Custom quiet hours",
-    }
+        }),
+        "Quiet 00:00-06:00",
+    ),
+];
+
+/// The combo's label for `hours`: its preset's, or "Custom quiet hours" for a
+/// rule saved with other hours.
+fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) -> &'static str {
+    QUIET_HOUR_PRESETS
+        .iter()
+        .find(|(preset, _)| *preset == hours)
+        .map_or("Custom quiet hours", |(_, label)| label)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         CONFIRM_DRY_RUN, CONFIRM_FOCUSED, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache,
-        FLOW_MAX_SECS, FlatListMode, OverwritePolicy, PENDING_FLOW_START, PendingOp,
+        FLOW_MAX_SECS, FitTone, FlatListMode, OverwritePolicy, PENDING_FLOW_START, PendingOp,
         clear_pending_dialog_state, collision_for_policy, conflict_banner, conflict_policy_enabled,
-        conflict_row_text, delete_not_started_message, dialog_enter_suppressed, dialog_heading,
-        dropped_items_note, dry_run_supported, durability_controls, elided_name, flat_list_header,
-        flat_row_accessible_label, flat_total, flow_rows, flow_transferred, focus_within_layer,
-        highlighted_policy, honours_click, is_conflict_row, normalization_note,
-        not_enough_space_message, nothing_left_message, primary_blocker, should_focus_primary,
-        source_header, unavailable_size_message, unavailable_space_message,
-        unstarted_delete_explanation,
+        conflict_row_text, conflict_rule_key, delete_not_started_message, dialog_enter_suppressed,
+        dialog_heading, dropped_items_note, dry_run_supported, durability_controls, elided_name,
+        fit_message, flat_list_header, flat_row_accessible_label, flat_total, flow_rows,
+        flow_transferred, focus_within_layer, highlighted_policy, honours_click, is_conflict_row,
+        normalization_note, not_enough_space_message, nothing_left_message, primary_blocker,
+        quiet_hours_label, should_focus_primary, source_header, unavailable_size_message,
+        unavailable_space_message, unstarted_delete_explanation,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1695,6 +1717,95 @@ mod tests {
             is_dir,
             depth,
         }
+    }
+
+    #[test]
+    fn fit_message_covers_every_space_verdict() {
+        use crate::ports::{NativeFailure, NativeFailureKind, SpacePrecision, SpaceProbeOutcome};
+        let failure = NativeFailure {
+            kind: NativeFailureKind::Unknown,
+            message: "probe failed".into(),
+        };
+        let known = |bytes, precision| SpaceProbeOutcome::Known { bytes, precision };
+        let exact = known(5_000, SpacePrecision::Exact);
+        let floor = known(5_000, SpacePrecision::SaturatedLowerBound);
+        // A size failure wins even over a finished, fitting probe.
+        let (text, tone) = fit_message(true, false, Some(1), Some(&exact), false, Some(&failure));
+        assert_eq!(tone, FitTone::Blocked);
+        assert!(text.contains("probe failed"), "{text}");
+        assert_eq!(
+            fit_message(false, false, None, None, false, None).1,
+            FitTone::Pending
+        );
+        assert_eq!(
+            fit_message(true, false, None, None, true, None),
+            ("No extra space needed (same volume)".into(), FitTone::Fits)
+        );
+        let (fits, tone) = fit_message(true, false, Some(1_000), Some(&exact), false, None);
+        assert_eq!(tone, FitTone::Fits);
+        assert!(
+            fits.starts_with("Fits: ") && !fits.contains("at least"),
+            "{fits}"
+        );
+        let (approx, _) = fit_message(true, false, Some(1_000), Some(&floor), false, None);
+        assert!(approx.contains("into at least "), "{approx}");
+        assert_eq!(
+            fit_message(true, true, Some(9_000), Some(&exact), false, None),
+            (not_enough_space_message(9_000, 5_000), FitTone::Blocked)
+        );
+        let unknown = SpaceProbeOutcome::Unknown(failure);
+        assert_eq!(
+            fit_message(true, false, Some(1), Some(&unknown), false, None),
+            (
+                unavailable_space_message(Some(&NativeFailure {
+                    kind: NativeFailureKind::Unknown,
+                    message: "probe failed".into(),
+                })),
+                FitTone::Unverified
+            )
+        );
+        // A known free figure without a measured size is still unverified.
+        assert_eq!(
+            fit_message(true, false, None, Some(&exact), false, None),
+            (unavailable_space_message(None), FitTone::Unverified)
+        );
+    }
+
+    #[test]
+    fn conflict_rules_are_keyed_by_the_first_conflicts_extension() {
+        let conflict = |name: &str| crate::conflict::Conflict {
+            name: name.into(),
+            src_path: name.into(),
+            src_size: 0,
+            dst_size: 0,
+            src_is_dir: false,
+            dst_is_dir: false,
+            src_newer: false,
+            dst_newer: false,
+        };
+        assert_eq!(conflict_rule_key(&[]), (Vec::new(), "other".to_string()));
+        assert_eq!(
+            conflict_rule_key(&[conflict("Photo.JPG"), conflict("notes.txt")]),
+            (
+                vec!["Photo.JPG".to_string(), "notes.txt".to_string()],
+                "jpg".to_string()
+            )
+        );
+        assert_eq!(conflict_rule_key(&[conflict("Makefile")]).1, "other");
+    }
+
+    #[test]
+    fn quiet_hour_presets_label_themselves_and_others_read_custom() {
+        for (hours, label) in super::QUIET_HOUR_PRESETS {
+            assert_eq!(quiet_hours_label(hours), label);
+        }
+        assert_eq!(
+            quiet_hours_label(Some(crate::transfer_tuning::QuietHours {
+                start_hour: 1,
+                end_hour: 2,
+            })),
+            "Custom quiet hours"
+        );
     }
 
     #[test]

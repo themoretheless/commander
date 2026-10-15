@@ -415,6 +415,26 @@ mod tests {
     }
 
     #[test]
+    fn compact_path_boundaries() {
+        let per_char = |text: &str| text.chars().count() as f32 * 7.0;
+        // Exactly as wide as the room: kept whole.
+        let (text, truncated) = compact_path(Path::new("/tmp/ab"), 49.0, per_char);
+        assert_eq!((text.as_str(), truncated), ("/tmp/ab", false));
+        // One unit narrower: elided, still within the room.
+        let (text, truncated) = compact_path(Path::new("/tmp/ab"), 48.0, per_char);
+        assert!(truncated);
+        assert!(text.starts_with("...") && per_char(&text) <= 48.0, "{text}");
+        // A single grapheme cannot be shortened, however little room there is.
+        assert_eq!(
+            compact_path(Path::new("/"), 1.0, per_char),
+            ("/".to_string(), false)
+        );
+        // With no room for any tail the last grapheme is still kept.
+        let (text, truncated) = compact_path(Path::new("/a/b"), 0.0, per_char);
+        assert_eq!((text.as_str(), truncated), ("...b", true));
+    }
+
+    #[test]
     fn compact_path_fits_wide_glyphs_by_measured_width() {
         let path = Path::new(
             "/home/\u{6587}\u{6863}/\u{9879}\u{76ee}/\u{65b0}\u{5efa}\u{6587}\u{4ef6}\u{5939}",
