@@ -4536,6 +4536,33 @@ fn partially_failed_trash_redo_refreshes_and_latches_safe_state() {
 }
 
 #[test]
+fn indeterminate_first_trash_redo_item_latches_safe_state() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed,
+        // redo: the very first item may or may not have been trashed
+        crate::ports::TrashItemOutcome::Indeterminate(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "scripted".to_string(),
+        }),
+    ]));
+    let (mut ws, first, second) = versioned_workspace_with_two_trashed(&left, &right, trash);
+    ws.perform_undo(|| {}).expect("restore both");
+    assert!(first.is_file() && second.is_file());
+
+    assert!(ws.perform_redo(|| {}).is_err());
+    let safe = ws
+        .safe_state
+        .as_ref()
+        .expect("an indeterminate item needs review, not a plain abort");
+    assert!(safe.reason.contains("Trash redo"));
+    assert_eq!(safe.paths, vec![first]);
+}
+
+#[test]
 fn relation_policy_sees_dotfile_conflicts_the_destination_panel_hides() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let source = l.file(".env", "small");
