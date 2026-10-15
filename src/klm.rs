@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn each_malformed_suite_field_is_reported() {
         type Mutation = fn(&mut KlmSuite);
-        let cases: [(&str, Mutation, Option<&str>, &str); 11] = [
+        let cases: [(&str, Mutation, Option<&str>, &str); 12] = [
             ("schema", |s| s.schema = 2, None, "schema must be 1"),
             (
                 "zero duration",
@@ -339,11 +339,21 @@ mod tests {
                 "measured duration",
             ),
             (
-                "keyboard pointing",
+                "keyboard homing (H)",
                 |s| {
                     let workflow = &mut s.workflows[0];
                     workflow.input_mode = InputMode::Keyboard;
                     workflow.steps[0].operator = Operator::H;
+                },
+                Some("switch-pane"),
+                "pointing or homing",
+            ),
+            (
+                "keyboard pointing (P)",
+                |s| {
+                    let workflow = &mut s.workflows[0];
+                    workflow.input_mode = InputMode::Keyboard;
+                    workflow.steps[0].operator = Operator::P;
                 },
                 Some("switch-pane"),
                 "pointing or homing",
