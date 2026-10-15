@@ -388,6 +388,12 @@ fn apply_sync(ws: &mut Workspace, actions: &[crate::sync::SyncAction]) {
     ws.apply_sync_between(actions, &left_dir, &right_dir, || {});
 }
 
+/// A followed-metadata listing row for `path`, as a transfer source.
+fn entry_for(path: &Path) -> FileEntry {
+    let meta = std::fs::metadata(path).unwrap();
+    FileEntry::from_meta(path.to_path_buf(), &meta).unwrap()
+}
+
 fn wait_transfer(ws: &mut Workspace) {
     if ws.active_transfer().is_none() && matches!(ws.pending_op, Some(PendingOp::Transfer(_))) {
         ws.finish_space_probe();
@@ -833,6 +839,19 @@ fn panicking_transfer_finishes_in_needs_review_without_wedging_workspace() {
             .any(|failure| failure.class == crate::operation::FailureClass::IntegrityUncertain)
     );
     assert!(ws.active_transfer_view().is_none());
+}
+
+#[test]
+fn pane_pairs_put_the_active_side_first() {
+    assert_eq!(ActivePanel::Left.order("l", "r"), ("l", "r"));
+    assert_eq!(ActivePanel::Right.order("l", "r"), ("r", "l"));
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.execute(Command::SwitchPanel);
+
+    let (active, inactive) = ws.panes();
+    assert_eq!(active.current_path, r.path());
+    assert_eq!(inactive.current_path, l.path());
 }
 
 #[test]
@@ -2013,22 +2032,18 @@ fn second_transfer_queues_and_runs_after_the_first() {
     let a = l.file("a.txt", "AAA");
     let b = l.file("b.txt", "BBBB");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
 
     // Fire two copies into the right dir. The first starts; the second is
     // queued behind it instead of being dropped (active_transfer stays set
     // until poll_transfer closes it).
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2049,19 +2064,15 @@ fn queue_snapshot_reports_running_and_pending_jobs() {
     let a = l.file("a.txt", "AAA");
     let b = l.file("b.txt", "BBBB");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
 
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2083,24 +2094,20 @@ fn queue_pause_resume_and_reorder_only_touch_pending_jobs() {
     let b = l.file("b.txt", "B");
     let c = l.file("c.txt", "C");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     ); // running
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     ); // pending
     ws.start_copy(
-        vec![entry(&c)],
+        vec![entry_for(&c)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2251,12 +2258,8 @@ fn queue_cancel_on_the_running_job_reports_a_truthful_outcome() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let a = l.file("a.txt", "A");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2298,18 +2301,14 @@ fn queue_cancel_on_a_pending_job_drops_it_without_touching_the_running_one() {
     let a = l.file("a.txt", "A");
     let b = l.file("b.txt", "B");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2339,20 +2338,16 @@ fn dismissing_an_errored_transfer_retires_the_job_and_drains_the_queue() {
     r.file("x.txt", "old"); // conflict: first copy errors under Ask
     l.file("y.txt", "Y");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     // First copy refuses x.txt (dest exists, policy Ask) -> finishes with an
     // error and is NOT cancelled. Second copy is queued behind it.
     ws.start_copy(
-        vec![entry(&l.path().join("x.txt"))],
+        vec![entry_for(&l.path().join("x.txt"))],
         r.path().to_path_buf(),
         OverwritePolicy::Ask,
         || {},
     );
     ws.start_copy(
-        vec![entry(&l.path().join("y.txt"))],
+        vec![entry_for(&l.path().join("y.txt"))],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2615,18 +2610,14 @@ fn cancelling_a_pipeline_drops_its_paused_tail() {
     let a = l.file("a.txt", "AAA");
     let b = l.file("b.txt", "BBBB");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let m = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &m).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -5145,4 +5136,807 @@ fn sync_reports_sources_that_vanished_after_the_plan() {
         )),
         "{requests:?}"
     );
+}
+
+/// The 1-based row (after "..") of the entry named `name` in `panel`.
+fn row_of(panel: &PanelState, name: &str) -> usize {
+    panel
+        .filtered_entries()
+        .iter()
+        .position(|entry| entry.name == name)
+        .expect("listed entry")
+        + 1
+}
+
+#[test]
+fn shift_up_stops_on_the_first_entry_without_reaching_the_parent_row() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(2); // b.txt
+
+    ws.execute(Command::ExtendSelectUp); // select b, move to a, select a
+    ws.execute(Command::ExtendSelectUp); // a again: the cursor stays on row 1
+
+    assert_eq!(ws.left.cursor(), 1);
+    assert_eq!(
+        ws.left.selected_paths().clone(),
+        [a, b].into_iter().collect()
+    );
+}
+
+#[test]
+fn toggle_select_advances_and_stays_on_the_last_row() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+
+    ws.execute(Command::ToggleSelect);
+    assert_eq!(ws.left.cursor(), 2, "Insert moves to the next row");
+    ws.execute(Command::ToggleSelect);
+    assert_eq!(ws.left.cursor(), 2, "the last row keeps the cursor");
+    assert!(ws.left.is_selected(&a) && ws.left.is_selected(&b));
+
+    ws.execute(Command::ToggleSelect);
+    assert!(!ws.left.is_selected(&b), "a second toggle unselects");
+    assert!(ws.left.is_selected(&a));
+}
+
+#[test]
+fn repeat_last_skips_cursor_commands_and_is_a_no_op_without_history() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let c = l.file("c.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+
+    ws.execute(Command::RepeatLast);
+    assert!(ws.left.selection_is_empty());
+    assert!(ws.drain_ui_requests().is_empty());
+    assert_eq!(ws.left.cursor(), 1);
+
+    ws.execute(Command::InvertSelection); // a, b, c
+    ws.execute(Command::CursorDown); // onto b
+    ws.execute(Command::ToggleSelect); // b off, cursor onto c
+    ws.execute(Command::RepeatLast); // inverts again, not another toggle
+
+    assert_eq!(ws.left.selected_paths().clone(), [b].into_iter().collect());
+    assert!(!ws.left.is_selected(&a) && !ws.left.is_selected(&c));
+    assert_eq!(ws.left.cursor(), 3);
+}
+
+#[test]
+fn nav_lock_mirrors_enter_and_go_up_only_while_on() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let left_sub = l.dir("sub");
+    let right_sub = r.dir("sub");
+    let mut ws = workspace(&l, &r);
+
+    ws.execute(Command::ToggleNavLock);
+    assert!(ws.nav_lock);
+    ws.left.set_cursor(row_of(&ws.left, "sub"));
+    ws.execute(Command::Activate);
+    assert_eq!(ws.left.current_path, left_sub);
+    assert_eq!(ws.right.current_path, right_sub, "Enter is mirrored");
+
+    ws.execute(Command::GoUp);
+    assert_eq!(ws.left.current_path, l.path());
+    assert_eq!(ws.right.current_path, r.path(), "Go Up is mirrored");
+
+    ws.execute(Command::ToggleNavLock);
+    assert!(!ws.nav_lock);
+    ws.left.set_cursor(row_of(&ws.left, "sub"));
+    ws.execute(Command::Activate);
+    assert_eq!(ws.left.current_path, left_sub);
+    assert_eq!(ws.right.current_path, r.path(), "unlocked panes move alone");
+
+    let notices = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        notices,
+        vec![
+            "Navigation lock on: the other pane follows Enter and Go Up".to_string(),
+            "Navigation lock off".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn nav_lock_go_up_leaves_an_other_pane_at_the_root_in_place() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let left_sub = l.dir("sub");
+    let root = r.path().ancestors().last().unwrap().to_path_buf();
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(left_sub);
+    ws.right.navigate_to(root.clone());
+    ws.execute(Command::ToggleNavLock);
+
+    ws.execute(Command::GoUp);
+
+    assert_eq!(ws.left.current_path, l.path(), "the active pane moves up");
+    assert_eq!(
+        ws.right.current_path, root,
+        "the root has no parent to follow"
+    );
+}
+
+#[test]
+fn activating_the_parent_row_goes_up_onto_the_folder_left() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let sub = l.dir("sub");
+    l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(sub.clone());
+    ws.left.set_cursor(0);
+
+    ws.execute(Command::Activate);
+
+    assert_eq!(ws.left.current_path, l.path());
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(sub)
+    );
+    assert!(
+        ws.drain_ui_requests().is_empty(),
+        "the '..' row opens nothing"
+    );
+}
+
+#[test]
+fn reveal_lands_on_the_file_when_the_listing_is_synchronous() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("deep");
+    for n in 0..5 {
+        l.file(&format!("deep/f{n}.txt"), "x");
+    }
+    let target = l.path().join("deep/f3.txt");
+    let mut ws = workspace(&l, &r);
+
+    ws.reveal(&target);
+
+    assert_eq!(ws.left.current_path, l.path().join("deep"));
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(target)
+    );
+}
+
+#[test]
+fn toggle_info_shows_the_cursor_entry_and_closes_on_the_second_toggle() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("notes.txt", "12345");
+    let mut ws = workspace(&l, &r);
+
+    ws.left.set_cursor(0);
+    ws.execute(Command::ToggleInfo);
+    assert!(ws.right.preview.is_none(), "the '..' row has no info card");
+
+    ws.left.set_cursor(row_of(&ws.left, "notes.txt"));
+    ws.execute(Command::ToggleInfo);
+    let Some(PreviewContent::Info(card)) = &ws.right.preview else {
+        panic!("expected an info card, got {:?}", ws.right.preview);
+    };
+    assert_eq!(card.name, "notes.txt");
+    assert_eq!(card.path, file.display().to_string());
+    assert_eq!(card.size, "5 B");
+    assert_eq!(card.children, None);
+    assert_eq!(card.pending, None);
+
+    ws.execute(Command::ToggleInfo);
+    assert!(ws.right.preview.is_none(), "a second toggle closes it");
+}
+
+#[test]
+fn toggle_info_on_a_folder_uses_its_measured_size() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let folder = l.dir("box");
+    l.file("box/a.bin", "1234567");
+    let mut ws = workspace(&l, &r);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.size_snapshot().size_of(&folder).is_none()
+        || ws.left.size_snapshot().count_of(&folder).is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "folder never measured"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    ws.left.set_cursor(row_of(&ws.left, "box"));
+
+    ws.execute(Command::ToggleInfo);
+
+    let Some(PreviewContent::Info(card)) = &ws.right.preview else {
+        panic!("expected an info card, got {:?}", ws.right.preview);
+    };
+    assert_eq!(card.kind, "Folder");
+    assert_eq!(card.size, "7 B");
+    assert_eq!(card.children, Some(1));
+    assert_eq!(card.pending, None, "nothing left to fill in");
+}
+
+fn version_for(path: &Path) -> crate::version_store::VersionRecord {
+    crate::version_store::VersionRecord {
+        operation_id: crate::operation::OperationId("delete".to_string()),
+        key: crate::operation::IdempotencyKey(path.display().to_string()),
+        original: path.to_path_buf(),
+        stored: PathBuf::from("/versions").join(path.file_name().unwrap()),
+        created_at_secs: 0,
+    }
+}
+
+/// A finished delete batch with the given per-item results; `trashed` and
+/// `failed` are counted from them like the delete worker does.
+fn delete_outcome(
+    items: Vec<(
+        &Path,
+        crate::ports::TrashItemOutcome,
+        Option<crate::version_store::VersionRecord>,
+    )>,
+    indeterminate: bool,
+) -> DeleteOutcome {
+    let items = items
+        .into_iter()
+        .map(|(path, outcome, version)| DeleteItemResult {
+            path: path.to_path_buf(),
+            outcome,
+            version,
+        })
+        .collect::<Vec<_>>();
+    let trashed = items
+        .iter()
+        .filter(|item| item.outcome == crate::ports::TrashItemOutcome::Trashed)
+        .count();
+    DeleteOutcome {
+        attempt_id: crate::operation::TransferAttemptId(1),
+        operation_id: crate::operation::OperationId("delete".to_string()),
+        submitted: crate::operation_view::SubmittedSummary {
+            verb: "Trash".to_string(),
+            item_count: items.len(),
+            item_names: Vec::new(),
+            source_roots: Vec::new(),
+            destination: PathBuf::new(),
+        },
+        origin: DeleteOrigin::Confirmation,
+        failed: items.len() - trashed,
+        items,
+        trashed,
+        failures: Vec::new(),
+        indeterminate,
+        cancelled: false,
+    }
+}
+
+#[test]
+fn trash_undo_records_only_trashed_items_and_only_when_every_one_has_a_version() {
+    use crate::ports::TrashItemOutcome::{Failed, Trashed};
+    let (a, b, c) = (Path::new("/d/a"), Path::new("/d/b"), Path::new("/d/c"));
+    let denied = || {
+        Failed(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "denied".to_string(),
+        })
+    };
+
+    // A failed item is left out; the trashed ones keep their order.
+    let mixed = delete_outcome(
+        vec![
+            (a, Trashed, Some(version_for(a))),
+            (b, denied(), Some(version_for(b))),
+            (c, Trashed, Some(version_for(c))),
+        ],
+        false,
+    );
+    match trash_undo_action(&mixed) {
+        Some(crate::undo::Action::Trash { items }) => {
+            let paths = items
+                .iter()
+                .map(|item| item.path.as_path())
+                .collect::<Vec<_>>();
+            assert_eq!(paths, vec![a, c]);
+            assert_eq!(items[1].version, version_for(c));
+        }
+        other => panic!("expected a Trash action, got {other:?}"),
+    }
+
+    // One trashed item without a preserved version: undo would be partial.
+    let unversioned = delete_outcome(
+        vec![(a, Trashed, Some(version_for(a))), (b, Trashed, None)],
+        false,
+    );
+    assert_eq!(trash_undo_action(&unversioned), None);
+
+    // A worker that died mid-batch may have trashed more than it reported.
+    let indeterminate = delete_outcome(vec![(a, Trashed, Some(version_for(a)))], true);
+    assert_eq!(trash_undo_action(&indeterminate), None);
+
+    // Nothing trashed: nothing to undo.
+    let none = delete_outcome(vec![(a, denied(), Some(version_for(a)))], false);
+    assert_eq!(trash_undo_action(&none), None);
+}
+
+#[test]
+fn trash_targets_without_a_listing_identity_fail_closed() {
+    let dir = TempDir::new();
+    let path = dir.file("a.txt", "x");
+    let failure = crate::ports::NativeFailure {
+        kind: crate::ports::NativeFailureKind::Denied,
+        message: "lstat denied".to_string(),
+    };
+
+    match trash_batch_item_from_listing(path.clone(), &crate::panel::ListingIdentity::Unavailable) {
+        crate::ports::TrashBatchItem::CaptureFailed { path: got, failure } => {
+            assert_eq!(got, path);
+            assert_eq!(failure.kind, crate::ports::NativeFailureKind::Unsupported);
+        }
+        other => panic!("expected a capture failure, got {other:?}"),
+    }
+    assert_eq!(
+        trash_batch_item_from_listing(
+            path.clone(),
+            &crate::panel::ListingIdentity::CaptureFailed(failure.clone())
+        ),
+        crate::ports::TrashBatchItem::CaptureFailed {
+            path: path.clone(),
+            failure,
+        }
+    );
+    let expected = crate::path_identity::PathIdentity::observe(&path).unwrap();
+    assert_eq!(
+        trash_batch_item_from_listing(
+            path.clone(),
+            &crate::panel::ListingIdentity::Captured(expected.clone())
+        ),
+        crate::ports::TrashBatchItem::Ready(crate::ports::TrashTarget { path, expected })
+    );
+}
+
+#[test]
+fn partially_failed_trash_undo_restores_the_first_item_and_latches_safe_state() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let one_dir = left.dir("one");
+    let two_dir = left.dir("two");
+    left.file("one/one.txt", "1");
+    left.file("two/two.txt", "2");
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed,
+    ]));
+    let mut ws = Workspace::with_versioned_delete_ports(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        trash,
+        Arc::new(TestFreeSpacePort),
+    );
+    ws.right.refresh();
+    ws.left.navigate_to(one_dir);
+    ws.left.select_path(left.path().join("one/one.txt"));
+    ws.left.navigate_to(two_dir);
+    ws.left.select_path(left.path().join("two/two.txt"));
+    ws.request_delete();
+    assert!(ws.confirm_pending_op(|| {}));
+    assert_eq!(ws.finish_delete().expect("delete outcome").trashed, 2);
+    let Some(crate::undo::Action::Trash { items }) = ws.top_undo_action().cloned() else {
+        panic!("a versioned Trash is undoable");
+    };
+    let (first, second) = (items[0].path.clone(), items[1].path.clone());
+    // The second item's folder vanishes: undo passes its preflight (the
+    // destination is free) but cannot put that item back.
+    std::fs::remove_dir(second.parent().unwrap()).unwrap();
+
+    let error = ws.perform_undo(|| {}).unwrap_err();
+
+    assert!(error.contains(&second.display().to_string()), "{error}");
+    assert!(first.is_file(), "the first item was restored");
+    assert!(!second.exists());
+    let state = ws.safe_state.as_ref().expect("partial undo needs review");
+    assert!(
+        state
+            .reason
+            .starts_with("Trash undo stopped after 1 of its items"),
+        "{}",
+        state.reason
+    );
+    assert_eq!(state.paths, vec![first]);
+    assert!(
+        matches!(
+            ws.top_undo_action(),
+            Some(crate::undo::Action::Trash { .. })
+        ),
+        "the failed undo stays on the history stack"
+    );
+}
+
+fn review_state(id: &str) -> crate::operation::SafeState {
+    crate::operation::SafeState {
+        operation_id: crate::operation::OperationId(id.to_string()),
+        reason: "review required".to_string(),
+        paths: Vec::new(),
+        failures: Vec::new(),
+    }
+}
+
+fn orphan_at(path: &Path) -> crate::operation_journal::OrphanStaging {
+    crate::operation_journal::OrphanStaging {
+        path: path.to_path_buf(),
+        identity: crate::path_identity::PathIdentity::observe_deep(path).unwrap(),
+    }
+}
+
+#[test]
+fn cleaning_orphan_staging_waits_for_review_and_queued_transfers() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let staged = l.file(".a.txt.cmdr-tmp.0", "staged");
+    let mut ws = workspace(&l, &r);
+
+    ws.safe_state = Some(review_state("review"));
+    assert_eq!(
+        ws.clean_recovery_orphan(&orphan_at(&staged)),
+        Err("Finish the integrity review before cleaning staging".to_string())
+    );
+    ws.safe_state = None;
+    ws.launch_test_transfer(
+        test_transfer_spec("busy-clean", r.path()),
+        transfer_queue::HistoryIntent::None,
+    );
+    assert_eq!(
+        ws.clean_recovery_orphan(&orphan_at(&staged)),
+        Err("Wait for the transfer queue before cleaning staging".to_string())
+    );
+    assert!(staged.is_file(), "a refused clean leaves the staging file");
+}
+
+#[test]
+fn cleaning_orphan_staging_waits_for_an_active_trash() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    let staged = l.file(".a.txt.cmdr-tmp.0", "staged");
+    let (release, gate) = mpsc::channel();
+    let trash = Arc::new(GatedTrashPort {
+        release: Mutex::new(gate),
+    });
+    let mut ws = workspace_with_trash(&l, &r, trash);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.request_delete();
+    assert!(ws.confirm_pending_op(|| {}));
+
+    assert_eq!(
+        ws.clean_recovery_orphan(&orphan_at(&staged)),
+        Err("Wait for the current Trash operation before cleaning staging".to_string())
+    );
+    assert!(staged.is_file());
+
+    release.send(()).unwrap();
+    ws.finish_delete().expect("delete retirement");
+}
+
+#[test]
+fn cleaning_orphan_staging_removes_it_and_refreshes_the_panes() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let staged = l.file(".a.txt.cmdr-tmp.0", "staged");
+    let mut ws = workspace(&l, &r);
+    assert_eq!(ws.left.toggle_hidden(), panel::ViewApplyOutcome::Applied);
+    assert!(ws.left.entries().iter().any(|entry| entry.path == staged));
+
+    ws.clean_recovery_orphan(&orphan_at(&staged)).unwrap();
+
+    assert!(!staged.exists());
+    assert!(
+        !ws.left.entries().iter().any(|entry| entry.path == staged),
+        "the listing no longer shows the cleaned file"
+    );
+}
+
+#[test]
+fn drop_while_another_operation_is_open_clears_the_drag_and_stages_nothing() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "x");
+    let sub = l.dir("sub");
+    let mut ws = workspace(&l, &r);
+    let drag_onto_sub = |ws: &mut Workspace| {
+        ws.left.drag.set(vec![file.clone()]);
+        ws.left.drag.set_drop_target(sub.clone());
+        ws.drop_dragged(|| {});
+        assert!(ws.left.drag.is_empty() && !ws.left.drag.has_drop_target());
+    };
+
+    // A confirmation is open: the drop must not replace it.
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.request_copy();
+    drag_onto_sub(&mut ws);
+    match &ws.pending_op {
+        Some(PendingOp::Transfer(transfer)) => {
+            assert_eq!(transfer.kind, TransferKind::Copy);
+            assert_eq!(transfer.target, r.path());
+        }
+        _ => panic!("the open confirmation survives the drop"),
+    }
+    ws.dismiss_pending_op();
+
+    // A transfer is running: the drop is not staged behind it.
+    ws.launch_test_transfer(
+        test_transfer_spec("busy-drop", r.path()),
+        transfer_queue::HistoryIntent::None,
+    );
+    drag_onto_sub(&mut ws);
+    assert!(ws.pending_op.is_none());
+    assert!(file.is_file() && !sub.join("a.txt").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_land_in_the_other_pane_and_report_their_count() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateSymlink);
+
+    let link = r.path().join("a.txt");
+    assert_eq!(std::fs::read_link(&link).unwrap(), file);
+    assert!(ws.right.entries().iter().any(|entry| entry.path == link));
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Created 1 symlink".to_string(),
+            error: false,
+        }]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_take_a_numbered_name_beside_an_existing_one() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "linked");
+    r.file("a.txt", "already here");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateSymlink);
+
+    assert_eq!(
+        std::fs::read_link(r.path().join("a.txt link 2")).unwrap(),
+        file
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("a.txt")).unwrap(),
+        "already here"
+    );
+}
+
+#[test]
+fn hard_links_take_a_numbered_name_beside_an_existing_one() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "linked");
+    r.file("a.txt", "already here");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateHardlink);
+
+    let link = r.path().join("a.txt link 2");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "linked");
+    std::fs::write(&file, "changed").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&link).unwrap(),
+        "changed",
+        "a hard link shares the original's content"
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("a.txt")).unwrap(),
+        "already here"
+    );
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Created 1 hard link".to_string(),
+            error: false,
+        }]
+    );
+}
+
+#[test]
+fn hard_linking_a_folder_is_refused_with_an_error_toast() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("sub");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "sub"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateHardlink);
+
+    assert!(!r.path().join("sub").exists());
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message:
+                "Created 0 hard links; Could not hard-link sub: hard links require a regular file"
+                    .to_string(),
+            error: true,
+        }]
+    );
+}
+
+#[test]
+fn treemap_orders_by_size_using_measured_folder_sizes() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("one.bin", "1");
+    l.file("five.bin", "12345");
+    l.file("three.bin", "123");
+    let folder = l.dir("box");
+    l.file("box/ten.bin", "1234567890");
+    let ws = workspace(&l, &r);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.size_snapshot().size_of(&folder).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "folder never measured"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let snapshot = ws.treemap_snapshot();
+
+    let items = snapshot
+        .items
+        .iter()
+        .map(|(entry, bytes)| (entry.name.as_str(), *bytes))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        items,
+        vec![
+            ("box", 10),
+            ("five.bin", 5),
+            ("three.bin", 3),
+            ("one.bin", 1)
+        ]
+    );
+}
+
+#[test]
+fn applying_a_profile_restores_both_folders_filters_and_policies() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let left_saved = l.dir("photos");
+    let right_saved = r.dir("backup");
+    let mut ws = workspace(&l, &r);
+    let mut profile = crate::workspace_profile::WorkspaceProfile::new(
+        "default",
+        left_saved.clone(),
+        right_saved.clone(),
+    );
+    profile.left_filter = "jpg".to_string();
+    profile.right_filter = "raw".to_string();
+    profile.durability = crate::operation::DurabilityProfile::Versioned;
+    profile.name_policy.collision = crate::filesystem_policy::CollisionPolicy::KeepBoth;
+    profile.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Follow;
+    ws.drain_ui_requests();
+
+    ws.apply_profile(&profile);
+
+    assert_eq!(ws.left.current_path, left_saved);
+    assert_eq!(ws.right.current_path, right_saved);
+    assert_eq!(ws.left.search_query(), "jpg");
+    assert_eq!(ws.right.search_query(), "raw");
+    assert_eq!(
+        ws.durability_profile,
+        crate::operation::DurabilityProfile::Versioned
+    );
+    assert_eq!(ws.name_policy, profile.name_policy);
+    assert_eq!(
+        ws.symlink_policy,
+        crate::filesystem_policy::SymlinkPolicy::Follow
+    );
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Applied workspace profile \"default\"".to_string(),
+            error: false,
+        }]
+    );
+
+    // Policies are not tied to a folder: a missing root still applies them.
+    let mut gone = profile.clone();
+    gone.left_root = l.path().join("removed");
+    gone.right_root = r.path().join("removed");
+    gone.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Skip;
+    gone.left_filter = "other".to_string();
+    gone.right_filter = "other".to_string();
+    ws.apply_profile(&gone);
+    assert_eq!(ws.left.current_path, left_saved);
+    assert_eq!(ws.right.current_path, right_saved);
+    assert_eq!(
+        ws.left.search_query(),
+        "jpg",
+        "a missing side keeps its filter"
+    );
+    assert_eq!(
+        ws.right.search_query(),
+        "raw",
+        "a missing side keeps its filter"
+    );
+    assert_eq!(
+        ws.symlink_policy,
+        crate::filesystem_policy::SymlinkPolicy::Skip
+    );
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [UiRequest::Notice { message, error: true }]
+                if message.contains(&gone.left_root.display().to_string())
+                    && message.contains(&gone.right_root.display().to_string())
+        ),
+        "{requests:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn find_duplicates_does_not_pair_a_symlink_with_its_target() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let original = l.file("original.bin", "same bytes");
+    let copy = l.file("copy.bin", "same bytes");
+    std::os::unix::fs::symlink(&original, l.path().join("alias.bin")).unwrap();
+    let ws = workspace(&l, &r);
+
+    let groups = ws.find_duplicates();
+
+    assert_eq!(groups.len(), 1, "{groups:?}");
+    let mut paths = groups[0]
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    paths.sort();
+    assert_eq!(paths, vec![copy, original], "the link is not a duplicate");
+}
+
+#[test]
+fn undo_of_a_cross_folder_move_is_refused_instead_of_misplacing_items() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let one = l.dir("one");
+    let two = l.dir("two");
+    l.file("one/x.txt", "x");
+    l.file("two/y.txt", "y");
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(one.clone());
+    ws.left.select_path(one.join("x.txt"));
+    ws.left.navigate_to(two.clone());
+    ws.left.select_path(two.join("y.txt"));
+
+    ws.request_move();
+    wait_transfer(&mut ws);
+    assert!(r.path().join("x.txt").is_file() && r.path().join("y.txt").is_file());
+    assert!(matches!(
+        ws.top_undo_action(),
+        Some(crate::undo::Action::Move { .. })
+    ));
+
+    // One undo transfer cannot return items to two different folders.
+    let error = ws.perform_undo(|| {}).unwrap_err();
+    assert!(
+        error.contains("Items came from different folders"),
+        "{error}"
+    );
+    drain_transfers(&mut ws);
+    assert!(r.path().join("x.txt").is_file() && r.path().join("y.txt").is_file());
+    assert!(!one.join("x.txt").exists() && !two.join("y.txt").exists());
+    assert!(ws.safe_state.is_none(), "a refused undo changes nothing");
 }
