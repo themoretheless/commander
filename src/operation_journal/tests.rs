@@ -2662,3 +2662,46 @@ fn duplicate_completion_must_match_the_recorded_proof() {
             .contains("no immutable effect proof")
     );
 }
+
+#[test]
+fn a_placement_failure_that_undid_its_staging_resumes_as_a_retry() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("retry-placement-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "new bytes");
+    let destination = target.join("source.txt");
+    let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("retry-after-placement", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+    // The executor's undo_placement removes the copy staging before the
+    // failure is recorded.
+    std::fs::remove_file(&staging).unwrap();
+    mark_failed(
+        &spec.operation_id,
+        &key,
+        ClassifiedFailure::message(FailureClass::Blocked, None, "final placement failed"),
+    )
+    .unwrap();
+    finish(&spec.operation_id, OperationStatus::Failed).unwrap();
+
+    let resumed = build_resume_spec(&spec.operation_id).unwrap();
+
+    assert_eq!(resumed.expectations.len(), 1);
+    assert_eq!(resumed.expectations[0].key.as_ref(), Some(&key));
+    assert!(resumed.expectations[0].resume.is_none());
+    let step = &operation(&spec.operation_id).unwrap().steps[0];
+    assert_eq!(step.status, StepStatus::Failed);
+    assert!(step.placement.is_none());
+    assert!(step.staging.is_none());
+}

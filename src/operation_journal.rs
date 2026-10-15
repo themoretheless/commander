@@ -2057,6 +2057,18 @@ fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), St
             )?;
             continue;
         }
+        let retryable_failure = step.status == StepStatus::Failed
+            && step
+                .failure
+                .as_ref()
+                .is_none_or(|failure| failure.class != FailureClass::IntegrityUncertain);
+        if retryable_failure && placement.phase == PlacementPhase::Prepared && staging_gone {
+            // An ordinary placement failure already undid its staging (deleted
+            // the copy or moved a renamed source back); nothing was placed, so
+            // the step is retried from its source.
+            clear_failed_placement(operation_id, &step.key, placement)?;
+            continue;
+        }
         match placement.phase {
             PlacementPhase::Prepared if !destination.exists && !staging_gone => {
                 // Staging still holds the sealed object; resume can retry rename.
@@ -2080,6 +2092,28 @@ fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), St
         }
     }
     Ok(())
+}
+
+fn clear_failed_placement(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    placement: &PlacementProof,
+) -> Result<(), String> {
+    mutate(|journal| {
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
+        if step.status != StepStatus::Failed || step.placement.as_ref() != Some(placement) {
+            return Err(format!(
+                "Placement proof changed while retrying failed step {}",
+                key.0
+            ));
+        }
+        step.placement = None;
+        step.staging = None;
+        step.checkpoint = None;
+        operation.updated_at_secs = now_secs();
+        Ok(())
+    })
 }
 
 fn complete_interrupted_placement(
