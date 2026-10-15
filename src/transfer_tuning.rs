@@ -406,6 +406,98 @@ mod tests {
         assert_eq!(invalid.normalized(), VolumeRule::default());
     }
 
+    fn uniform(latency_ms: f64, failures: usize, total: usize) -> Vec<Sample> {
+        (0..total)
+            .map(|index| Sample {
+                latency_ms,
+                success: index >= failures,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_samples_assume_the_backend_latency() {
+        for (backend, latency, concurrency) in [
+            (BackendKind::LocalFast, 1.0, 4),
+            (BackendKind::LocalSlow, 8.0, 4),
+            (BackendKind::Removable, 15.0, 2),
+            (BackendKind::Remote, 35.0, 2),
+            (BackendKind::Unknown, 25.0, 2),
+        ] {
+            let snapshot = snapshot_from(&profile(backend, 4), Vec::new());
+            assert_eq!(snapshot.p95_latency_ms, latency, "{backend:?}");
+            assert_eq!(snapshot.concurrency, concurrency, "{backend:?}");
+            assert_eq!(snapshot.error_rate, 0.0);
+            assert_eq!(snapshot.samples, 0);
+        }
+    }
+
+    #[test]
+    fn concurrency_tiers_switch_at_15ms_80ms_and_ten_percent_errors() {
+        let profile = profile(BackendKind::Remote, 4);
+        let concurrency =
+            |latency, failures, total| snapshot_from(&profile, uniform(latency, failures, total));
+        assert_eq!(concurrency(14.9, 0, 20).concurrency, 4);
+        assert_eq!(concurrency(15.0, 0, 20).concurrency, 2);
+        assert_eq!(concurrency(79.9, 0, 20).concurrency, 2);
+        assert_eq!(concurrency(80.0, 0, 20).concurrency, 1);
+        let at_limit = concurrency(2.0, 1, 10);
+        assert_eq!(at_limit.error_rate, 0.10);
+        assert_eq!(at_limit.concurrency, 1);
+        assert_eq!(concurrency(2.0, 1, 11).concurrency, 4);
+    }
+
+    #[test]
+    fn concurrency_respects_the_volume_capability_and_never_reaches_zero() {
+        let fast = uniform(2.0, 0, 20);
+        assert_eq!(
+            snapshot_from(&profile(BackendKind::LocalFast, 0), fast.clone()).concurrency,
+            1
+        );
+        assert_eq!(
+            snapshot_from(&profile(BackendKind::LocalFast, 2), fast).concurrency,
+            2
+        );
+    }
+
+    #[test]
+    fn quiet_hours_edges_and_invalid_ranges() {
+        let overnight = QuietHours {
+            start_hour: 22,
+            end_hour: 7,
+        };
+        assert!(overnight.contains(22));
+        assert!(overnight.contains(0));
+        assert!(overnight.contains(6));
+        assert!(!overnight.contains(7));
+        assert!(!overnight.contains(21));
+        assert!(!overnight.contains(24));
+
+        let empty = QuietHours {
+            start_hour: 5,
+            end_hour: 5,
+        };
+        assert!(!empty.valid());
+        assert!((0..24).all(|hour| !empty.contains(hour)));
+    }
+
+    #[test]
+    fn limited_limiter_throttles_and_honours_cancel() {
+        let rule = VolumeRule {
+            max_bytes_per_second: Some(64 * 1024),
+            quiet_hours: None,
+        };
+        let mut limiter = BandwidthLimiter::new(rule);
+        let error = limiter.consume(1024 * 1024, || true).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+
+        // 6.4 KiB at 64 KiB/s is ~100 ms of budget.
+        let mut limiter = BandwidthLimiter::new(rule);
+        let started = Instant::now();
+        limiter.consume(64 * 1024 / 10, || false).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(50));
+    }
+
     #[test]
     fn unlimited_limiter_never_sleeps_or_cancels() {
         let mut limiter = BandwidthLimiter::new(VolumeRule::default());
