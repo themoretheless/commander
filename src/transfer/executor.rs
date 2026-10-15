@@ -1905,14 +1905,11 @@ pub(super) fn undo_placement(staged: &Path, source: &Path, was_renamed: bool) ->
             )
         });
     }
-    if crate::fs_at::rename_sibling(staged, source, false).is_ok() {
-        return None;
-    }
-    if staged.symlink_metadata().is_ok() {
-        Some(format!("data preserved at {}", staged.display()))
-    } else {
-        None
-    }
+    let error = crate::fs_at::rename_sibling(staged, source, false).err()?;
+    staged
+        .symlink_metadata()
+        .is_ok()
+        .then(|| format!("data preserved at {}: {error}", staged.display()))
 }
 
 /// Replace `dest` with the freshly-staged `staged`: move the existing `dest`
@@ -2015,9 +2012,9 @@ fn swap_into_place(
             // Put the original back. If even that fails, the original now
             // lives only at the hidden backup path; name it in the error so
             // it can be recovered rather than vanishing silently.
-            if crate::fs_at::rename_sibling(&backup, dest, false).is_err() {
+            if let Err(restore) = crate::fs_at::rename_sibling(&backup, dest, false) {
                 return Err(std::io::Error::other(format!(
-                    "{e}; original preserved at {}",
+                    "{e}; restore failed: {restore}; original preserved at {}",
                     backup.display()
                 )));
             }
@@ -2174,6 +2171,10 @@ mod tests {
         let message = undo_placement(&staged, &source, true).expect("restore must fail");
 
         assert!(message.contains(&staged.display().to_string()), "{message}");
+        assert!(
+            message.contains("os error"),
+            "the failed restore must keep its OS error: {message}"
+        );
         assert_eq!(std::fs::read_to_string(&staged).unwrap(), "only copy");
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "recreated");
     }
