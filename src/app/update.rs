@@ -169,6 +169,80 @@ struct PaneDropContext {
 /// Seconds a modifier must be held before the key bar floats in.
 const KEY_BAR_REVEAL_DELAY: f64 = 0.45;
 
+/// Whether held modifiers should float the key bar in. Shift is left out:
+/// it is held for range selection, and a revealed bar over the bottom rows
+/// would turn a Shift-click there into a command.
+const fn key_bar_modifier_held(modifiers: egui::Modifiers) -> bool {
+    modifiers.command || modifiers.alt || modifiers.ctrl
+}
+
+/// Temp-data key for the floating key bar's rect while it shows this frame.
+const KEY_BAR_OVERLAY_RECT: &str = "shortcuts_overlay_rect";
+
+/// The selection HUD's bottom edge: just above the central area's bottom,
+/// and above the floating key bar while that shows, since both sit at the
+/// bottom centre.
+fn selection_hud_bottom(area_bottom: f32, key_bar_top: Option<f32>) -> f32 {
+    let bottom = area_bottom - 14.0;
+    key_bar_top.map_or(bottom, |top| bottom.min(top - 6.0))
+}
+
+/// Accessible name of the pane-tool close button, whose visible text is
+/// only a multiplication sign.
+const CLOSE_PANE_TOOL_LABEL: &str = "Close pane tool";
+
+/// Temp-data key for the left pane's share of the two panes' width.
+const PANE_SPLIT_RATIO: &str = "pane_split_ratio";
+
+/// The left pane width that keeps the user's split `ratio` of `remaining`,
+/// leaving both panes at least `pane_min` wide when there is room.
+fn split_left_width(ratio: f32, remaining: f32, pane_min: f32) -> f32 {
+    let half = remaining / 2.0;
+    (remaining * ratio.clamp(0.0, 1.0)).clamp(pane_min.min(half), (remaining - pane_min).max(half))
+}
+
+/// The split ratio to keep after this frame. Only a divider drag (pointer
+/// held, the left pane's width changed since last frame, no window or tree
+/// re-layout this frame) stores a new ratio, so a width clamped by a narrow
+/// window never overwrites the user's split.
+fn dragged_split_ratio(
+    stored: f32,
+    prev_width: Option<f32>,
+    width: f32,
+    remaining: f32,
+    relayout: bool,
+    pointer_down: bool,
+) -> f32 {
+    match prev_width {
+        Some(prev)
+            if !relayout && pointer_down && remaining > 0.0 && (width - prev).abs() > 0.5 =>
+        {
+            width / remaining
+        }
+        _ => stored,
+    }
+}
+
+/// The keyboard focus ring (a double outline, as on file rows) for a
+/// widget whose own frame is hidden, so tabbing to it stays visible.
+fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, t: &crate::theme::ThemeColors) {
+    if !response.has_focus() {
+        return;
+    }
+    ui.painter().rect_stroke(
+        response.rect,
+        crate::theme::ROUNDING_SM,
+        Stroke::new(2.0, t.text_primary),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().rect_stroke(
+        response.rect.shrink(2.0),
+        crate::theme::ROUNDING_SM,
+        Stroke::new(1.0, t.bg_panel),
+        egui::StrokeKind::Inside,
+    );
+}
+
 fn clipped_label(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
@@ -300,11 +374,242 @@ fn unique_smart_folder_name(
         .expect("an unused suffix exists")
 }
 
-/// The toast after saving a smart folder. A failed save gets none here:
-/// the persistence layer already records the failure with its cause, and
-/// `begin_frame` toasts that, so a second, vaguer error toast would repeat it.
+/// The toast after saving a smart folder, worded as the "Save filter as
+/// search" menu item and the Saved searches sheet name it. A failed save
+/// gets none here: the persistence layer already records the failure with
+/// its cause, and `begin_frame` toasts that, so a second, vaguer error toast
+/// would repeat it.
 fn smart_folder_saved_toast(name: &str, saved: bool) -> Option<String> {
-    saved.then(|| format!("Saved smart folder \"{name}\""))
+    saved.then(|| format!("Saved search \"{name}\""))
+}
+
+/// `n` with the singular or plural noun: "1 item", "3 items".
+fn count_noun(n: usize, singular: &str, plural: &str) -> String {
+    format!("{n} {}", if n == 1 { singular } else { plural })
+}
+
+fn item_count(n: usize) -> String {
+    count_noun(n, "item", "items")
+}
+
+/// A command shortcut as this platform's key bar and menus spell it:
+/// the Command glyph on macOS, `Ctrl+Z` elsewhere (egui's `command` is Ctrl there).
+fn command_shortcut(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("\u{2318}{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
+}
+
+/// The toast after a clean, undoable transfer, naming where the items went:
+/// `Moved 3 items to "Photos"`, or the folder a gather created.
+fn undo_recorded_toast(action: &crate::undo::Action) -> String {
+    let head = format!("{} {}", action.verb(), item_count(action.item_count()));
+    let name = |path: &std::path::Path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    };
+    match action {
+        crate::undo::Action::Gather { folder, .. } => match name(folder) {
+            Some(name) => format!("{head} into \"{name}\""),
+            None => head,
+        },
+        crate::undo::Action::Move { .. } => match action.jump_to().as_deref().and_then(name) {
+            Some(name) => format!("{head} to \"{name}\""),
+            None => head,
+        },
+        _ => head,
+    }
+}
+
+/// The toast text and kind for a finished Move to Trash.
+fn delete_outcome_toast(
+    submitted: usize,
+    trashed: usize,
+    failed: usize,
+    cancelled: bool,
+    indeterminate: bool,
+) -> (String, crate::toasts::ToastKind) {
+    use crate::toasts::ToastKind;
+    if indeterminate {
+        (
+            format!(
+                "Trash of {} may be incomplete; review the errors in the Operations panel ({})",
+                item_count(submitted),
+                command_shortcut("J")
+            ),
+            ToastKind::Error,
+        )
+    } else if cancelled {
+        (
+            if trashed == 0 {
+                "Moving to Trash was cancelled".to_string()
+            } else {
+                format!("Moved {} to Trash before cancellation", item_count(trashed))
+            },
+            ToastKind::Info,
+        )
+    } else if failed == 0 {
+        (
+            format!("Moved {} to Trash", item_count(trashed)),
+            ToastKind::Success,
+        )
+    } else if trashed == 0 {
+        (
+            format!("Could not move {} to Trash", item_count(failed)),
+            ToastKind::Error,
+        )
+    } else {
+        (
+            format!("Moved {} to Trash, {failed} failed", item_count(trashed)),
+            ToastKind::Error,
+        )
+    }
+}
+
+/// The clipboard label after copying `n` paths in `style`: "path" for one,
+/// "3 paths" for several.
+fn copied_paths_label(style: crate::clipboard::PathStyle, n: usize) -> String {
+    let label = crate::clipboard::style_label(style);
+    if n == 1 {
+        label.to_string()
+    } else {
+        format!("{n} {label}s")
+    }
+}
+
+/// The selection HUD's lead text. With nothing picked in this folder it
+/// names only the selection kept in other folders.
+fn selection_hud_head(
+    count: usize,
+    dir_count: usize,
+    elsewhere: usize,
+    other_folders: usize,
+) -> String {
+    let other = count_noun(other_folders, "other folder", "other folders");
+    let mut head = if count == 0 {
+        format!("{elsewhere} selected in {other}")
+    } else if elsewhere > 0 {
+        format!("{} + {elsewhere} in {other}", item_count(count))
+    } else {
+        item_count(count)
+    };
+    if dir_count > 0 {
+        head.push_str(&format!(
+            " \u{00b7} {}",
+            count_noun(dir_count, "folder", "folders")
+        ));
+    }
+    head
+}
+
+/// Where the egui fallback context menu opens: below the row for a
+/// keyboard invocation (its anchor is the row rect relative to `origin`, the
+/// viewport's top-left), otherwise at the pointer.
+fn fallback_menu_pos(
+    invocation: &crate::ports::ContextMenuInvocation,
+    origin: egui::Pos2,
+    pointer: Option<egui::Pos2>,
+    fallback: egui::Pos2,
+) -> egui::Pos2 {
+    match (invocation.trigger, invocation.anchor) {
+        (
+            crate::ports::ContextMenuTrigger::Keyboard,
+            crate::ports::ContextMenuAnchor::ViewRect(rect),
+        ) => origin + egui::vec2(rect.min_x as f32, rect.max_y as f32),
+        _ => pointer.unwrap_or(fallback),
+    }
+}
+
+/// Keyboard focus bookkeeping for the fallback context menu, kept in egui
+/// temp data under [`FALLBACK_MENU_FOCUS`] while the menu is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FallbackMenuFocus {
+    /// The row that opened the menu; it gets focus back when the menu closes.
+    restore: egui::Id,
+    /// Whether the first item already took focus.
+    armed: bool,
+    /// Whether focus in the menu is keyboard-driven (opened from the
+    /// keyboard, or navigated by key since), so the focus ring shows.
+    keyboard: bool,
+}
+
+const FALLBACK_MENU_FOCUS: &str = "fallback_context_menu_focus";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuFocusStep {
+    FocusFirst,
+    Keep,
+    Close,
+}
+
+/// The fallback menu takes focus on its first item when it opens, like a
+/// native menu, and closes once focus leaves it (Tab out, a click on another
+/// widget), so it never floats unfocused while keys act on the list.
+const fn fallback_menu_focus_step(armed: bool, focus_in_menu: bool) -> MenuFocusStep {
+    if !armed {
+        MenuFocusStep::FocusFirst
+    } else if focus_in_menu {
+        MenuFocusStep::Keep
+    } else {
+        MenuFocusStep::Close
+    }
+}
+
+/// Whether closing the fallback menu hands focus back to the row: after
+/// Escape or a chosen item, and when a key (an arrow, Tab) moved focus out
+/// of the menu. A pointer press elsewhere leaves focus where it landed.
+const fn fallback_menu_restores_focus(
+    escaped: bool,
+    chose: bool,
+    focus_lost: bool,
+    pointer_active: bool,
+) -> bool {
+    escaped || chose || (focus_lost && !pointer_active)
+}
+
+/// Height a toast row takes before it has been measured once.
+const TOAST_ROW_HEIGHT: f32 = 44.0;
+/// Gap between stacked toasts.
+const TOAST_GAP: f32 = 6.0;
+
+/// Top offset of each stacked toast (newest first) and the stack's total
+/// height, from each toast's last measured height. A wrapped message makes
+/// its toast taller, so a fixed row pitch would overlap the next one.
+fn toast_stack_offsets(heights: &[Option<f32>]) -> (Vec<f32>, f32) {
+    let mut offsets = Vec::with_capacity(heights.len());
+    let mut y = 0.0;
+    for height in heights {
+        offsets.push(y);
+        y += height.unwrap_or(TOAST_ROW_HEIGHT - TOAST_GAP) + TOAST_GAP;
+    }
+    (offsets, y)
+}
+
+/// The visible toast text. Errors carry a warning icon so their kind is not
+/// told by the accent colour alone.
+fn toast_text(kind: crate::toasts::ToastKind, message: &str) -> String {
+    match kind {
+        crate::toasts::ToastKind::Error => format!("\u{26a0} {message}"),
+        crate::toasts::ToastKind::Success | crate::toasts::ToastKind::Info => message.to_string(),
+    }
+}
+
+/// How assistive technology announces a toast: errors interrupt, every
+/// other result is read when the user is idle.
+const fn toast_live_region(
+    kind: crate::toasts::ToastKind,
+) -> (egui::accesskit::Role, egui::accesskit::Live) {
+    match kind {
+        crate::toasts::ToastKind::Error => (
+            egui::accesskit::Role::Alert,
+            egui::accesskit::Live::Assertive,
+        ),
+        crate::toasts::ToastKind::Success | crate::toasts::ToastKind::Info => {
+            (egui::accesskit::Role::Status, egui::accesskit::Live::Polite)
+        }
+    }
 }
 
 /// Why a drop would be cancelled right now, worded to follow "Cannot drop: ".
@@ -327,6 +632,40 @@ fn drop_busy_reason(
         Some("wait for the running transfer to finish".to_string())
     } else if pending_op {
         Some("answer the open confirmation first".to_string())
+    } else {
+        None
+    }
+}
+
+/// Whether every dragged source already sits directly in `target`, so a
+/// move there would only conflict with itself.
+fn sources_already_in(target: &std::path::Path, sources: &[PathBuf]) -> bool {
+    !sources.is_empty() && sources.iter().all(|source| source.parent() == Some(target))
+}
+
+/// Why the dragged `sources` cannot land in `target`, judged from their
+/// paths and worded to follow "Cannot drop: ". `copy` is the Alt-drag
+/// effect: copying items next to themselves is allowed (it duplicates them).
+fn drag_path_rejection(
+    target: &std::path::Path,
+    sources: &[PathBuf],
+    copy: bool,
+) -> Option<&'static str> {
+    if sources
+        .iter()
+        .any(|source| crate::fs_util::is_within_or_equal(target, source))
+    {
+        Some(if copy {
+            "a folder cannot be copied into itself"
+        } else {
+            "a folder cannot be moved into itself"
+        })
+    } else if !copy && sources_already_in(target, sources) {
+        Some(if sources.len() == 1 {
+            "the item is already in this folder"
+        } else {
+            "the items are already in this folder"
+        })
     } else {
         None
     }
@@ -469,10 +808,26 @@ impl App {
             return;
         }
         if !self.context_menu.presents_native_menu() {
-            let pos = ctx
-                .pointer_latest_pos()
-                .unwrap_or_else(|| ctx.content_rect().center());
+            let pos = fallback_menu_pos(
+                &request.invocation,
+                ctx.input(|input| input.viewport_rect().min),
+                ctx.pointer_latest_pos(),
+                ctx.content_rect().center(),
+            );
             self.fallback_menu = Some((request.panel, request.invocation.target.path.clone(), pos));
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    egui::Id::new(FALLBACK_MENU_FOCUS),
+                    FallbackMenuFocus {
+                        restore: request.focus_id,
+                        armed: false,
+                        keyboard: matches!(
+                            request.invocation.trigger,
+                            crate::ports::ContextMenuTrigger::Keyboard
+                        ),
+                    },
+                );
+            });
             return;
         }
         let context_menu = std::rc::Rc::clone(&self.context_menu);
@@ -489,16 +844,38 @@ impl App {
     /// Context menu drawn by egui where no native menu exists (Linux, Windows).
     fn show_fallback_context_menu(&mut self, ctx: &egui::Context) {
         use crate::provider_runtime::ContextMenuUiEffect as Effect;
+        let focus_key = egui::Id::new(FALLBACK_MENU_FOCUS);
         // A modal opened from the keyboard (F8, F2...) dismisses the menu,
         // which would otherwise float above it with live items.
         if self.has_modal_surface() {
             self.fallback_menu = None;
         }
         let Some((panel, path, pos)) = self.fallback_menu.clone() else {
+            ctx.data_mut(|data| data.remove::<FallbackMenuFocus>(focus_key));
             return;
         };
         let t = self.colors;
         let mut effect: Option<Effect> = None;
+        let mut items: Vec<egui::Id> = Vec::new();
+        let mut focus = ctx.data(|data| data.get_temp::<FallbackMenuFocus>(focus_key));
+        // A right-click focuses the first item too, but shows the keyboard
+        // focus ring only once the user starts navigating by key.
+        let key_nav = ctx.input(|input| {
+            [
+                egui::Key::ArrowUp,
+                egui::Key::ArrowDown,
+                egui::Key::ArrowLeft,
+                egui::Key::ArrowRight,
+                egui::Key::Tab,
+            ]
+            .into_iter()
+            .any(|key| input.key_pressed(key))
+        });
+        if key_nav && let Some(focus) = focus.as_mut() {
+            focus.keyboard = true;
+            ctx.data_mut(|data| data.insert_temp(focus_key, *focus));
+        }
+        let show_ring = focus.is_some_and(|focus| focus.keyboard);
         let area = egui::Area::new(egui::Id::new("fallback_context_menu"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
@@ -511,15 +888,19 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_min_width(180.0);
                         let mut item = |ui: &mut egui::Ui, label: &str, value: Effect| {
-                            if ui
-                                .add(
-                                    egui::Button::new(label)
-                                        .fill(Color32::TRANSPARENT)
-                                        .stroke(Stroke::NONE)
-                                        .min_size(Vec2::new(ui.available_width(), 24.0)),
-                                )
-                                .clicked()
-                            {
+                            let response = ui.add(
+                                egui::Button::new(label)
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::NONE)
+                                    .min_size(Vec2::new(ui.available_width(), 24.0)),
+                            );
+                            if show_ring {
+                                paint_focus_ring(ui, &response, &t);
+                            }
+                            items.push(response.id);
+                            // The first item is focused on open, so Space
+                            // (select, Quick Look) must not run it; Enter does.
+                            if super::confirm_dialog::confirm_clicked(ui, &response) {
                                 effect = Some(value);
                             }
                         };
@@ -540,10 +921,42 @@ impl App {
                         item(ui, "Refresh", Effect::RefreshPanels);
                     });
             });
-        let dismissed = ctx.input(|input| input.key_pressed(egui::Key::Escape))
-            || (area.response.clicked_elsewhere() && effect.is_none());
+        let focus_in_menu = ctx
+            .memory(|memory| memory.focused())
+            .is_some_and(|id| items.contains(&id));
+        let escaped = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+        let mut focus_lost = false;
+        match focus.map(|focus| fallback_menu_focus_step(focus.armed, focus_in_menu)) {
+            Some(MenuFocusStep::FocusFirst) => {
+                if let Some(first) = items.first() {
+                    ctx.memory_mut(|memory| memory.request_focus(*first));
+                }
+                if let Some(focus) = focus.as_mut() {
+                    focus.armed = true;
+                    ctx.data_mut(|data| data.insert_temp(focus_key, *focus));
+                }
+            }
+            Some(MenuFocusStep::Close) => focus_lost = true,
+            Some(MenuFocusStep::Keep) | None => {}
+        }
+        let dismissed =
+            escaped || focus_lost || (area.response.clicked_elsewhere() && effect.is_none());
         if effect.is_some() || dismissed {
             self.fallback_menu = None;
+            ctx.data_mut(|data| data.remove::<FallbackMenuFocus>(focus_key));
+            // Like the native menu, hand focus back to the row, unless the
+            // user clicked elsewhere. Arrow keys and Tab move egui focus
+            // spatially out of the menu; that closes it but returns to the row.
+            let pointer_active = ctx.input(|input| {
+                input.pointer.any_pressed()
+                    || input.pointer.any_down()
+                    || input.pointer.any_released()
+            });
+            if fallback_menu_restores_focus(escaped, effect.is_some(), focus_lost, pointer_active)
+                && let Some(focus) = focus
+            {
+                ctx.memory_mut(|memory| memory.request_focus(focus.restore));
+            }
         }
         if effect.is_some() {
             self.apply_context_menu_effect(panel, effect, ctx);
@@ -679,7 +1092,14 @@ impl App {
         self.ws.left.drag.clear_drop_target();
         self.ws.right.drag.clear_drop_target();
 
-        self.handle_keys(ctx);
+        // The fallback context menu owns the keyboard while it is open:
+        // arrows, Enter and Delete act on its items, not the list behind it.
+        if self.fallback_menu.is_some() {
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+        } else {
+            self.handle_keys(ctx);
+        }
         self.preload_images(ctx);
         {
             let c = ctx.clone();
@@ -697,7 +1117,7 @@ impl App {
                     self.toast(
                         ctx,
                         crate::toasts::ToastKind::Success,
-                        format!("{} {} item(s)", a.verb(), a.item_count()),
+                        undo_recorded_toast(&a),
                         true,
                     );
                     if let Some(jump_to) = a.jump_to() {
@@ -739,48 +1159,13 @@ impl App {
         ctx: &egui::Context,
     ) {
         let now = ctx.input(|input| input.time);
-        let item = |count: usize| if count == 1 { "item" } else { "items" };
-        let (message, kind) = if outcome.indeterminate {
-            (
-                "Trash result is uncertain; review operation errors".to_string(),
-                crate::toasts::ToastKind::Error,
-            )
-        } else if outcome.cancelled {
-            (
-                if outcome.trashed == 0 {
-                    "Moving to Trash was cancelled".to_string()
-                } else {
-                    format!("Moved {} to Trash before cancellation", outcome.trashed)
-                },
-                crate::toasts::ToastKind::Info,
-            )
-        } else if outcome.failed == 0 {
-            (
-                format!(
-                    "Moved {} {} to Trash",
-                    outcome.trashed,
-                    item(outcome.trashed)
-                ),
-                crate::toasts::ToastKind::Success,
-            )
-        } else if outcome.trashed == 0 {
-            (
-                format!(
-                    "Could not move {} {} to Trash",
-                    outcome.failed,
-                    item(outcome.failed)
-                ),
-                crate::toasts::ToastKind::Error,
-            )
-        } else {
-            (
-                format!(
-                    "Moved {} to Trash, {} failed",
-                    outcome.trashed, outcome.failed
-                ),
-                crate::toasts::ToastKind::Error,
-            )
-        };
+        let (message, kind) = delete_outcome_toast(
+            outcome.submitted.item_count,
+            outcome.trashed,
+            outcome.failed,
+            outcome.cancelled,
+            outcome.indeterminate,
+        );
         // Only this delete's own history record may back the Undo: when it
         // recorded none, the top entry is an older Trash.
         let undo_action = self
@@ -957,11 +1342,7 @@ impl App {
         if !paths.is_empty() {
             let other_root = self.ws.inactive_panel().current_path.clone();
             let text = crate::clipboard::format(&paths, style, Some(&other_root));
-            self.write_clipboard(
-                &text,
-                format!("{} ({})", crate::clipboard::style_label(style), paths.len()).as_str(),
-                ctx,
-            );
+            self.write_clipboard(&text, &copied_paths_label(style, paths.len()), ctx);
         }
     }
 
@@ -1015,10 +1396,8 @@ impl App {
         let t = self.colors;
         let ctx = ui.ctx().clone();
         let now = ctx.input(|input| input.time);
-        let held = ctx.input(|input| {
-            let m = input.modifiers;
-            m.command || m.shift || m.alt || m.ctrl
-        });
+        ctx.data_mut(|data| data.remove::<egui::Rect>(egui::Id::new(KEY_BAR_OVERLAY_RECT)));
+        let held = ctx.input(|input| key_bar_modifier_held(input.modifiers));
         self.ui.modifier_held_since = match (held, self.ui.modifier_held_since) {
             (true, None) => Some(now),
             (true, since) => since,
@@ -1053,6 +1432,7 @@ impl App {
                             .corner_radius(crate::theme::ROUNDING_SM),
                         )
                         .on_hover_text(hint.label);
+                    paint_focus_ring(ui, &response, &t);
                     if response.clicked() {
                         *run = Some(hint.command);
                     }
@@ -1071,7 +1451,7 @@ impl App {
             // The overlay is a root Area that would not inherit this disabled
             // Ui; skip it while a dialog owns input, so holding a modifier
             // in a dialog cannot reveal clickable commands above it.
-            egui::Area::new(egui::Id::new("shortcuts_overlay"))
+            let overlay = egui::Area::new(egui::Id::new("shortcuts_overlay"))
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
                 .order(egui::Order::Foreground)
                 .interactable(true)
@@ -1086,6 +1466,9 @@ impl App {
                             draw(ui, &mut run);
                         });
                 });
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new(KEY_BAR_OVERLAY_RECT), overlay.response.rect);
+            });
         }
         if let Some(command) = run
             && ui.is_enabled()
@@ -1133,7 +1516,7 @@ impl App {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| active.current_path.display().to_string());
             let descriptor = if active.search_query().trim().is_empty() {
-                format!("{} facet(s)", active.facets().active_count())
+                count_noun(active.facets().active_count(), "facet", "facets")
             } else {
                 active.search_query().trim().to_string()
             };
@@ -1177,16 +1560,7 @@ impl App {
         let s = crate::selection_summary::summarize(&selected);
         let t = self.colors;
 
-        let mut head = format!("{} item(s)", s.count);
-        if elsewhere > 0 {
-            head.push_str(&format!(
-                " + {elsewhere} in {other_folders} other folder{}",
-                if other_folders == 1 { "" } else { "s" }
-            ));
-        }
-        if s.dir_count > 0 {
-            head.push_str(&format!(" \u{00b7} {} folder(s)", s.dir_count));
-        }
+        let mut head = selection_hud_head(s.count, s.dir_count, elsewhere, other_folders);
         if s.total_bytes > 0 {
             head.push_str(&format!(
                 " \u{00b7} {}",
@@ -1230,12 +1604,15 @@ impl App {
 
         let area = ui.available_rect_before_wrap();
         let screen = ctx.input(|i| i.viewport_rect());
+        let key_bar =
+            ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(KEY_BAR_OVERLAY_RECT)));
+        let bottom = selection_hud_bottom(area.bottom(), key_bar.map(|rect| rect.top()));
         egui::Area::new(egui::Id::new("selection_hud"))
             .anchor(
                 egui::Align2::CENTER_BOTTOM,
                 [
                     area.center().x - screen.center().x,
-                    -(screen.bottom() - area.bottom()) - 14.0,
+                    bottom - screen.bottom(),
                 ],
             )
             .order(egui::Order::Foreground)
@@ -1411,20 +1788,25 @@ impl App {
         // Compute half from remaining space (after tree)
         let remaining = window_width - tree_actual_width - 6.0;
         let half = remaining / 2.0;
-        // Reset panel width when window resizes or tree toggled
-        {
+        let pane_min = crate::accessibility::pane_min_width(remaining);
+        let split_ratio_id = egui::Id::new(PANE_SPLIT_RATIO);
+        let split_ratio: f32 = ctx.data_mut(|d| d.get_temp(split_ratio_id).unwrap_or(0.5));
+        // Re-lay the panes when the window resizes or the tree toggles,
+        // keeping the user's split ratio rather than snapping to 50/50.
+        let relayout = {
             let prev_half: f32 =
                 ctx.data_mut(|d| d.get_temp(egui::Id::new("prev_half")).unwrap_or(0.0));
-            if self.prev_window_width > 0.0
+            let relayout = self.prev_window_width > 0.0
                 && ((window_width - self.prev_window_width).abs() > 1.0
-                    || (half - prev_half).abs() > 1.0)
-            {
+                    || (half - prev_half).abs() > 1.0);
+            if relayout {
                 ctx.data_mut(|d| {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
                 });
             }
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("prev_half"), half));
-        }
+            relayout
+        };
         self.prev_window_width = window_width;
 
         let mut tree_toggle = false;
@@ -1433,10 +1815,9 @@ impl App {
             external_open.borrow_mut().push(request);
         };
         // Left panel
-        let pane_min = crate::accessibility::pane_min_width(remaining);
         let left_resp = egui::Panel::left(panel_id)
             .resizable(true)
-            .default_size(half)
+            .default_size(split_left_width(split_ratio, remaining, pane_min))
             .min_size(pane_min)
             .frame(Frame::NONE.fill(t.bg_deep).inner_margin(Margin::same(0)))
             .show(ui, |ui| {
@@ -1488,6 +1869,23 @@ impl App {
             if input_policy.allows_divider_reset(containing_ui_enabled, double_clicked) {
                 ctx.data_mut(|d| {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
+                    d.insert_temp(split_ratio_id, 0.5_f32);
+                });
+            } else {
+                let width_id = egui::Id::new("pane_split_prev_width");
+                let prev_width: Option<f32> = ctx.data_mut(|d| d.get_temp(width_id));
+                let pointer_down = ctx.input(|i| i.pointer.primary_down());
+                let ratio = dragged_split_ratio(
+                    split_ratio,
+                    prev_width,
+                    panel_rect.width(),
+                    remaining,
+                    relayout,
+                    pointer_down,
+                );
+                ctx.data_mut(|d| {
+                    d.insert_temp(split_ratio_id, ratio);
+                    d.insert_temp(width_id, panel_rect.width());
                 });
             }
         }
@@ -1611,16 +2009,25 @@ impl App {
                 // Each tool draws its own heading; the host only adds Close.
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
+                        let close_button = ui
                             .add(
                                 egui::Button::new(
                                     egui::RichText::new("\u{00d7}").color(t.text_muted),
                                 )
                                 .frame(false),
                             )
-                            .on_hover_text("Close (Esc)")
-                            .clicked()
-                        {
+                            .on_hover_text("Close (Esc)");
+                        // egui names a button by its text; the glyph alone
+                        // would be read as "multiplication sign".
+                        let enabled = close_button.enabled();
+                        close_button.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                enabled,
+                                CLOSE_PANE_TOOL_LABEL,
+                            )
+                        });
+                        if close_button.clicked() {
                             close = true;
                         }
                     });
@@ -1714,7 +2121,7 @@ impl App {
                 self.drag_announcement.get_or_compute(target, alt, || {
                     let Some(target) = target else {
                         return crate::operation_view::DragAnnouncement::rejected(
-                            "highlight a destination folder",
+                            "point at a folder or the other pane",
                         );
                     };
                     if !target.is_dir() {
@@ -1725,13 +2132,8 @@ impl App {
                         crate::operation_view::DragAnnouncement::rejected(
                             "destination volume is read-only",
                         )
-                    } else if drag_entries
-                        .iter()
-                        .any(|source| crate::fs_util::is_within_or_equal(target, source))
-                    {
-                        crate::operation_view::DragAnnouncement::rejected(
-                            "a folder cannot be moved into itself",
-                        )
+                    } else if let Some(reason) = drag_path_rejection(target, drag_entries, alt) {
+                        crate::operation_view::DragAnnouncement::rejected(reason)
                     } else {
                         let effect = if alt {
                             crate::operation_view::DragEffect::Copy
@@ -1789,9 +2191,8 @@ impl App {
         }
         let t = self.colors;
         let label = format!("\u{00bb} {buffer}");
-        let screen = ctx.input(|i| i.viewport_rect());
         egui::Area::new(egui::Id::new("type_ahead_overlay"))
-            .fixed_pos(egui::pos2(screen.center().x - 60.0, screen.bottom() - 80.0))
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -50.0])
             .order(egui::Order::Tooltip)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style())
@@ -1832,6 +2233,16 @@ impl App {
                 });
             }
         }
+        // Newest on top; each row is as tall as it measured last frame.
+        let heights: Vec<Option<f32>> = active
+            .iter()
+            .rev()
+            .map(|toast| {
+                ctx.memory(|memory| memory.area_rect(egui::Id::new(("toast", toast.id()))))
+                    .map(|rect| rect.height())
+            })
+            .collect();
+        let (offsets, stack_height) = toast_stack_offsets(&heights);
         let Some(stack) = crate::accessibility::place_overlay(
             crate::accessibility::Rect {
                 x: screen.left(),
@@ -1840,7 +2251,7 @@ impl App {
                 height: screen.height(),
             },
             268.0,
-            active.len() as f32 * 44.0,
+            stack_height,
             &avoid,
         ) else {
             // Hidden toasts must not expire unseen (an error would be lost);
@@ -1854,8 +2265,9 @@ impl App {
         // offers it; an older toast's button would undo something else.
         let undo_toast = newest_undoable_toast(active);
         // Newest on top, in the nearest corner that preserves focus and errors.
-        for (row, toast) in active.iter().rev().enumerate() {
-            let y = stack.y + row as f32 * 44.0;
+        let undo_label = format!("Undo {}", command_shortcut("Z"));
+        for (toast, offset) in active.iter().rev().zip(offsets) {
+            let y = stack.y + offset;
             let accent = match toast.kind {
                 crate::toasts::ToastKind::Success => t.accent,
                 crate::toasts::ToastKind::Error => t.accent_red,
@@ -1878,17 +2290,12 @@ impl App {
                         .show(ui, |ui| {
                             ui.set_width(236.0);
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&toast.message)
-                                        .size(12.0)
-                                        .color(t.text_primary),
-                                );
-                                if undo_toast == Some(toast.id()) {
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if undo_toast == Some(toast.id())
+                                        && ui
                                             .add(
                                                 egui::Button::new(
-                                                    egui::RichText::new("Undo \u{2318}Z")
+                                                    egui::RichText::new(&undo_label)
                                                         .size(11.0)
                                                         .color(Color32::WHITE),
                                                 )
@@ -1896,11 +2303,34 @@ impl App {
                                                 .corner_radius(CornerRadius::ZERO),
                                             )
                                             .clicked()
-                                        {
-                                            undo = true;
-                                        }
-                                    });
-                                }
+                                    {
+                                        undo = true;
+                                    }
+                                    // The message wraps in the space the Undo
+                                    // button leaves instead of widening the toast.
+                                    ui.allocate_ui_with_layout(
+                                        Vec2::new(ui.available_width(), 0.0),
+                                        Layout::top_down(Align::Min),
+                                        |ui| {
+                                            let message = ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(toast_text(
+                                                        toast.kind,
+                                                        &toast.message,
+                                                    ))
+                                                    .size(12.0)
+                                                    .color(t.text_primary),
+                                                )
+                                                .wrap(),
+                                            );
+                                            let (role, live) = toast_live_region(toast.kind);
+                                            ui.ctx().accesskit_node_builder(message.id, |node| {
+                                                node.set_role(role);
+                                                node.set_live(live);
+                                            });
+                                        },
+                                    );
+                                });
                             });
                             // Hairline countdown.
                             let (rect, _) = ui.allocate_exact_size(
@@ -1940,12 +2370,29 @@ impl App {
         } else {
             TransferKind::Move
         };
-        if kind == TransferKind::Move {
-            self.ws.drop_dragged(move || ctx2.request_repaint());
-        } else {
-            self.ws
-                .drop_dragged_as(kind, move || ctx2.request_repaint());
-        }
+        finish_drop(&mut self.ws, kind, move || ctx2.request_repaint());
+    }
+}
+
+/// Complete a released drag with `kind`. A Move onto the sources' own
+/// folder is cancelled: the overlay already said the items are there, and
+/// moving them onto themselves would only raise a conflict dialog.
+fn finish_drop(
+    ws: &mut crate::workspace::Workspace,
+    kind: TransferKind,
+    notify: impl Fn() + Send + 'static,
+) {
+    let onto_own_folder = ws.drag_session().is_some_and(|session| {
+        session
+            .target
+            .is_some_and(|target| sources_already_in(target, session.entries))
+    });
+    if kind == TransferKind::Move && onto_own_folder {
+        ws.cancel_drag();
+    } else if kind == TransferKind::Move {
+        ws.drop_dragged(notify);
+    } else {
+        ws.drop_dragged_as(kind, notify);
     }
 }
 
@@ -1960,9 +2407,21 @@ mod tests {
         hidden_files_rejection_message, perform_clipboard_write, perform_open,
     };
     use super::{
+        MenuFocusStep, fallback_menu_focus_step, fallback_menu_pos, fallback_menu_restores_focus,
+    };
+    use super::{
         average_file_size, opens_in_archive_viewer, resized_tree_width, unique_smart_folder_name,
     };
+    use super::{
+        command_shortcut, copied_paths_label, delete_outcome_toast, selection_hud_head,
+        undo_recorded_toast,
+    };
+    use super::{drag_path_rejection, finish_drop, sources_already_in};
+    use super::{
+        dragged_split_ratio, key_bar_modifier_held, selection_hud_bottom, split_left_width,
+    };
     use super::{drop_busy_reason, smart_folder_saved_toast};
+    use super::{toast_live_region, toast_stack_offsets, toast_text};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -2410,7 +2869,7 @@ mod tests {
     fn a_failed_smart_folder_save_leaves_the_error_to_persistence_health() {
         assert_eq!(
             smart_folder_saved_toast("Filter: a - b", true).as_deref(),
-            Some("Saved smart folder \"Filter: a - b\"")
+            Some("Saved search \"Filter: a - b\"")
         );
         assert_eq!(smart_folder_saved_toast("Filter: a - b", false), None);
     }
@@ -2435,5 +2894,325 @@ mod tests {
             .as_deref(),
             Some("wait for the current Trash operation before dropping")
         );
+    }
+
+    #[test]
+    fn delete_toasts_always_name_the_items() {
+        use crate::toasts::ToastKind;
+        assert_eq!(
+            delete_outcome_toast(5, 3, 0, true, false),
+            (
+                "Moved 3 items to Trash before cancellation".to_string(),
+                ToastKind::Info
+            )
+        );
+        assert_eq!(
+            delete_outcome_toast(5, 3, 2, false, false),
+            (
+                "Moved 3 items to Trash, 2 failed".to_string(),
+                ToastKind::Error
+            )
+        );
+        assert_eq!(
+            delete_outcome_toast(1, 1, 0, false, false).0,
+            "Moved 1 item to Trash"
+        );
+        assert_eq!(
+            delete_outcome_toast(2, 0, 2, false, false).0,
+            "Could not move 2 items to Trash"
+        );
+    }
+
+    #[test]
+    fn an_uncertain_trash_names_its_size_and_where_to_review() {
+        let (message, kind) = delete_outcome_toast(12, 0, 0, false, true);
+        assert_eq!(kind, crate::toasts::ToastKind::Error);
+        assert_eq!(
+            message,
+            format!(
+                "Trash of 12 items may be incomplete; review the errors in the Operations panel ({})",
+                command_shortcut("J")
+            )
+        );
+    }
+
+    #[test]
+    fn command_shortcuts_follow_the_platform_modifier() {
+        let expected = if cfg!(target_os = "macos") {
+            "\u{2318}Z"
+        } else {
+            "Ctrl+Z"
+        };
+        assert_eq!(command_shortcut("Z"), expected);
+    }
+
+    #[test]
+    fn undo_toasts_pluralize_and_name_the_destination() {
+        use crate::undo::Action;
+        use std::path::PathBuf;
+        let one_move = Action::Move {
+            pairs: vec![(PathBuf::from("/a/x"), PathBuf::from("/b/Photos/x"))],
+        };
+        assert_eq!(undo_recorded_toast(&one_move), "Moved 1 item to \"Photos\"");
+        let gather = Action::Gather {
+            folder: PathBuf::from("/a/Photos 2"),
+            pairs: vec![
+                (PathBuf::from("/a/x"), PathBuf::from("/a/Photos 2/x")),
+                (PathBuf::from("/a/y"), PathBuf::from("/a/Photos 2/y")),
+            ],
+        };
+        assert_eq!(
+            undo_recorded_toast(&gather),
+            "Gathered 2 items into \"Photos 2\""
+        );
+        let rename = Action::Rename {
+            from: PathBuf::from("/a/x"),
+            to: PathBuf::from("/a/y"),
+        };
+        assert_eq!(undo_recorded_toast(&rename), "Renamed 1 item");
+    }
+
+    #[test]
+    fn copied_path_labels_agree_with_their_count() {
+        use crate::clipboard::PathStyle;
+        assert_eq!(copied_paths_label(PathStyle::FullPath, 1), "path");
+        assert_eq!(copied_paths_label(PathStyle::FullPath, 3), "3 paths");
+        assert_eq!(copied_paths_label(PathStyle::NameOnly, 2), "2 names");
+        assert_eq!(copied_paths_label(PathStyle::FileUrl, 2), "2 file URLs");
+    }
+
+    #[test]
+    fn selection_hud_pluralizes_and_skips_an_empty_local_count() {
+        assert_eq!(selection_hud_head(1, 0, 0, 0), "1 item");
+        assert_eq!(selection_hud_head(3, 1, 0, 0), "3 items \u{00b7} 1 folder");
+        assert_eq!(
+            selection_hud_head(2, 2, 5, 1),
+            "2 items + 5 in 1 other folder \u{00b7} 2 folders"
+        );
+        assert_eq!(
+            selection_hud_head(0, 0, 5, 2),
+            "5 selected in 2 other folders"
+        );
+    }
+
+    #[test]
+    fn move_drop_onto_the_sources_own_folder_is_cancelled_without_a_dialog() {
+        let (l, r) = (
+            crate::testutil::TempDir::new(),
+            crate::testutil::TempDir::new(),
+        );
+        let file = l.file("a.txt", "alpha");
+        let mut ws =
+            crate::workspace::Workspace::new(l.path().to_path_buf(), r.path().to_path_buf());
+        ws.left.refresh();
+        ws.right.refresh();
+        // Dragging from the left pane onto the right pane, which shows the
+        // same folder the item already sits in.
+        ws.left.drag.set(vec![file.clone()]);
+        ws.right.drag.set_drop_target(l.path().to_path_buf());
+
+        finish_drop(&mut ws, crate::transfer::TransferKind::Move, || {});
+
+        assert!(ws.pending_op.is_none(), "no conflict or transfer is staged");
+        assert!(!ws.has_unfinished_transfer_work());
+        assert!(ws.drag_session().is_none(), "the drag is cancelled");
+        assert!(ws.left.drag.is_empty());
+        assert!(!ws.right.drag.has_drop_target());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha");
+    }
+
+    #[test]
+    fn drag_rejections_follow_the_drag_effect_and_the_source_folder() {
+        let dir = crate::testutil::TempDir::new();
+        let folder = dir.dir("photos");
+        let file = dir.file("a.txt", "");
+        let root = dir.path().to_path_buf();
+        assert_eq!(
+            drag_path_rejection(&folder, std::slice::from_ref(&folder), true),
+            Some("a folder cannot be copied into itself")
+        );
+        assert_eq!(
+            drag_path_rejection(&folder, std::slice::from_ref(&folder), false),
+            Some("a folder cannot be moved into itself")
+        );
+        // The other pane showing the sources' own folder.
+        assert_eq!(
+            drag_path_rejection(&root, std::slice::from_ref(&file), false),
+            Some("the item is already in this folder")
+        );
+        assert_eq!(
+            drag_path_rejection(&root, &[file.clone(), folder.clone()], false),
+            Some("the items are already in this folder")
+        );
+        assert_eq!(
+            drag_path_rejection(&root, std::slice::from_ref(&file), true),
+            None
+        );
+        assert_eq!(
+            drag_path_rejection(&folder, std::slice::from_ref(&file), false),
+            None
+        );
+        assert!(!sources_already_in(&root, &[]));
+    }
+
+    #[test]
+    fn toasts_stack_by_their_measured_height() {
+        let (offsets, total) = toast_stack_offsets(&[None, Some(70.0), Some(30.0)]);
+        assert_eq!(offsets, vec![0.0, 44.0, 120.0]);
+        assert_eq!(total, 156.0);
+        assert_eq!(toast_stack_offsets(&[]), (Vec::new(), 0.0));
+    }
+
+    #[test]
+    fn error_toasts_have_an_icon_and_interrupt_assistive_technology() {
+        use crate::toasts::ToastKind;
+        use egui::accesskit::{Live, Role};
+        assert_eq!(
+            toast_text(ToastKind::Error, "Could not copy"),
+            "\u{26a0} Could not copy"
+        );
+        assert_eq!(toast_text(ToastKind::Success, "Copied path"), "Copied path");
+        assert_eq!(
+            toast_live_region(ToastKind::Error),
+            (Role::Alert, Live::Assertive)
+        );
+        assert_eq!(
+            toast_live_region(ToastKind::Info),
+            (Role::Status, Live::Polite)
+        );
+        assert_eq!(
+            toast_live_region(ToastKind::Success),
+            (Role::Status, Live::Polite)
+        );
+    }
+
+    #[test]
+    fn fallback_menu_takes_focus_once_and_closes_when_focus_leaves() {
+        assert_eq!(
+            fallback_menu_focus_step(false, false),
+            MenuFocusStep::FocusFirst
+        );
+        assert_eq!(fallback_menu_focus_step(true, true), MenuFocusStep::Keep);
+        assert_eq!(fallback_menu_focus_step(true, false), MenuFocusStep::Close);
+    }
+
+    #[test]
+    fn fallback_menu_returns_focus_to_the_row_unless_the_pointer_moved_it() {
+        // Escape and a chosen item restore the row.
+        assert!(fallback_menu_restores_focus(true, false, false, false));
+        assert!(fallback_menu_restores_focus(false, true, false, true));
+        // An arrow key or Tab that moved focus out of the menu restores it.
+        assert!(fallback_menu_restores_focus(false, false, true, false));
+        // A click on another widget keeps focus where the user clicked.
+        assert!(!fallback_menu_restores_focus(false, false, true, true));
+        assert!(!fallback_menu_restores_focus(false, false, false, true));
+    }
+
+    #[test]
+    fn keyboard_fallback_menu_opens_below_the_row_not_at_the_pointer() {
+        use crate::ports::{
+            ContextMenuAnchor, ContextMenuInvocation, ContextMenuTarget, ContextMenuTrigger,
+            ContextMenuViewPoint, ContextMenuViewRect,
+        };
+        let path = std::path::PathBuf::from("/tmp/context-target");
+        let target = ContextMenuTarget {
+            expected: crate::path_identity::PathIdentity::missing(&path),
+            path,
+        };
+        let keyboard = ContextMenuInvocation {
+            target: target.clone(),
+            trigger: ContextMenuTrigger::Keyboard,
+            anchor: ContextMenuAnchor::ViewRect(ContextMenuViewRect {
+                min_x: 10.0,
+                min_y: 100.0,
+                max_x: 400.0,
+                max_y: 120.0,
+                native_points_per_ui_point: 1.0,
+            }),
+        };
+        let origin = egui::pos2(5.0, 7.0);
+        let pointer = Some(egui::pos2(600.0, 500.0));
+        let center = egui::pos2(300.0, 300.0);
+        assert_eq!(
+            fallback_menu_pos(&keyboard, origin, pointer, center),
+            egui::pos2(15.0, 127.0)
+        );
+        let pointer_invocation = ContextMenuInvocation {
+            target,
+            trigger: ContextMenuTrigger::Pointer,
+            anchor: ContextMenuAnchor::ViewPoint(ContextMenuViewPoint {
+                x: 1.0,
+                y: 2.0,
+                native_points_per_ui_point: 1.0,
+            }),
+        };
+        assert_eq!(
+            fallback_menu_pos(&pointer_invocation, origin, pointer, center),
+            egui::pos2(600.0, 500.0)
+        );
+        assert_eq!(
+            fallback_menu_pos(&pointer_invocation, origin, None, center),
+            center
+        );
+    }
+
+    #[test]
+    fn shift_alone_does_not_float_the_key_bar() {
+        use egui::Modifiers;
+        assert!(!key_bar_modifier_held(Modifiers::SHIFT));
+        assert!(!key_bar_modifier_held(Modifiers::NONE));
+        assert!(key_bar_modifier_held(Modifiers::COMMAND));
+        assert!(key_bar_modifier_held(Modifiers::ALT));
+        assert!(key_bar_modifier_held(Modifiers::CTRL));
+        assert!(key_bar_modifier_held(Modifiers::SHIFT | Modifiers::ALT));
+    }
+
+    #[test]
+    fn selection_hud_rises_above_the_floating_key_bar() {
+        assert_eq!(selection_hud_bottom(800.0, None), 786.0);
+        // The bar's top sits above the HUD's normal bottom: clear it.
+        assert_eq!(selection_hud_bottom(800.0, Some(770.0)), 764.0);
+        // A bar lower than the HUD changes nothing.
+        assert_eq!(selection_hud_bottom(700.0, Some(770.0)), 686.0);
+    }
+
+    #[test]
+    fn pane_split_keeps_its_ratio_across_resizes() {
+        assert_eq!(split_left_width(0.3, 1000.0, 100.0), 300.0);
+        // Only a divider drag stores a new ratio.
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 400.0, 1000.0, false, true),
+            0.4
+        );
+        // A narrow window clamps the pane: the preference survives, so
+        // widening again restores the 30% split.
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 100.0, 200.0, true, false),
+            0.3
+        );
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 100.0, 200.0, true, true),
+            0.3
+        );
+        // Width settling without a held pointer, or no change, keeps it too.
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 320.0, 1000.0, false, false),
+            0.3
+        );
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 300.0, 1000.0, false, true),
+            0.3
+        );
+        assert_eq!(
+            dragged_split_ratio(0.3, None, 400.0, 1000.0, false, true),
+            0.3
+        );
+        assert_eq!(split_left_width(0.3, 2000.0, 100.0), 600.0);
+        assert_eq!(split_left_width(0.5, 1000.0, 100.0), 500.0);
+        // Both panes keep their minimum width.
+        assert_eq!(split_left_width(0.02, 1000.0, 100.0), 100.0);
+        assert_eq!(split_left_width(0.99, 1000.0, 100.0), 900.0);
+        // Too narrow for two minimums: split evenly instead of inverting.
+        assert_eq!(split_left_width(0.1, 150.0, 100.0), 75.0);
     }
 }
