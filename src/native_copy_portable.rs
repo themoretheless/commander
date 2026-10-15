@@ -1,9 +1,10 @@
 //! Portable native-copy backend for Linux and Windows.
 //!
 //! Mirrors the macOS `native_copy` API: exclusive (never-clobbering) copies
-//! with progress, cancellation, and a no-replace rename. `std::fs::copy`
-//! already uses the platform's best primitive (`copy_file_range`, which can
-//! reflink on Btrfs/XFS, or `CopyFileExW` on Windows).
+//! with progress and cancellation. Bytes move in 1 MiB steps so progress and
+//! cancel stay responsive: on Linux through `copy_file_range` (in-kernel, and
+//! a reflink or server-side copy where Btrfs, XFS or NFS can do one), falling
+//! back to a userspace read/write loop where the kernel declines.
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -31,6 +32,47 @@ fn read_retrying(input: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize
     }
 }
 
+/// Move up to `len` bytes from `input` to `output` inside the kernel, at both
+/// files' current offsets. `Ok(None)` means the kernel cannot copy between
+/// these files and the caller should use read/write from here on.
+#[cfg(target_os = "linux")]
+fn copy_range_chunk(
+    input: &fs::File,
+    output: &fs::File,
+    len: usize,
+) -> std::io::Result<Option<usize>> {
+    use std::os::fd::AsRawFd;
+
+    loop {
+        let n = unsafe {
+            libc::copy_file_range(
+                input.as_raw_fd(),
+                std::ptr::null_mut(),
+                output.as_raw_fd(),
+                std::ptr::null_mut(),
+                len,
+                0,
+            )
+        };
+        if let Ok(n) = usize::try_from(n) {
+            return Ok(Some(n));
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => {}
+            Some(
+                libc::EXDEV
+                | libc::ENOSYS
+                | libc::EOPNOTSUPP
+                | libc::EINVAL
+                | libc::EPERM
+                | libc::EBADF,
+            ) => return Ok(None),
+            _ => return Err(error),
+        }
+    }
+}
+
 /// Copy one file's bytes into a destination that must not exist yet.
 fn copy_bytes(
     src: &Path,
@@ -41,23 +83,48 @@ fn copy_bytes(
 ) -> std::io::Result<u64> {
     let mut input = fs::File::open(src)?;
     let mut output = OpenOptions::new().write(true).create_new(true).open(dst)?;
-    let mut buf = vec![0u8; CHUNK];
+    let report = |copied: u64| {
+        if report_progress {
+            let mut s = crate::lock_util::recover(state);
+            s.current_file_copied = copied;
+            s.copied_bytes = base_bytes.saturating_add(copied);
+            s.maybe_sample();
+        }
+    };
+    let mut buf = Vec::new();
     let mut copied = 0u64;
+    // Both paths advance the shared file offsets, so a fallback mid-file
+    // continues exactly where the kernel copy stopped.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut kernel_copy = cfg!(target_os = "linux");
     let result = (|| {
         loop {
             crate::transfer::check_cancelled(state)?;
+            #[cfg(target_os = "linux")]
+            if kernel_copy {
+                match copy_range_chunk(&input, &output, CHUNK)? {
+                    // A zero before any byte may be a pseudo-file whose size
+                    // the kernel cannot see; let read() decide EOF.
+                    Some(0) if copied == 0 => kernel_copy = false,
+                    Some(0) => break,
+                    Some(n) => {
+                        copied = copied.saturating_add(n as u64);
+                        report(copied);
+                        continue;
+                    }
+                    None => kernel_copy = false,
+                }
+            }
+            if buf.is_empty() {
+                buf = vec![0u8; CHUNK];
+            }
             let n = read_retrying(&mut input, &mut buf)?;
             if n == 0 {
                 break;
             }
             output.write_all(&buf[..n])?;
-            copied += n as u64;
-            if report_progress {
-                let mut s = crate::lock_util::recover(state);
-                s.current_file_copied = copied;
-                s.copied_bytes = base_bytes.saturating_add(copied);
-                s.maybe_sample();
-            }
+            copied = copied.saturating_add(n as u64);
+            report(copied);
         }
         output.flush()?;
         if let Ok(metadata) = fs::metadata(src) {
@@ -386,5 +453,36 @@ mod tests {
                 .any(|e| e.contains("pipe") && e.contains("special file")),
             "{errors:?}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn file_copy_falls_back_to_read_for_files_the_kernel_cannot_copy() {
+        // procfs reports size 0 and copy_file_range copies nothing, yet the
+        // file has content: the read/write fallback must still copy it.
+        let tmp = TempDir::new();
+        let dst = tmp.path().join("status");
+        let state = progress();
+        let outcome =
+            copy_file_native(Path::new("/proc/self/status"), &dst, &state, 0, false).unwrap();
+        let copied = fs::read_to_string(&dst).unwrap();
+        assert!(copied.starts_with("Name:"), "{copied}");
+        assert_eq!(outcome.bytes, copied.len() as u64);
+    }
+
+    #[test]
+    fn large_file_copy_is_byte_exact_across_chunks() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("big.bin");
+        let bytes: Vec<u8> = (0..(CHUNK * 2 + 4321)).map(|i| (i % 251) as u8).collect();
+        fs::write(&src, &bytes).unwrap();
+        let dst = tmp.path().join("copy.bin");
+        let state = progress();
+        let outcome = copy_file_native(&src, &dst, &state, 10, false).unwrap();
+        assert_eq!(outcome.bytes, bytes.len() as u64);
+        assert_eq!(fs::read(&dst).unwrap(), bytes);
+        let s = crate::lock_util::recover(&state);
+        assert_eq!(s.copied_bytes, 10 + bytes.len() as u64);
+        assert_eq!(s.current_file_copied, bytes.len() as u64);
     }
 }
