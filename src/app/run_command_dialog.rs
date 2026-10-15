@@ -328,6 +328,19 @@ impl App {
                     egui::Label::new(preview_job(&segs, t.text_secondary, t.accent, t.text_muted))
                         .wrap(),
                 );
+                let unencodable = crate::cmdtemplate::non_utf8_path(&state.line, &sctx);
+                if let Some(path) = unencodable {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Cannot run: {} is not valid UTF-8 and would expand to a different name",
+                            path.display()
+                        ))
+                        .size(11.0)
+                        .color(t.accent_warning),
+                    );
+                }
+                let unencodable = unencodable.is_some();
 
                 // Saved templates that apply to this selection.
                 if !matching.is_empty() {
@@ -369,7 +382,7 @@ impl App {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     let has_line = !state.line.trim().is_empty();
-                    let can_run = has_line && state.run.is_none();
+                    let can_run = has_line && state.run.is_none() && !unencodable;
                     if ui
                         .add_enabled(
                             can_run,
