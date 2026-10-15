@@ -4,7 +4,8 @@ use crate::panel::{FacetSet, KindFacet, SortOrder};
 #[derive(Default)]
 pub struct PanelRenderOutcome {
     pub tree_toggle: bool,
-    pub context_menu_request: Option<ui_state::ContextMenuCandidate>,
+    /// A row asked for its context menu: the request, or why it has none.
+    pub context_menu_request: Option<Result<ui_state::ContextMenuCandidate, String>>,
 }
 
 fn file_name_of(path: &std::path::Path) -> String {

@@ -1950,11 +1950,17 @@ impl App {
         tree_toggle |= right_outcome.tree_toggle;
 
         let pending_external_opens = external_open.into_inner();
-        if let Some(candidate) = left_outcome.context_menu_request {
-            self.queue_context_menu_candidate(ActivePanel::Left, candidate, &ctx);
-        }
-        if let Some(candidate) = right_outcome.context_menu_request {
-            self.queue_context_menu_candidate(ActivePanel::Right, candidate, &ctx);
+        for (panel, request) in [
+            (ActivePanel::Left, left_outcome.context_menu_request),
+            (ActivePanel::Right, right_outcome.context_menu_request),
+        ] {
+            match request {
+                Some(Ok(candidate)) => self.queue_context_menu_candidate(panel, candidate, &ctx),
+                Some(Err(reason)) => {
+                    self.toast(&ctx, crate::toasts::ToastKind::Info, reason, false);
+                }
+                None => {}
+            }
         }
         for request in pending_external_opens {
             self.open_external(request, &ctx);

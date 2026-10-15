@@ -1,13 +1,29 @@
 use super::*;
 
+/// Why a row has no context menu: the menu binds to the file identity
+/// captured with the listing, so a row without one cannot get a menu.
+fn context_menu_unavailable_reason(identity: &crate::panel::ListingIdentity) -> Option<String> {
+    match identity {
+        crate::panel::ListingIdentity::Captured(_) => None,
+        crate::panel::ListingIdentity::CaptureFailed(failure) => Some(format!(
+            "Menu unavailable: file identity could not be read ({})",
+            failure.message
+        )),
+        crate::panel::ListingIdentity::Unavailable => {
+            Some("Menu unavailable: file identity could not be read".to_string())
+        }
+    }
+}
+
+/// The context-menu request for a row, or the reason it has none.
 fn context_menu_candidate(
     entry: &crate::panel::FileEntry,
     trigger: crate::ports::ContextMenuTrigger,
     row_rect: egui::Rect,
     response: &egui::Response,
-) -> Option<ui_state::ContextMenuCandidate> {
+) -> Result<ui_state::ContextMenuCandidate, String> {
     let crate::panel::ListingIdentity::Captured(expected) = &entry.identity else {
-        return None;
+        return Err(context_menu_unavailable_reason(&entry.identity).unwrap_or_default());
     };
     // AppKit converts this anchor through the full content view. Using the
     // viewport origin keeps egui and AppKit coordinates aligned when a safe
@@ -37,7 +53,7 @@ fn context_menu_candidate(
             })
         }
     };
-    Some(ui_state::ContextMenuCandidate {
+    Ok(ui_state::ContextMenuCandidate {
         target: crate::ports::ContextMenuTarget {
             path: entry.path.clone(),
             expected: expected.clone(),
@@ -560,7 +576,7 @@ impl App {
         dragged: &[PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
-    ) -> Option<ui_state::ContextMenuCandidate> {
+    ) -> Option<Result<ui_state::ContextMenuCandidate, String>> {
         // Only claim Shift+F10 when the cursor is on a file row; on ".." or an
         // empty list there is nothing for the menu to target.
         let keyboard_context_menu_requested = is_active
@@ -1232,23 +1248,23 @@ impl App {
                     {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
-                        context_menu_request = context_menu_candidate(
+                        context_menu_request = Some(context_menu_candidate(
                             entry,
                             crate::ports::ContextMenuTrigger::Keyboard,
                             full_rect,
                             &row_resp,
-                        );
+                        ));
                     }
 
                     if row_resp.secondary_clicked() {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
-                        context_menu_request = context_menu_candidate(
+                        context_menu_request = Some(context_menu_candidate(
                             entry,
                             crate::ports::ContextMenuTrigger::Pointer,
                             full_rect,
                             &row_resp,
-                        );
+                        ));
                     }
 
                     if row_resp.double_clicked() {
@@ -1603,13 +1619,28 @@ pub(super) fn append_highlighted(
 mod tests {
     use super::{
         EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
-        append_highlighted, click_range, compare_marker, count_summary, cursor_chevron_fits,
-        cursor_row_to_reveal, drop_target_writable, empty_state, filter_footer, folder_changed,
-        folder_extremes, follow_cursor_focus, grid_row_index, highlight_name_job,
-        map_ranges_to_display, name_char_budget, name_column_width, parent_row_label,
-        row_click_kind, row_content_height, row_spoken_label, selection_footer,
-        selection_size_label, selection_summary_with, visible_rows, visible_selection_summary,
+        append_highlighted, click_range, compare_marker, context_menu_unavailable_reason,
+        count_summary, cursor_chevron_fits, cursor_row_to_reveal, drop_target_writable,
+        empty_state, filter_footer, folder_changed, folder_extremes, follow_cursor_focus,
+        grid_row_index, highlight_name_job, map_ranges_to_display, name_char_budget,
+        name_column_width, parent_row_label, row_click_kind, row_content_height, row_spoken_label,
+        selection_footer, selection_size_label, selection_summary_with, visible_rows,
+        visible_selection_summary,
     };
+
+    #[test]
+    fn rows_without_a_captured_identity_explain_the_missing_menu() {
+        let failed = crate::panel::ListingIdentity::CaptureFailed(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "permission denied".to_string(),
+        });
+        let reason = context_menu_unavailable_reason(&failed).unwrap();
+        assert!(reason.starts_with("Menu unavailable"), "{reason}");
+        assert!(reason.contains("permission denied"), "{reason}");
+        assert!(
+            context_menu_unavailable_reason(&crate::panel::ListingIdentity::Unavailable).is_some()
+        );
+    }
 
     #[test]
     fn degenerate_viewport_never_inverts_the_row_window() {
