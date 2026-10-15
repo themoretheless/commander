@@ -2504,20 +2504,30 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
 }
 
 fn restore_version_item(step: &OperationStep, effect: &Path) -> RepairItem {
-    let has_version = step
+    let receipt_has_version = step
         .rollback
         .as_ref()
-        .is_some_and(|receipt| receipt.version.is_some())
-        || crate::version_store::record_for_key(&step.key).is_some();
+        .is_some_and(|receipt| receipt.version.is_some());
+    let stored = if receipt_has_version {
+        Ok(true)
+    } else {
+        crate::version_store::record_for_key(&step.key).map(|record| record.is_some())
+    };
+    let (action, automatic) = match stored {
+        Ok(true) => ("Restore replaced local version".to_string(), true),
+        Ok(false) => (
+            "No preserved version of the replaced original was found; inspect manually".to_string(),
+            false,
+        ),
+        Err(error) => (
+            format!("Could not read the version store ({error}); inspect manually"),
+            false,
+        ),
+    };
     RepairItem {
         path: effect.to_path_buf(),
-        action: if has_version {
-            "Restore replaced local version"
-        } else {
-            "No preserved version of the replaced original was found; inspect manually"
-        }
-        .to_string(),
-        automatic: has_version,
+        action,
+        automatic,
     }
 }
 
@@ -2633,6 +2643,7 @@ fn rollback_version_receipt(
         return Ok(None);
     }
     let version = crate::version_store::record_for_key(&step.key)
+        .map_err(|error| format!("Could not read the version store: {error}"))?
         .ok_or_else(|| "Replaced destination has no local version".to_string())?;
     if version.key != step.key || version.original != effect {
         return Err("Replaced destination version is bound to another journal step".to_string());

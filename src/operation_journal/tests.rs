@@ -1979,6 +1979,35 @@ fn repair_plan_keeps_a_replaced_copy_destination_manual_without_a_version() {
 }
 
 #[test]
+fn rollback_reports_an_unreadable_version_store_not_a_missing_version() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("unreadable-journal.json"));
+    let versions_dir = temp.dir("unreadable-versions");
+    let _versions = crate::version_store::use_test_versions_dir(versions_dir.clone());
+    let (operation_id, key, _source, destination, _completed) =
+        completed_overwrite(&temp, "unreadable", TransferKind::Copy);
+    std::fs::write(versions_dir.join("manifest.json"), b"{ not json").unwrap();
+
+    let error = prepare_rollback_receipt(&operation_id, &key, &destination).unwrap_err();
+    let plan = repair_plan(&operation_id).unwrap();
+
+    assert_eq!(
+        error,
+        "Could not read the version store: version manifest is corrupt"
+    );
+    assert_eq!(
+        plan.remaining,
+        vec![RepairItem {
+            path: destination,
+            action: "Could not read the version store (version manifest is corrupt); \
+                     inspect manually"
+                .to_string(),
+            automatic: false,
+        }]
+    );
+}
+
+#[test]
 fn repair_plan_lists_the_version_restore_of_an_overwriting_move() {
     let temp = TempDir::new();
     let _journal = use_test_journal(temp.path().join("plan-journal.json"));
@@ -2357,7 +2386,11 @@ fn a_rollback_retry_reuses_the_version_its_receipt_already_holds() {
     // The version-store record is gone (pruned or blocked manifest), but the
     // durable receipt still carries the version and its identity.
     let _empty = crate::version_store::use_test_versions_dir(temp.dir("pruned-versions"));
-    assert!(crate::version_store::record_for_key(&key).is_none());
+    assert!(
+        crate::version_store::record_for_key(&key)
+            .unwrap()
+            .is_none()
+    );
 
     let retried = prepare_rollback_receipt(&operation_id, &key, &destination).unwrap();
 
