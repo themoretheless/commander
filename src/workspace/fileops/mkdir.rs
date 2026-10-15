@@ -4,7 +4,11 @@ use super::super::Workspace;
 use crate::ui_request::UiRequest;
 
 pub fn create_dir(workspace: &mut Workspace) {
-    if workspace.mutation_commits_blocked() {
+    if let Some(reason) = workspace.mutation_block_reason("creating a folder") {
+        workspace.emit_ui_request(UiRequest::Notice {
+            message: reason,
+            error: true,
+        });
         return;
     }
     let base = workspace.active_panel_ref().current_path.clone();

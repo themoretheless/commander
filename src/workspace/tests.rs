@@ -1586,6 +1586,25 @@ fn create_dir_reports_a_failure() {
 }
 
 #[test]
+fn create_dir_says_why_it_is_blocked() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.safe_state = Some(crate::operation::SafeState::integrity(
+        crate::operation::OperationId::new(),
+        "test stop".to_string(),
+        Vec::new(),
+    ));
+
+    ws.create_dir();
+
+    assert!(!l.path().join("New Folder").exists());
+    assert!(ws.drain_ui_requests().iter().any(|request| matches!(
+        request,
+        UiRequest::Notice { message, error: true } if message.contains("creating a folder")
+    )));
+}
+
+#[test]
 fn select_same_named_adds_common_names_keeping_prior_picks() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let shared = l.file("report.txt", "x");
