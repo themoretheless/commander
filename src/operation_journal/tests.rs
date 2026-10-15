@@ -1936,3 +1936,67 @@ fn store_lock_excludes_another_handle_until_released() {
     drop(held);
     other.try_lock().unwrap();
 }
+
+#[test]
+fn begin_accepts_a_resume_manifest_that_omits_settled_steps() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("partial-resume-journal.json"));
+    let target = temp.dir("target");
+    let first = temp.file("first.txt", "first");
+    let second = temp.file("second.txt", "second");
+    let third = temp.file("third.txt", "third");
+    let entries = [&first, &second, &third]
+        .into_iter()
+        .map(|path| FileEntry::from_meta(path.clone(), &path.symlink_metadata().unwrap()).unwrap())
+        .collect::<Vec<_>>();
+    let spec = transfer_spec("partial-resume", entries, &target);
+    begin(&spec).unwrap();
+    let completed = target.join("first.txt");
+    let completed_key = step_key(&spec, 0, &completed);
+    mark_running(
+        &spec.operation_id,
+        &completed_key,
+        &target.join(".first.txt.cmdr-tmp.0"),
+        &completed,
+        PathIdentity::missing(&completed),
+    )
+    .unwrap();
+    std::fs::write(&completed, "first").unwrap();
+    mark_completed(
+        &spec.operation_id,
+        &completed_key,
+        &completed,
+        crate::transfer_tuning::FastPath::Buffered,
+    )
+    .unwrap();
+    let failed_key = step_key(&spec, 1, &target.join("second.txt"));
+    mark_failed(
+        &spec.operation_id,
+        &failed_key,
+        ClassifiedFailure::message(FailureClass::Blocked, None, "disk full"),
+    )
+    .unwrap();
+    finish(&spec.operation_id, OperationStatus::Failed).unwrap();
+
+    let resumed = build_resume_spec(&spec.operation_id).unwrap();
+    assert_eq!(resumed.entries.len(), 2);
+
+    // Dropping an unsettled step or reordering the rest is still refused.
+    let mut omitted = resumed.clone();
+    omitted.entries.pop();
+    omitted.expectations.pop();
+    assert!(
+        begin(&omitted)
+            .unwrap_err()
+            .contains("different manifest length")
+    );
+    let mut reordered = resumed.clone();
+    reordered.entries.swap(0, 1);
+    reordered.expectations.swap(0, 1);
+    assert!(begin(&reordered).unwrap_err().contains("reordered"));
+
+    begin(&resumed).unwrap();
+    let record = operation(&spec.operation_id).unwrap();
+    assert_eq!(record.status, OperationStatus::Running);
+    assert_eq!(record.steps[0].status, StepStatus::Completed);
+}

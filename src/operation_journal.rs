@@ -1010,24 +1010,34 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                     spec.operation_id.0
                 ));
             }
-            let finalization_only = spec.entries.is_empty()
-                && existing
-                    .steps
+            // A resume manifest lists only the steps still to run, in journal
+            // order; every step it omits must already be settled.
+            let settled = |step: &OperationStep| {
+                matches!(step.status, StepStatus::Completed | StepStatus::Skipped)
+            };
+            let mut cursor = 0;
+            for (key, source, destination) in &manifest {
+                let matched = existing.steps[cursor..]
                     .iter()
-                    .all(|step| matches!(step.status, StepStatus::Completed | StepStatus::Skipped));
-            if !finalization_only && existing.steps.len() != spec.entries.len() {
-                return Err(format!(
-                    "Operation {} was reused with a different manifest length",
-                    spec.operation_id.0
-                ));
-            }
-            for (step, (key, source, destination)) in existing.steps.iter().zip(manifest.iter()) {
-                if step.key != *key || step.source != *source || step.destination != *destination {
+                    .position(|step| step.key == *key)
+                    .map(|offset| cursor + offset)
+                    .filter(|&index| existing.steps[cursor..index].iter().all(settled));
+                let Some(index) = matched.filter(|&index| {
+                    let step = &existing.steps[index];
+                    step.source == *source && step.destination == *destination
+                }) else {
                     return Err(format!(
                         "Operation {} was reused with a reordered or different manifest entry",
                         spec.operation_id.0
                     ));
-                }
+                };
+                cursor = index + 1;
+            }
+            if !existing.steps[cursor..].iter().all(settled) {
+                return Err(format!(
+                    "Operation {} was reused with a different manifest length",
+                    spec.operation_id.0
+                ));
             }
             existing.status = existing
                 .status
