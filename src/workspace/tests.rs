@@ -842,6 +842,19 @@ fn panicking_transfer_finishes_in_needs_review_without_wedging_workspace() {
 }
 
 #[test]
+fn pane_pairs_put_the_active_side_first() {
+    assert_eq!(ActivePanel::Left.order("l", "r"), ("l", "r"));
+    assert_eq!(ActivePanel::Right.order("l", "r"), ("r", "l"));
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.execute(Command::SwitchPanel);
+
+    let (active, inactive) = ws.panes();
+    assert_eq!(active.current_path, r.path());
+    assert_eq!(inactive.current_path, l.path());
+}
+
+#[test]
 fn switch_panel_toggles_active() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&l, &r);

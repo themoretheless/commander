@@ -20,9 +20,10 @@ pub use drop::{
     DragSession, cancel_drag, drag_session, drop_dragged, drop_dragged_as,
     transfer_selection_into_cursor_folder,
 };
-pub use link::{create_hardlinks, create_symlinks};
+pub use link::{LinkReport, create_hardlinks, create_symlinks};
 pub use mkdir::create_dir;
 pub use pending::confirm_pending_op;
 pub use rename::{
-    commit_rename, latch_rename_execution_error, rename_path_no_clobber, rename_siblings,
+    RenameExecutionError, commit_rename, latch_rename_execution_error, rename_path_no_clobber,
+    rename_siblings,
 };
