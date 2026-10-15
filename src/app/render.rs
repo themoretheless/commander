@@ -36,6 +36,55 @@ fn text_preview_path_changed(
     })
 }
 
+/// What a laid-out text preview depends on. The content is identified by its
+/// `Arc`: the key holds a clone, so the allocation cannot be reused for other
+/// text while the key lives, and a reloaded file always gets a new `Arc`.
+#[derive(Clone)]
+struct TextPreviewLayoutKey {
+    content: std::sync::Arc<str>,
+    wrap_width: f32,
+    pixels_per_point: f32,
+    color: Color32,
+}
+
+impl TextPreviewLayoutKey {
+    fn same_layout(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.content, &other.content)
+            && self.wrap_width.to_bits() == other.wrap_width.to_bits()
+            && self.pixels_per_point.to_bits() == other.pixels_per_point.to_bits()
+            && self.color == other.color
+    }
+}
+
+/// The text preview body laid out once per (content, width, scale, color).
+/// A plain wrapped label hashes the whole text (up to 1 MB) every frame to
+/// find its cached layout; this keeps the galley per pane instead.
+fn text_preview_galley(
+    ui: &egui::Ui,
+    scroll_id: egui::Id,
+    key: TextPreviewLayoutKey,
+) -> std::sync::Arc<egui::Galley> {
+    let memory_id = scroll_id.with("galley");
+    let cached = ui.ctx().data(|data| {
+        data.get_temp::<(TextPreviewLayoutKey, std::sync::Arc<egui::Galley>)>(memory_id)
+    });
+    if let Some((cached_key, galley)) = cached
+        && cached_key.same_layout(&key)
+    {
+        return galley;
+    }
+    let job = egui::text::LayoutJob::simple(
+        key.content.to_string(),
+        egui::FontId::monospace(12.0),
+        key.color,
+        key.wrap_width,
+    );
+    let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(memory_id, (key, galley.clone())));
+    galley
+}
+
 /// The close button shared by the image, text and Get Info previews.
 fn close_preview_button(ui: &mut egui::Ui) -> bool {
     let response = ui.small_button("\u{00d7}");
@@ -84,7 +133,7 @@ fn image_preview_disabled_reason(state: crate::feature_flags::FeatureSnapshot) -
 fn render_text_preview(
     ui: &mut egui::Ui,
     path: &std::path::Path,
-    content: Option<&str>,
+    content: Option<&std::sync::Arc<str>>,
     image_cache: &mut crate::image_cache::ImageCache,
     t: &ThemeColors,
     panel_side: &str,
@@ -131,15 +180,17 @@ fn render_text_preview(
                 }
                 scroll.auto_shrink([false; 2]).show(ui, |ui| {
                     ui.style_mut().interaction.selectable_labels = true;
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(content)
-                                .size(12.0)
-                                .font(egui::FontId::monospace(12.0))
-                                .color(t.text_secondary),
-                        )
-                        .wrap(),
+                    let galley = text_preview_galley(
+                        ui,
+                        scroll_id,
+                        TextPreviewLayoutKey {
+                            content: content.clone(),
+                            wrap_width: ui.available_width(),
+                            pixels_per_point: ui.ctx().pixels_per_point(),
+                            color: t.text_secondary,
+                        },
                     );
+                    ui.add(egui::Label::new(galley));
                 });
                 return;
             }
@@ -1074,7 +1125,7 @@ impl App {
                         PreviewContent::Text { identity, content } => render_text_preview(
                             ui,
                             &identity.path,
-                            Some(content.as_ref()),
+                            Some(content),
                             image_cache,
                             t,
                             panel_side,
@@ -1187,6 +1238,42 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_preview_layout_is_reused_until_content_or_width_changes() {
+        let ctx = egui::Context::default();
+        let content: std::sync::Arc<str> = std::sync::Arc::from("line one\nline two");
+        let key = |content: &std::sync::Arc<str>, wrap_width: f32| TextPreviewLayoutKey {
+            content: content.clone(),
+            wrap_width,
+            pixels_per_point: 1.0,
+            color: Color32::WHITE,
+        };
+        let scroll_id = text_preview_scroll_id("left");
+        let mut galleys = Vec::new();
+        for (text, width) in [
+            (&content, 300.0),
+            (&content, 300.0),
+            (&content, 200.0),
+            (&std::sync::Arc::from("line one\nline two"), 200.0),
+        ] {
+            let _ =
+                crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                    galleys.push(text_preview_galley(ui, scroll_id, key(text, width)));
+                }));
+        }
+        assert!(std::sync::Arc::ptr_eq(&galleys[0], &galleys[1]));
+        assert!(
+            !std::sync::Arc::ptr_eq(&galleys[1], &galleys[2]),
+            "width changed"
+        );
+        // Equal text in a new allocation is a reloaded file: lay it out again
+        // (epaint's own cache may still hand back an equal galley).
+        let reloaded: std::sync::Arc<str> = std::sync::Arc::from("line one\nline two");
+        assert!(!key(&content, 200.0).same_layout(&key(&reloaded, 200.0)));
+        assert!(key(&content, 200.0).same_layout(&key(&content, 200.0)));
+        assert_eq!(galleys[3].text(), "line one\nline two");
+    }
 
     fn accesskit_nodes(
         add: impl FnMut(&mut egui::Ui),
