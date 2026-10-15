@@ -2315,6 +2315,15 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
                         action: format!("Move back to {}", step.source.display()),
                         automatic: !crate::fs_util::path_is_taken(&step.source),
                     });
+                    // Rolling back an overwriting move also needs the
+                    // replaced destination's version.
+                    if step
+                        .destination_before
+                        .as_ref()
+                        .is_some_and(|identity| identity.exists)
+                    {
+                        plan.remaining.push(restore_version_item(step, effect));
+                    }
                 } else if step
                     .destination_before
                     .as_ref()
@@ -2326,12 +2335,7 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
                         automatic: true,
                     });
                 } else {
-                    let has_version = crate::version_store::record_for_key(&step.key).is_some();
-                    plan.remaining.push(RepairItem {
-                        path: effect.to_path_buf(),
-                        action: "Restore replaced local version".to_string(),
-                        automatic: has_version,
-                    });
+                    plan.remaining.push(restore_version_item(step, effect));
                 }
             }
             StepStatus::Failed
@@ -2358,6 +2362,24 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
         });
     }
     Ok(plan)
+}
+
+fn restore_version_item(step: &OperationStep, effect: &Path) -> RepairItem {
+    let has_version = step
+        .rollback
+        .as_ref()
+        .is_some_and(|receipt| receipt.version.is_some())
+        || crate::version_store::record_for_key(&step.key).is_some();
+    RepairItem {
+        path: effect.to_path_buf(),
+        action: if has_version {
+            "Restore replaced local version"
+        } else {
+            "Replaced original was not preserved; inspect manually"
+        }
+        .to_string(),
+        automatic: has_version,
+    }
 }
 
 fn cleanup_contains_only_operation_effects(record: &OperationRecord, cleanup: &Path) -> bool {

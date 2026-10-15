@@ -1855,9 +1855,56 @@ fn repair_plan_keeps_a_replaced_copy_destination_manual_without_a_version() {
 
     let plan = repair_plan(&operation_id).unwrap();
 
-    assert_eq!(plan.remaining.len(), 1);
-    assert_eq!(plan.remaining[0].path, destination);
-    assert!(!plan.remaining[0].automatic);
+    assert_eq!(
+        plan.remaining,
+        vec![RepairItem {
+            path: destination,
+            action: "Replaced original was not preserved; inspect manually".to_string(),
+            automatic: false,
+        }]
+    );
+}
+
+#[test]
+fn repair_plan_lists_the_version_restore_of_an_overwriting_move() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("plan-journal.json"));
+    let versions = crate::version_store::use_test_versions_dir(temp.dir("plan-versions"));
+    let (operation_id, _key, source, destination, _completed) =
+        completed_overwrite(&temp, "plan-move-overwrite", TransferKind::Move);
+    let move_back = RepairItem {
+        path: destination.clone(),
+        action: format!("Move back to {}", source.display()),
+        automatic: true,
+    };
+
+    let plan = repair_plan(&operation_id).unwrap();
+    assert_eq!(
+        plan.remaining,
+        vec![
+            move_back.clone(),
+            RepairItem {
+                path: destination.clone(),
+                action: "Restore replaced local version".to_string(),
+                automatic: true,
+            },
+        ]
+    );
+
+    drop(versions);
+    let _empty = crate::version_store::use_test_versions_dir(temp.dir("empty-versions"));
+    let plan = repair_plan(&operation_id).unwrap();
+    assert_eq!(
+        plan.remaining,
+        vec![
+            move_back,
+            RepairItem {
+                path: destination,
+                action: "Replaced original was not preserved; inspect manually".to_string(),
+                automatic: false,
+            },
+        ]
+    );
 }
 
 #[test]
