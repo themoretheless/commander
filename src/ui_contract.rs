@@ -24,6 +24,11 @@ impl ContractHarness {
         self
     }
 
+    fn pane_tool(mut self) -> Self {
+        self.state.pane_tool_open = true;
+        self
+    }
+
     fn active_preview(mut self) -> Self {
         self.state.active_preview_open = true;
         self
@@ -221,6 +226,40 @@ fn escape_routes_only_to_modal_text_input_active_preview_or_focus_mode() {
     assert_eq!(
         ContractHarness::default().resolve().escape,
         EscapeRoute::None
+    );
+}
+
+#[test]
+fn pane_tool_escape_ranks_below_modal_and_text_input_above_preview() {
+    let editing = TextInputState {
+        text_edit_focused: true,
+        ime_composing: false,
+    };
+    let escape = |harness: ContractHarness| harness.resolve().escape;
+    assert_eq!(
+        escape(
+            ContractHarness::default()
+                .modal(ModalSurface::Rename)
+                .pane_tool()
+        ),
+        EscapeRoute::Modal(ModalSurface::Rename)
+    );
+    assert_eq!(
+        escape(ContractHarness::default().text_input(editing).pane_tool()),
+        EscapeRoute::TextInput(TextInputMode::TextEdit)
+    );
+    assert_eq!(
+        escape(
+            ContractHarness::default()
+                .pane_tool()
+                .active_preview()
+                .focus_mode()
+        ),
+        EscapeRoute::PaneTool
+    );
+    assert_eq!(
+        escape(ContractHarness::default().pane_tool()),
+        EscapeRoute::PaneTool
     );
 }
 

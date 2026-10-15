@@ -837,4 +837,170 @@ mod tests {
             "Folder contains 2 unrelated entries and will be kept"
         );
     }
+
+    #[test]
+    fn stack_commit_rejects_a_stale_entry_and_clears_redo_invalidation() {
+        let entry = |id, action| HistoryEntry {
+            id: HistoryEntryId(id),
+            action,
+        };
+        let mut stack = UndoStack::default();
+        stack.push_entry(entry(1, mv("/a/1", "/b/1")));
+        assert!(stack.commit_undo_entry(HistoryEntryId(1)));
+        stack.push_entry(entry(2, mv("/a/2", "/b/2"))); // abandons the redo branch
+        stack.push_entry(entry(3, mv("/a/3", "/b/3")));
+        assert!(stack.redo_invalidation().is_some());
+
+        assert!(!stack.commit_undo_entry(HistoryEntryId(2)));
+        assert_eq!(stack.peek_undo(), Some(&mv("/a/3", "/b/3")));
+        assert!(stack.redo_invalidation().is_some());
+
+        assert!(stack.commit_undo_entry(HistoryEntryId(3)));
+        assert!(stack.redo_invalidation().is_none());
+        assert_eq!(stack.peek_redo_action(), Some(mv("/a/3", "/b/3")));
+    }
+
+    fn blocked(reason: &str) -> ReplayEligibility {
+        ReplayEligibility::Blocked(reason.to_string())
+    }
+
+    #[test]
+    fn preview_blocks_every_pair_targeting_the_same_path() {
+        let temp = TempDir::new();
+        temp.file("a.txt", "a");
+        temp.file("b.txt", "b");
+        let action = Action::BatchRename {
+            dir: temp.path().to_path_buf(),
+            pairs: vec![
+                ("a.txt".into(), "c.txt".into()),
+                ("b.txt".into(), "c.txt".into()),
+            ],
+        };
+        let preview = preview(&action);
+        assert_eq!(preview.blocked_count(), 2);
+        for path in &preview.paths {
+            assert_eq!(
+                path.eligibility,
+                blocked("Multiple entries target the same path")
+            );
+        }
+    }
+
+    #[test]
+    fn gather_preview_allows_a_missing_folder_and_blocks_an_existing_one() {
+        let temp = TempDir::new();
+        let a = temp.file("a.txt", "a");
+        let b = temp.file("b.txt", "b");
+        let folder = temp.path().join("Photos");
+        let action = Action::Gather {
+            folder: folder.clone(),
+            pairs: vec![(a.clone(), folder.join("a.txt")), (b, folder.join("b.txt"))],
+        };
+        // The folder is created by the replay, so its absence is not a
+        // missing destination folder.
+        assert!(preview(&action).can_execute(), "{:?}", preview(&action));
+
+        temp.dir("Photos");
+        let preview = preview(&action);
+        assert_eq!(preview.blocked_count(), 2);
+        assert_eq!(
+            preview.paths[0].eligibility,
+            blocked("Gather folder already exists")
+        );
+        assert!(a.exists());
+    }
+
+    #[test]
+    fn preview_blocks_a_rename_into_a_vanished_folder() {
+        let temp = TempDir::new();
+        let action = Action::Rename {
+            from: temp.file("x.txt", "x"),
+            to: temp.path().join("gone/x.txt"),
+        };
+        assert_eq!(
+            preview(&action).paths[0].eligibility,
+            blocked("Destination folder no longer exists")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_allows_a_target_that_is_the_same_entry_as_its_source() {
+        let temp = TempDir::new();
+        let source = temp.file("a.txt", "a");
+        let link = temp.path().join("b.txt");
+        std::fs::hard_link(&source, &link).unwrap();
+        let same = Action::Rename {
+            from: source.clone(),
+            to: link,
+        };
+        assert!(preview(&same).can_execute(), "{:?}", preview(&same));
+
+        let foreign = Action::Rename {
+            from: source,
+            to: temp.file("c.txt", "c"),
+        };
+        assert_eq!(
+            preview(&foreign).paths[0].eligibility,
+            blocked("Destination is occupied by another entry")
+        );
+    }
+
+    fn trashed(path: PathBuf, stored: PathBuf) -> TrashedItem {
+        TrashedItem {
+            path: path.clone(),
+            version: crate::version_store::VersionRecord {
+                operation_id: crate::operation::OperationId("op".into()),
+                key: crate::operation::IdempotencyKey("key".into()),
+                original: path,
+                stored,
+                created_at_secs: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn restore_trash_preview_checks_the_stored_copy_and_destination() {
+        let temp = TempDir::new();
+        let stored = temp.file("store/a.txt", "saved");
+        let missing_store = temp.path().join("store/gone.txt");
+        let free = temp.path().join("free.txt");
+        let occupied = temp.file("occupied.txt", "new");
+        let preview = preview(&Action::RestoreTrash {
+            items: vec![
+                trashed(free.clone(), missing_store),
+                trashed(occupied, stored.clone()),
+                trashed(free.clone(), stored.clone()),
+            ],
+        });
+        assert_eq!(
+            preview.paths[0].eligibility,
+            blocked("Preserved version no longer exists")
+        );
+        assert_eq!(
+            preview.paths[1].eligibility,
+            blocked("Restore destination is occupied")
+        );
+        assert_eq!(preview.paths[2].eligibility, ReplayEligibility::Ready);
+        assert_eq!(preview.paths[2].from, stored);
+        assert_eq!(preview.paths[2].to, free);
+    }
+
+    #[test]
+    fn trash_redo_preview_blocks_a_missing_path() {
+        let temp = TempDir::new();
+        let stored = temp.path().join("store/a.txt");
+        let present = temp.file("a.txt", "a");
+        let preview = preview(&Action::Trash {
+            items: vec![
+                trashed(temp.path().join("gone.txt"), stored.clone()),
+                trashed(present, stored),
+            ],
+        });
+        assert_eq!(
+            preview.paths[0].eligibility,
+            blocked("Source no longer exists")
+        );
+        assert_eq!(preview.paths[1].eligibility, ReplayEligibility::Ready);
+    }
 }

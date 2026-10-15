@@ -636,4 +636,61 @@ mod tests {
         // Right-only files are left untouched (copy-only mirror).
         assert_eq!(status_of(&a, "c.txt").direction, SyncDirection::Skip);
     }
+
+    #[test]
+    fn one_sided_rows_only_allow_flowing_away_from_their_source() {
+        let a = sync_diff(
+            &[entry("left.txt", 1, Some(100))],
+            &[entry("right.txt", 1, Some(100))],
+            SyncPolicy::TwoWay,
+        );
+        let left_only = status_of(&a, "left.txt");
+        assert_eq!(left_only.status, SyncStatus::LeftOnly);
+        assert!(left_only.allows(SyncDirection::ToRight));
+        assert!(!left_only.allows(SyncDirection::ToLeft));
+        assert!(left_only.allows(SyncDirection::Skip));
+        let right_only = status_of(&a, "right.txt");
+        assert_eq!(right_only.status, SyncStatus::RightOnly);
+        assert!(right_only.allows(SyncDirection::ToLeft));
+        assert!(!right_only.allows(SyncDirection::ToRight));
+    }
+
+    #[test]
+    fn mirror_right_to_left_overwrites_and_ignores_left_only() {
+        let left = [
+            entry("a.txt", 1, Some(100)), // left only
+            entry("b.txt", 1, Some(500)), // left is newer, still overwrite
+            entry("d.txt", 1, Some(100)), // identical
+        ];
+        let right = [
+            entry("b.txt", 1, Some(100)),
+            entry("c.txt", 1, Some(100)), // right only
+            entry("d.txt", 1, Some(100)),
+        ];
+        let a = sync_diff(&left, &right, SyncPolicy::MirrorRightToLeft);
+        assert_eq!(status_of(&a, "a.txt").direction, SyncDirection::Skip);
+        assert_eq!(status_of(&a, "b.txt").status, SyncStatus::LeftNewer);
+        assert_eq!(status_of(&a, "b.txt").direction, SyncDirection::ToLeft);
+        assert_eq!(status_of(&a, "c.txt").direction, SyncDirection::ToLeft);
+        assert_eq!(status_of(&a, "d.txt").direction, SyncDirection::Skip);
+        assert_eq!(
+            default_direction(SyncStatus::Differing, SyncPolicy::MirrorRightToLeft),
+            SyncDirection::ToLeft
+        );
+        assert_eq!(
+            default_direction(SyncStatus::CaseConflict, SyncPolicy::MirrorRightToLeft),
+            SyncDirection::Skip
+        );
+    }
+
+    #[test]
+    fn pane_relation_counts_a_file_versus_folder_clash_as_differing() {
+        let relation = pane_relation(
+            &[entry("x", 1, Some(100)), directory("y", Some(100))],
+            &[directory("x", Some(100)), entry("y", 1, Some(100))],
+        );
+        assert_eq!(relation.differing, vec![0, 1]);
+        assert!(relation.directories.is_empty());
+        assert!(relation.identical.is_empty());
+    }
 }

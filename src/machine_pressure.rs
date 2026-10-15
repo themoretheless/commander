@@ -102,4 +102,55 @@ mod tests {
         assert!(fair.allows_background_preview());
         assert!(!fair.allows_background_index());
     }
+
+    fn on_battery(percent: u8) -> PressureSnapshot {
+        PressureSnapshot {
+            power: PowerSource::Battery,
+            battery_percent: Some(percent),
+            ..PressureSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn battery_thresholds_split_preview_from_index() {
+        assert!(!on_battery(19).allows_background_preview());
+        assert!(on_battery(20).allows_background_preview());
+        assert!(!on_battery(20).allows_background_index());
+        assert!(on_battery(25).allows_background_preview());
+        assert!(!on_battery(29).allows_background_index());
+        assert!(!on_battery(29).allows_background_hash());
+        assert!(on_battery(30).allows_background_index());
+        assert!(on_battery(30).allows_background_hash());
+    }
+
+    #[test]
+    fn low_power_mode_blocks_only_on_battery() {
+        let low_power = |power| PressureSnapshot {
+            power,
+            low_power_mode: true,
+            ..PressureSnapshot::default()
+        };
+        let battery = low_power(PowerSource::Battery);
+        assert!(!battery.allows_background_preview());
+        assert!(!battery.allows_background_index());
+        for power in [PowerSource::Ac, PowerSource::Unknown] {
+            assert!(low_power(power).allows_background_preview());
+            assert!(low_power(power).allows_background_index());
+        }
+    }
+
+    #[test]
+    fn serious_and_critical_thermal_block_everything_on_ac() {
+        for thermal in [ThermalState::Serious, ThermalState::Critical] {
+            let snap = PressureSnapshot {
+                power: PowerSource::Ac,
+                battery_percent: Some(100),
+                thermal,
+                low_power_mode: false,
+            };
+            assert!(!snap.allows_background_preview(), "{thermal:?}");
+            assert!(!snap.allows_background_index(), "{thermal:?}");
+            assert!(!snap.allows_background_hash(), "{thermal:?}");
+        }
+    }
 }

@@ -638,4 +638,189 @@ mod tests {
             .expect("commit resumed execution");
         assert!(center.can_redo());
     }
+
+    fn op(name: &str) -> OperationId {
+        OperationId(name.to_string())
+    }
+
+    fn begin_undo(center: &mut UndoCenter) -> ReplayPlan {
+        center
+            .begin(ReplayDirection::Undo)
+            .expect("begin")
+            .expect("plan")
+    }
+
+    #[test]
+    fn abort_execution_keeps_the_cursor_and_frees_the_slot() {
+        let mut center = seeded();
+        let plan = begin_undo(&mut center);
+        let operation = op("replay");
+        center
+            .bind_execution(plan.reservation, &operation)
+            .expect("bind");
+        assert_eq!(
+            center.abort_execution(plan.reservation, &op("foreign")),
+            Err(HistoryError::OperationMismatch)
+        );
+        center
+            .abort_execution(plan.reservation, &operation)
+            .expect("abort execution");
+        assert!(!center.has_pending_replay());
+        assert!(center.can_undo());
+        assert!(!center.can_redo());
+    }
+
+    #[test]
+    fn abort_interrupted_only_settles_its_own_interrupted_operation() {
+        let mut center = seeded();
+        let plan = begin_undo(&mut center);
+        let operation = op("replay");
+        center
+            .bind_execution(plan.reservation, &operation)
+            .expect("bind");
+        // Still running: not awaiting recovery.
+        assert_eq!(
+            center.abort_interrupted(plan.reservation, &operation),
+            Err(HistoryError::ExecutionNotBound)
+        );
+        center
+            .interrupt_execution(plan.reservation, &operation)
+            .expect("interrupt");
+        assert_eq!(
+            center.abort_interrupted(plan.reservation, &op("foreign")),
+            Err(HistoryError::ExecutionNotBound)
+        );
+        assert!(center.has_pending_replay());
+        center
+            .abort_interrupted(plan.reservation, &operation)
+            .expect("abort interrupted");
+        assert!(!center.has_pending_replay());
+        assert!(center.can_undo());
+    }
+
+    #[test]
+    fn redo_commit_moves_the_entry_back_to_undo() {
+        let mut center = seeded();
+        let undo = begin_undo(&mut center);
+        center.commit_immediate(undo.reservation).expect("undo");
+        let redo = center
+            .begin(ReplayDirection::Redo)
+            .expect("begin redo")
+            .expect("redo plan");
+        assert_eq!(redo.action, rename("/a/old", "/a/new"));
+        let operation = op("redo");
+        center
+            .bind_execution(redo.reservation, &operation)
+            .expect("bind redo");
+        center
+            .commit_execution(redo.reservation, &operation)
+            .expect("commit redo");
+        assert!(center.can_undo());
+        assert!(!center.can_redo());
+        assert_eq!(center.top_undo(), Some(&rename("/a/old", "/a/new")));
+    }
+
+    #[test]
+    fn begin_is_single_flight_and_empty_history_reserves_nothing() {
+        let mut fresh = UndoCenter::default();
+        assert_eq!(fresh.begin(ReplayDirection::Undo), Ok(None));
+        assert_eq!(fresh.begin(ReplayDirection::Redo), Ok(None));
+        assert!(!fresh.has_pending_replay());
+
+        let mut center = seeded();
+        let plan = begin_undo(&mut center);
+        assert_eq!(
+            center.begin(ReplayDirection::Undo),
+            Err(HistoryError::ReplayAlreadyPending)
+        );
+        assert_eq!(
+            center.begin(ReplayDirection::Redo),
+            Err(HistoryError::ReplayAlreadyPending)
+        );
+        assert_eq!(center.pending_reservation(), Some(plan.reservation));
+    }
+
+    #[test]
+    fn bind_rejects_a_second_bind_and_a_foreign_resume() {
+        let mut center = seeded();
+        let plan = begin_undo(&mut center);
+        let operation = op("replay");
+        center
+            .bind_execution(plan.reservation, &operation)
+            .expect("bind");
+        assert_eq!(
+            center.bind_execution(plan.reservation, &operation),
+            Err(HistoryError::ExecutionAlreadyBound)
+        );
+        center
+            .interrupt_execution(plan.reservation, &operation)
+            .expect("interrupt");
+        assert_eq!(
+            center.bind_execution(plan.reservation, &op("foreign")),
+            Err(HistoryError::OperationMismatch)
+        );
+        assert_eq!(
+            center.interrupted_reservation_for(&operation),
+            Ok(Some(plan.reservation))
+        );
+    }
+
+    #[test]
+    fn immediate_settlement_after_bind_reports_already_bound() {
+        let mut center = seeded();
+        let plan = begin_undo(&mut center);
+        center
+            .bind_execution(plan.reservation, &op("replay"))
+            .expect("bind");
+        assert_eq!(
+            center.commit_immediate(plan.reservation),
+            Err(HistoryError::ExecutionAlreadyBound)
+        );
+        assert_eq!(
+            center.abort_immediate(plan.reservation),
+            Err(HistoryError::ExecutionAlreadyBound)
+        );
+        assert_eq!(center.pending_reservation(), Some(plan.reservation));
+        assert!(center.can_undo());
+        assert!(!center.can_redo());
+    }
+
+    #[test]
+    fn interrupted_reservation_for_requires_an_interrupted_replay() {
+        let operation = op("replay");
+        assert_eq!(
+            UndoCenter::default().interrupted_reservation_for(&operation),
+            Ok(None)
+        );
+        let mut center = seeded();
+        let plan = begin_undo(&mut center);
+        assert_eq!(
+            center.interrupted_reservation_for(&operation),
+            Err(HistoryError::ReplayNotInterrupted)
+        );
+        center
+            .bind_execution(plan.reservation, &operation)
+            .expect("bind");
+        assert_eq!(
+            center.interrupted_reservation_for(&operation),
+            Err(HistoryError::ReplayNotInterrupted)
+        );
+    }
+
+    #[test]
+    fn execution_settlement_requires_a_bound_replay() {
+        let mut center = seeded();
+        let plan = begin_undo(&mut center);
+        let operation = op("replay");
+        assert_eq!(
+            center.commit_execution(plan.reservation, &operation),
+            Err(HistoryError::ExecutionNotBound)
+        );
+        assert_eq!(
+            center.interrupt_execution(plan.reservation, &operation),
+            Err(HistoryError::ExecutionNotBound)
+        );
+        assert!(center.can_undo());
+        assert_eq!(center.pending_reservation(), Some(plan.reservation));
+    }
 }

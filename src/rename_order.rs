@@ -558,6 +558,43 @@ mod tests {
     }
 
     #[test]
+    fn apply_steps_rollback_mid_cycle_unstages_the_temp() {
+        // a<->b swap: fail the Direct after the ToTemp; the staged member must
+        // come back from the scratch name.
+        let pairs = [("a", "b"), ("b", "a")];
+        let order = safe_rename_order(&map(&pairs), &existing(&["a", "b"]));
+        assert!(matches!(steps(&order)[0], RenameStep::ToTemp { .. }));
+        let mut fs: HashMap<String, String> = HashMap::from([
+            ("a".to_string(), "A".to_string()),
+            ("b".to_string(), "B".to_string()),
+        ]);
+        let RenameStep::Direct {
+            from: fail_from,
+            to: fail_to,
+        } = steps(&order)[1].clone()
+        else {
+            panic!("expected the cycle's Direct second");
+        };
+        let error = apply_steps(steps(&order), |from, to| {
+            if (from, to) == (fail_from.as_str(), fail_to.as_str()) {
+                return Err("boom");
+            }
+            let value = fs.remove(from).ok_or("missing source")?;
+            fs.insert(to.to_string(), value);
+            Ok::<(), &str>(())
+        })
+        .unwrap_err();
+        assert_eq!(error.operation, "boom");
+        assert!(error.rollback_failures.is_empty());
+        assert_eq!(fs.get("a"), Some(&"A".to_string()));
+        assert_eq!(fs.get("b"), Some(&"B".to_string()));
+        assert!(
+            !fs.keys().any(|name| name.starts_with(".cmdr-rename")),
+            "no temp left behind: {fs:?}"
+        );
+    }
+
+    #[test]
     fn apply_steps_reports_a_failed_rollback_without_hiding_the_original_error() {
         let pairs = [("a", "x"), ("b", "y")];
         let order = safe_rename_order(&map(&pairs), &existing(&["a", "b"]));
