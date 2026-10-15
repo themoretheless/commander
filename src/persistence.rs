@@ -1716,6 +1716,54 @@ mod tests {
     }
 
     #[test]
+    fn load_strict_maps_every_fail_closed_status_to_a_named_error() {
+        let path = Path::new("strict.json");
+        let current = br#"{"format":"commander.persist","store":"commander.test","schema":1,"generation":3,"payload":{"name":"x","count":1}}"#;
+        let (value, gate) = load_strict::<Item>(
+            &MemoryPersist::new(Some(current.to_vec())),
+            path,
+            TEST_STORE,
+            "Test store",
+        )
+        .unwrap();
+        assert_eq!(value.map(|item| item.name), Some("x".to_string()));
+        assert_eq!(gate.status(), LoadStatus::Current);
+
+        let (missing, gate) =
+            load_strict::<Item>(&MemoryPersist::new(None), path, TEST_STORE, "Test store").unwrap();
+        assert!(missing.is_none());
+        assert_eq!(gate.status(), LoadStatus::Missing);
+
+        let cases: [(Vec<u8>, &str); 4] = [
+            (b"not json".to_vec(), "Test store is corrupt"),
+            (
+                br#"{"format":"commander.persist","store":"commander.test","schema":1,"generation":1,"payload":{"name":"x","count":"many"}}"#
+                    .to_vec(),
+                "Test store is corrupt",
+            ),
+            (
+                br#"{"format":"commander.persist","store":"commander.test","schema":2,"generation":1,"payload":{}}"#
+                    .to_vec(),
+                "Test store uses a newer persist envelope",
+            ),
+            (
+                vec![b' '; TEST_STORE.max_bytes + 1],
+                "Could not open test store",
+            ),
+        ];
+        for (bytes, expected) in cases {
+            let error = load_strict::<Item>(
+                &MemoryPersist::new(Some(bytes)),
+                path,
+                TEST_STORE,
+                "Test store",
+            )
+            .unwrap_err();
+            assert!(error.starts_with(expected), "{error}");
+        }
+    }
+
+    #[test]
     fn envelope_serialization_finishes_before_the_port_is_called() {
         let persist = MemoryPersist::new(None);
         let mut gate = StoreGate::missing();
