@@ -1311,6 +1311,34 @@ mod tests {
     }
 
     #[test]
+    fn discard_removes_the_record_its_references_and_its_payload() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "rejected");
+        let operation = OperationId("discard-success".to_string());
+        let record = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(record.stored.exists());
+
+        discard_record_at(&versions, &record).unwrap();
+
+        let manifest = load_manifest(&versions);
+        assert!(manifest.records.is_empty());
+        assert!(manifest.identities.is_empty());
+        assert!(manifest.blobs.is_empty());
+        assert!(manifest.payload_files.is_empty());
+        assert!(!record.stored.exists());
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "rejected");
+    }
+
+    #[test]
     fn repeated_same_key_preserve_keeps_the_authoritative_payload() {
         let temp = TempDir::new();
         let versions = temp.path().join("versions");
