@@ -509,25 +509,35 @@ fn read_up_to(reader: &mut std::fs::File, buffer: &mut [u8]) -> std::io::Result<
 const PREPARING_DESTINATION: &str = "Preparing the existing destination";
 const INDEXING_DESTINATION: &str = "Indexing the existing destination";
 
-/// Shows `reason` as the transfer's waiting reason until dropped. Drop
-/// clears it only if it is still ours, so a mount-wait reason set meanwhile
-/// is left alone.
+/// Shows `reason` as the transfer's waiting reason until dropped. A reason
+/// already shown (a mount wait, or another delta worker on the same
+/// transfer) is left in place and this guard then owns nothing; drop clears
+/// the reason only if this guard set it and it is still ours.
 struct WaitingReason<'a> {
     state: &'a TransferState,
-    reason: &'static str,
+    reason: Option<&'static str>,
 }
 
 impl<'a> WaitingReason<'a> {
     fn show(state: &'a TransferState, reason: &'static str) -> Self {
-        crate::lock_util::recover(state).waiting_reason = Some(reason.to_string());
+        let mut progress = crate::lock_util::recover(state);
+        let reason = if progress.waiting_reason.is_none() {
+            progress.waiting_reason = Some(reason.to_string());
+            Some(reason)
+        } else {
+            None
+        };
         Self { state, reason }
     }
 }
 
 impl Drop for WaitingReason<'_> {
     fn drop(&mut self) {
+        let Some(reason) = self.reason else {
+            return;
+        };
         let mut progress = crate::lock_util::recover(self.state);
-        if progress.waiting_reason.as_deref() == Some(self.reason) {
+        if progress.waiting_reason.as_deref() == Some(reason) {
             progress.waiting_reason = None;
         }
     }
@@ -611,6 +621,13 @@ mod tests {
         let reason = WaitingReason::show(&progress, PREPARING_DESTINATION);
         progress.lock().unwrap().waiting_reason = Some("Mount disconnected".to_string());
         drop(reason);
+        assert_eq!(
+            progress.lock().unwrap().waiting_reason.as_deref(),
+            Some("Mount disconnected")
+        );
+
+        // A reason shown first is neither replaced nor cleared.
+        drop(WaitingReason::show(&progress, INDEXING_DESTINATION));
         assert_eq!(
             progress.lock().unwrap().waiting_reason.as_deref(),
             Some("Mount disconnected")
