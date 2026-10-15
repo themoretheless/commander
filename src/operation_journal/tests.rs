@@ -2249,3 +2249,92 @@ fn a_rollback_retry_reuses_the_version_its_receipt_already_holds() {
 
     assert_eq!(retried, first);
 }
+
+fn created_container_record(temp: &TempDir) -> (OperationRecord, PathBuf) {
+    let source = temp.file("source.txt", "source");
+    let folder = temp.dir("gathered");
+    let mut record = incomplete_record(&source, &folder.join("source.txt"), StepStatus::Planned);
+    record.rollback_cleanup = Some(folder.clone());
+    record.rollback_cleanup_identity = Some(PathIdentity::observe_deep(&folder).unwrap());
+    (record, folder)
+}
+
+#[test]
+fn rollback_keeps_the_created_folder_in_place_while_entries_remain() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("keep-folder-journal.json"));
+    let (mut record, destination) = completed_created_copy(&temp, "keep-folder");
+    let folder = destination.parent().unwrap().to_path_buf();
+    record.rollback_cleanup = Some(folder.clone());
+    record.rollback_cleanup_identity = Some(PathIdentity::observe_deep(&folder).unwrap());
+    let id = record.id.clone();
+    save_test_journal(vec![record]);
+    std::fs::write(&destination, "changed after the operation").unwrap();
+
+    let plan = rollback(&id).unwrap();
+
+    assert_eq!(plan.remaining.len(), 2, "{:?}", plan.remaining);
+    assert_eq!(plan.remaining[1].path, folder);
+    assert!(
+        plan.remaining[1].action.contains("kept until"),
+        "{:?}",
+        plan.remaining
+    );
+    assert!(destination.exists());
+    assert!(
+        operation(&id)
+            .unwrap()
+            .rollback_cleanup_quarantine
+            .is_none()
+    );
+}
+
+#[test]
+fn container_rollback_picks_a_fresh_quarantine_when_a_foreign_object_holds_the_old_one() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("foreign-quarantine-journal.json"));
+    let (mut record, folder) = created_container_record(&temp);
+    let taken = temp.file(".gathered.cmdr-quarantine.0", "foreign");
+    record.rollback_cleanup_quarantine = Some(taken.clone());
+    save_test_journal(vec![record.clone()]);
+    let mut plan = RepairPlan::default();
+
+    rollback_created_container(&record, &mut plan);
+
+    assert!(plan.remaining.is_empty(), "{:?}", plan.remaining);
+    assert_eq!(plan.completed.len(), 1);
+    assert!(!folder.exists());
+    assert_eq!(std::fs::read_to_string(&taken).unwrap(), "foreign");
+    assert!(
+        operation(&record.id)
+            .unwrap()
+            .rollback_cleanup_quarantine
+            .is_none()
+    );
+}
+
+#[test]
+fn container_rollback_keeps_an_uninspectable_quarantine_record() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("uninspectable-journal.json"));
+    let (mut record, folder) = created_container_record(&temp);
+    std::fs::remove_dir(&folder).unwrap();
+    let blocker = temp.file("blocker", "a file, not a folder");
+    let quarantine = blocker.join(".gathered.cmdr-quarantine.0");
+    record.rollback_cleanup_quarantine = Some(quarantine.clone());
+    save_test_journal(vec![record.clone()]);
+    let mut plan = RepairPlan::default();
+
+    rollback_created_container(&record, &mut plan);
+
+    assert_eq!(plan.remaining.len(), 1);
+    assert!(
+        plan.remaining[0].action.starts_with("Could not inspect"),
+        "{:?}",
+        plan.remaining
+    );
+    assert_eq!(
+        operation(&record.id).unwrap().rollback_cleanup_quarantine,
+        Some(quarantine)
+    );
+}

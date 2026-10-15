@@ -2853,7 +2853,7 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
         });
         return;
     };
-    let quarantine = record
+    let mut quarantine = record
         .rollback_cleanup_quarantine
         .clone()
         .unwrap_or_else(|| quarantine_path(cleanup));
@@ -2877,11 +2877,20 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
         return;
     }
 
-    let quarantined = PathIdentity::observe_deep(&quarantine).ok();
-    if quarantined
-        .as_ref()
-        .is_none_or(|identity| !expected.same_object(identity))
-    {
+    // An unreadable quarantine may still hold the folder; never treat it as
+    // absent, or the record that points at it would be cleared below.
+    let quarantined = match PathIdentity::observe_deep(&quarantine) {
+        Ok(identity) => identity,
+        Err(error) => {
+            plan.remaining.push(RepairItem {
+                path: quarantine,
+                action: format!("Could not inspect operation-created folder quarantine: {error}"),
+                automatic: false,
+            });
+            return;
+        }
+    };
+    if !expected.same_object(&quarantined) {
         let current = match PathIdentity::observe_deep(cleanup) {
             Ok(identity) => identity,
             Err(error) => {
@@ -2894,7 +2903,13 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
             }
         };
         if !current.exists {
-            let _ = clear_container_quarantine(&record.id, &quarantine);
+            if let Err(error) = clear_container_quarantine(&record.id, &quarantine) {
+                plan.remaining.push(RepairItem {
+                    path: cleanup.clone(),
+                    action: error,
+                    automatic: false,
+                });
+            }
             return;
         }
         if !expected.same_binding(&current) {
@@ -2904,6 +2919,20 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
                 automatic: false,
             });
             return;
+        }
+        if quarantined.exists {
+            // A foreign object took the persisted quarantine name; leave it
+            // untouched and detach the folder under a fresh name instead.
+            let fresh = quarantine_path(cleanup);
+            if let Err(error) = replace_container_quarantine(&record.id, &quarantine, &fresh) {
+                plan.remaining.push(RepairItem {
+                    path: cleanup.clone(),
+                    action: error,
+                    automatic: false,
+                });
+                return;
+            }
+            quarantine = fresh;
         }
         if let Err(error) = detach_expected_path(cleanup, expected, &quarantine) {
             plan.remaining.push(RepairItem {
@@ -2954,6 +2983,22 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
             });
         }
     }
+}
+
+fn replace_container_quarantine(
+    operation_id: &OperationId,
+    quarantine: &Path,
+    fresh: &Path,
+) -> Result<(), String> {
+    mutate(|journal| {
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        if operation.rollback_cleanup_quarantine.as_deref() != Some(quarantine) {
+            return Err("Rollback container quarantine changed before cleanup".to_string());
+        }
+        operation.rollback_cleanup_quarantine = Some(fresh.to_path_buf());
+        operation.updated_at_secs = now_secs();
+        Ok(())
+    })
 }
 
 fn clear_container_quarantine(operation_id: &OperationId, quarantine: &Path) -> Result<(), String> {
@@ -3024,7 +3069,21 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
             }),
         }
     }
-    rollback_created_container(&record, &mut plan);
+    // Detaching a folder that still holds unresolved entries would only
+    // rename it to a hidden name and back. A persisted quarantine still runs:
+    // the folder may be sitting under it from an interrupted attempt.
+    if plan.remaining.is_empty() || record.rollback_cleanup_quarantine.is_some() {
+        rollback_created_container(&record, &mut plan);
+    } else if let Some(cleanup) = &record.rollback_cleanup
+        && crate::fs_util::path_is_taken(cleanup)
+    {
+        plan.remaining.push(RepairItem {
+            path: cleanup.clone(),
+            action: "Operation-created folder is kept until the remaining entries are resolved"
+                .to_string(),
+            automatic: false,
+        });
+    }
     finish(
         operation_id,
         if plan.remaining.is_empty() {
