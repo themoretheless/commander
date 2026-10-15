@@ -104,25 +104,58 @@ fn continues_word(last: char, next: Option<char>) -> bool {
 /// A shared filename prefix across `entries` (case-insensitive, keeping the
 /// first entry's casing), trimmed of leading dots (so the folder is never
 /// hidden) and trailing separators, digits and spaces, if it is at least two
-/// characters and does not stop mid-word (`cat` + `car` share no word). A
-/// single entry yields its own (trimmed) stem.
+/// characters. A prefix that stops mid-word backs off to the last whole word
+/// (`Holiday photos` + `Holiday pics` give `Holiday`); with no whole word
+/// left (`cat` + `car`) there is no prefix. A single entry yields its own
+/// (trimmed) stem.
 fn common_stem_prefix(entries: &[FileEntry]) -> Option<String> {
     let stems: Vec<&str> = entries.iter().map(|e| stem(&e.name)).collect();
     let first = *stems.first()?;
-    let mut len = first.len();
+    let mut end = first.len();
     for s in &stems[1..] {
-        len = len.min(common_prefix_len(first, s));
+        end = end.min(common_prefix_len(first, s));
     }
-    let prefix = first[..len]
-        .trim_start_matches('.')
-        .trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, '_' | '-' | ' ' | '.'));
-    let last = prefix.chars().last()?;
-    let end = first[..len].len() - first[..len].trim_start_matches('.').len() + prefix.len();
-    let taken = first[..end].chars().count();
-    let mid_word = stems
-        .iter()
-        .all(|s| continues_word(last, s.chars().nth(taken)));
-    (prefix.chars().count() >= 2 && !mid_word).then(|| prefix.to_string())
+    loop {
+        let raw = &first[..end];
+        let undotted = raw.trim_start_matches('.');
+        let prefix = undotted
+            .trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, '_' | '-' | ' ' | '.'));
+        if prefix.chars().count() < 2 {
+            return None;
+        }
+        let last = prefix.chars().last()?;
+        let prefix_end = raw.len() - undotted.len() + prefix.len();
+        let taken = first[..prefix_end].chars().count();
+        let mid_word = stems
+            .iter()
+            .all(|s| continues_word(last, s.chars().nth(taken)));
+        if !mid_word {
+            return Some(prefix.to_string());
+        }
+        let backed = word_start(&first[..prefix_end]);
+        if backed >= end {
+            return None;
+        }
+        end = backed;
+    }
+}
+
+/// Byte index where the trailing word of `text` starts: the run of letters
+/// at its end, or the camelCase word (`photoAlbum` -> `Album`) within it.
+fn word_start(text: &str) -> usize {
+    let mut start = text.len();
+    let mut chars = text.char_indices().rev().peekable();
+    while let Some((i, c)) = chars.next() {
+        if !c.is_alphabetic() {
+            break;
+        }
+        start = i;
+        let previous = chars.peek().map(|&(_, p)| p);
+        if c.is_uppercase() && previous.is_some_and(char::is_lowercase) {
+            break;
+        }
+    }
+    start
 }
 
 /// A folder-friendly label for a dominant kind, or `None` for kinds that make
@@ -333,6 +366,23 @@ mod tests {
             entry("tripBeta.txt", false, 1),
         ];
         assert_eq!(suggest_folder_name(&e), "trip");
+    }
+
+    #[test]
+    fn suggest_folder_name_backs_off_to_the_last_whole_word() {
+        let e = vec![
+            entry("Holiday photos.jpg", false, 1),
+            entry("Holiday pics.jpg", false, 1),
+        ];
+        assert_eq!(suggest_folder_name(&e), "Holiday");
+        let e = vec![
+            entry("tripAlphaOne.txt", false, 1),
+            entry("tripAlphaTwo.txt", false, 1),
+            entry("tripAlpine.txt", false, 1),
+        ];
+        assert_eq!(suggest_folder_name(&e), "trip");
+        assert_eq!(word_start("photoAlb"), 5);
+        assert_eq!(word_start("ab cd"), 3);
     }
 
     #[test]
