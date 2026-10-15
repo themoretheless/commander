@@ -880,6 +880,146 @@ mod tests {
         assert!(stats.source_bytes < stats.logical_bytes, "{stats:?}");
     }
 
+    /// Deterministic incompressible bytes, so CDC finds varied chunk cuts.
+    fn noise(len: usize, mut seed: u64) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect()
+    }
+
+    /// Delta-copy `source` over `basis` into `destination`, returning the
+    /// result and every published checkpoint offset.
+    fn run_delta(
+        source: &Path,
+        basis: &Path,
+        destination: &Path,
+        mode: DeltaMode,
+        resume_offset: Option<u64>,
+    ) -> (std::io::Result<DeltaStats>, Vec<u64>) {
+        let mut checkpoints = Vec::new();
+        let result = copy_file(
+            DeltaRequest {
+                source,
+                basis,
+                destination,
+                mode,
+                state: &state(source.metadata().unwrap().len()),
+                base_bytes: 0,
+                allow_clone_seed: true,
+                resume_offset,
+                reverify_staging: true,
+            },
+            &mut |offset, _| {
+                checkpoints.push(offset);
+                Ok(())
+            },
+        );
+        (result, checkpoints)
+    }
+
+    #[test]
+    fn cdc_delta_resumes_from_a_mid_file_checkpoint() {
+        let temp = TempDir::new();
+        let basis = temp.path().join("basis-cdc-resume.bin");
+        let source = temp.path().join("source-cdc-resume.bin");
+        let basis_bytes = noise(CHECKPOINT_INTERVAL as usize + 4 * 1024 * 1024, 0x9e37);
+        let mut source_bytes = basis_bytes.clone();
+        // Changes on both sides of the first checkpoint.
+        source_bytes[1_000_000..1_000_100].fill(1);
+        let late = CHECKPOINT_INTERVAL as usize + 2 * 1024 * 1024;
+        source_bytes[late..late + 100].fill(2);
+        std::fs::write(&basis, &basis_bytes).unwrap();
+        std::fs::write(&source, &source_bytes).unwrap();
+        let (full, checkpoints) = run_delta(
+            &source,
+            &basis,
+            &temp.path().join("staging-cdc-full.bin"),
+            DeltaMode::ContentDefined,
+            None,
+        );
+        full.unwrap();
+        let resume_at = *checkpoints
+            .iter()
+            .find(|&&offset| offset > 0 && offset < source_bytes.len() as u64)
+            .expect("a mid-file checkpoint");
+        let at = resume_at as usize;
+        // Staging as an interrupted run left it: the source up to the
+        // checkpoint, the seeded basis after it.
+        let mut partial = source_bytes[..at].to_vec();
+        partial.extend_from_slice(&basis_bytes[at..]);
+        let destination = temp.path().join("staging-cdc-resume.bin");
+        std::fs::write(&destination, &partial).unwrap();
+
+        let (resumed, resumed_checkpoints) = run_delta(
+            &source,
+            &basis,
+            &destination,
+            DeltaMode::ContentDefined,
+            Some(resume_at),
+        );
+
+        let stats = resumed.unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), source_bytes);
+        assert_eq!(stats.logical_bytes, source_bytes.len() as u64);
+        // Only the part after the checkpoint is processed again.
+        assert!(
+            stats.reused_bytes + stats.source_bytes <= source_bytes.len() as u64 - resume_at,
+            "{stats:?}"
+        );
+        assert_eq!(
+            resumed_checkpoints.last(),
+            Some(&(source_bytes.len() as u64))
+        );
+        assert!(!resumed_checkpoints.contains(&0), "resume republished 0");
+
+        // An offset inside a chunk cannot be a CDC checkpoint.
+        std::fs::write(&destination, &source_bytes).unwrap();
+        let (misaligned, _) = run_delta(
+            &source,
+            &basis,
+            &destination,
+            DeltaMode::ContentDefined,
+            Some(resume_at + 1),
+        );
+        let error = misaligned.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("chunk-aligned"), "{error}");
+    }
+
+    #[test]
+    fn delta_staging_matches_a_source_shorter_or_longer_than_the_basis() {
+        let temp = TempDir::new();
+        let basis = temp.path().join("basis-len.bin");
+        let basis_bytes = noise(FIXED_BLOCK_SIZE * 3, 0x51ed);
+        std::fs::write(&basis, &basis_bytes).unwrap();
+        let shorter = basis_bytes[..FIXED_BLOCK_SIZE * 2 + 1234].to_vec();
+        let mut longer = basis_bytes.clone();
+        longer.extend_from_slice(b"appended tail");
+        let cases = [
+            (DeltaMode::Fixed, &shorter),
+            (DeltaMode::Fixed, &longer),
+            (DeltaMode::ContentDefined, &shorter),
+        ];
+        for (case, (mode, bytes)) in cases.into_iter().enumerate() {
+            let source = temp.path().join(format!("source-len-{case}.bin"));
+            let destination = temp.path().join(format!("staging-len-{case}.bin"));
+            std::fs::write(&source, bytes).unwrap();
+
+            let (result, _) = run_delta(&source, &basis, &destination, mode, None);
+
+            let stats = result.unwrap();
+            // The seeded basis tail past a shorter source must be cut off.
+            assert_eq!(&std::fs::read(&destination).unwrap(), bytes, "{mode:?}");
+            assert_eq!(stats.logical_bytes, bytes.len() as u64, "{mode:?}");
+            assert!(stats.reused_bytes > 0, "{mode:?} {stats:?}");
+        }
+    }
+
     #[test]
     fn failed_delta_keeps_staging_once_a_checkpoint_was_published() {
         let temp = TempDir::new();
