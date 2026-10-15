@@ -157,7 +157,15 @@ impl Drop for ViewRun {
     }
 }
 
-pub fn spawn_view(collection: ProjectCollection, notify: Notify) -> ViewRun {
+/// Whether the virtual view lists `name`: dot-names only when hidden files
+/// are shown, the same rule the panels use.
+fn listed(name: &std::ffi::OsStr, show_hidden: bool) -> bool {
+    show_hidden || !name.to_string_lossy().starts_with('.')
+}
+
+/// Stream every root's entries on a worker thread. Hidden (dot-name) entries
+/// follow `show_hidden`, like the panels.
+pub fn spawn_view(collection: ProjectCollection, show_hidden: bool, notify: Notify) -> ViewRun {
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = mpsc::channel();
@@ -176,6 +184,7 @@ pub fn spawn_view(collection: ProjectCollection, notify: Notify) -> ViewRun {
                 continue;
             };
             let mut entries: Vec<_> = read_dir.filter_map(Result::ok).collect();
+            entries.retain(|entry| listed(&entry.file_name(), show_hidden));
             entries.sort_by_key(|entry| entry.file_name());
             for dir_entry in entries {
                 if worker_cancelled.load(Ordering::Acquire) {
@@ -367,6 +376,7 @@ mod tests {
                 "Both",
                 [left.path().to_path_buf(), right.path().to_path_buf()],
             ),
+            false,
             Arc::new(|| {}),
         );
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -403,6 +413,7 @@ mod tests {
         let missing = root.path().join("missing");
         let run = spawn_view(
             ProjectCollection::new("Mixed", [root.path().to_path_buf(), missing.clone()]),
+            false,
             Arc::new(|| {}),
         );
         let mut unavailable = Vec::new();
@@ -416,5 +427,36 @@ mod tests {
             }
         }
         assert_eq!(unavailable, vec![missing]);
+    }
+
+    fn view_names(root: &Path, show_hidden: bool) -> Vec<String> {
+        let run = spawn_view(
+            ProjectCollection::new("Hidden", [root.to_path_buf()]),
+            show_hidden,
+            Arc::new(|| {}),
+        );
+        let mut names = Vec::new();
+        while let Ok(event) = run.receiver.recv_timeout(Duration::from_secs(5)) {
+            match event {
+                ViewEvent::Batch(batch) => {
+                    names.extend(batch.into_iter().map(|row| row.entry.name))
+                }
+                ViewEvent::Complete { .. } => break,
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn hidden_entries_follow_the_show_hidden_setting() {
+        let root = TempDir::new();
+        root.file("visible.txt", "v");
+        root.file(".DS_Store", "x");
+        root.dir(".git");
+        assert_eq!(view_names(root.path(), false), vec!["visible.txt"]);
+        assert_eq!(
+            view_names(root.path(), true),
+            vec![".DS_Store", ".git", "visible.txt"]
+        );
     }
 }

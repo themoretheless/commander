@@ -19,6 +19,7 @@ impl App {
         let repaint = ctx.clone();
         let run = crate::collections::spawn_view(
             collection,
+            self.ws.active_panel_ref().show_hidden(),
             std::sync::Arc::new(move || repaint.request_repaint()),
         );
         if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
