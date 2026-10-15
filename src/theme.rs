@@ -6,6 +6,16 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// The palette that follows the OS appearance: `system` is egui's reading
+/// of it, and `None` (the platform does not report one) keeps `current`.
+pub const fn follow_system(system: Option<egui::Theme>, current: ThemeMode) -> ThemeMode {
+    match system {
+        Some(egui::Theme::Dark) => ThemeMode::Dark,
+        Some(egui::Theme::Light) => ThemeMode::Light,
+        None => current,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct ThemeColors {
     pub bg_deep: Color32,
@@ -224,6 +234,15 @@ fn theme_style(mode: ThemeMode, preferences: crate::accessibility::Preferences) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn following_the_system_tracks_its_appearance() {
+        assert!(follow_system(Some(egui::Theme::Dark), ThemeMode::Light) == ThemeMode::Dark);
+        assert!(follow_system(Some(egui::Theme::Light), ThemeMode::Dark) == ThemeMode::Light);
+        // No reported appearance: keep the palette in use.
+        assert!(follow_system(None, ThemeMode::Dark) == ThemeMode::Dark);
+        assert!(follow_system(None, ThemeMode::Light) == ThemeMode::Light);
+    }
 
     #[test]
     fn every_palette_knows_whether_it_is_dark() {

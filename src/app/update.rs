@@ -1140,6 +1140,7 @@ impl App {
             self.window_size = Some(size);
         }
         self.refresh_accessibility_preferences(ctx);
+        self.follow_system_appearance(ctx);
         ctx.data_mut(|data| {
             data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));

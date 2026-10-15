@@ -104,6 +104,9 @@ pub struct Session {
     pub right_path: PathBuf,
     pub active_left: bool,
     pub theme_dark: bool,
+    /// Follow the OS light/dark appearance instead of `theme_dark`.
+    #[serde(default)]
+    pub theme_follow_system: bool,
     pub ui_scale: f32,
     pub show_tree: bool,
     pub tree_width: f32,
@@ -338,6 +341,7 @@ mod tests {
             right_path: right,
             active_left: true,
             theme_dark: true,
+            theme_follow_system: true,
             ui_scale: 1.1,
             show_tree: true,
             tree_width: 220.0,
@@ -529,6 +533,17 @@ mod tests {
         }
         assert!(!object.contains_key("left_view"));
         assert!(!object.contains_key("right_view"));
+    }
+
+    #[test]
+    fn a_session_saved_before_system_theme_keeps_its_fixed_theme() {
+        let session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut value = serde_json::to_value(session).unwrap();
+        assert_eq!(value["theme_follow_system"], true);
+        value.as_object_mut().unwrap().remove("theme_follow_system");
+        let old: Session = serde_json::from_value(value).unwrap();
+        assert!(!old.theme_follow_system);
+        assert!(old.theme_dark);
     }
 
     #[test]

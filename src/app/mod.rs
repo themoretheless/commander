@@ -70,6 +70,8 @@ pub struct App {
     pub(crate) session_gate: crate::persistence::StoreGate,
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
+    /// Track the OS appearance each frame instead of a fixed `theme_mode`.
+    pub(crate) follow_system_theme: bool,
     pub colors: ThemeColors,
     pub(crate) accessibility_preferences: crate::accessibility::Preferences,
     /// Re-reads [`Self::accessibility_preferences`] on window focus gain.
@@ -900,6 +902,8 @@ impl App {
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
             show_key_bar: session.as_ref().is_some_and(|s| s.show_key_bar),
+            // A first launch has no saved choice, so it follows the system.
+            follow_system_theme: session.as_ref().is_none_or(|s| s.theme_follow_system),
             recent_order: session
                 .as_ref()
                 .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
@@ -1038,6 +1042,7 @@ impl App {
             show_size_bars: false,
             show_compare: false,
             show_key_bar: false,
+            follow_system_theme: false,
             fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
@@ -1154,6 +1159,7 @@ impl App {
             right_path: self.ws.right.current_path.clone(),
             active_left: self.ws.active == ActivePanel::Left,
             theme_dark: self.theme_mode == ThemeMode::Dark,
+            theme_follow_system: self.follow_system_theme,
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
