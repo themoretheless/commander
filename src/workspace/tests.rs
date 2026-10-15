@@ -1552,6 +1552,40 @@ fn create_links_is_refused_while_mutations_are_blocked() {
 }
 
 #[test]
+fn create_dir_focuses_the_new_folder_and_opens_rename() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "a");
+    let mut ws = workspace(&l, &r);
+
+    ws.create_dir();
+
+    let folder = l.path().join("New Folder");
+    assert!(folder.is_dir());
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(folder.clone())
+    );
+    assert!(ws.drain_ui_requests().contains(&UiRequest::Rename(folder)));
+}
+
+#[test]
+fn create_dir_reports_a_failure() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let gone = l.dir("gone");
+    let mut ws = Workspace::new(gone.clone(), r.path().to_path_buf());
+    std::fs::remove_dir(&gone).unwrap();
+
+    ws.create_dir();
+
+    assert!(!gone.exists());
+    assert!(
+        ws.drain_ui_requests()
+            .iter()
+            .any(|request| matches!(request, UiRequest::Notice { error: true, .. }))
+    );
+}
+
+#[test]
 fn select_same_named_adds_common_names_keeping_prior_picks() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let shared = l.file("report.txt", "x");
