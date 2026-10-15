@@ -1,5 +1,5 @@
 use super::*;
-use crate::panel::{FacetSet, KindFacet};
+use crate::panel::{FacetSet, KindFacet, SortOrder};
 
 #[derive(Default)]
 pub struct PanelRenderOutcome {
@@ -256,6 +256,132 @@ fn path_bar_button(
     (rect, response)
 }
 
+/// Name a pane's region for assistive tech, so moving focus into a pane
+/// announces which one it is and whether it is active.
+fn mark_pane_region(ui: &egui::Ui, panel_side: &str, is_active: bool) {
+    let label = pane_accessible_label(panel_side, is_active);
+    ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+        node.set_role(egui::accesskit::Role::Group);
+        node.set_label(label);
+    });
+}
+
+fn pane_accessible_label(panel_side: &str, is_active: bool) -> String {
+    let mut chars = panel_side.chars();
+    let side = chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect::<String>()
+    });
+    if is_active {
+        format!("{side} pane, active")
+    } else {
+        format!("{side} pane")
+    }
+}
+
+/// The pane's filter box. Both panes share the hint text, so the field is
+/// named after its pane for screen readers.
+fn pane_filter_field(
+    ui: &mut egui::Ui,
+    query: &mut String,
+    width: f32,
+    panel_side: &str,
+) -> egui::Response {
+    let response = ui.add_sized(
+        Vec2::new(width, 26.0),
+        egui::TextEdit::singleline(query)
+            .hint_text("\u{1f50d} Filter\u{2026}")
+            .desired_width(f32::INFINITY)
+            .margin(egui::vec2(8.0, 4.0)),
+    );
+    let label = format!("Filter {panel_side} pane");
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_label(label);
+    });
+    response
+}
+
+/// The "×" button that clears the filter text; named "Clear filter" for
+/// assistive tech, which would otherwise read the glyph.
+fn clear_filter_button(ui: &mut egui::Ui, t: &ThemeColors) -> egui::Response {
+    let response = ui.add_sized(
+        Vec2::new(26.0, 24.0),
+        egui::Button::new(
+            egui::RichText::new("\u{00d7}")
+                .size(12.0)
+                .color(t.text_secondary),
+        )
+        .fill(t.bg_card)
+        .corner_radius(crate::theme::ROUNDING_SM),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Clear filter")
+    });
+    response.on_hover_text("Clear filter")
+}
+
+/// Width a row spends ahead of its name column (selection mark, icon and
+/// padding) that the header row does not, so both make the same
+/// [`file_row_layout`](crate::accessibility::file_row_layout) call.
+const ROW_LEAD_WIDTH: f32 = 32.0;
+
+/// Whether the column header shows Size/Modified: only when the rows below
+/// show those columns too.
+fn header_shows_metadata(header_width: f32) -> bool {
+    crate::accessibility::file_row_layout(header_width - ROW_LEAD_WIDTH).show_metadata
+}
+
+/// The sortable column headers; returns the clicked column. Size and
+/// Modified sit right-aligned but are laid out left to right, so Tab
+/// visits Name, Size, Modified in the order they appear.
+fn column_headers(
+    ui: &mut egui::Ui,
+    order_for: impl Fn(SortColumn) -> Option<SortOrder>,
+    color: Color32,
+    show_metadata: bool,
+) -> Option<SortColumn> {
+    let mut clicked = None;
+    if crate::app::glyphs::sort_header(ui, "Name", order_for(SortColumn::Name), color).clicked() {
+        clicked = Some(SortColumn::Name);
+    }
+    if !show_metadata {
+        return clicked;
+    }
+    const GAP: f32 = 24.0;
+    // `sort_header` draws an 11pt label, plus a 3pt gap and a 9pt triangle
+    // when that column is sorted.
+    let header_width = |ui: &egui::Ui, label: &str, order: Option<SortOrder>| {
+        let text = ui
+            .painter()
+            .layout_no_wrap(label.to_owned(), egui::FontId::proportional(11.0), color)
+            .size()
+            .x;
+        text + if order.is_some() { 12.0 } else { 0.0 }
+    };
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.add_space(8.0);
+        let size_order = order_for(SortColumn::Size);
+        let modified_order = order_for(SortColumn::Modified);
+        let width = header_width(ui, "Size", size_order)
+            + GAP
+            + header_width(ui, "Modified", modified_order);
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, ui.available_height()),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                if crate::app::glyphs::sort_header(ui, "Size", size_order, color).clicked() {
+                    clicked = Some(SortColumn::Size);
+                }
+                ui.add_space(GAP);
+                if crate::app::glyphs::sort_header(ui, "Modified", modified_order, color).clicked()
+                {
+                    clicked = Some(SortColumn::Modified);
+                }
+            },
+        );
+    });
+    clicked
+}
+
 impl App {
     /// A row of toggleable quick-filter chips under the filter box.
     fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) -> bool {
@@ -389,6 +515,7 @@ impl App {
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::ZERO)
             .show(ui, |ui| {
+                mark_pane_region(ui, panel_side, is_active);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 10.0);
 
                 // Path bar: back/forward + breadcrumb arrows
@@ -660,30 +787,10 @@ impl App {
                             let text_filter_active = !query.trim().is_empty();
                             let clear_width = if text_filter_active { 30.0 } else { 0.0 };
                             let input_width = (ui.available_width() - clear_width).max(80.0);
-                            filter_changed |= ui
-                                .add_sized(
-                                    Vec2::new(input_width, 26.0),
-                                    egui::TextEdit::singleline(&mut query)
-                                        .hint_text("\u{1f50d} Filter\u{2026}")
-                                        .desired_width(f32::INFINITY)
-                                        .margin(egui::vec2(8.0, 4.0)),
-                                )
-                                .changed();
-                            if text_filter_active
-                                && ui
-                                    .add_sized(
-                                        Vec2::new(26.0, 24.0),
-                                        egui::Button::new(
-                                            egui::RichText::new("\u{00d7}")
-                                                .size(12.0)
-                                                .color(t.text_secondary),
-                                        )
-                                        .fill(t.bg_card)
-                                        .corner_radius(crate::theme::ROUNDING_SM),
-                                    )
-                                    .on_hover_text("Clear filter")
-                                    .clicked()
-                            {
+                            filter_changed |=
+                                pane_filter_field(ui, &mut query, input_width, panel_side)
+                                    .changed();
+                            if text_filter_active && clear_filter_button(ui, t).clicked() {
                                 query.clear();
                                 filter_changed = true;
                             }
@@ -719,6 +826,8 @@ impl App {
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            // Measured before the "ACTIVE" tag, like the rows.
+                            let show_metadata = header_shows_metadata(ui.available_width());
                             if is_active {
                                 ui.label(
                                     egui::RichText::new("ACTIVE")
@@ -728,44 +837,14 @@ impl App {
                                 );
                                 ui.add_space(4.0);
                             }
-                            if crate::app::glyphs::sort_header(
+                            if let Some(column) = column_headers(
                                 ui,
-                                "Name",
-                                panel.sort_order_for(SortColumn::Name),
+                                |column| panel.sort_order_for(column),
                                 header_text,
-                            )
-                            .clicked()
-                            {
-                                panel.set_sort(SortColumn::Name);
+                                show_metadata,
+                            ) {
+                                panel.set_sort(column);
                             }
-
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add_space(8.0);
-
-                                if crate::app::glyphs::sort_header(
-                                    ui,
-                                    "Modified",
-                                    panel.sort_order_for(SortColumn::Modified),
-                                    header_text,
-                                )
-                                .clicked()
-                                {
-                                    panel.set_sort(SortColumn::Modified);
-                                }
-
-                                ui.add_space(24.0);
-
-                                if crate::app::glyphs::sort_header(
-                                    ui,
-                                    "Size",
-                                    panel.sort_order_for(SortColumn::Size),
-                                    header_text,
-                                )
-                                .clicked()
-                                {
-                                    panel.set_sort(SortColumn::Size);
-                                }
-                            });
                         });
                     });
                 if is_active {
@@ -1096,5 +1175,89 @@ mod tests {
         assert_eq!(mouse_history_step(false, true), Some(HistoryStep::Forward));
         assert_eq!(mouse_history_step(false, false), None);
         assert_eq!(mouse_history_step(true, true), None);
+    }
+
+    /// Labels of the nodes in AccessKit tree order (depth first), which is
+    /// the order widgets were created in and so the Tab order.
+    fn labels_in_tree_order(ctx_run: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), ctx_run));
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output");
+        let nodes: std::collections::HashMap<_, _> = update.nodes.into_iter().collect();
+        let mut stack = vec![update.tree.expect("full tree").root];
+        let mut labels = Vec::new();
+        while let Some(id) = stack.pop() {
+            let Some(node) = nodes.get(&id) else { continue };
+            if let Some(label) = node.label() {
+                labels.push(label.to_string());
+            }
+            stack.extend(node.children().iter().rev());
+        }
+        labels
+    }
+
+    #[test]
+    fn column_headers_tab_in_visual_order() {
+        let labels = labels_in_tree_order(|ui| {
+            ui.horizontal(|ui| {
+                column_headers(ui, |_| None, Color32::WHITE, true);
+            });
+        });
+        let position = |name: &str| {
+            labels
+                .iter()
+                .position(|label| label.starts_with(name))
+                .unwrap_or_else(|| panic!("no {name} header in {labels:?}"))
+        };
+        assert!(position("Name") < position("Size"));
+        assert!(position("Size") < position("Modified"));
+    }
+
+    #[test]
+    fn narrow_headers_drop_the_columns_the_rows_drop() {
+        assert!(!header_shows_metadata(150.0));
+        assert!(header_shows_metadata(400.0));
+        // The rows lose their metadata below 160 px of name space.
+        assert!(!header_shows_metadata(160.0 + ROW_LEAD_WIDTH - 1.0));
+        let labels = labels_in_tree_order(|ui| {
+            column_headers(ui, |_| None, Color32::WHITE, false);
+        });
+        assert!(labels.iter().all(|label| !label.starts_with("Size")));
+    }
+
+    #[test]
+    fn filter_controls_are_named_for_their_pane() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| {
+            let mut query = String::from("abc");
+            pane_filter_field(ui, &mut query, 120.0, "left");
+            clear_filter_button(ui, &t);
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Filter left pane").role(),
+            egui::accesskit::Role::TextInput
+        );
+        assert_eq!(
+            node_labelled(&nodes, "Clear filter").role(),
+            egui::accesskit::Role::Button
+        );
+    }
+
+    #[test]
+    fn panes_are_named_regions() {
+        assert_eq!(pane_accessible_label("left", true), "Left pane, active");
+        assert_eq!(pane_accessible_label("right", false), "Right pane");
+        let nodes = accesskit_nodes(|ui| {
+            ui.scope(|ui| mark_pane_region(ui, "right", false));
+        });
+        assert_eq!(
+            node_labelled(&nodes, "Right pane").role(),
+            egui::accesskit::Role::Group
+        );
     }
 }
