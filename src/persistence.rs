@@ -1485,13 +1485,48 @@ pub fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
     publish_issue(&mut health);
 }
 
-pub fn record_unreadable(store: &'static str) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadIssue {
+    /// The file could not be read; the store runs on defaults.
+    Unreadable,
+    /// The file was read but is malformed; the store runs on defaults.
+    Malformed,
+    /// The store fails closed: nothing is replaced until the file is fixed.
+    Blocked,
+}
+
+fn load_issue_text(store: &str, issue: LoadIssue) -> String {
+    match issue {
+        LoadIssue::Unreadable => {
+            format!("{store}: settings could not be read; defaults are active")
+        }
+        LoadIssue::Malformed => format!("{store}: file is malformed; defaults are active"),
+        LoadIssue::Blocked => {
+            format!("{store}: could not be read; changes are blocked to protect the file")
+        }
+    }
+}
+
+fn record_load_issue(store: &'static str, issue: LoadIssue) {
     let mut health = crate::lock_util::recover(health_state());
     health.unreadable_stores = health.unreadable_stores.saturating_add(1);
-    health.last_issue = Some(format!(
-        "{store}: settings could not be read; defaults are active"
-    ));
+    health.last_issue = Some(load_issue_text(store, issue));
     publish_issue(&mut health);
+}
+
+pub fn record_unreadable(store: &'static str) {
+    record_load_issue(store, LoadIssue::Unreadable);
+}
+
+/// The store's file was read but did not decode; defaults are active.
+pub fn record_corrupt(store: &'static str) {
+    record_load_issue(store, LoadIssue::Malformed);
+}
+
+/// A fail-closed store could not be loaded, so saves are refused rather
+/// than defaults being used.
+pub fn record_blocked(store: &'static str) {
+    record_load_issue(store, LoadIssue::Blocked);
 }
 
 pub fn record_save_failure(store: &'static str, error: &PreCommitError) {
@@ -1600,7 +1635,7 @@ pub fn load_item_store<T: DeserializeOwned>(path: &Path, store: &'static str) ->
             decoded.items
         }
         Err(_) => {
-            record_unreadable(store);
+            record_corrupt(store);
             mark_lossy_load(path);
             Vec::new()
         }
@@ -1767,6 +1802,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn load_issues_describe_unreadable_malformed_and_blocked_stores() {
+        assert_eq!(
+            load_issue_text("Smart folders", LoadIssue::Unreadable),
+            "Smart folders: settings could not be read; defaults are active"
+        );
+        assert_eq!(
+            load_issue_text("Smart folders", LoadIssue::Malformed),
+            "Smart folders: file is malformed; defaults are active"
+        );
+        let blocked = load_issue_text("Version manifest", LoadIssue::Blocked);
+        assert!(blocked.contains("changes are blocked"), "{blocked}");
+        assert!(!blocked.contains("defaults are active"), "{blocked}");
     }
 
     #[test]

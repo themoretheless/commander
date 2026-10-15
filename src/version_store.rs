@@ -100,6 +100,7 @@ pub fn store_usage() -> crate::version_dedup::VersionStoreUsage {
     if loaded.blocked {
         return crate::version_dedup::VersionStoreUsage {
             bytes_quota: store_quota().max_bytes,
+            blocked: true,
             ..Default::default()
         };
     }
@@ -959,13 +960,28 @@ fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) ->
             }
         }
     }
-    if blocked {
-        crate::persistence::record_unreadable(MANIFEST_LABEL);
+    if note_manifest_blocked(&manifest_path(root), blocked) {
+        crate::persistence::record_blocked(MANIFEST_LABEL);
     }
     LoadedManifest {
         manifest,
         gate,
         blocked,
+    }
+}
+
+/// Whether a blocked load of `manifest` should be published as a health
+/// issue: only on the transition into the blocked state, since every
+/// preserve, listing and usage refresh reloads the manifest and each issue
+/// raises an error toast.
+fn note_manifest_blocked(manifest: &Path, blocked: bool) -> bool {
+    static REPORTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+    let mut reported = crate::lock_util::recover(REPORTED.get_or_init(Mutex::default));
+    if blocked {
+        reported.insert(manifest.to_path_buf())
+    } else {
+        reported.remove(manifest);
+        false
     }
 }
 
@@ -1161,6 +1177,32 @@ mod tests {
         assert_eq!(
             records_or_blocked(),
             Err("version manifest is corrupt".to_string())
+        );
+    }
+
+    #[test]
+    fn blocked_manifest_is_reported_once_and_shown_as_unreadable_usage() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let _guard = use_test_versions_dir(versions.clone());
+        let path = manifest_path(&versions);
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let usage = store_usage();
+        assert!(usage.blocked);
+        assert!(usage.label().contains("unreadable"), "{}", usage.label());
+        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(
+            !note_manifest_blocked(&path, true),
+            "repeated blocked loads must not publish the issue again"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        let usage = store_usage();
+        assert!(!usage.blocked);
+        assert!(
+            note_manifest_blocked(&path, true),
+            "a readable load re-arms the report"
         );
     }
 
