@@ -1571,7 +1571,7 @@ fn create_links_is_refused_while_mutations_are_blocked() {
     assert_eq!(report.created, 0);
     assert_eq!(report.errors.len(), 1);
     assert!(
-        report.errors[0].contains("Safe-state review"),
+        report.errors[0].contains("integrity review"),
         "{:?}",
         report.errors
     );
@@ -2166,7 +2166,7 @@ fn resume_blocked_by_safe_state_keeps_the_job_paused_and_says_why() {
 
     let reason = ws.queue_resume(id, || {}).unwrap_err();
 
-    assert!(reason.contains("Safe-state review"), "{reason}");
+    assert!(reason.contains("integrity review"), "{reason}");
     assert!(ws.active_transfer().is_none());
     assert_eq!(
         ws.queue_snapshot()[0].state,
