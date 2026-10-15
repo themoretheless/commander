@@ -366,6 +366,50 @@ fn focus_cursor_row(ui: &egui::Ui, panel_side: &str, response: &egui::Response) 
     claim_row_focus(ui, panel_side, response);
 }
 
+/// Footer item count with the folder size. Under a filter the size is
+/// still the whole folder's, so it is labelled as such rather than read as
+/// the size of the matching rows.
+fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<u64>) -> String {
+    let size = size.map_or_else(|| "\u{2026}".to_string(), format_size);
+    if filters_active {
+        format!(
+            "{shown} of {} (folder {size})",
+            super::confirm_dialog::items_label(total)
+        )
+    } else {
+        format!("{} ({size})", super::confirm_dialog::items_label(shown))
+    }
+}
+
+/// A name cut to the footer's fixed budget.
+fn footer_name(name: &str) -> String {
+    const MAX: usize = 16;
+    if name.chars().count() > MAX {
+        let head: String = name.chars().take(MAX - 1).collect();
+        format!("{head}\u{2026}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The footer's folder extremes: the short text, and the full names for
+/// its hover text. `None` when there is nothing to show.
+fn folder_extremes(largest: Option<(&str, u64)>, oldest: Option<&str>) -> Option<(String, String)> {
+    let largest = largest.filter(|&(_, size)| size > 0);
+    let mut short = String::new();
+    let mut full = Vec::new();
+    if let Some((name, size)) = largest {
+        let size = format_size(size);
+        short.push_str(&format!("  |  largest {} ({size})", footer_name(name)));
+        full.push(format!("Largest: {name} ({size})"));
+    }
+    if let Some(name) = oldest {
+        short.push_str(&format!("  |  oldest {}", footer_name(name)));
+        full.push(format!("Oldest: {name}"));
+    }
+    (!short.is_empty()).then(|| (short, full.join("\n")))
+}
+
 /// Spoken label of the ".." row. Like file rows it says "State: cursor"
 /// while the keyboard cursor sits on it.
 fn parent_row_label(is_cursor: bool) -> &'static str {
@@ -1303,16 +1347,16 @@ impl App {
                                 panel.search_query(),
                                 &panel.facets(),
                             );
-                            let count_prefix = if filters_active {
-                                format!("{shown} of {total} items")
-                            } else {
-                                format!("{shown} items")
+                            // Footer texts truncate (full text on hover) rather
+                            // than run past a narrow pane's edge.
+                            let footer = |text: String, color: Color32| {
+                                egui::Label::new(egui::RichText::new(text).size(11.0).color(color))
+                                    .truncate()
                             };
-                            let size_str = match overview.total {
-                                Some(s) => format!("{count_prefix} ({})", format_size(s)),
-                                None => format!("{count_prefix} (\u{2026})"),
-                            };
-                            ui.label(egui::RichText::new(size_str).size(11.0).color(t.text_muted));
+                            ui.add(footer(
+                                count_summary(shown, total, filters_active, overview.total),
+                                t.text_muted,
+                            ));
                             if filters_active {
                                 let active_count = panel.facets().active_count();
                                 let filter_label = if active_count > 0 {
@@ -1320,9 +1364,7 @@ impl App {
                                 } else {
                                     "  |  Filter text".to_string()
                                 };
-                                ui.label(
-                                    egui::RichText::new(filter_label).size(11.0).color(t.accent),
-                                );
+                                ui.add(footer(filter_label, t.accent));
                             }
                             if selected_total > 0 {
                                 let selected_size =
@@ -1335,49 +1377,37 @@ impl App {
                                          {selected_size})"
                                     )
                                 };
-                                ui.label(
-                                    egui::RichText::new(format!("  |  {selection_text}"))
-                                        .size(11.0)
-                                        .color(t.accent_purple),
-                                );
+                                let selection = ui
+                                    .add(footer(format!("  |  {selection_text}"), t.accent_purple));
+                                // Spoken when Space/Insert changes the count.
+                                ui.ctx().accesskit_node_builder(selection.id, |node| {
+                                    node.set_role(egui::accesskit::Role::Status);
+                                    node.set_live(egui::accesskit::Live::Polite);
+                                });
                             }
 
                             // Folder largest/oldest: the always-on complement to the
                             // selection HUD (which shows the same for the selection).
                             // Hidden once a selection is active, so the two don't clash.
-                            if selected_total == 0 && total >= 2 {
-                                let short = |name: &str| -> String {
-                                    const MAX: usize = 16;
-                                    if name.chars().count() > MAX {
-                                        let head: String = name.chars().take(MAX - 1).collect();
-                                        format!("{head}\u{2026}")
-                                    } else {
-                                        name.to_string()
-                                    }
-                                };
-                                let mut extra = String::new();
-                                if let Some((name, sz)) = &overview.largest
-                                    && *sz > 0
-                                {
-                                    extra.push_str(&format!(
-                                        "  |  largest {} ({})",
-                                        short(name),
-                                        format_size(*sz)
-                                    ));
-                                }
-                                if let Some((name, _)) = &overview.oldest {
-                                    extra.push_str(&format!("  |  oldest {}", short(name)));
-                                }
-                                if !extra.is_empty() {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(extra)
-                                                .size(11.0)
-                                                .color(t.text_muted),
-                                        )
-                                        .truncate(),
-                                    );
-                                }
+                            if selected_total == 0
+                                && total >= 2
+                                && let Some((extra, full)) = folder_extremes(
+                                    overview
+                                        .largest
+                                        .as_ref()
+                                        .map(|(name, size)| (name.as_str(), *size)),
+                                    overview.oldest.as_ref().map(|(name, _)| name.as_str()),
+                                )
+                            {
+                                // The names are cut short; hover shows them whole.
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(extra).size(11.0).color(t.text_muted),
+                                    )
+                                    .truncate()
+                                    .show_tooltip_when_elided(false),
+                                )
+                                .on_hover_text(full);
                             }
 
                             // Compare mode: chips to turn the diff into a selection.
@@ -1393,16 +1423,21 @@ impl App {
                                     ("Differing", CompareCriterion::Differing),
                                     ("Unique", CompareCriterion::Unique),
                                 ] {
-                                    let clicked = ui
-                                        .add(
-                                            egui::Label::new(
-                                                egui::RichText::new(label)
-                                                    .size(11.0)
-                                                    .color(t.accent),
-                                            )
-                                            .sense(Sense::click()),
+                                    let chip = ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(label).size(11.0).color(t.accent),
                                         )
-                                        .clicked();
+                                        .sense(Sense::click()),
+                                    );
+                                    // A clickable label: tell AT it is a button.
+                                    chip.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            ui.is_enabled(),
+                                            format!("Select {label}"),
+                                        )
+                                    });
+                                    let clicked = chip.clicked();
                                     if clicked {
                                         panel.replace_selection(crate::compare::select_by_compare(
                                             panel
@@ -1512,10 +1547,10 @@ fn highlight_name_job(
 mod tests {
     use super::{
         EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
-        click_range, compare_marker, cursor_chevron_fits, cursor_row_to_reveal,
-        drop_target_writable, empty_state, folder_changed, follow_cursor_focus, grid_row_index,
-        highlight_name_job, map_ranges_to_display, name_char_budget, name_column_width,
-        parent_row_label, row_click_kind, row_content_height, row_spoken_label,
+        click_range, compare_marker, count_summary, cursor_chevron_fits, cursor_row_to_reveal,
+        drop_target_writable, empty_state, folder_changed, folder_extremes, follow_cursor_focus,
+        grid_row_index, highlight_name_job, map_ranges_to_display, name_char_budget,
+        name_column_width, parent_row_label, row_click_kind, row_content_height, row_spoken_label,
         selection_size_label, selection_summary_with, visible_rows, visible_selection_summary,
     };
 
@@ -1826,5 +1861,41 @@ mod tests {
         assert!(!follow_cursor_focus(true, true, false, false, true));
         assert!(!follow_cursor_focus(true, true, true, true, true));
         assert!(!follow_cursor_focus(true, true, true, false, false));
+    }
+
+    #[test]
+    fn footer_count_is_singular_for_one_item() {
+        assert_eq!(count_summary(1, 1, false, Some(3)), "1 item (3 B)");
+        assert_eq!(count_summary(2, 2, false, None), "2 items (\u{2026})");
+        assert_eq!(
+            count_summary(0, 1, true, Some(3)),
+            "0 of 1 item (folder 3 B)"
+        );
+    }
+
+    #[test]
+    fn filtered_footer_marks_the_size_as_the_folder_total() {
+        assert_eq!(
+            count_summary(12, 400, true, Some(2048)),
+            format!(
+                "12 of 400 items (folder {})",
+                crate::panel::format_size(2048)
+            )
+        );
+    }
+
+    #[test]
+    fn folder_extremes_keep_the_full_names_for_hover() {
+        let long = "a-very-long-file-name-indeed.bin";
+        let (short, full) =
+            folder_extremes(Some((long, 10)), Some("old.log")).expect("something to show");
+        assert!(
+            short.contains("largest a-very-long-fil\u{2026} (10 B)"),
+            "{short}"
+        );
+        assert!(short.ends_with("  |  oldest old.log"), "{short}");
+        assert_eq!(full, format!("Largest: {long} (10 B)\nOldest: old.log"));
+        // A zero-byte "largest" is not worth showing.
+        assert_eq!(folder_extremes(Some(("x", 0)), None), None);
     }
 }

@@ -332,7 +332,7 @@ fn unavailable_size_message(failure: &crate::ports::NativeFailure) -> String {
 }
 
 /// "1 item" / "3 items".
-fn items_label(count: usize) -> String {
+pub(super) fn items_label(count: usize) -> String {
     if count == 1 {
         "1 item".to_string()
     } else {
