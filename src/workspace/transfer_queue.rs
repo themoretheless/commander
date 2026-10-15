@@ -988,17 +988,28 @@ impl Workspace {
         let Some(retirement) = outcome.retirement else {
             return super::TransferPollOutcome::default();
         };
+        let (raised, report) = self.apply_retirement(retirement, notify);
+        super::TransferPollOutcome {
+            undo_recorded: raised,
+            terminal: Some(report),
+        }
+    }
+
+    /// Apply one retired transfer: re-list both panels, settle its history,
+    /// then start the next job. The order matters: history and safe-state
+    /// outcomes are committed before another worker may observe the queue.
+    /// Returns whether an undo entry was raised, and the terminal report.
+    fn apply_retirement(
+        &mut self,
+        retirement: RetirementOutcome,
+        notify: impl Fn() + Send + 'static,
+    ) -> (bool, super::TransferTerminalReport) {
         self.left.refresh();
         self.right.refresh();
         let raised =
             self.apply_history_outcome(retirement.history, retirement.report.operation_id.clone());
-        // History and safe-state outcomes are committed before another worker
-        // may observe the queue.
         self.pump_queue(notify);
-        super::TransferPollOutcome {
-            undo_recorded: raised,
-            terminal: Some(retirement.report),
-        }
+        (raised, retirement.report)
     }
 
     pub fn cancel_pending_transfers(&mut self) {
@@ -1027,11 +1038,8 @@ impl Workspace {
             }
             Err(rejection) => return Err(rejection),
         };
-        self.left.refresh();
-        self.right.refresh();
-        self.apply_history_outcome(retirement.history, retirement.report.operation_id.clone());
-        self.pump_queue(notify);
-        Ok(retirement.report)
+        let (_, report) = self.apply_retirement(retirement, notify);
+        Ok(report)
     }
 
     pub fn queue_snapshot(&self) -> Vec<super::QueueRow> {
