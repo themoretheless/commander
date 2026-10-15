@@ -23,6 +23,11 @@ fn file_job_queue_bound(workers: usize) -> usize {
     workers.saturating_mul(8).max(8)
 }
 
+/// Test-only fault injection: a worker asked to copy this exact source fails.
+/// Tests run as root, so permission tricks cannot make one copy fail.
+#[cfg(test)]
+static FAIL_WORKER_COPY_OF: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 pub(super) fn copy_dir_buffered_parallel(
     src: &Path,
     dst: &Path,
@@ -81,6 +86,13 @@ pub(super) fn copy_dir_buffered_parallel(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
                 "cancelled while copying the directory tree",
+            ));
+        }
+        #[cfg(test)]
+        if crate::lock_util::recover(&FAIL_WORKER_COPY_OF).as_deref() == Some(source) {
+            return Err(with_path(
+                std::io::Error::other("injected worker copy failure"),
+                source,
             ));
         }
         let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
@@ -306,6 +318,45 @@ mod tests {
         copy_b.join().unwrap();
         assert_eq!(copy_a.join().unwrap().unwrap(), 300);
         assert_eq!(finished.expect("copy B waited for copy A").unwrap(), 1);
+    }
+
+    #[test]
+    fn a_worker_copy_failure_stops_the_tree_copy_without_hanging() {
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        let total = file_job_queue_bound(2) * 20;
+        for index in 0..total {
+            tmp.file(&format!("src/{index:04}.txt"), "x");
+        }
+        let failing = src.join("0000.txt");
+        *crate::lock_util::recover(&FAIL_WORKER_COPY_OF) = Some(failing.clone());
+        let dst = tmp.path().join("dst");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let copy = {
+            let (src, dst) = (src.clone(), dst.clone());
+            thread::spawn(move || {
+                let result = copy_dir_buffered_parallel(&src, &dst, &progress(), 2, false);
+                let _ = done_tx.send(result);
+            })
+        };
+
+        let result = done_rx.recv_timeout(std::time::Duration::from_secs(10));
+        *crate::lock_util::recover(&FAIL_WORKER_COPY_OF) = None;
+        copy.join().unwrap();
+        let error = result
+            .expect("tree copy hung after a worker failed")
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(
+            message.contains("injected worker copy failure"),
+            "{message}"
+        );
+        assert!(message.contains("0000.txt"), "{message}");
+        // The first error stops the other worker and the scan: the queue
+        // never drains the whole tree.
+        let copied = std::fs::read_dir(&dst).map_or(0, |entries| entries.count());
+        assert!(copied < total, "copied {copied} of {total}");
     }
 
     #[test]
