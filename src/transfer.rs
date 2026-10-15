@@ -325,16 +325,6 @@ impl backend::CheckpointSink for JournalCheckpointSink<'_> {
     }
 }
 
-#[cfg(test)]
-const fn requires_resumable_buffer(
-    profile: &crate::volume_profile::VolumeProfile,
-    source_size: u64,
-) -> bool {
-    profile.capabilities.resumable
-        && profile.backend.is_slow_link()
-        && source_size >= crate::delta_copy::DELTA_MIN_BYTES
-}
-
 /// Cleanup that runs only after every entry of a transfer succeeded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PostTransferAction {
@@ -1222,39 +1212,14 @@ mod tests {
         spec.preflight_bytes = Some(bytes);
     }
 
-    /// Run a transfer to completion and return the final progress state.
-    fn run(spec: TransferSpec) -> TransferProgress {
+    /// Fresh progress state sized for `spec`'s entries.
+    fn progress_for(spec: &TransferSpec) -> TransferState {
         let total = total_bytes(&spec.entries);
-        let progress: TransferState =
-            Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
-        spawn_transfer(spec, progress.clone(), || {});
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            {
-                let s = progress.lock().unwrap();
-                if s.finished {
-                    return s.clone();
-                }
-            }
-            assert!(std::time::Instant::now() < deadline, "transfer timed out");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())))
     }
 
-    fn run_with_backends(spec: TransferSpec, backends: backend::BackendPorts) -> TransferProgress {
-        let total = total_bytes(&spec.entries);
-        let progress: TransferState =
-            Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
-        TransferExecutor::with_backends(
-            crate::workload::global_handle(),
-            spec,
-            Arc::clone(&progress),
-            || {},
-            backends,
-        )
-        .submit();
-
+    /// Poll `progress` until the worker finishes and return the final state.
+    fn wait_finished(progress: &TransferState) -> TransferProgress {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             {
@@ -1266,6 +1231,26 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "transfer timed out");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// Run a transfer to completion and return the final progress state.
+    fn run(spec: TransferSpec) -> TransferProgress {
+        let progress = progress_for(&spec);
+        spawn_transfer(spec, progress.clone(), || {});
+        wait_finished(&progress)
+    }
+
+    fn run_with_backends(spec: TransferSpec, backends: backend::BackendPorts) -> TransferProgress {
+        let progress = progress_for(&spec);
+        TransferExecutor::with_backends(
+            crate::workload::global_handle(),
+            spec,
+            Arc::clone(&progress),
+            || {},
+            backends,
+        )
+        .submit();
+        wait_finished(&progress)
     }
 
     struct FakeStageBackend {
@@ -1916,20 +1901,37 @@ mod tests {
         let mut profile = crate::volume_profile::profile(temp.path());
         profile.backend = crate::volume_profile::BackendKind::Remote;
         profile.capabilities.resumable = true;
+        let plan = |profile: &crate::volume_profile::VolumeProfile, size: u64| {
+            backend::BackendPlanner::select(backend::PlanInput {
+                method: CopyMethod::Native,
+                is_dir: false,
+                is_symlink: false,
+                source_size: Some(size),
+                basis_size: None,
+                source_is_sparse: false,
+                resume_layout: None,
+                symlink_policy: crate::filesystem_policy::SymlinkPolicy::Preserve,
+                delta_capable: false,
+                sparse_capable: false,
+                resumable_capable: profile.capabilities.resumable,
+                slow_link: profile.backend.is_slow_link(),
+                bandwidth_limited: false,
+                tuning: crate::transfer_tuning::TuningSnapshot::default(),
+            })
+            .unwrap()
+        };
 
-        assert!(requires_resumable_buffer(
-            &profile,
-            crate::delta_copy::DELTA_MIN_BYTES
-        ));
-        assert!(!requires_resumable_buffer(
-            &profile,
-            crate::delta_copy::DELTA_MIN_BYTES - 1
-        ));
+        let threshold = crate::delta_copy::DELTA_MIN_BYTES;
+        assert_eq!(plan(&profile, threshold), backend::BackendPlan::Buffered);
+        assert_eq!(
+            plan(&profile, threshold - 1),
+            backend::BackendPlan::NativeClone
+        );
         profile.capabilities.resumable = false;
-        assert!(!requires_resumable_buffer(
-            &profile,
-            crate::delta_copy::DELTA_MIN_BYTES
-        ));
+        assert_eq!(plan(&profile, threshold), backend::BackendPlan::NativeClone);
+        profile.capabilities.resumable = true;
+        profile.backend = crate::volume_profile::BackendKind::LocalFast;
+        assert_eq!(plan(&profile, threshold), backend::BackendPlan::NativeClone);
     }
 
     #[test]
@@ -2787,6 +2789,52 @@ mod tests {
     }
 
     #[test]
+    fn known_byte_total_drives_progress_and_clamps_overshoot() {
+        let mut progress = TransferProgress::new(1_000, 4);
+        progress.files_done = 4;
+        assert_eq!(progress.progress_fraction(), Some(0.0));
+        progress.copied_bytes = 500;
+        assert_eq!(progress.progress_fraction(), Some(0.5));
+        progress.copied_bytes = 1_500;
+        assert_eq!(progress.progress_fraction(), Some(1.0));
+    }
+
+    #[test]
+    fn disconnect_classification_covers_only_transport_failures() {
+        use std::io::ErrorKind;
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::TimedOut,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::NetworkDown,
+            ErrorKind::NotConnected,
+            ErrorKind::HostUnreachable,
+            ErrorKind::StaleNetworkFileHandle,
+        ] {
+            assert!(
+                is_disconnect_error(&std::io::Error::from(kind)),
+                "{kind:?} must wait for the mount"
+            );
+        }
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::StorageFull,
+            ErrorKind::Interrupted,
+            ErrorKind::AlreadyExists,
+            ErrorKind::InvalidData,
+            ErrorKind::Other,
+        ] {
+            assert!(
+                !is_disconnect_error(&std::io::Error::from(kind)),
+                "{kind:?} must not be retried as a disconnect"
+            );
+        }
+    }
+
+    #[test]
     fn phase_eta_is_only_published_for_measured_transfer_work() {
         let mut progress = TransferProgress::new(1_000, 1);
         progress.started_at = std::time::Instant::now() - std::time::Duration::from_secs(6);
@@ -3137,6 +3185,85 @@ mod tests {
                 .any(|error| error.contains("source changed after transfer preflight"))
         );
         assert!(!dst.path().join("alias.txt").exists());
+    }
+
+    #[test]
+    fn verification_accepts_identical_trees() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.dir("tree/sub");
+        src.file("tree/sub/a.txt", "same");
+        dst.dir("tree/sub");
+        dst.file("tree/sub/a.txt", "same");
+        assert!(transfer_paths_equal(
+            &src.path().join("tree"),
+            &dst.path().join("tree"),
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        ));
+    }
+
+    #[test]
+    fn verification_rejects_a_file_where_a_directory_was_copied() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.dir("item");
+        dst.file("item", "");
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        assert!(!transfer_paths_equal(
+            &src.path().join("item"),
+            &dst.path().join("item"),
+            policy,
+        ));
+        assert!(!transfer_paths_equal(
+            &dst.path().join("item"),
+            &src.path().join("item"),
+            policy,
+        ));
+    }
+
+    #[test]
+    fn verification_rejects_an_extra_destination_child() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.dir("tree");
+        src.file("tree/a.txt", "a");
+        dst.dir("tree");
+        dst.file("tree/a.txt", "a");
+        dst.file("tree/stray.txt", "");
+        assert!(!transfer_paths_equal(
+            &src.path().join("tree"),
+            &dst.path().join("tree"),
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        ));
+    }
+
+    #[test]
+    fn verification_rejects_differing_file_contents() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let source = src.file("a.txt", "abcd");
+        let destination = dst.file("a.txt", "abce");
+        assert!(!transfer_paths_equal(
+            &source,
+            &destination,
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verification_rejects_a_preserved_link_with_another_target() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        std::os::unix::fs::symlink("one", src.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("two", dst.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("one", dst.path().join("same")).unwrap();
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        assert!(!transfer_paths_equal(
+            &src.path().join("link"),
+            &dst.path().join("link"),
+            policy,
+        ));
+        assert!(transfer_paths_equal(
+            &src.path().join("link"),
+            &dst.path().join("same"),
+            policy,
+        ));
     }
 
     #[cfg(unix)]
