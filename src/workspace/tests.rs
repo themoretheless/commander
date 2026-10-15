@@ -4936,3 +4936,197 @@ fn toggle_info_on_a_folder_uses_its_measured_size() {
     assert_eq!(card.children, Some(1));
     assert_eq!(card.pending, None, "nothing left to fill in");
 }
+
+fn version_for(path: &Path) -> crate::version_store::VersionRecord {
+    crate::version_store::VersionRecord {
+        operation_id: crate::operation::OperationId("delete".to_string()),
+        key: crate::operation::IdempotencyKey(path.display().to_string()),
+        original: path.to_path_buf(),
+        stored: PathBuf::from("/versions").join(path.file_name().unwrap()),
+        created_at_secs: 0,
+    }
+}
+
+/// A finished delete batch with the given per-item results; `trashed` and
+/// `failed` are counted from them like the delete worker does.
+fn delete_outcome(
+    items: Vec<(
+        &Path,
+        crate::ports::TrashItemOutcome,
+        Option<crate::version_store::VersionRecord>,
+    )>,
+    indeterminate: bool,
+) -> DeleteOutcome {
+    let items = items
+        .into_iter()
+        .map(|(path, outcome, version)| DeleteItemResult {
+            path: path.to_path_buf(),
+            outcome,
+            version,
+        })
+        .collect::<Vec<_>>();
+    let trashed = items
+        .iter()
+        .filter(|item| item.outcome == crate::ports::TrashItemOutcome::Trashed)
+        .count();
+    DeleteOutcome {
+        attempt_id: crate::operation::TransferAttemptId(1),
+        operation_id: crate::operation::OperationId("delete".to_string()),
+        submitted: crate::operation_view::SubmittedSummary {
+            verb: "Trash".to_string(),
+            item_count: items.len(),
+            item_names: Vec::new(),
+            source_roots: Vec::new(),
+            destination: PathBuf::new(),
+        },
+        origin: DeleteOrigin::Confirmation,
+        failed: items.len() - trashed,
+        items,
+        trashed,
+        failures: Vec::new(),
+        indeterminate,
+        cancelled: false,
+    }
+}
+
+#[test]
+fn trash_undo_records_only_trashed_items_and_only_when_every_one_has_a_version() {
+    use crate::ports::TrashItemOutcome::{Failed, Trashed};
+    let (a, b, c) = (Path::new("/d/a"), Path::new("/d/b"), Path::new("/d/c"));
+    let denied = || {
+        Failed(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "denied".to_string(),
+        })
+    };
+
+    // A failed item is left out; the trashed ones keep their order.
+    let mixed = delete_outcome(
+        vec![
+            (a, Trashed, Some(version_for(a))),
+            (b, denied(), Some(version_for(b))),
+            (c, Trashed, Some(version_for(c))),
+        ],
+        false,
+    );
+    match trash_undo_action(&mixed) {
+        Some(crate::undo::Action::Trash { items }) => {
+            let paths = items
+                .iter()
+                .map(|item| item.path.as_path())
+                .collect::<Vec<_>>();
+            assert_eq!(paths, vec![a, c]);
+            assert_eq!(items[1].version, version_for(c));
+        }
+        other => panic!("expected a Trash action, got {other:?}"),
+    }
+
+    // One trashed item without a preserved version: undo would be partial.
+    let unversioned = delete_outcome(
+        vec![(a, Trashed, Some(version_for(a))), (b, Trashed, None)],
+        false,
+    );
+    assert_eq!(trash_undo_action(&unversioned), None);
+
+    // A worker that died mid-batch may have trashed more than it reported.
+    let indeterminate = delete_outcome(vec![(a, Trashed, Some(version_for(a)))], true);
+    assert_eq!(trash_undo_action(&indeterminate), None);
+
+    // Nothing trashed: nothing to undo.
+    let none = delete_outcome(vec![(a, denied(), Some(version_for(a)))], false);
+    assert_eq!(trash_undo_action(&none), None);
+}
+
+#[test]
+fn trash_targets_without_a_listing_identity_fail_closed() {
+    let dir = TempDir::new();
+    let path = dir.file("a.txt", "x");
+    let failure = crate::ports::NativeFailure {
+        kind: crate::ports::NativeFailureKind::Denied,
+        message: "lstat denied".to_string(),
+    };
+
+    match trash_batch_item_from_listing(path.clone(), &crate::panel::ListingIdentity::Unavailable) {
+        crate::ports::TrashBatchItem::CaptureFailed { path: got, failure } => {
+            assert_eq!(got, path);
+            assert_eq!(failure.kind, crate::ports::NativeFailureKind::Unsupported);
+        }
+        other => panic!("expected a capture failure, got {other:?}"),
+    }
+    assert_eq!(
+        trash_batch_item_from_listing(
+            path.clone(),
+            &crate::panel::ListingIdentity::CaptureFailed(failure.clone())
+        ),
+        crate::ports::TrashBatchItem::CaptureFailed {
+            path: path.clone(),
+            failure,
+        }
+    );
+    let expected = crate::path_identity::PathIdentity::observe(&path).unwrap();
+    assert_eq!(
+        trash_batch_item_from_listing(
+            path.clone(),
+            &crate::panel::ListingIdentity::Captured(expected.clone())
+        ),
+        crate::ports::TrashBatchItem::Ready(crate::ports::TrashTarget { path, expected })
+    );
+}
+
+#[test]
+fn partially_failed_trash_undo_restores_the_first_item_and_latches_safe_state() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let versions = TempDir::new();
+    let _guard = crate::version_store::use_test_versions_dir(versions.path().to_path_buf());
+    let one_dir = left.dir("one");
+    let two_dir = left.dir("two");
+    left.file("one/one.txt", "1");
+    left.file("two/two.txt", "2");
+    let trash = Arc::new(ScriptedTrashPort::new([
+        crate::ports::TrashItemOutcome::Trashed,
+        crate::ports::TrashItemOutcome::Trashed,
+    ]));
+    let mut ws = Workspace::with_versioned_delete_ports(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        trash,
+        Arc::new(TestFreeSpacePort),
+    );
+    ws.right.refresh();
+    ws.left.navigate_to(one_dir);
+    ws.left.select_path(left.path().join("one/one.txt"));
+    ws.left.navigate_to(two_dir);
+    ws.left.select_path(left.path().join("two/two.txt"));
+    ws.request_delete();
+    assert!(ws.confirm_pending_op(|| {}));
+    assert_eq!(ws.finish_delete().expect("delete outcome").trashed, 2);
+    let Some(crate::undo::Action::Trash { items }) = ws.top_undo_action().cloned() else {
+        panic!("a versioned Trash is undoable");
+    };
+    let (first, second) = (items[0].path.clone(), items[1].path.clone());
+    // The second item's folder vanishes: undo passes its preflight (the
+    // destination is free) but cannot put that item back.
+    std::fs::remove_dir(second.parent().unwrap()).unwrap();
+
+    let error = ws.perform_undo(|| {}).unwrap_err();
+
+    assert!(error.contains(&second.display().to_string()), "{error}");
+    assert!(first.is_file(), "the first item was restored");
+    assert!(!second.exists());
+    let state = ws.safe_state.as_ref().expect("partial undo needs review");
+    assert!(
+        state
+            .reason
+            .starts_with("Trash undo stopped after 1 of its items"),
+        "{}",
+        state.reason
+    );
+    assert_eq!(state.paths, vec![first]);
+    assert!(
+        matches!(
+            ws.top_undo_action(),
+            Some(crate::undo::Action::Trash { .. })
+        ),
+        "the failed undo stays on the history stack"
+    );
+}
