@@ -186,7 +186,15 @@ impl App {
         // Keep a path probe alive only in path mode, fed from the shared input.
         let state = self.ui.modals.palette_input.as_mut().unwrap();
         match mode {
-            OmnibarMode::Path(path) => {
+            OmnibarMode::Path(typed) => {
+                // `./` and `../` input resolves from the active folder before
+                // probing, so the probe and Go see an absolute path.
+                let relative = crate::omnibar::resolve_relative(
+                    typed,
+                    &self.ws.active_panel_ref().current_path,
+                );
+                let path = relative.as_deref().unwrap_or(typed);
+                let state = self.ui.modals.palette_input.as_mut().unwrap();
                 if state.probe.is_none() {
                     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
                     let id = {
