@@ -74,7 +74,7 @@ impl ThemeColors {
             bg_toolbar: Color32::from_rgb(24, 22, 19),
             text_primary: Color32::from_rgb(237, 233, 226),
             text_secondary: Color32::from_rgb(185, 181, 176),
-            text_muted: Color32::from_rgb(136, 132, 127),
+            text_muted: Color32::from_rgb(146, 142, 137),
             accent: Color32::from_rgb(49, 120, 186),
             accent_red: Color32::from_rgb(202, 69, 61),
             accent_purple: Color32::from_rgb(140, 100, 183),
@@ -132,6 +132,17 @@ pub fn apply_theme(
     mode: ThemeMode,
     preferences: crate::accessibility::Preferences,
 ) {
+    let style = theme_style(mode, preferences);
+    let theme = match mode {
+        ThemeMode::Light => egui::Theme::Light,
+        ThemeMode::Dark => egui::Theme::Dark,
+    };
+    ctx.set_style_of(theme, style);
+    ctx.set_theme(theme);
+}
+
+/// The egui style for `mode` and `preferences`, without touching a context.
+fn theme_style(mode: ThemeMode, preferences: crate::accessibility::Preferences) -> Style {
     let c = ThemeColors::for_preferences(mode, preferences);
 
     let mut style = Style::default();
@@ -162,6 +173,19 @@ pub fn apply_theme(
     visuals.widgets.active.fg_stroke.color = Color32::WHITE;
     visuals.widgets.active.corner_radius = ROUNDING_SM;
 
+    // An open combo box or menu button reads like a hovered one rather than
+    // keeping egui's gray defaults.
+    visuals.widgets.open = visuals.widgets.hovered;
+
+    // Separators, frames and window edges use the palette border. High
+    // contrast also outlines idle controls so buttons stay distinguishable.
+    let border_width = if preferences.high_contrast { 1.5 } else { 1.0 };
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(border_width, c.border);
+    visuals.window_stroke = egui::Stroke::new(border_width, c.border);
+    if preferences.high_contrast {
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(border_width, c.border);
+    }
+
     visuals.selection.bg_fill = c.accent.linear_multiply(0.3);
     visuals.selection.stroke.color = c.accent;
 
@@ -181,13 +205,7 @@ pub fn apply_theme(
     } else {
         0.15
     };
-
-    let theme = match mode {
-        ThemeMode::Light => egui::Theme::Light,
-        ThemeMode::Dark => egui::Theme::Dark,
-    };
-    ctx.set_style_of(theme, style);
-    ctx.set_theme(theme);
+    style
 }
 
 #[cfg(test)]
@@ -239,12 +257,42 @@ mod tests {
             assert!(contrast(colors.text_primary, colors.bg_panel) >= 7.0);
             assert!(contrast(colors.text_secondary, colors.bg_panel) >= 4.5);
             for surface in [colors.bg_panel, colors.bg_card] {
-                assert!(contrast(colors.text_muted, surface) >= 4.3);
+                assert!(contrast(colors.text_muted, surface) >= 4.5);
             }
             for fill in [colors.accent, colors.accent_red, colors.accent_purple] {
                 assert!(contrast(Color32::WHITE, fill) >= 4.5);
             }
             assert!(contrast(Color32::WHITE, colors.accent_warning) >= 3.0);
+        }
+    }
+
+    fn preferences(high_contrast: bool) -> crate::accessibility::Preferences {
+        crate::accessibility::Preferences {
+            high_contrast,
+            ..crate::accessibility::Preferences::default()
+        }
+    }
+
+    #[test]
+    fn frames_and_open_widgets_follow_the_palette() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            for high_contrast in [false, true] {
+                let prefs = preferences(high_contrast);
+                let colors = ThemeColors::for_preferences(mode, prefs);
+                let visuals = theme_style(mode, prefs).visuals;
+                assert_eq!(visuals.window_stroke.color, colors.border);
+                assert_eq!(
+                    visuals.widgets.noninteractive.bg_stroke.color,
+                    colors.border
+                );
+                assert_eq!(visuals.widgets.open.bg_fill, colors.bg_hover);
+                assert_eq!(visuals.widgets.open.fg_stroke.color, colors.text_primary);
+                // Idle buttons get an outline only in high contrast.
+                assert_eq!(
+                    visuals.widgets.inactive.bg_stroke.color == colors.border,
+                    high_contrast
+                );
+            }
         }
     }
 
