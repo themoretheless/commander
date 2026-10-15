@@ -3811,6 +3811,33 @@ fn commit_rename_allows_a_case_only_change() {
     assert!(!names.contains("README.md"));
 }
 
+/// Two hard links whose names differ only in case look like a case-only
+/// rename of one file, but the second staging step finds the target name
+/// occupied. The rollback must put the file back and report it unchanged.
+#[cfg(target_os = "linux")]
+#[test]
+fn case_only_rename_rolls_back_when_the_target_name_is_still_occupied() {
+    let tmp = TempDir::new();
+    let from = tmp.file("readme.md", "x");
+    let to = tmp.path().join("README.md");
+    std::fs::hard_link(&from, &to).unwrap();
+
+    let error = fileops::rename_path_no_clobber(&from, &to).unwrap_err();
+
+    assert!(!error.integrity_uncertain, "{}", error.message);
+    assert!(error.paths.is_empty());
+    assert_eq!(std::fs::read_to_string(&from).unwrap(), "x");
+    assert_eq!(std::fs::read_to_string(&to).unwrap(), "x");
+    let mut names = fileops::dir_names(tmp.path())
+        .into_iter()
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["README.md".to_string(), "readme.md".to_string()]
+    );
+}
+
 #[test]
 fn drop_prefers_source_panel_target() {
     let (l, r) = (TempDir::new(), TempDir::new());
