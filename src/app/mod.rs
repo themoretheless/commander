@@ -526,8 +526,9 @@ pub struct DiffState {
 /// this holds the groups, the per-group keep choice, and the policy.
 pub struct DupState {
     pub groups: Vec<crate::dedup::DupGroup>,
-    /// Index (into each group's `files`) of the file to keep.
-    pub keep: Vec<usize>,
+    /// Index (into each group's `files`) of the file to keep; `None` keeps
+    /// every copy of that group ("Keep all").
+    pub keep: Vec<Option<usize>>,
     pub policy: crate::dedup::KeepPolicy,
 }
 

@@ -3,7 +3,7 @@
 //! Grouping and keep-policy live in `crate::dedup`.
 
 use super::*;
-use crate::dedup::{KeepPolicy, bytes_reclaimed, default_keep, delete_count};
+use crate::dedup::{KeepPolicy, bytes_reclaimed, default_keep, delete_count, trashed_members};
 use crate::panel::format_size;
 
 /// Toast for a Trash request the workspace refused: the block reason when
@@ -55,7 +55,7 @@ impl App {
         let groups = self.ws.find_duplicates();
         let keep = groups
             .iter()
-            .map(|group| default_keep(group, policy))
+            .map(|group| Some(default_keep(group, policy)))
             .collect();
         self.ui.tools.replace_on(self.ws.active.other());
         self.ui.tools.duplicates = Some(DupState {
@@ -95,8 +95,8 @@ impl App {
                 .collect();
             (
                 view,
-                delete_count(&s.groups),
-                bytes_reclaimed(&s.groups),
+                delete_count(&s.groups, &s.keep),
+                bytes_reclaimed(&s.groups, &s.keep),
                 scanned_folder(&s.groups).map(|p| p.display().to_string()),
             )
         };
@@ -206,8 +206,9 @@ impl App {
                                 .color(t.accent),
                             );
                             for (fi, (label, path)) in labels.iter().enumerate() {
-                                let radio = ui.radio_value(keep, fi, label).on_hover_text(path);
-                                let checked = *keep == fi;
+                                let radio =
+                                    ui.radio_value(keep, Some(fi), label).on_hover_text(path);
+                                let checked = *keep == Some(fi);
                                 radio.widget_info(|| {
                                     egui::WidgetInfo::selected(
                                         egui::WidgetType::RadioButton,
@@ -217,6 +218,19 @@ impl App {
                                     )
                                 });
                             }
+                            let label = "Keep all (skip this group)";
+                            let radio = ui
+                                .radio_value(keep, None, label)
+                                .on_hover_text("Move none of these copies to the Trash");
+                            let checked = keep.is_none();
+                            radio.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::WidgetType::RadioButton,
+                                    true,
+                                    checked,
+                                    format!("Keep all copies (group {} of {groups})", group + 1),
+                                )
+                            });
                             ui.add_space(6.0);
                         }
                     });
@@ -290,7 +304,7 @@ impl App {
             && let Some(s) = self.ui.tools.duplicates.as_mut()
         {
             s.policy = p;
-            s.keep = s.groups.iter().map(|g| default_keep(g, p)).collect();
+            s.keep = s.groups.iter().map(|g| Some(default_keep(g, p))).collect();
         }
         if commit {
             if self.ws.mutations_blocked() {
@@ -303,25 +317,17 @@ impl App {
                 );
                 return;
             }
-            // Every non-kept file across all groups goes to the Trash.
+            // Every non-kept file goes to the Trash; "Keep all" groups are skipped.
             let to_trash: Vec<crate::ports::TrashBatchItem> = {
                 let Some(s) = self.ui.tools.duplicates.as_ref() else {
                     return;
                 };
-                s.groups
-                    .iter()
-                    .zip(&s.keep)
-                    .flat_map(|(g, &keep)| {
-                        g.files
-                            .iter()
-                            .enumerate()
-                            .filter(move |(fi, _)| *fi != keep)
-                            .map(|(_, file)| {
-                                crate::workspace::trash_batch_item_from_listing(
-                                    file.path.clone(),
-                                    &file.identity,
-                                )
-                            })
+                trashed_members(&s.groups, &s.keep)
+                    .map(|(_, file)| {
+                        crate::workspace::trash_batch_item_from_listing(
+                            file.path.clone(),
+                            &file.identity,
+                        )
                     })
                     .collect()
             };

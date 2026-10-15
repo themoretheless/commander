@@ -100,20 +100,36 @@ pub fn default_keep(group: &DupGroup, policy: KeepPolicy) -> usize {
     }
 }
 
-/// Total number of files the plan would delete: every non-kept member across
-/// all groups.
-pub fn delete_count(groups: &[DupGroup]) -> usize {
-    groups.iter().map(|g| g.files.len().saturating_sub(1)).sum()
-}
-
-/// Bytes the plan moves to the Trash: every non-kept member's size.
-pub fn bytes_reclaimed(groups: &[DupGroup]) -> u64 {
+/// Members the plan moves to the Trash: in each group every file except the
+/// kept one (`keep[i]` indexes group `i`'s files). A group whose keep is
+/// `None` ("Keep all") is skipped entirely.
+pub fn trashed_members<'a>(
+    groups: &'a [DupGroup],
+    keep: &'a [Option<usize>],
+) -> impl Iterator<Item = (&'a DupGroup, &'a FileKey)> + 'a {
     groups
         .iter()
-        .map(|g| {
-            g.size
-                .saturating_mul(g.files.len().saturating_sub(1) as u64)
+        .zip(keep)
+        .filter_map(|(group, keep)| keep.map(|keep| (group, keep)))
+        .flat_map(|(group, keep)| {
+            group
+                .files
+                .iter()
+                .enumerate()
+                .filter(move |(index, _)| *index != keep)
+                .map(move |(_, file)| (group, file))
         })
+}
+
+/// Total number of files the plan would delete.
+pub fn delete_count(groups: &[DupGroup], keep: &[Option<usize>]) -> usize {
+    trashed_members(groups, keep).count()
+}
+
+/// Bytes the plan moves to the Trash: every trashed member's size.
+pub fn bytes_reclaimed(groups: &[DupGroup], keep: &[Option<usize>]) -> u64 {
+    trashed_members(groups, keep)
+        .map(|(group, _)| group.size)
         .fold(0, u64::saturating_add)
 }
 
@@ -182,9 +198,17 @@ mod tests {
                 .map(|i| key(&format!("/{i}"), size, 1, None))
                 .collect(),
         };
-        assert_eq!(bytes_reclaimed(&[]), 0);
-        assert_eq!(bytes_reclaimed(&[group(10, 3), group(7, 2)]), 27);
-        assert_eq!(bytes_reclaimed(&[group(u64::MAX, 3)]), u64::MAX);
+        assert_eq!(bytes_reclaimed(&[], &[]), 0);
+        assert_eq!(
+            bytes_reclaimed(&[group(10, 3), group(7, 2)], &[Some(0), Some(1)]),
+            27
+        );
+        assert_eq!(bytes_reclaimed(&[group(u64::MAX, 3)], &[Some(2)]), u64::MAX);
+        // "Keep all" leaves a group out of the plan.
+        assert_eq!(
+            bytes_reclaimed(&[group(10, 3), group(7, 2)], &[None, Some(0)]),
+            7
+        );
     }
 
     #[test]
@@ -227,8 +251,25 @@ mod tests {
             size: 1,
             files: (0..n).map(|i| key(&format!("/f{i}"), 1, 1, None)).collect(),
         };
-        assert_eq!(delete_count(&[g(2), g(3)]), 1 + 2);
-        assert_eq!(delete_count(&[]), 0);
+        assert_eq!(delete_count(&[g(2), g(3)], &[Some(0), Some(2)]), 1 + 2);
+        assert_eq!(delete_count(&[], &[]), 0);
+        assert_eq!(delete_count(&[g(2), g(3)], &[Some(1), None]), 1);
+        assert_eq!(delete_count(&[g(2), g(3)], &[None, None]), 0);
+    }
+
+    #[test]
+    fn trashed_members_skip_the_kept_file_and_kept_groups() {
+        let g = |n: usize, tag: &str| DupGroup {
+            size: 1,
+            files: (0..n)
+                .map(|i| key(&format!("/{tag}{i}"), 1, 1, None))
+                .collect(),
+        };
+        let groups = [g(3, "a"), g(2, "b")];
+        let trashed: Vec<String> = trashed_members(&groups, &[Some(1), None])
+            .map(|(_, file)| file.path.display().to_string())
+            .collect();
+        assert_eq!(trashed, ["/a0", "/a2"]);
     }
 
     #[test]
