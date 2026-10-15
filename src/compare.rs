@@ -32,6 +32,28 @@ pub fn mtime_newer(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
     }
 }
 
+/// Which attributes of two same-named files disagree. The one place compare
+/// mode decides "changed", so the mtime tolerance applies to every caller.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FileDiff {
+    size: bool,
+    /// Mtimes differ beyond [`MTIME_TOLERANCE`] or are unknown on a side.
+    time: bool,
+}
+
+impl FileDiff {
+    fn of(fingerprint: &CompareFingerprint, entry: &FileEntry) -> Self {
+        Self {
+            size: fingerprint.size != entry.size,
+            time: !mtimes_match(fingerprint.modified, entry.modified),
+        }
+    }
+
+    const fn any(self) -> bool {
+        self.size || self.time
+    }
+}
+
 /// How an entry relates to the same-named entry in the other panel.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum CompareStatus {
@@ -147,9 +169,7 @@ pub fn select_by_compare<'a>(
                 CompareCriterion::Unique => false,
                 CompareCriterion::Differing => {
                     fingerprint.is_dir != e.is_dir
-                        || (!e.is_dir
-                            && (fingerprint.size != e.size
-                                || !mtimes_match(fingerprint.modified, e.modified)))
+                        || (!e.is_dir && FileDiff::of(fingerprint, e).any())
                 }
                 CompareCriterion::Newer if fingerprint.is_dir == e.is_dir && !e.is_dir => {
                     mtime_newer(e.modified, fingerprint.modified)
@@ -181,14 +201,8 @@ pub fn classify_entry(entry: &FileEntry, other: &CompareMap) -> CompareStatus {
         None => CompareStatus::Unique,
         Some(fingerprint) if fingerprint.is_dir != entry.is_dir => CompareStatus::TypeConflict,
         Some(_) if entry.is_dir => CompareStatus::DirectoryPair,
-        Some(fingerprint) => {
-            if fingerprint.size == entry.size && mtimes_match(fingerprint.modified, entry.modified)
-            {
-                CompareStatus::Identical
-            } else {
-                CompareStatus::Differs
-            }
-        }
+        Some(fingerprint) if FileDiff::of(fingerprint, entry).any() => CompareStatus::Differs,
+        Some(_) => CompareStatus::Identical,
     }
 }
 
@@ -208,10 +222,9 @@ pub fn compare_hint(entry: &FileEntry, other: &CompareMap) -> Option<String> {
             Some("Folder exists in both panes; recursive contents not compared".to_string())
         }
         Some(fingerprint) => {
-            let size_differs = fingerprint.size != entry.size;
-            let time_differs = !mtimes_match(fingerprint.modified, entry.modified);
+            let diff = FileDiff::of(fingerprint, entry);
             let time_unknown = fingerprint.modified.is_none() || entry.modified.is_none();
-            match (size_differs, time_differs) {
+            match (diff.size, diff.time) {
                 (false, false) => None,
                 (false, true) if time_unknown => {
                     Some("Same name and size, modified time unknown".to_string())
@@ -472,6 +485,65 @@ mod tests {
             compare_hint(&entry(&left_file), &other)
                 .unwrap()
                 .contains("file")
+        );
+    }
+
+    fn fake_dir(name: &str) -> FileEntry {
+        FileEntry {
+            is_dir: true,
+            ..fake(name, 0, None)
+        }
+    }
+
+    #[test]
+    fn differing_selects_type_conflicts_but_not_folder_pairs() {
+        use std::time::UNIX_EPOCH;
+        let t = Some(UNIX_EPOCH + Duration::from_secs(100));
+        let entries = [
+            fake("mixed", 0, t),
+            fake_dir("folders"),
+            fake_dir("other-mixed"),
+            fake("same.txt", 4, t),
+        ];
+        let other = build_compare_map(&[
+            fake_dir("mixed"),
+            // A folder pair with different sizes and mtimes is still not
+            // known to differ: its contents were never compared.
+            FileEntry {
+                size: 4096,
+                modified: t,
+                ..fake_dir("folders")
+            },
+            fake("other-mixed", 0, None),
+            fake("same.txt", 4, t),
+        ]);
+        let picks = select_by_compare(entries.iter(), &other, CompareCriterion::Differing);
+        let expected: HashSet<PathBuf> = [entries[0].path.clone(), entries[2].path.clone()]
+            .into_iter()
+            .collect();
+        assert_eq!(picks, expected);
+        // Neither kind of pair is ever "newer".
+        assert!(select_by_compare(entries.iter(), &other, CompareCriterion::Newer).is_empty());
+    }
+
+    #[test]
+    fn newer_never_selects_an_unknown_mtime() {
+        use std::time::UNIX_EPOCH;
+        let t = Some(UNIX_EPOCH + Duration::from_secs(10_000));
+        let here_unknown = fake("a.txt", 1, None);
+        let there_unknown = fake("b.txt", 1, t);
+        let both_unknown = fake("c.txt", 1, None);
+        let other = build_compare_map(&[
+            fake("a.txt", 1, Some(UNIX_EPOCH)),
+            fake("b.txt", 1, None),
+            fake("c.txt", 1, None),
+        ]);
+        let entries = [here_unknown, there_unknown, both_unknown];
+        assert!(select_by_compare(entries.iter(), &other, CompareCriterion::Newer).is_empty());
+        // The same pairs do count as differing: unknown cannot vouch for equal.
+        assert_eq!(
+            select_by_compare(entries.iter(), &other, CompareCriterion::Differing).len(),
+            3
         );
     }
 }
