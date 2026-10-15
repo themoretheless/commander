@@ -265,6 +265,21 @@ const fn mouse_history_step(back: bool, forward: bool) -> Option<HistoryStep> {
     }
 }
 
+/// The history step a mouse side button asks of the pane under the pointer.
+/// None while the pane is disabled (a modal dialog traps input), so a side
+/// button cannot navigate a pane behind an open dialog.
+fn pane_history_step(ui: &egui::Ui, pane_rect: egui::Rect) -> Option<HistoryStep> {
+    if !ui.is_enabled() || !ui.rect_contains_pointer(pane_rect) {
+        return None;
+    }
+    ui.input(|input| {
+        mouse_history_step(
+            input.pointer.button_pressed(egui::PointerButton::Extra1),
+            input.pointer.button_pressed(egui::PointerButton::Extra2),
+        )
+    })
+}
+
 /// A painted 28px path-bar button with an accessible name, a tooltip, hover
 /// feedback and a focus ring. A disabled button only senses hover: it keeps
 /// its tooltip but neither takes focus nor reacts to clicks.
@@ -543,18 +558,10 @@ impl App {
         // The mouse's side buttons step through this pane's history while
         // the pointer is over it, like the Back/Forward buttons.
         let pane_rect = ui.available_rect_before_wrap();
-        if ui.rect_contains_pointer(pane_rect) {
-            let step = ui.input(|input| {
-                mouse_history_step(
-                    input.pointer.button_pressed(egui::PointerButton::Extra1),
-                    input.pointer.button_pressed(egui::PointerButton::Extra2),
-                )
-            });
-            match step {
-                Some(HistoryStep::Back) if panel.can_go_back() => panel.go_back(),
-                Some(HistoryStep::Forward) if panel.can_go_forward() => panel.go_forward(),
-                _ => {}
-            }
+        match pane_history_step(ui, pane_rect) {
+            Some(HistoryStep::Back) if panel.can_go_back() => panel.go_back(),
+            Some(HistoryStep::Forward) if panel.can_go_forward() => panel.go_forward(),
+            _ => {}
         }
 
         Frame::NONE
@@ -1221,6 +1228,47 @@ mod tests {
         assert_eq!(mouse_history_step(false, true), Some(HistoryStep::Forward));
         assert_eq!(mouse_history_step(false, false), None);
         assert_eq!(mouse_history_step(true, true), None);
+    }
+
+    /// Press the Extra1 (back) side button over the middle of the screen on
+    /// the second frame and report what `pane_history_step` saw there.
+    fn side_button_step(enabled: bool) -> Option<HistoryStep> {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let pos = screen.center();
+        let mut step = None;
+        for frame in 0..2 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            input.events.push(egui::Event::PointerMoved(pos));
+            if frame == 1 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Extra1,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let output = ctx.run_ui(input, |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    let rect = ui.available_rect_before_wrap();
+                    ui.allocate_rect(rect, Sense::hover());
+                    if frame == 1 {
+                        step = pane_history_step(ui, rect);
+                    }
+                });
+            });
+            crate::testutil::take_egui_output(output);
+        }
+        step
+    }
+
+    #[test]
+    fn side_buttons_do_not_navigate_a_disabled_pane() {
+        assert_eq!(side_button_step(true), Some(HistoryStep::Back));
+        assert_eq!(side_button_step(false), None);
     }
 
     /// Labels of the nodes in AccessKit tree order (depth first), which is
