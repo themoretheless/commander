@@ -1030,6 +1030,7 @@ impl App {
                             Effect::Open(crate::ports::OpenRequest::Reveal(path.clone())),
                         );
                         item(ui, "Copy path", Effect::CopyPath(path.clone()));
+                        item(ui, "Rename\u{2026}", Effect::Rename(path.clone()));
                         ui.separator();
                         item(ui, "Move to Trash", Effect::MoveToTrash(path.clone()));
                         ui.separator();
@@ -1776,6 +1777,9 @@ impl App {
             }
             crate::provider_runtime::ContextMenuUiEffect::MoveToTrash(path) => {
                 self.ws.request_context_delete(panel, &path);
+            }
+            crate::provider_runtime::ContextMenuUiEffect::Rename(path) => {
+                self.open_rename(path, ctx);
             }
             crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
                 self.toast(

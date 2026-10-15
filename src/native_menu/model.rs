@@ -54,6 +54,7 @@ pub enum MenuItemId {
     GetInfo,
     Tags,
     Tag(TagColor),
+    Rename,
     Duplicate,
     Compress,
     CopyPath,
@@ -75,6 +76,7 @@ impl MenuItemId {
             Self::GetInfo => "get_info".to_string(),
             Self::Tags => "tags".to_string(),
             Self::Tag(color) => format!("tag.{}", color.label().to_ascii_lowercase()),
+            Self::Rename => "rename".to_string(),
             Self::Duplicate => "duplicate".to_string(),
             Self::Compress => "compress".to_string(),
             Self::CopyPath => "copy_path".to_string(),
@@ -110,6 +112,7 @@ pub enum MenuIntent {
     QuickLook,
     GetInfo,
     ToggleTag { tag: String },
+    Rename,
     Duplicate,
     Compress,
     CopyPath,
@@ -352,6 +355,10 @@ pub fn build_invocation(
     let target_available = target.expected.exists;
     let compress_title = format!("Compress \"{}\"", clipped_name(display_name, 42));
     let compress_accessible_label = format!("Compress \"{display_name}\"");
+    // Duplicate and Compress act on the clicked row only (unlike Move to
+    // Trash, which takes a selection containing it), so both name it.
+    let duplicate_title = format!("Duplicate \"{}\"", clipped_name(display_name, 42));
+    let duplicate_accessible_label = format!("Duplicate \"{display_name}\"");
 
     let tree = vec![
         MenuNode::Item(
@@ -385,11 +392,21 @@ pub fn build_invocation(
         )),
         MenuNode::Separator,
         MenuNode::Item(MenuItem::action(
-            MenuItemId::Duplicate,
-            "Duplicate",
+            MenuItemId::Rename,
+            "Rename\u{2026}",
             target_available,
-            MenuIntent::Duplicate,
+            MenuIntent::Rename,
         )),
+        MenuNode::Item({
+            let mut item = MenuItem::action(
+                MenuItemId::Duplicate,
+                duplicate_title,
+                target_available,
+                MenuIntent::Duplicate,
+            );
+            item.accessible_label = duplicate_accessible_label;
+            item
+        }),
         MenuNode::Item({
             let mut item = MenuItem::action(
                 MenuItemId::Compress,
@@ -500,6 +517,7 @@ pub fn selection_result(
         MenuIntent::ToggleTag { tag } => {
             ContextMenuResult::DeferredActionRequested(ContextMenuAction::ToggleTag { target, tag })
         }
+        MenuIntent::Rename => ContextMenuResult::RenameRequested,
         MenuIntent::Duplicate => {
             ContextMenuResult::DeferredActionRequested(ContextMenuAction::Duplicate(target))
         }
@@ -583,7 +601,8 @@ mod tests {
                 "Get Info",
                 "Tags",
                 "-",
-                "Duplicate",
+                "Rename\u{2026}",
+                "Duplicate \"a very long but readable fixture filena...\"",
                 "Compress \"a very long but readable fixture filena...\"",
                 "-",
                 "Copy Path",
@@ -867,6 +886,20 @@ mod tests {
             ContextMenuResult::DeferredActionRequested(ContextMenuAction::Duplicate(
                 invocation.bound_target
             ))
+        );
+    }
+
+    #[test]
+    fn rename_item_requests_the_rename_dialog_for_the_bound_target() {
+        let invocation = fixture();
+        let selected = MenuSelection {
+            invocation_id: invocation.id,
+            bound_target: invocation.bound_target.path.clone(),
+            item_id: MenuItemId::Rename,
+        };
+        assert_eq!(
+            selection_result(&invocation, Some(selected)),
+            ContextMenuResult::RenameRequested
         );
     }
 

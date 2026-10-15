@@ -23,6 +23,7 @@ pub enum ContextMenuUiEffect {
     Open(crate::ports::OpenRequest),
     CopyPath(PathBuf),
     MoveToTrash(PathBuf),
+    Rename(PathBuf),
     Perform(ContextMenuAction),
     Notice {
         level: ContextMenuNoticeLevel,
@@ -62,6 +63,7 @@ pub fn reduce_context_menu_result(
         ContextMenuResult::MoveToTrashRequested => {
             Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
         }
+        ContextMenuResult::RenameRequested => Some(ContextMenuUiEffect::Rename(path.to_path_buf())),
         ContextMenuResult::DeferredActionRequested(action) => {
             Some(ContextMenuUiEffect::Perform(action))
         }
@@ -817,6 +819,15 @@ mod tests {
         assert_eq!(
             reduce_context_menu_result(ContextMenuResult::MoveToTrashRequested, path),
             Some(ContextMenuUiEffect::MoveToTrash(path.to_path_buf()))
+        );
+    }
+
+    #[test]
+    fn context_menu_rename_opens_the_dialog_for_the_menu_target() {
+        let path = Path::new("/tmp/example");
+        assert_eq!(
+            reduce_context_menu_result(ContextMenuResult::RenameRequested, path),
+            Some(ContextMenuUiEffect::Rename(path.to_path_buf()))
         );
     }
 
