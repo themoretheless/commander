@@ -47,11 +47,13 @@ pub enum Predicate {
 }
 
 impl Predicate {
-    pub(crate) fn matches_metadata(&self, e: &FileEntry, now: SystemTime, mode: MatchMode) -> bool {
+    /// Whether `e` satisfies this predicate's metadata condition (type, size,
+    /// age). Text predicates (name, path, content) are not metadata: they
+    /// depend on the query's [`MatchMode`] and are evaluated by the search
+    /// provider's compiled matchers, so they pass here.
+    pub(crate) fn matches_metadata(&self, e: &FileEntry, now: SystemTime) -> bool {
         match self {
-            Self::NameContains(value) => text_matches(mode, value, &e.name),
-            Self::PathContains(value) => text_matches(mode, value, &e.path.to_string_lossy()),
-            Self::ContentContains(_) => true,
+            Self::NameContains(_) | Self::PathContains(_) | Self::ContentContains(_) => true,
             Self::Kind(kind) => kind_of(e) == *kind,
             Self::MinSize(min) => e.size >= *min,
             Self::MaxSize(max) => e.size <= *max,
@@ -98,17 +100,6 @@ fn age_days(modified: Option<SystemTime>, now: SystemTime) -> Option<u64> {
         now.duration_since(modified?)
             .map_or(0, |d| d.as_secs() / SECONDS_PER_DAY),
     )
-}
-
-fn text_matches(mode: MatchMode, needle: &str, candidate: &str) -> bool {
-    match mode {
-        MatchMode::Exact => candidate.to_lowercase().contains(&needle.to_lowercase()),
-        MatchMode::Fuzzy => crate::fuzzy::is_match(needle, candidate),
-        MatchMode::Regex => regex::RegexBuilder::new(needle)
-            .case_insensitive(true)
-            .build()
-            .is_ok_and(|regex| regex.is_match(candidate)),
-    }
 }
 
 /// A conjunction (AND) of predicates. An empty query matches everything.
@@ -173,14 +164,13 @@ impl Query {
         Ok(())
     }
 
-    /// Metadata-only matching. Content predicates are deferred and therefore
-    /// pass this stage; the search provider evaluates them before emitting a
-    /// hit.
+    /// Metadata-only matching, through the same compiled matchers Find uses
+    /// (name and path text under the query's mode; `path:` sees the full
+    /// path). Content predicates are deferred and therefore pass this stage;
+    /// the search provider evaluates them before emitting a hit.
     #[cfg(test)]
     pub fn matches_metadata(&self, e: &FileEntry, now: SystemTime) -> bool {
-        self.predicates
-            .iter()
-            .all(|predicate| predicate.matches_metadata(e, now, self.mode))
+        crate::search::query_matches_metadata(self, e, now)
     }
 
     /// Match only queries that require no file reads. Kept for lightweight

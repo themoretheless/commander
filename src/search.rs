@@ -697,6 +697,17 @@ impl TextMatcher {
     }
 }
 
+/// Whether `entry` passes `query`'s metadata stage (everything but content),
+/// matching `path:` against the full path.
+#[cfg(test)]
+pub fn query_matches_metadata(query: &Query, entry: &FileEntry, now: SystemTime) -> bool {
+    CompiledQuery::new(query.clone()).is_ok_and(|compiled| {
+        compiled
+            .evaluate_metadata(entry, Path::new(""), now)
+            .is_some()
+    })
+}
+
 impl CompiledQuery {
     fn new(query: Query) -> Result<Self, QueryError> {
         query.validate()?;
@@ -761,7 +772,7 @@ impl CompiledQuery {
                 }
                 CompiledPredicate::Content(_) => {}
                 CompiledPredicate::Metadata(predicate) => {
-                    if !predicate.matches_metadata(entry, now, MatchMode::Exact) {
+                    if !predicate.matches_metadata(entry, now) {
                         return None;
                     }
                     explanation.components.push(MatchComponent {
