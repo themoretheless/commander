@@ -425,28 +425,6 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     return;
                 }
             }
-            while resource_rule.is_quiet_now() {
-                let should_stop = {
-                    let mut state = crate::lock_util::recover(&progress);
-                    let reason = crate::operation_view::PauseReason::QuietHours { resume_at: None };
-                    state.waiting_reason = Some(reason.label());
-                    state.pause_reason = Some(reason);
-                    if scheduler_cancel.is_cancelled() {
-                        state.cancelled = true;
-                    }
-                    state.cancelled || state.stop_requested
-                };
-                notify();
-                if should_stop {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            {
-                let mut state = crate::lock_util::recover(&progress);
-                state.waiting_reason = None;
-                state.pause_reason = None;
-            }
             let is_move = spec.kind == TransferKind::Move;
             let mut base_bytes: u64 = 0;
             let expectations = spec.expectations;
@@ -475,6 +453,15 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
             notify();
 
             'work: while let Some(mut work_item) = work.pop_front() {
+                // Quiet hours can begin mid-run; hold between entries.
+                wait_out_quiet_hours(
+                    resource_rule,
+                    || resource_rule.is_quiet_now(),
+                    &progress,
+                    &scheduler_cancel,
+                    &notify,
+                    QUIET_HOURS_POLL,
+                );
                 let this_size = work_item.expectation.source.as_ref().map_or_else(
                     |_| entry_size(&work_item.entry),
                     |source| source.logical_bytes,
@@ -1558,6 +1545,60 @@ fn vanished_on_mounted_volumes(
         && target_mount.check_bounded() == Available
 }
 
+const QUIET_HOURS_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The pause shown while quiet hours hold a transfer, naming the hour they
+/// end when the rule has one.
+fn quiet_hours_pause(
+    rule: crate::transfer_tuning::VolumeRule,
+) -> crate::operation_view::PauseReason {
+    crate::operation_view::PauseReason::QuietHours {
+        resume_at: rule
+            .quiet_hours
+            .map(|hours| format!("{:02}:00", hours.end_hour)),
+    }
+}
+
+/// Block while `is_quiet` holds, publishing the quiet-hours pause, and return
+/// when it ends or a cancel or stop is requested (the caller's own check then
+/// ends the run). Nothing is published when the window is not active.
+fn wait_out_quiet_hours(
+    rule: crate::transfer_tuning::VolumeRule,
+    is_quiet: impl Fn() -> bool,
+    progress: &TransferState,
+    scheduler_cancel: &crate::workload::CancellationToken,
+    notify: &impl Fn(),
+    poll: std::time::Duration,
+) {
+    let mut paused = false;
+    while is_quiet() {
+        paused = true;
+        let should_stop = {
+            let mut state = crate::lock_util::recover(progress);
+            let reason = quiet_hours_pause(rule);
+            state.waiting_reason = Some(reason.label());
+            state.pause_reason = Some(reason);
+            if scheduler_cancel.is_cancelled() {
+                state.cancelled = true;
+            }
+            state.cancelled || state.stop_requested
+        };
+        notify();
+        if should_stop {
+            break;
+        }
+        std::thread::sleep(poll);
+    }
+    if paused {
+        {
+            let mut state = crate::lock_util::recover(progress);
+            state.waiting_reason = None;
+            state.pause_reason = None;
+        }
+        notify();
+    }
+}
+
 /// Run a transfer-owned follow-up only after every entry completed without an
 /// error or cancellation. Failure is appended to the normal transfer error
 /// surface, so the progress dialog remains open instead of hiding cleanup loss.
@@ -2579,6 +2620,89 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(&landing).unwrap().count(), 0);
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "a");
+    }
+
+    fn quiet_rule() -> crate::transfer_tuning::VolumeRule {
+        crate::transfer_tuning::VolumeRule {
+            quiet_hours: Some(crate::transfer_tuning::QuietHours {
+                start_hour: 22,
+                end_hour: 7,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn quiet_hours_pause_names_the_hour_they_end() {
+        assert_eq!(
+            quiet_hours_pause(quiet_rule()).resume_condition(),
+            "Resumes automatically at 07:00"
+        );
+        assert_eq!(
+            quiet_hours_pause(crate::transfer_tuning::VolumeRule::default()),
+            crate::operation_view::PauseReason::QuietHours { resume_at: None }
+        );
+    }
+
+    #[test]
+    fn quiet_hours_wait_publishes_the_pause_until_the_window_ends() {
+        use std::sync::atomic::AtomicUsize;
+
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        let checks = AtomicUsize::new(0);
+        let seen = Mutex::new(Vec::new());
+
+        wait_out_quiet_hours(
+            quiet_rule(),
+            || checks.fetch_add(1, Ordering::SeqCst) < 2,
+            &progress,
+            &crate::workload::CancellationToken::new(),
+            &|| {
+                let state = crate::lock_util::recover(&progress);
+                crate::lock_util::recover(&seen).push(state.pause_reason.clone());
+            },
+            std::time::Duration::ZERO,
+        );
+
+        let paused = Some(quiet_hours_pause(quiet_rule()));
+        assert_eq!(
+            *crate::lock_util::recover(&seen),
+            [paused.clone(), paused, None]
+        );
+        let state = crate::lock_util::recover(&progress);
+        assert_eq!(state.waiting_reason, None);
+        assert!(!state.cancelled);
+    }
+
+    #[test]
+    fn quiet_hours_wait_returns_on_stop_and_is_silent_outside_the_window() {
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        let token = crate::workload::CancellationToken::new();
+        let notified = std::sync::atomic::AtomicUsize::new(0);
+        let notify = || {
+            notified.fetch_add(1, Ordering::SeqCst);
+        };
+
+        wait_out_quiet_hours(
+            quiet_rule(),
+            || false,
+            &progress,
+            &token,
+            &notify,
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(notified.load(Ordering::SeqCst), 0);
+
+        crate::lock_util::recover(&progress).stop_requested = true;
+        wait_out_quiet_hours(
+            quiet_rule(),
+            || true,
+            &progress,
+            &token,
+            &notify,
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(crate::lock_util::recover(&progress).pause_reason, None);
     }
 
     #[test]
