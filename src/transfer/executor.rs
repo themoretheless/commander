@@ -2227,6 +2227,55 @@ mod tests {
         backend::BackendPorts::new(backend.clone(), backend.clone(), backend.clone(), backend)
     }
 
+    /// Stage a plain file copy the way a real backend reports it.
+    fn copy_stage(request: &backend::StageRequest<'_>) -> std::io::Result<backend::StageReceipt> {
+        let bytes = std::fs::copy(request.source, request.staging)?;
+        request.progress.complete_file(request.base_bytes, bytes);
+        backend::receipt(
+            request.staging,
+            bytes,
+            crate::transfer_tuning::FastPath::Buffered,
+            request.durability,
+        )
+    }
+
+    #[test]
+    fn reconnected_mount_requeues_the_entry_and_restarts_its_progress() {
+        use std::sync::atomic::AtomicUsize;
+
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("share.txt", "reconnected payload");
+        let mut request = spec(TransferKind::Copy, vec![entry_for(&file)], target.path());
+        request.mount_wait_override = Some(Arc::new(|| Ok(())));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let stage_calls = Arc::clone(&calls);
+
+        let state = run_with_backends(
+            request,
+            scripted(move |request| {
+                if stage_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    std::fs::write(request.staging, "partial")?;
+                    request.progress.complete_file(request.base_bytes, 7);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "fixture share dropped",
+                    ));
+                }
+                copy_stage(request)
+            }),
+        );
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(
+            std::fs::read_to_string(target.path().join("share.txt")).unwrap(),
+            "reconnected payload"
+        );
+        assert_eq!(state.files_done, 1);
+        assert_eq!(state.copied_bytes, state.total_bytes);
+        assert!(hidden_entries(target.path()).is_empty());
+    }
+
     #[test]
     fn failed_dir_stage_is_kept_and_its_hidden_path_is_reported() {
         let (source, target) = (TempDir::new(), TempDir::new());
