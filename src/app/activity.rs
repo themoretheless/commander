@@ -1255,6 +1255,7 @@ mod tests {
             paused: None,
             finished,
             stop_requested: false,
+            can_cancel: true,
             errors,
             queued: 0,
         }

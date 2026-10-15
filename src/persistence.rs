@@ -22,6 +22,9 @@ pub struct PersistenceHealth {
     pub unreadable_stores: u64,
     pub save_failures: u64,
     pub durability_warnings: u64,
+    /// Data a store no longer references that could not be removed. Kept
+    /// apart from `save_failures` because the save itself succeeded.
+    pub cleanup_failures: u64,
     pub last_issue: Option<String>,
 }
 
@@ -298,14 +301,30 @@ fn with_store_locks<T, E>(
 
 impl Persist for FsPersist {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure> {
-        with_store_locks(
-            path,
-            |error| ReadFailure {
-                kind: ReadFailureKind::Io,
-                source: error,
-            },
-            || read_file_bounded(path, max_bytes),
-        )
+        // A read must not create the store's directory, and a store that
+        // does not exist is missing even where no lock file can be created
+        // (an absent or read-only config directory). Saves still take the
+        // lock and re-check the expected revision, so skipping it here
+        // cannot let a stale snapshot through.
+        let store_absent = || {
+            std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        };
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && std::fs::symlink_metadata(parent)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        {
+            return Ok(ReadOutcome::Missing);
+        }
+        let _process_lock = match acquire_process_store_lock(path) {
+            Ok(lock) => lock,
+            Err(_) if store_absent() => return Ok(ReadOutcome::Missing),
+            Err(error) => return Err(read_failure(ReadFailureKind::Io, error)),
+        };
+        let path_lock = path_lock(path);
+        let _guard = crate::lock_util::recover(&path_lock);
+        read_file_bounded(path, max_bytes)
     }
 
     fn commit(
@@ -315,6 +334,7 @@ impl Persist for FsPersist {
         expected: ExpectedRevision,
     ) -> Result<AtomicWriteOutcome, PreCommitError> {
         with_store_locks(path, process_lock_io, || {
+            sweep_stale_temps(path);
             verify_expected_revision(path, &expected)?;
             write_bytes_atomic_with(path, bytes, &StdFsOps)
         })
@@ -334,10 +354,57 @@ impl FsPersist {
         F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
     {
         with_store_locks(path, process_lock_io, || {
+            sweep_stale_temps(path);
             verify_expected_revision(path, &expected)?;
             write_stream_atomic_with(path, write, &StdFsOps)
         })
     }
+}
+
+/// Remove temp files a crashed or killed writer left beside `path`, once per
+/// store per process. Must run under the store's flock: every writer of this
+/// store holds it while its temp exists, so a temp named for another PID is
+/// orphaned. A temp is never authoritative (the rename is the commit), so
+/// removal cannot lose data. Without flock (non-Unix) another process may be
+/// mid-write, so nothing is swept there.
+fn sweep_stale_temps(path: &Path) {
+    #[cfg(unix)]
+    {
+        static SWEPT: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+        if !crate::lock_util::recover(SWEPT.get_or_init(Mutex::default))
+            .insert(normalized_lock_path(path))
+        {
+            return;
+        }
+        let Ok((parent, prefix)) = store_location(path) else {
+            return;
+        };
+        let (Some(prefix), Ok(entries)) = (prefix.to_str(), std::fs::read_dir(parent)) else {
+            return;
+        };
+        let own_pid = std::process::id().to_string();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some((pid, sequence)) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(prefix))
+                .and_then(|rest| rest.strip_suffix(".tmp"))
+                .and_then(|rest| rest.split_once('-'))
+            else {
+                continue;
+            };
+            let numeric = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+            if numeric(pid)
+                && numeric(sequence)
+                && pid != own_pid
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 pub fn fs_persist() -> Arc<dyn Persist> {
@@ -548,6 +615,9 @@ pub struct StoreGate {
     generation: u64,
     expected: ExpectedRevision,
     recovered_source: Option<Vec<u8>>,
+    /// Why a fail-closed load was rejected (read failure or decode error),
+    /// kept so strict stores can say what to fix instead of only "corrupt".
+    detail: Option<String>,
 }
 
 impl StoreGate {
@@ -557,11 +627,16 @@ impl StoreGate {
             generation: 0,
             expected: ExpectedRevision::Missing,
             recovered_source: None,
+            detail: None,
         }
     }
 
     pub const fn status(&self) -> LoadStatus {
         self.status
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 
     pub(crate) fn block(&mut self, status: LoadStatus) {
@@ -642,7 +717,11 @@ struct LoadedRaw {
     source_bytes: Option<Vec<u8>>,
 }
 
-fn loaded_without_value(status: LoadStatus, expected: ExpectedRevision) -> LoadedRaw {
+fn loaded_without_value(
+    status: LoadStatus,
+    expected: ExpectedRevision,
+    detail: impl Into<String>,
+) -> LoadedRaw {
     LoadedRaw {
         value: None,
         gate: if status == LoadStatus::Missing {
@@ -653,6 +732,7 @@ fn loaded_without_value(status: LoadStatus, expected: ExpectedRevision) -> Loade
                 generation: 0,
                 expected,
                 recovered_source: None,
+                detail: Some(detail.into()),
             }
         },
         source_bytes: None,
@@ -662,20 +742,26 @@ fn loaded_without_value(status: LoadStatus, expected: ExpectedRevision) -> Loade
 fn load_raw_envelope(persist: &dyn Persist, path: &Path, spec: StoreSpec) -> LoadedRaw {
     let (bytes, revision) = match persist.read(path, spec.max_bytes) {
         Ok(ReadOutcome::Missing) => {
-            return loaded_without_value(LoadStatus::Missing, ExpectedRevision::Missing);
+            return loaded_without_value(LoadStatus::Missing, ExpectedRevision::Missing, "");
         }
         Ok(ReadOutcome::Present { bytes, revision }) => (bytes, revision),
-        Err(_) => {
-            return loaded_without_value(LoadStatus::Unreadable, ExpectedRevision::Any);
+        Err(failure) => {
+            return loaded_without_value(
+                LoadStatus::Unreadable,
+                ExpectedRevision::Any,
+                failure.to_string(),
+            );
         }
     };
     let expected = ExpectedRevision::Exact(revision);
-    let root = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+    let corrupt =
+        |expected, detail: &str| loaded_without_value(LoadStatus::Corrupt, expected, detail);
+    let mut root = match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(root) => root,
-        Err(_) => return loaded_without_value(LoadStatus::Corrupt, expected),
+        Err(error) => return corrupt(expected, &error.to_string()),
     };
-    let Some(object) = root.as_object() else {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+    let Some(object) = root.as_object_mut() else {
+        return corrupt(expected, "top-level value is not an object");
     };
     let envelope_candidate = object.contains_key("format")
         || object.contains_key("store")
@@ -690,6 +776,7 @@ fn load_raw_envelope(persist: &dyn Persist, path: &Path, spec: StoreSpec) -> Loa
                 generation: 0,
                 expected,
                 recovered_source: None,
+                detail: None,
             },
             source_bytes: Some(bytes),
         };
@@ -703,27 +790,34 @@ fn load_raw_envelope(persist: &dyn Persist, path: &Path, spec: StoreSpec) -> Loa
         .and_then(|schema| u32::try_from(schema).ok());
     let generation = object.get("generation").and_then(serde_json::Value::as_u64);
     if format != Some(spec.format) || store != Some(spec.store) {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+        return corrupt(expected, "envelope names a different format or store");
     }
     let Some(schema) = schema else {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+        return corrupt(expected, "envelope has no valid schema");
     };
     if schema > spec.schema {
-        return loaded_without_value(LoadStatus::FutureVersion, expected);
+        return loaded_without_value(
+            LoadStatus::FutureVersion,
+            expected,
+            format!("envelope schema {schema}, supported {}", spec.schema),
+        );
     }
     if schema != spec.schema {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+        return corrupt(expected, &format!("unsupported envelope schema {schema}"));
     }
-    let (Some(generation), Some(payload)) = (generation, object.get("payload")) else {
-        return loaded_without_value(LoadStatus::Corrupt, expected);
+    // Take the payload instead of cloning it: the journal can be tens of MB
+    // and is reloaded on every mutation.
+    let (Some(generation), Some(payload)) = (generation, object.remove("payload")) else {
+        return corrupt(expected, "envelope has no generation or payload");
     };
     LoadedRaw {
-        value: Some(payload.clone()),
+        value: Some(payload),
         gate: StoreGate {
             status: LoadStatus::Current,
             generation,
             expected,
             recovered_source: None,
+            detail: None,
         },
         source_bytes: Some(bytes),
     }
@@ -746,10 +840,11 @@ pub fn load_enveloped<T: DeserializeOwned>(
             value: Some(value),
             gate: raw.gate,
         },
-        Err(_) => LoadedJson {
+        Err(error) => LoadedJson {
             value: None,
             gate: StoreGate {
                 status: LoadStatus::Corrupt,
+                detail: Some(format!("payload did not decode: {error}")),
                 ..raw.gate
             },
         },
@@ -759,7 +854,9 @@ pub fn load_enveloped<T: DeserializeOwned>(
 /// Load a store that must never fall back to defaults (operation journal,
 /// content index). `Ok(None)` only when the store is missing; every
 /// fail-closed status becomes an error naming the store. `noun` is the
-/// store's sentence-case name, e.g. "Operation journal".
+/// store's sentence-case name, e.g. "Operation journal". Errors name the
+/// file (after a `(file ` marker) so the user knows what to inspect or move
+/// aside, followed by the read or decode failure.
 pub fn load_strict<T: DeserializeOwned>(
     persist: &dyn Persist,
     path: &Path,
@@ -767,18 +864,25 @@ pub fn load_strict<T: DeserializeOwned>(
     noun: &str,
 ) -> Result<(Option<T>, StoreGate), String> {
     let loaded = load_enveloped::<T>(persist, path, spec);
+    let file = path.display();
+    let detail = loaded
+        .gate
+        .detail()
+        .unwrap_or("envelope or payload rejected");
     match loaded.gate.status() {
         LoadStatus::Missing => Ok((None, loaded.gate)),
         LoadStatus::Legacy | LoadStatus::Current | LoadStatus::Recovered => match loaded.value {
             Some(value) => Ok((Some(value), loaded.gate)),
-            None => Err(format!("{noun} is corrupt: payload did not decode")),
+            None => Err(format!(
+                "{noun} is corrupt (file {file}): payload did not decode"
+            )),
         },
-        LoadStatus::Corrupt => Err(format!("{noun} is corrupt: envelope or payload rejected")),
+        LoadStatus::Corrupt => Err(format!("{noun} is corrupt (file {file}): {detail}")),
         LoadStatus::FutureVersion => Err(format!(
-            "{noun} uses a newer persist envelope than this build supports"
+            "{noun} uses a newer persist envelope than this build supports (file {file}): {detail}"
         )),
         LoadStatus::Unreadable => Err(format!(
-            "Could not open {}: unreadable",
+            "Could not open {}: unreadable (file {file}): {detail}",
             noun.to_lowercase()
         )),
     }
@@ -854,6 +958,14 @@ pub fn save_enveloped<T: Serialize>(
     let bytes = serde_json::to_vec_pretty(&envelope)
         .map_err(PreCommitError::Serialize)
         .map_err(JsonSaveError::PreCommit)?;
+    // A store the loader would reject as too large must never be committed:
+    // it would replace readable data with a file that fails closed forever.
+    if bytes.len() > spec.max_bytes {
+        return Err(JsonSaveError::PreCommit(too_large_error(
+            u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            spec.max_bytes,
+        )));
+    }
     preserve_recovered_source(persist, path, spec.max_bytes, gate)?;
     let outcome = persist
         .commit(path, &bytes, gate.expected.clone())
@@ -864,8 +976,21 @@ pub fn save_enveloped<T: Serialize>(
     Ok(outcome)
 }
 
+fn too_large_error(size: u64, max_bytes: usize) -> PreCommitError {
+    PreCommitError::Io {
+        stage: SaveStage::Write,
+        source: io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            format!("serialized store reached {size} bytes; the load limit is {max_bytes}"),
+        ),
+        cleanup: None,
+    }
+}
+
 /// Save an enveloped document through a streaming writer so large payloads
 /// (content index) never require a full in-memory `to_vec` of the envelope.
+/// The output is compact JSON (the store is machine-only) and is aborted
+/// before the rename once it exceeds `spec.max_bytes`.
 pub fn save_enveloped_streaming<T: Serialize>(
     persist: &FsPersist,
     path: &Path,
@@ -887,10 +1012,13 @@ pub fn save_enveloped_streaming<T: Serialize>(
     let expected = gate.expected.clone();
     let outcome = persist
         .commit_with_writer(path, expected, |writer| {
+            // serde_json emits many tiny writes; batch them before the file.
+            let mut buffered = io::BufWriter::with_capacity(256 * 1024, writer);
             let mut hashing = HashingWriter {
-                inner: writer,
+                inner: &mut buffered,
                 hasher: &mut hasher,
                 written: &mut written,
+                limit: u64::try_from(spec.max_bytes).unwrap_or(u64::MAX),
             };
             let envelope = Envelope {
                 format: spec.format,
@@ -899,8 +1027,17 @@ pub fn save_enveloped_streaming<T: Serialize>(
                 generation,
                 payload: value,
             };
-            serde_json::to_writer_pretty(&mut hashing, &envelope)
-                .map_err(PreCommitError::Serialize)?;
+            serde_json::to_writer(&mut hashing, &envelope).map_err(|error| {
+                if error.is_io() {
+                    PreCommitError::Io {
+                        stage: SaveStage::Write,
+                        source: error.into(),
+                        cleanup: None,
+                    }
+                } else {
+                    PreCommitError::Serialize(error)
+                }
+            })?;
             hashing.flush().map_err(|source| PreCommitError::Io {
                 stage: SaveStage::Write,
                 source,
@@ -919,10 +1056,19 @@ struct HashingWriter<'a> {
     inner: &'a mut dyn Write,
     hasher: &'a mut blake3::Hasher,
     written: &'a mut u64,
+    limit: u64,
 }
 
 impl Write for HashingWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let size = (*self.written).saturating_add(buf.len() as u64);
+        if size > self.limit {
+            let limit = usize::try_from(self.limit).unwrap_or(usize::MAX);
+            let PreCommitError::Io { source, .. } = too_large_error(size, limit) else {
+                unreachable!("too_large_error is an I/O error");
+            };
+            return Err(source);
+        }
         let n = self.inner.write(buf)?;
         self.hasher.update(&buf[..n]);
         *self.written = (*self.written).saturating_add(n as u64);
@@ -1324,7 +1470,22 @@ fn publish_issue(health: &mut PersistenceHealth) {
     health.issue_generation = previous.saturating_add(1);
     if let Some(issue) = &health.last_issue {
         log::warn!(target: "commander::persistence", "{issue}");
+        #[cfg(test)]
+        THREAD_ISSUES.with(|issues| issues.borrow_mut().push(issue.clone()));
     }
+}
+
+// Issues published by the current thread, so a test can see what its own
+// call reported even while parallel tests overwrite the shared `last_issue`.
+#[cfg(test)]
+thread_local! {
+    static THREAD_ISSUES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn take_thread_issues() -> Vec<String> {
+    THREAD_ISSUES.with(|issues| std::mem::take(&mut *issues.borrow_mut()))
 }
 
 pub fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
@@ -1342,13 +1503,48 @@ pub fn record_recovery(store: &'static str, recovered: usize, rejected: usize) {
     publish_issue(&mut health);
 }
 
-pub fn record_unreadable(store: &'static str) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadIssue {
+    /// The file could not be read; the store runs on defaults.
+    Unreadable,
+    /// The file was read but is malformed; the store runs on defaults.
+    Malformed,
+    /// The store fails closed: nothing is replaced until the file is fixed.
+    Blocked,
+}
+
+fn load_issue_text(store: &str, issue: LoadIssue) -> String {
+    match issue {
+        LoadIssue::Unreadable => {
+            format!("{store}: settings could not be read; defaults are active")
+        }
+        LoadIssue::Malformed => format!("{store}: file is malformed; defaults are active"),
+        LoadIssue::Blocked => {
+            format!("{store}: could not be read; changes are blocked to protect the file")
+        }
+    }
+}
+
+fn record_load_issue(store: &'static str, issue: LoadIssue) {
     let mut health = crate::lock_util::recover(health_state());
     health.unreadable_stores = health.unreadable_stores.saturating_add(1);
-    health.last_issue = Some(format!(
-        "{store}: settings could not be read; defaults are active"
-    ));
+    health.last_issue = Some(load_issue_text(store, issue));
     publish_issue(&mut health);
+}
+
+pub fn record_unreadable(store: &'static str) {
+    record_load_issue(store, LoadIssue::Unreadable);
+}
+
+/// The store's file was read but did not decode; defaults are active.
+pub fn record_corrupt(store: &'static str) {
+    record_load_issue(store, LoadIssue::Malformed);
+}
+
+/// A fail-closed store could not be loaded, so saves are refused rather
+/// than defaults being used.
+pub fn record_blocked(store: &'static str) {
+    record_load_issue(store, LoadIssue::Blocked);
 }
 
 pub fn record_save_failure(store: &'static str, error: &PreCommitError) {
@@ -1393,6 +1589,18 @@ pub fn record_json_save_failure(store: &'static str, error: &JsonSaveError) {
             publish_issue(&mut health);
         }
     }
+}
+
+/// Data a store no longer references could not be removed; it stays on
+/// disk (outside quota accounting) until removed by hand.
+pub fn record_cleanup_failure(store: &'static str, source: &io::Error) {
+    let mut health = crate::lock_util::recover(health_state());
+    health.cleanup_failures = health.cleanup_failures.saturating_add(1);
+    health.last_issue = Some(format!(
+        "{store}: could not remove expired data ({:?}); it remains on disk",
+        source.kind()
+    ));
+    publish_issue(&mut health);
 }
 
 pub fn record_durability_warning(store: &'static str, source: &io::Error) {
@@ -1457,7 +1665,7 @@ pub fn load_item_store<T: DeserializeOwned>(path: &Path, store: &'static str) ->
             decoded.items
         }
         Err(_) => {
-            record_unreadable(store);
+            record_corrupt(store);
             mark_lossy_load(path);
             Vec::new()
         }
@@ -1627,6 +1835,42 @@ mod tests {
     }
 
     #[test]
+    fn load_issues_describe_unreadable_malformed_and_blocked_stores() {
+        assert_eq!(
+            load_issue_text("Smart folders", LoadIssue::Unreadable),
+            "Smart folders: settings could not be read; defaults are active"
+        );
+        assert_eq!(
+            load_issue_text("Smart folders", LoadIssue::Malformed),
+            "Smart folders: file is malformed; defaults are active"
+        );
+        let blocked = load_issue_text("Version manifest", LoadIssue::Blocked);
+        assert!(blocked.contains("changes are blocked"), "{blocked}");
+        assert!(!blocked.contains("defaults are active"), "{blocked}");
+    }
+
+    #[test]
+    fn item_store_load_reports_malformed_and_unreadable_files_distinctly() {
+        let temp = TempDir::new();
+        let malformed = temp.file("items.json", "not json");
+        take_thread_issues();
+        assert!(load_item_store::<Item>(&malformed, "Smart folders").is_empty());
+        assert_eq!(
+            take_thread_issues(),
+            vec!["Smart folders: file is malformed; defaults are active".to_string()]
+        );
+
+        // Bytes that are not UTF-8 cannot be read as text.
+        let unreadable = temp.path().join("binary.json");
+        std::fs::write(&unreadable, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(load_item_store::<Item>(&unreadable, "Smart folders").is_empty());
+        assert_eq!(
+            take_thread_issues(),
+            vec!["Smart folders: settings could not be read; defaults are active".to_string()]
+        );
+    }
+
+    #[test]
     fn item_decoder_rejects_a_malformed_or_wrong_shaped_root() {
         assert!(decode_item_store::<Item>("not json").is_err());
         assert!(decode_item_store::<Item>(r#"{"entries": []}"#).is_err());
@@ -1713,6 +1957,132 @@ mod tests {
             assert_eq!(persist.commits.load(Ordering::Relaxed), 0);
             assert_eq!(persist.bytes().as_deref(), Some(bytes));
         }
+    }
+
+    #[test]
+    fn load_strict_maps_every_fail_closed_status_to_a_named_error() {
+        let path = Path::new("strict.json");
+        let current = br#"{"format":"commander.persist","store":"commander.test","schema":1,"generation":3,"payload":{"name":"x","count":1}}"#;
+        let (value, gate) = load_strict::<Item>(
+            &MemoryPersist::new(Some(current.to_vec())),
+            path,
+            TEST_STORE,
+            "Test store",
+        )
+        .unwrap();
+        assert_eq!(value.map(|item| item.name), Some("x".to_string()));
+        assert_eq!(gate.status(), LoadStatus::Current);
+
+        let (missing, gate) =
+            load_strict::<Item>(&MemoryPersist::new(None), path, TEST_STORE, "Test store").unwrap();
+        assert!(missing.is_none());
+        assert_eq!(gate.status(), LoadStatus::Missing);
+
+        let cases: [(Vec<u8>, &str, &str); 4] = [
+            (
+                b"not json".to_vec(),
+                "Test store is corrupt",
+                "expected ident at line 1",
+            ),
+            (
+                br#"{"format":"commander.persist","store":"commander.test","schema":1,"generation":1,"payload":{"name":"x","count":"many"}}"#
+                    .to_vec(),
+                "Test store is corrupt",
+                "payload did not decode: invalid type: string",
+            ),
+            (
+                br#"{"format":"commander.persist","store":"commander.test","schema":2,"generation":1,"payload":{}}"#
+                    .to_vec(),
+                "Test store uses a newer persist envelope",
+                "envelope schema 2, supported 1",
+            ),
+            (
+                vec![b' '; TEST_STORE.max_bytes + 1],
+                "Could not open test store",
+                "TooLarge",
+            ),
+        ];
+        for (bytes, expected, detail) in cases {
+            let error = load_strict::<Item>(
+                &MemoryPersist::new(Some(bytes)),
+                path,
+                TEST_STORE,
+                "Test store",
+            )
+            .unwrap_err();
+            assert!(error.starts_with(expected), "{error}");
+            assert!(error.contains("(file strict.json)"), "{error}");
+            assert!(error.contains(detail), "{error}");
+        }
+    }
+
+    #[test]
+    fn oversized_envelope_is_refused_before_the_port_is_called() {
+        let persist = MemoryPersist::new(None);
+        let mut gate = StoreGate::missing();
+        let result = save_enveloped(
+            &persist,
+            Path::new("memory.json"),
+            TEST_STORE,
+            &Item {
+                name: "x".repeat(TEST_STORE.max_bytes),
+                count: 1,
+            },
+            &mut gate,
+            SaveIntent::Explicit,
+        );
+        let Err(JsonSaveError::PreCommit(PreCommitError::Io { stage, source, .. })) = result else {
+            panic!("an oversized store must not be committed: {result:?}");
+        };
+        assert_eq!(stage, SaveStage::Write);
+        assert_eq!(source.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(persist.commits.load(Ordering::Relaxed), 0);
+        assert_eq!(gate.status(), LoadStatus::Missing);
+    }
+
+    #[test]
+    fn streaming_save_round_trips_compact_and_refuses_an_oversized_store() {
+        let temp = TempDir::new();
+        let path = temp.path().join("index.json");
+        let persist = FsPersist::default();
+        let small = Item {
+            name: "small".to_string(),
+            count: 1,
+        };
+        let mut gate = StoreGate::missing();
+        save_enveloped_streaming(
+            &persist,
+            &path,
+            TEST_STORE,
+            &small,
+            &mut gate,
+            SaveIntent::Explicit,
+        )
+        .unwrap();
+        let committed = std::fs::read(&path).unwrap();
+        assert!(!committed.contains(&b'\n'), "machine store is compact");
+        let loaded = load_enveloped::<Item>(&persist, &path, TEST_STORE);
+        assert_eq!(loaded.value, Some(small));
+        assert_eq!(loaded.gate.expected, gate.expected);
+
+        let result = save_enveloped_streaming(
+            &persist,
+            &path,
+            TEST_STORE,
+            &Item {
+                name: "x".repeat(TEST_STORE.max_bytes),
+                count: 2,
+            },
+            &mut gate,
+            SaveIntent::Explicit,
+        );
+        let Err(JsonSaveError::PreCommit(PreCommitError::Io { stage, source, .. })) = result else {
+            panic!("an oversized stream must abort before the rename: {result:?}");
+        };
+        assert_eq!(stage, SaveStage::Write);
+        assert_eq!(source.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(non_lock_entry_count(temp.path()), 1, "temp file removed");
     }
 
     #[test]
@@ -1829,6 +2199,7 @@ mod tests {
             generation: u64::MAX,
             expected: ExpectedRevision::Any,
             recovered_source: None,
+            detail: None,
         };
         let result = save_enveloped(
             &persist,
@@ -2052,6 +2423,39 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn first_commit_removes_temps_orphaned_by_another_process() {
+        let temp = TempDir::new();
+        let path = temp.path().join("state.json");
+        let orphan = temp.file(
+            ".state.json.commander-json-4194305-00000000000000000007.tmp",
+            "partial",
+        );
+        let own = temp.file(
+            &format!(
+                ".state.json.commander-json-{}-99999999999999999999.tmp",
+                std::process::id()
+            ),
+            "ours",
+        );
+        let unrelated = temp.file(".state.json.commander-json-notes.tmp", "keep");
+        let other_store = temp.file(
+            ".other.json.commander-json-4194305-00000000000000000007.tmp",
+            "keep",
+        );
+
+        FsPersist::default()
+            .commit(&path, b"{}", ExpectedRevision::Any)
+            .unwrap();
+
+        assert!(!orphan.exists());
+        assert!(own.exists());
+        assert!(unrelated.exists());
+        assert!(other_store.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn load_rejects_a_symlink_target() {
         use std::os::unix::fs::symlink;
 
@@ -2063,6 +2467,17 @@ mod tests {
         let error = FsPersist::default().read(&link, 4096).unwrap_err();
         assert_eq!(error.kind, ReadFailureKind::Symlink);
         assert!(load_json::<Item>(&link, "Test").is_none());
+    }
+
+    #[test]
+    fn reading_a_store_in_an_absent_directory_is_missing_and_creates_nothing() {
+        let temp = TempDir::new();
+        let parent = temp.path().join("absent").join("config");
+        let outcome = FsPersist::default()
+            .read(&parent.join("state.json"), 4096)
+            .unwrap();
+        assert!(matches!(outcome, ReadOutcome::Missing));
+        assert!(!temp.path().join("absent").exists());
     }
 
     #[test]

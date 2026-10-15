@@ -412,6 +412,18 @@ mod tests {
             "its store lock could not be acquired"
         );
         assert_eq!(
+            journal_unavailable_reason(
+                "Operation journal is corrupt (file /home/sherlock/directory/journal.json): EOF"
+            ),
+            "the file is corrupt"
+        );
+        assert_eq!(
+            journal_unavailable_reason(
+                "Could not open operation journal: unreadable (file /locked/j.json): Io: denied"
+            ),
+            "the file is unreadable"
+        );
+        assert_eq!(
             journal_unavailable_reason("Unsupported operation journal schema 9; expected 3"),
             "it was written by an unsupported version"
         );
