@@ -106,22 +106,28 @@ mod tests {
 
     #[test]
     fn round_trips_every_predicate_through_json() {
-        let d = Definition {
-            name: "Everything".into(),
-            root: PathBuf::from("/root"),
-            query: Query {
-                predicates: vec![
-                    Predicate::NameContains("report".into()),
-                    Predicate::Kind(Kind::Document),
-                    Predicate::MinSize(1024),
-                    Predicate::MaxAgeDays(30),
-                ],
-                mode: crate::query::MatchMode::Exact,
-            },
-        };
-        let json = serde_json::to_string(&d).unwrap();
-        let back: Definition = serde_json::from_str(&json).unwrap();
-        assert_eq!(d, back);
+        for mode in crate::query::MatchMode::ALL {
+            let d = Definition {
+                name: "Everything".into(),
+                root: PathBuf::from("/root"),
+                query: Query {
+                    predicates: vec![
+                        Predicate::NameContains("report".into()),
+                        Predicate::PathContains("Finance/2026".into()),
+                        Predicate::ContentContains("revenue".into()),
+                        Predicate::Kind(Kind::Document),
+                        Predicate::MinSize(1024),
+                        Predicate::MaxSize(1 << 30),
+                        Predicate::MaxAgeDays(30),
+                        Predicate::MinAgeDays(365),
+                    ],
+                    mode,
+                },
+            };
+            let json = serde_json::to_string(&d).unwrap();
+            let back: Definition = serde_json::from_str(&json).unwrap();
+            assert_eq!(d, back);
+        }
     }
 
     #[test]
