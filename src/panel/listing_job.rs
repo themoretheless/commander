@@ -307,11 +307,7 @@ impl ListingJobController {
                 });
                 self.poll_terminals();
             }
-            Err(_) => {
-                self.ready =
-                    Some(self.settle(binding, DirectoryRead::Incomplete(DirStatus::Denied)));
-                self.awaiting = false;
-            }
+            Err(_) => self.finish(binding, DirectoryRead::Incomplete(DirStatus::Denied)),
         }
     }
 
@@ -331,6 +327,13 @@ impl ListingJobController {
             forced_sizes: self.forced_sizes,
             watcher_gap: self.watcher_gap.take(),
         }
+    }
+
+    /// Publish `read` as the desired binding's result; nothing more is
+    /// awaited for it.
+    fn finish(&mut self, binding: ListingBinding, read: DirectoryRead) {
+        self.ready = Some(self.settle(binding, read));
+        self.awaiting = false;
     }
 
     fn poll_terminals(&mut self) {
@@ -355,15 +358,13 @@ impl ListingJobController {
             }
             match event {
                 WorkerEvent::Completed { binding, read } if binding == retired.binding => {
-                    self.ready = Some(self.settle(binding, read));
-                    self.awaiting = false;
+                    self.finish(binding, read);
                 }
-                WorkerEvent::Completed { .. } => {
-                    self.ready = Some(self.settle(
+                WorkerEvent::Completed { .. } | WorkerEvent::Abandoned { .. } => {
+                    self.finish(
                         retired.binding,
                         DirectoryRead::Incomplete(DirStatus::Denied),
-                    ));
-                    self.awaiting = false;
+                    );
                 }
                 WorkerEvent::Cancelled { .. } => {
                     // Keep awaiting so drive() can admit a fresh attempt for
@@ -372,13 +373,6 @@ impl ListingJobController {
                     if self.desired.as_ref() == Some(&retired.binding) {
                         self.awaiting = true;
                     }
-                }
-                WorkerEvent::Abandoned { .. } => {
-                    self.ready = Some(self.settle(
-                        retired.binding,
-                        DirectoryRead::Incomplete(DirStatus::Denied),
-                    ));
-                    self.awaiting = false;
                 }
             }
         }
@@ -490,10 +484,9 @@ mod tests {
                 job.drive(&workload, Arc::clone(&notify), |path, _show_hidden| {
                     match std::fs::read_dir(path) {
                         Ok(_) => DirectoryRead::Complete(Vec::new()),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            DirectoryRead::Incomplete(DirStatus::Gone)
+                        Err(error) => {
+                            DirectoryRead::Incomplete(super::super::status_for_read_error(&error))
                         }
-                        Err(_) => DirectoryRead::Incomplete(DirStatus::Denied),
                     }
                 });
                 if let Some(ready) = job.take_ready() {
@@ -605,5 +598,154 @@ mod tests {
                 .any(|in_flight| in_flight.binding.path == Path::new("/fresh"))
         );
         released.store(true, Ordering::SeqCst);
+    }
+
+    /// A listing worker driven by hand, with a read that counts its calls
+    /// and finds every folder empty.
+    struct Harness {
+        workload: crate::workload::DeterministicWorkload,
+        notify: Notify,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Harness {
+        fn new(limits: SchedulerLimits) -> Self {
+            Self {
+                workload: crate::workload::DeterministicWorkload::new(limits),
+                notify: Arc::new(|| {}),
+                reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        fn drive(&self, job: &mut ListingJobController) {
+            let reads = Arc::clone(&self.reads);
+            job.drive(
+                &self.workload.handle(),
+                Arc::clone(&self.notify),
+                move |_: &Path, _: bool| {
+                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    DirectoryRead::Complete(Vec::new())
+                },
+            );
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn ready_listing_carries_its_ticket_and_is_not_read_again() {
+        let mut watcher = super::super::watcher::DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/parent"));
+        let ticket = watcher.snapshot_ticket().unwrap();
+        let harness = Harness::new(SchedulerLimits::default());
+        let mut job = ListingJobController::default();
+
+        job.request(
+            PathBuf::from("/parent"),
+            false,
+            Some(ticket.clone()),
+            PendingFocus::None,
+        );
+        harness.drive(&mut job);
+        assert!(harness.workload.run_next());
+        let ready = job.take_ready().expect("the listing completed");
+        assert_eq!(ready.ticket, Some(ticket));
+        assert!(!job.is_awaiting());
+
+        // Later frames keep driving the controller: no second read.
+        harness.drive(&mut job);
+        harness.drive(&mut job);
+        assert!(!harness.workload.run_next(), "nothing was resubmitted");
+        assert_eq!(harness.reads(), 1);
+        assert!(job.take_ready().is_none());
+    }
+
+    #[test]
+    fn completion_of_a_superseded_request_never_becomes_ready() {
+        let harness = Harness::new(SchedulerLimits::default());
+        let mut job = ListingJobController::default();
+        job.request(PathBuf::from("/a"), false, None, PendingFocus::None);
+        harness.drive(&mut job);
+        // A's read finishes, but B is asked for before A's result is polled.
+        assert!(harness.workload.run_next());
+        let b = job.request(PathBuf::from("/b"), false, None, PendingFocus::None);
+
+        harness.drive(&mut job);
+        assert!(job.take_ready().is_none(), "A's completion is dropped");
+        assert!(job.is_awaiting());
+        assert!(harness.workload.run_next());
+        let ready = job.take_ready().expect("B completed");
+        assert_eq!(ready.binding, b);
+        assert!(job.take_ready().is_none());
+    }
+
+    #[test]
+    fn a_read_cancelled_while_still_desired_is_retried() {
+        let harness = Harness::new(SchedulerLimits::default());
+        let mut job = ListingJobController::default();
+        let binding = job.request(PathBuf::from("/a"), false, None, PendingFocus::None);
+        harness.drive(&mut job);
+        // The worker sees its token cancelled once it starts.
+        assert!(
+            harness
+                .workload
+                .run_next_after_dequeue(|| assert!(job.in_flight[0].task.cancel()))
+        );
+
+        assert!(job.take_ready().is_none());
+        assert!(job.is_awaiting(), "the binding is still wanted");
+        harness.drive(&mut job);
+        assert!(harness.workload.run_next(), "a fresh attempt was admitted");
+        let ready = job.take_ready().expect("the retry completed");
+        assert_eq!(ready.binding, binding);
+        assert!(matches!(ready.read, DirectoryRead::Complete(_)));
+        assert_eq!(harness.reads(), 1, "the cancelled attempt never read");
+    }
+
+    #[test]
+    fn an_abandoned_read_settles_as_unreadable() {
+        let harness = Harness::new(SchedulerLimits::default());
+        let mut job = ListingJobController::default();
+        let binding = job.request(
+            PathBuf::from("/a"),
+            false,
+            None,
+            PendingFocus::NamedChild("child".into()),
+        );
+        harness.drive(&mut job);
+        // Cancelled while queued: the runtime abandons it without running.
+        assert!(job.in_flight[0].task.cancel());
+
+        let ready = job.take_ready().expect("an abandoned read settles");
+        assert_eq!(ready.binding, binding);
+        assert!(matches!(
+            ready.read,
+            DirectoryRead::Incomplete(DirStatus::Denied)
+        ));
+        assert_eq!(named(&ready.focus), Some("child"));
+        assert!(!job.is_awaiting());
+        assert_eq!(harness.reads(), 0);
+    }
+
+    #[test]
+    fn a_refused_submission_settles_as_unreadable() {
+        let harness = Harness::new(SchedulerLimits {
+            max_queued: 0,
+            ..SchedulerLimits::default()
+        });
+        let mut job = ListingJobController::default();
+        let binding = job.request(PathBuf::from("/a"), false, None, PendingFocus::None);
+        harness.drive(&mut job);
+
+        assert!(job.in_flight.is_empty());
+        assert!(!job.is_awaiting());
+        let ready = job.take_ready().expect("a refused read settles at once");
+        assert_eq!(ready.binding, binding);
+        assert!(matches!(
+            ready.read,
+            DirectoryRead::Incomplete(DirStatus::Denied)
+        ));
     }
 }

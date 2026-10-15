@@ -274,4 +274,40 @@ mod tests {
         assert!(state.show_hidden());
         assert_eq!(restored.scroll_anchor, 0);
     }
+
+    #[test]
+    fn switching_column_from_a_descending_sort_starts_ascending() {
+        let mut state = ViewState::default();
+        state.toggle_sort(SortColumn::Size);
+        state.toggle_sort(SortColumn::Size);
+        assert_eq!(
+            (state.sort_col(), state.sort_order()),
+            (SortColumn::Size, SortOrder::Desc)
+        );
+
+        state.toggle_sort(SortColumn::Name);
+        assert_eq!(
+            (state.sort_col(), state.sort_order()),
+            (SortColumn::Name, SortOrder::Asc)
+        );
+        state.toggle_sort(SortColumn::Name);
+        assert_eq!(state.sort_order(), SortOrder::Desc);
+    }
+
+    #[test]
+    fn remembering_a_path_again_refreshes_its_recency_and_settings() {
+        let mut state = ViewState::with_capacity(2);
+        state.remember(Path::new("/a"), settings("a-old"));
+        state.remember(Path::new("/b"), settings("b"));
+        state.remember(Path::new("/a"), settings("a-new"));
+        state.remember(Path::new("/c"), settings("c"));
+
+        assert_eq!(state.remembered_len(), 2);
+        assert!(state.restore(Path::new("/b")).is_none(), "b was oldest");
+        assert_eq!(
+            state.restore(Path::new("/a")).unwrap().search_query,
+            "a-new"
+        );
+        assert_eq!(state.restore(Path::new("/c")).unwrap().search_query, "c");
+    }
 }

@@ -969,4 +969,78 @@ mod tests {
         assert_eq!(path, Path::new("/watched"));
         assert!(*retry_at > Instant::now());
     }
+
+    #[test]
+    fn deep_change_only_marks_sizes_dirty() {
+        let mut watcher = DirectoryWatcherState::default();
+        let binding = watcher.activate_test_binding(Path::new("/w"));
+        let ticket = watcher.snapshot_ticket();
+        watcher.acknowledge_snapshot(ticket, Path::new("/w"));
+        let generation = watcher.requested_generation;
+
+        watcher.inject_test_message(
+            binding,
+            WatchMessageKind::Changed {
+                paths: vec![PathBuf::from("/w/a/b")],
+                direct: false,
+            },
+        );
+        let outcome = watcher.poll(Path::new("/w"));
+
+        assert!(outcome.sizes_dirty);
+        assert!(outcome.ticket.is_none(), "the listing itself is current");
+        assert_eq!(watcher.requested_generation, generation);
+    }
+
+    #[test]
+    fn a_deferred_snapshot_holds_back_its_ticket_until_the_backoff() {
+        let mut watcher = DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/w"));
+        assert!(watcher.poll(Path::new("/w")).ticket.is_some());
+
+        let ticket = watcher.snapshot_ticket();
+        watcher.defer_snapshot(ticket.as_ref());
+        assert!(watcher.poll(Path::new("/w")).ticket.is_none());
+        assert!(watcher.has_pending_reconciliation_for_test());
+
+        // Once the backoff has passed, the retry is handed out again.
+        watcher.retry_reconciliation_at = Some(Instant::now());
+        assert!(watcher.poll(Path::new("/w")).ticket.is_some());
+    }
+
+    #[test]
+    fn deferring_a_ticket_from_an_old_binding_is_ignored() {
+        let mut watcher = DirectoryWatcherState::default();
+        watcher.activate_test_binding(Path::new("/old"));
+        let stale = watcher.snapshot_ticket();
+        watcher.activate_test_binding(Path::new("/current"));
+
+        watcher.defer_snapshot(stale.as_ref());
+
+        assert_eq!(watcher.retry_reconciliation_at, None);
+        assert!(watcher.poll(Path::new("/current")).ticket.is_some());
+    }
+
+    #[test]
+    fn events_on_the_folder_or_its_children_are_direct_and_deeper_ones_are_not() {
+        let (mut handler, receiver) = test_callback("/w", None);
+        let mut direct_for = |paths: &[&str]| {
+            let mut event = notify::Event::new(notify::EventKind::Any);
+            for path in paths {
+                event = event.add_path(PathBuf::from(path));
+            }
+            handler(Ok(event));
+            match receiver.try_recv().unwrap().kind {
+                WatchMessageKind::Changed { direct, .. } => direct,
+                other => panic!("expected a change, got {other:?}"),
+            }
+        };
+
+        assert!(direct_for(&["/w/child"]));
+        assert!(direct_for(&["/w"]));
+        assert!(direct_for(&[]), "an event without paths re-lists");
+        assert!(!direct_for(&["/w/a/grandchild"]));
+        assert!(!direct_for(&["/elsewhere/file"]));
+        assert!(direct_for(&["/w/a/deep", "/w/renamed"]), "any direct path");
+    }
 }

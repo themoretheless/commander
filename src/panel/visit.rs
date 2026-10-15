@@ -177,4 +177,72 @@ mod tests {
         assert!(stats.uses.contains_key(path));
         assert!(visited_paths().contains(&path.to_path_buf()));
     }
+
+    fn usage(count: u32, last: u64) -> VisitUsage {
+        VisitUsage { count, last }
+    }
+
+    #[test]
+    fn whitespace_only_query_filters_nothing() {
+        let paths = vec![PathBuf::from("/alpha"), PathBuf::from("/beta")];
+        let ranked = rank_visited(
+            &paths,
+            "   ",
+            RecentOrder::Chronological,
+            &VisitStats::default(),
+        );
+        let ranked: Vec<_> = ranked.into_iter().map(|item| item.path).collect();
+        assert_eq!(ranked, paths);
+    }
+
+    #[test]
+    fn frecency_frequency_is_capped_at_thirty_two_visits() {
+        let fewer = PathBuf::from("/fewer");
+        let many = PathBuf::from("/many");
+        let stats = VisitStats {
+            uses: HashMap::from([(fewer.clone(), usage(32, 5)), (many.clone(), usage(100, 5))]),
+            tick: 5,
+        };
+        // Past the cap, more visits no longer outrank list order.
+        let ranked = rank_visited(
+            &[fewer.clone(), many.clone()],
+            "",
+            RecentOrder::Frecency,
+            &stats,
+        );
+        assert_eq!(ranked[0].score, ranked[1].score);
+        assert_eq!(ranked[0].path, fewer);
+        assert_eq!(ranked[1].count, 100);
+    }
+
+    #[test]
+    fn frecency_ties_go_to_the_more_recent_visit_then_list_order() {
+        let older = PathBuf::from("/older");
+        let newer = PathBuf::from("/newer");
+        let unused = PathBuf::from("/unused");
+        // Both visits are more than 64 ticks old, so recency is capped and
+        // the scores tie.
+        let stats = VisitStats {
+            uses: HashMap::from([(older.clone(), usage(1, 10)), (newer.clone(), usage(1, 20))]),
+            tick: 200,
+        };
+        let ranked = rank_visited(
+            &[older.clone(), newer.clone()],
+            "",
+            RecentOrder::Frecency,
+            &stats,
+        );
+        assert_eq!(ranked[0].score, ranked[1].score);
+        assert_eq!(ranked[0].path, newer);
+
+        let second = PathBuf::from("/second");
+        let ranked = rank_visited(
+            &[unused.clone(), second.clone()],
+            "",
+            RecentOrder::Frecency,
+            &VisitStats::default(),
+        );
+        let order: Vec<_> = ranked.into_iter().map(|item| item.path).collect();
+        assert_eq!(order, [unused, second]);
+    }
 }
