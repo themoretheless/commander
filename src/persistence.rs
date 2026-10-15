@@ -1573,6 +1573,18 @@ pub fn record_json_save_failure(store: &'static str, error: &JsonSaveError) {
     }
 }
 
+/// Data a store no longer references could not be removed; it stays on
+/// disk (outside quota accounting) until removed by hand.
+pub fn record_cleanup_failure(store: &'static str, source: &io::Error) {
+    let mut health = crate::lock_util::recover(health_state());
+    health.save_failures = health.save_failures.saturating_add(1);
+    health.last_issue = Some(format!(
+        "{store}: could not remove expired data ({:?}); it remains on disk",
+        source.kind()
+    ));
+    publish_issue(&mut health);
+}
+
 pub fn record_durability_warning(store: &'static str, source: &io::Error) {
     let mut health = crate::lock_util::recover(health_state());
     health.durability_warnings = health.durability_warnings.saturating_add(1);

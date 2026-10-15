@@ -214,20 +214,25 @@ fn preserve_at_inner(
         .iter()
         .find(|record| record.key == key)
     {
-        if existing.operation_id == *operation_id
-            && existing.original == path
-            && validate_record(
-                root,
-                existing,
-                loaded.manifest.identities.get(&existing.key.0),
-            )
-            .is_ok()
-        {
-            return Ok(Some(existing.clone()));
+        if existing.operation_id != *operation_id || existing.original != path {
+            return Err(version_failure(
+                "Version key is already bound to a different authoritative record",
+            ));
         }
-        return Err(version_failure(
-            "Version key is already bound to a different authoritative record",
-        ));
+        // Same record: a replay. Report why its payload cannot be trusted
+        // instead of claiming a different record owns the key.
+        return validate_record(
+            root,
+            existing,
+            loaded.manifest.identities.get(&existing.key.0),
+        )
+        .map(|()| Some(existing.clone()))
+        .map_err(|message| {
+            version_failure(format!(
+                "Existing version of {} is not usable: {message}",
+                path.display()
+            ))
+        });
     }
     let stored = record_path(root, operation_id, &key, path);
     if !lexically_descends_from(root, &stored) {
@@ -593,7 +598,11 @@ fn prune_manifest(
         if !expected.same_binding(&current) {
             continue;
         }
-        let _ = remove_path(&record.stored);
+        // The manifest no longer references this payload, so a failed removal
+        // leaves orphaned data that quota accounting cannot see: report it.
+        if let Err(error) = remove_path(&record.stored) {
+            crate::persistence::record_cleanup_failure(MANIFEST_LABEL, &error);
+        }
         remove_empty_version_dirs(record.stored.parent(), root);
     }
 }
@@ -645,6 +654,27 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
             "Restore destination is occupied: {}",
             authoritative.original.display()
         ));
+    }
+    if let Some(parent) = authoritative
+        .original
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        match fs::metadata(parent) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "Restore folder {} no longer exists",
+                    parent.display()
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(format!(
+                    "Restore folder {} is no longer a folder",
+                    parent.display()
+                ));
+            }
+            _ => {}
+        }
     }
     let restore_receipt = match copy_path_tracked(&authoritative.stored, &authoritative.original) {
         Ok(receipt) => receipt,
@@ -1533,6 +1563,30 @@ mod tests {
         );
         assert!(versions.exists());
         assert_eq!(std::fs::read_to_string(&original).unwrap(), "rejected");
+    }
+
+    #[test]
+    fn restore_into_a_deleted_folder_names_the_missing_folder() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("gone/original.txt", "before");
+        let operation = OperationId("restore-gone-parent".to_string());
+        let record = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        std::fs::remove_dir_all(temp.path().join("gone")).unwrap();
+
+        let error = restore_at(&versions, &record).unwrap_err();
+
+        assert!(error.contains("no longer exists"), "{error}");
+        assert!(error.contains("gone"), "{error}");
+        assert!(record.stored.exists());
     }
 
     #[test]
