@@ -187,8 +187,14 @@ impl PreviewError {
             Self::ProviderUnavailable => "No text preview provider is available for this file.",
             Self::ProviderPanicked => "The text preview provider stopped unexpectedly.",
             Self::SchedulerUnavailable => "The preview queue is busy. Retry in a moment.",
-            Self::WorkerBusy => "Waiting for the previous preview read to finish.",
-            Self::TimedOut => "The text preview provider exceeded its time budget.",
+            // Shown once a hung earlier read (dead mount) has kept the single
+            // preview worker for a full timeout.
+            Self::WorkerBusy => {
+                "An earlier preview read is not responding. Retry in a moment, or open the file directly."
+            }
+            Self::TimedOut => {
+                "The text preview took too long to load. Retry, or open the file directly."
+            }
         }
     }
 }
@@ -371,9 +377,17 @@ struct TextPreviewCompletion {
 
 enum TextPreviewPhase {
     Idle,
-    Debouncing { ready_at: Instant },
-    WaitingForWorker,
-    Running { deadline: Instant },
+    Debouncing {
+        ready_at: Instant,
+    },
+    /// The previous read still holds the worker; after `deadline` the
+    /// request fails as `WorkerBusy` instead of spinning forever.
+    WaitingForWorker {
+        deadline: Instant,
+    },
+    Running {
+        deadline: Instant,
+    },
     Ready(Arc<str>),
     Failed(PreviewError),
 }
@@ -578,9 +592,27 @@ fn decode_text_bytes(mut bytes: Vec<u8>) -> Result<Arc<str>, PreviewError> {
     if !bytes.is_empty() && controls.saturating_mul(20) > bytes.len() {
         return Err(PreviewError::Binary);
     }
-    String::from_utf8(bytes)
-        .map(Arc::from)
-        .map_err(|_| PreviewError::InvalidUtf8)
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Arc::from(text)),
+        // A stray Latin-1/CP1252 byte in otherwise UTF-8 text (a pasted
+        // "café") shows as U+FFFD instead of rejecting the whole preview.
+        Err(error) if mostly_utf8(error.as_bytes()) => {
+            Ok(Arc::from(String::from_utf8_lossy(error.as_bytes())))
+        }
+        Err(_) => Err(PreviewError::InvalidUtf8),
+    }
+}
+
+/// At most one invalid UTF-8 sequence per `MIN_BYTES_PER_INVALID_SEQUENCE`
+/// bytes: few enough that the replacement characters stay incidental. A
+/// file in a legacy encoding throughout still fails as `InvalidUtf8`.
+fn mostly_utf8(bytes: &[u8]) -> bool {
+    const MIN_BYTES_PER_INVALID_SEQUENCE: usize = 200;
+    let invalid = bytes
+        .utf8_chunks()
+        .filter(|chunk| !chunk.invalid().is_empty())
+        .count();
+    invalid.saturating_mul(MIN_BYTES_PER_INVALID_SEQUENCE) <= bytes.len()
 }
 
 trait TextPreviewTaskHandle {
@@ -759,7 +791,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         let ready_to_submit = matches!(
             self.phase,
             TextPreviewPhase::Debouncing { ready_at } if now >= ready_at
-        ) || matches!(self.phase, TextPreviewPhase::WaitingForWorker)
+        ) || matches!(self.phase, TextPreviewPhase::WaitingForWorker { .. })
             && self.task.is_none();
         if ready_to_submit {
             self.submit(ctx, now);
@@ -772,7 +804,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         match &self.phase {
             TextPreviewPhase::Idle
             | TextPreviewPhase::Debouncing { .. }
-            | TextPreviewPhase::WaitingForWorker
+            | TextPreviewPhase::WaitingForWorker { .. }
             | TextPreviewPhase::Running { .. } => TextPreviewPoll::Loading,
             TextPreviewPhase::Ready(content) => {
                 self.delivered = true;
@@ -787,8 +819,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
 
     fn submit(&mut self, ctx: &Context, now: Instant) {
         if self.task.is_some() {
-            self.phase = TextPreviewPhase::WaitingForWorker;
-            self.delivered = false;
+            self.wait_for_worker(now);
             return;
         }
         let Some(ownership) = self.active.clone() else {
@@ -840,9 +871,12 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
             repaint.request_repaint();
         });
 
-        self.phase = TextPreviewPhase::Running {
-            deadline: now + TEXT_PREVIEW_TIMEOUT,
-        };
+        let previous_wait = std::mem::replace(
+            &mut self.phase,
+            TextPreviewPhase::Running {
+                deadline: now + TEXT_PREVIEW_TIMEOUT,
+            },
+        );
         match self
             .executor
             .submit(TextPreviewSubmission { generation }, job)
@@ -851,14 +885,25 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
                 self.task = Some(RunningTextPreviewTask { generation, handle });
             }
             Err(PreviewError::WorkerBusy) => {
-                self.phase = TextPreviewPhase::WaitingForWorker;
-                self.delivered = false;
+                self.phase = previous_wait;
+                self.wait_for_worker(now);
             }
             Err(error) => {
                 self.phase = TextPreviewPhase::Failed(error);
                 self.delivered = false;
             }
         }
+    }
+
+    /// Enter (or stay in) `WaitingForWorker`, keeping the deadline of a wait
+    /// already under way so per-frame resubmission cannot extend it.
+    fn wait_for_worker(&mut self, now: Instant) {
+        if !matches!(self.phase, TextPreviewPhase::WaitingForWorker { .. }) {
+            self.phase = TextPreviewPhase::WaitingForWorker {
+                deadline: now + TEXT_PREVIEW_TIMEOUT,
+            };
+        }
+        self.delivered = false;
     }
 
     fn drain_completions(&mut self) {
@@ -923,6 +968,16 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
             self.phase = TextPreviewPhase::Failed(PreviewError::TimedOut);
             self.delivered = false;
         }
+        // Nothing of this request was submitted, so there is no task of ours
+        // to cancel; the hung read keeps the worker until it returns.
+        let worker_stuck = matches!(
+            self.phase,
+            TextPreviewPhase::WaitingForWorker { deadline } if now >= deadline
+        );
+        if worker_stuck {
+            self.phase = TextPreviewPhase::Failed(PreviewError::WorkerBusy);
+            self.delivered = false;
+        }
     }
 
     fn schedule_repaint(&self, ctx: &Context, now: Instant) {
@@ -930,8 +985,10 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
             TextPreviewPhase::Debouncing { ready_at } => {
                 ctx.request_repaint_after(ready_at.saturating_duration_since(now));
             }
-            TextPreviewPhase::WaitingForWorker => {
-                ctx.request_repaint_after(TEXT_PREVIEW_POLL_INTERVAL);
+            TextPreviewPhase::WaitingForWorker { deadline } => {
+                ctx.request_repaint_after(
+                    TEXT_PREVIEW_POLL_INTERVAL.min(deadline.saturating_duration_since(now)),
+                );
             }
             TextPreviewPhase::Running { deadline } => {
                 ctx.request_repaint_after(
@@ -954,7 +1011,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         match self.phase {
             TextPreviewPhase::Idle => TextPreviewLoadState::Idle,
             TextPreviewPhase::Debouncing { .. } => TextPreviewLoadState::Debouncing,
-            TextPreviewPhase::WaitingForWorker => TextPreviewLoadState::Waiting,
+            TextPreviewPhase::WaitingForWorker { .. } => TextPreviewLoadState::Waiting,
             TextPreviewPhase::Running { .. } => TextPreviewLoadState::Loading,
             TextPreviewPhase::Ready(_) => TextPreviewLoadState::Ready,
             TextPreviewPhase::Failed(error) => TextPreviewLoadState::Failed(error),
@@ -1024,7 +1081,9 @@ impl PreviewFailure {
             Self::TooLarge => "This image exceeds the preview memory limit.",
             Self::Unreadable => "Commander cannot read this file.",
             Self::Unsupported => "This image format is not supported.",
-            Self::TimedOut => "The preview provider exceeded its time budget.",
+            Self::TimedOut => {
+                "The preview took too long to load. Retry, or open the file directly."
+            }
             Self::Busy => "All preview decoders are busy. Retry in a moment.",
             Self::Quarantined => {
                 "Previews of this format are paused after repeated decode failures. Retry to test the decoder again."
@@ -1265,7 +1324,9 @@ impl ImageCache {
                         .to_string();
                     let texture = ctx.load_texture(&name, decoded.image, TextureOptions::LINEAR);
                     self.total_bytes = self.total_bytes.saturating_add(decoded.byte_size);
-                    self.entries.insert(
+                    // A sharper re-decode replaces the smaller texture that
+                    // stayed on screen while it loaded.
+                    if let Some(replaced) = self.entries.insert(
                         path,
                         CacheEntry {
                             texture,
@@ -1273,7 +1334,9 @@ impl ImageCache {
                             last_used: self.frame,
                             decoded_for: decoded.decoded_for,
                         },
-                    );
+                    ) {
+                        self.total_bytes = self.total_bytes.saturating_sub(replaced.byte_size);
+                    }
                 }
             }
         }
@@ -1296,9 +1359,9 @@ impl ImageCache {
                 }
                 continue;
             }
-            if let Some(entry) = self.entries.remove(path) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-            }
+            // A cached texture smaller than the pane (it just grew) stays
+            // until the sharper decode publishes, so the preview never blanks
+            // while it loads or while every worker slot is busy.
             if available_slots == 0 || failed.contains_key(path) {
                 continue;
             }
@@ -2031,6 +2094,11 @@ unsafe fn nsstring_lossy(string: *mut objc::runtime::Object) -> String {
 /// unsupported format, not a damaged file.
 const AVFOUNDATION_UNSUPPORTED: &[&str] = &["mkv", "webm", "wmv", "flv"];
 
+/// Video thumbnail frame times, in order of preference: 1 s skips black
+/// lead-in frames, 0 s covers clips shorter than that.
+#[cfg(target_os = "macos")]
+const VIDEO_THUMBNAIL_SECONDS: [i64; 2] = [1, 0];
+
 /// `AVErrorFileFormatNotRecognized` and `AVErrorDecoderNotFound`.
 const AV_UNSUPPORTED_CODES: &[i64] = &[-11828, -11833];
 
@@ -2116,8 +2184,9 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         };
         let _: () = msg_send![generator, setMaximumSize: maximum_size];
 
-        // CMTime for 1 second (or 0 if short video)
-        // CMTimeMake(1, 1) = 1 second
+        // Grab the frame at 1 s, past black lead-in frames. A clip shorter
+        // than that can yield no image there, so fall back to the first
+        // frame before reporting a failure.
         #[repr(C)]
         #[derive(Copy, Clone)]
         struct CMTime {
@@ -2126,14 +2195,13 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
             flags: u32,
             epoch: i64,
         }
-        let time = CMTime {
-            value: 1,
+        let at_seconds = |value: i64| CMTime {
+            value,
             timescale: 1,
+            // kCMTimeFlags_Valid
             flags: 1,
             epoch: 0,
         };
-
-        // copyCGImageAtTime:actualTime:error:
         let mut actual_time = CMTime {
             value: 0,
             timescale: 0,
@@ -2141,11 +2209,19 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
             epoch: 0,
         };
         let mut error: *mut Object = std::ptr::null_mut();
-        let cg_image: *mut Object = msg_send![generator,
-            copyCGImageAtTime: time
-            actualTime: &mut actual_time as *mut CMTime
-            error: &mut error as *mut *mut Object
-        ];
+        let mut cg_image: *mut Object = std::ptr::null_mut();
+        for seconds in VIDEO_THUMBNAIL_SECONDS {
+            // copyCGImageAtTime:actualTime:error:
+            error = std::ptr::null_mut();
+            cg_image = msg_send![generator,
+                copyCGImageAtTime: at_seconds(seconds)
+                actualTime: &mut actual_time as *mut CMTime
+                error: &mut error as *mut *mut Object
+            ];
+            if !cg_image.is_null() || has_extension_in(path, AVFOUNDATION_UNSUPPORTED) {
+                break;
+            }
+        }
 
         let _: () = msg_send![generator, release];
 
@@ -2775,6 +2851,65 @@ mod tests {
     }
 
     #[test]
+    fn growing_the_pane_keeps_the_smaller_texture_until_the_redecode_lands() {
+        let ctx = egui::Context::default();
+        let mut cache = ImageCache::new();
+        let dir = PathBuf::from("/preview-dir");
+        let path = dir.join("photo.png");
+        cache.current_dir = Some(dir.clone());
+        let small = PreviewTarget {
+            width: 10,
+            height: 10,
+        };
+        cache.entries.insert(
+            path.clone(),
+            super::CacheEntry {
+                texture: ctx.load_texture(
+                    "small",
+                    egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                    egui::TextureOptions::LINEAR,
+                ),
+                byte_size: 4,
+                last_used: 0,
+                decoded_for: small,
+            },
+        );
+        cache.total_bytes = 4;
+        // The re-decode is already in flight, so preload starts no worker.
+        let generation = cache.generation.load(Ordering::Acquire);
+        crate::lock_util::recover(&cache.pending).insert(
+            path.clone(),
+            super::PendingLoad {
+                generation,
+                decoded: None,
+            },
+        );
+        cache.set_preview_extent(400.0, 300.0, 1.0);
+
+        cache.preload(&ctx, std::slice::from_ref(&path), &dir);
+
+        assert!(
+            cache.get(&path).is_some(),
+            "preview blanked while re-decoding"
+        );
+        assert_eq!(cache.total_bytes, 4);
+
+        let sharp = cache.preview_target;
+        crate::lock_util::recover(&cache.pending)
+            .get_mut(&path)
+            .unwrap()
+            .decoded = Some(super::DecodedPreview {
+            image: egui::ColorImage::filled([2, 2], egui::Color32::WHITE),
+            byte_size: 16,
+            decoded_for: sharp,
+        });
+        cache.preload(&ctx, std::slice::from_ref(&path), &dir);
+
+        assert_eq!(cache.entries[&path].decoded_for, sharp);
+        assert_eq!(cache.total_bytes, 16, "replaced texture bytes not released");
+    }
+
+    #[test]
     fn retry_clears_negative_and_pending_cache_entries() {
         let mut cache = ImageCache::new();
         let path = std::path::PathBuf::from("broken.png");
@@ -2949,7 +3084,7 @@ mod tests {
         assert_eq!(pipeline.request(&ctx, &request), TextPreviewPoll::Loading);
         assert!(matches!(
             pipeline.phase,
-            super::TextPreviewPhase::WaitingForWorker
+            super::TextPreviewPhase::WaitingForWorker { .. }
         ));
         assert_eq!(executor.pending_count(), 0, "retry is not admitted yet");
 
@@ -2960,6 +3095,63 @@ mod tests {
         match pipeline.request(&ctx, &request) {
             TextPreviewPoll::Ready(content) => assert_eq!(content.as_ref(), "fresh"),
             other => panic!("expected retried preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hung_retiring_worker_fails_the_waiting_request_after_the_timeout() {
+        let executor = TestExecutor {
+            cancel_finishes: false,
+            ..TestExecutor::default()
+        };
+        let provider = Arc::new(ScriptedProvider::default());
+        let clock = TestClock::new();
+        let mut pipeline = TextPreviewPipeline::with_parts(
+            executor.clone(),
+            provider.clone(),
+            Arc::new(clock.clone()),
+        );
+        let ctx = egui::Context::default();
+        let hung = identity("hung.txt", 5);
+        submit_after_debounce(&mut pipeline, &executor, &clock, &ctx, &hung);
+        clock.advance(TEXT_PREVIEW_TIMEOUT);
+        assert_eq!(
+            pipeline.request(&ctx, &hung),
+            TextPreviewPoll::Failed(PreviewError::TimedOut)
+        );
+
+        // The next file waits behind the read that never returns.
+        let next = identity("next.txt", 5);
+        assert_eq!(pipeline.request(&ctx, &next), TextPreviewPoll::Loading);
+        clock.advance(TEXT_PREVIEW_DEBOUNCE);
+        assert_eq!(pipeline.request(&ctx, &next), TextPreviewPoll::Loading);
+        assert_eq!(
+            pipeline.load_state(&next.path),
+            super::TextPreviewLoadState::Waiting
+        );
+        clock.advance(TEXT_PREVIEW_TIMEOUT - Duration::from_millis(1));
+        assert_eq!(pipeline.request(&ctx, &next), TextPreviewPoll::Loading);
+
+        clock.advance(Duration::from_millis(1));
+        assert_eq!(
+            pipeline.request(&ctx, &next),
+            TextPreviewPoll::Failed(PreviewError::WorkerBusy)
+        );
+        assert_eq!(executor.pending_count(), 0);
+    }
+
+    #[test]
+    fn timeout_copy_avoids_internal_jargon() {
+        for message in [
+            PreviewError::TimedOut.message(),
+            PreviewFailure::TimedOut.message(),
+            PreviewError::WorkerBusy.message(),
+        ] {
+            assert!(
+                !message.contains("provider") && !message.contains("budget"),
+                "{message}"
+            );
+            assert!(message.contains("Retry"), "{message}");
         }
     }
 
@@ -3038,6 +3230,16 @@ mod tests {
         );
         assert_eq!(
             decode_text_bytes(vec![0xff]),
+            Err(PreviewError::InvalidUtf8)
+        );
+        // One stray CP1252 byte in a page of UTF-8 text still previews.
+        let mut stray = "line of plain text\n".repeat(20).into_bytes();
+        stray.extend_from_slice(b"caf\xe9\n");
+        let text = decode_text_bytes(stray).unwrap();
+        assert!(text.ends_with("caf\u{fffd}\n"));
+        // A file in a legacy encoding throughout is still rejected.
+        assert_eq!(
+            decode_text_bytes(b"caf\xe9 cr\xe8me br\xfbl\xe9e".repeat(20)),
             Err(PreviewError::InvalidUtf8)
         );
     }

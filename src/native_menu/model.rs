@@ -253,6 +253,32 @@ fn stable_path_id(path: &Path) -> String {
     }
 }
 
+/// Row titles for "Open With": the application name, plus its folder when
+/// two installs share a name (e.g. `/Applications` and `~/Applications`),
+/// so the rows can be told apart.
+fn open_with_titles(entries: &[(String, PathBuf)], home: Option<&Path>) -> Vec<String> {
+    entries
+        .iter()
+        .map(|(title, application)| {
+            let shared = entries.iter().filter(|(other, _)| other == title).count() > 1;
+            match application.parent().filter(|_| shared) {
+                Some(folder) => format!("{title} ({})", home_relative(folder, home)),
+                None => title.clone(),
+            }
+        })
+        .collect()
+}
+
+/// `path` with the home folder shown as `~`, component-aware so a sibling
+/// such as `/Users/al2` never becomes `~2`.
+fn home_relative(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 pub fn build_invocation(
     id: u64,
     target: ContextMenuTarget,
@@ -272,10 +298,12 @@ pub fn build_invocation(
         .share_services
         .retain(|(_, service)| service_names.insert(service.clone()));
 
+    let titles = open_with_titles(&dynamic.open_with, dirs::home_dir().as_deref());
     let open_with = dynamic
         .open_with
         .into_iter()
-        .map(|(title, application)| {
+        .zip(titles)
+        .map(|((_, application), title)| {
             let identity = stable_path_id(&application);
             MenuNode::Item(MenuItem::action(
                 MenuItemId::OpenWithApplication(identity),
@@ -333,7 +361,7 @@ pub fn build_invocation(
         MenuNode::Item(MenuItem::submenu(
             MenuItemId::OpenWith,
             "Open With",
-            !open_with.is_empty(),
+            target_available && !open_with.is_empty(),
             open_with,
         )),
         MenuNode::Item(MenuItem::action(
@@ -382,7 +410,7 @@ pub fn build_invocation(
         MenuNode::Item(MenuItem::submenu(
             MenuItemId::Share,
             "Share",
-            !share.is_empty(),
+            target_available && !share.is_empty(),
             share,
         )),
         MenuNode::Separator,
@@ -664,6 +692,64 @@ mod tests {
             &share[0],
             MenuNode::Item(MenuItem { title, .. }) if title == "AirDrop"
         ));
+    }
+
+    #[test]
+    fn same_named_applications_show_their_folder() {
+        let entries = vec![
+            (
+                "Safari".to_string(),
+                PathBuf::from("/Applications/Safari.app"),
+            ),
+            (
+                "Safari".to_string(),
+                PathBuf::from("/Users/al/Applications/Safari.app"),
+            ),
+            ("Zed".to_string(), PathBuf::from("/Applications/Zed.app")),
+        ];
+
+        let titles = open_with_titles(&entries, Some(Path::new("/Users/al")));
+
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            titles,
+            [
+                "Safari (/Applications)".to_string(),
+                format!("Safari (~{sep}Applications)"),
+                "Zed".to_string(),
+            ]
+        );
+        assert_eq!(
+            home_relative(Path::new("/Users/al2/Apps"), Some(Path::new("/Users/al"))),
+            Path::new("/Users/al2/Apps").display().to_string()
+        );
+    }
+
+    #[test]
+    fn submenus_are_disabled_for_a_missing_target() {
+        let path = PathBuf::from("/gone/context-menu-target.txt");
+        let expected = crate::path_identity::PathIdentity::missing(&path);
+        let invocation = build_invocation(
+            45,
+            ContextMenuTarget { expected, path },
+            "gone.txt",
+            DynamicMenuEntries {
+                open_with: vec![("Zed".to_string(), PathBuf::from("/Applications/Zed.app"))],
+                share_services: vec![("Mail".to_string(), "com.apple.share.Mail".to_string())],
+                ..DynamicMenuEntries::default()
+            },
+        );
+        for id in [MenuItemId::OpenWith, MenuItemId::Share, MenuItemId::Open] {
+            let item = invocation
+                .tree
+                .iter()
+                .find_map(|node| match node {
+                    MenuNode::Item(item) if item.id == id => Some(item),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(!item.enabled, "{id:?} enabled for a missing target");
+        }
     }
 
     #[test]

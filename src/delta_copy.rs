@@ -229,6 +229,9 @@ fn copy_file_inner(
         ));
     }
     if resume_offset.is_none() {
+        // The seed copies the whole basis without byte progress; say why the
+        // bar stands still on a slow link.
+        let _reason = WaitingReason::show(state, PREPARING_DESTINATION);
         let _seed =
             crate::native_copy::seed_file_native(basis, destination, state, allow_clone_seed)?;
         let destination = std::fs::OpenOptions::new().write(true).open(destination)?;
@@ -376,6 +379,8 @@ fn copy_content_defined(
     checkpoints: &mut CheckpointWriter<'_>,
 ) -> std::io::Result<DeltaStats> {
     let mut index: HashMap<ChunkKey, Vec<u64>> = HashMap::new();
+    // Indexing reads the whole basis before any byte of progress.
+    let indexing = WaitingReason::show(state, INDEXING_DESTINATION);
     let basis_source = std::fs::File::open(basis)?;
     for chunk in
         fastcdc::v2020::StreamCDC::new(basis_source, CDC_MIN_CHUNK, CDC_AVG_CHUNK, CDC_MAX_CHUNK)
@@ -392,6 +397,7 @@ fn copy_content_defined(
             }
         }
     }
+    drop(indexing);
 
     let mut basis = std::fs::File::open(basis)?;
     let destination_path = destination;
@@ -498,6 +504,45 @@ fn read_up_to(reader: &mut std::fs::File, buffer: &mut [u8]) -> std::io::Result<
     Ok(filled)
 }
 
+/// Activity-strip text for the delta passes that read the destination
+/// without advancing the byte counters.
+const PREPARING_DESTINATION: &str = "Preparing the existing destination";
+const INDEXING_DESTINATION: &str = "Indexing the existing destination";
+
+/// Shows `reason` as the transfer's waiting reason until dropped. A reason
+/// already shown (a mount wait, or another delta worker on the same
+/// transfer) is left in place and this guard then owns nothing; drop clears
+/// the reason only if this guard set it and it is still ours.
+struct WaitingReason<'a> {
+    state: &'a TransferState,
+    reason: Option<&'static str>,
+}
+
+impl<'a> WaitingReason<'a> {
+    fn show(state: &'a TransferState, reason: &'static str) -> Self {
+        let mut progress = crate::lock_util::recover(state);
+        let reason = if progress.waiting_reason.is_none() {
+            progress.waiting_reason = Some(reason.to_string());
+            Some(reason)
+        } else {
+            None
+        };
+        Self { state, reason }
+    }
+}
+
+impl Drop for WaitingReason<'_> {
+    fn drop(&mut self) {
+        let Some(reason) = self.reason else {
+            return;
+        };
+        let mut progress = crate::lock_util::recover(self.state);
+        if progress.waiting_reason.as_deref() == Some(reason) {
+            progress.waiting_reason = None;
+        }
+    }
+}
+
 fn is_cancelled(state: &TransferState) -> bool {
     crate::lock_util::recover(state).cancelled
 }
@@ -559,6 +604,34 @@ mod tests {
 
     fn state(total: u64) -> TransferState {
         Arc::new(Mutex::new(crate::transfer::TransferProgress::new(total, 1)))
+    }
+
+    #[test]
+    fn waiting_reason_shows_while_held_and_keeps_foreign_reasons() {
+        let progress = state(1);
+        {
+            let _reason = WaitingReason::show(&progress, INDEXING_DESTINATION);
+            assert_eq!(
+                progress.lock().unwrap().waiting_reason.as_deref(),
+                Some(INDEXING_DESTINATION)
+            );
+        }
+        assert_eq!(progress.lock().unwrap().waiting_reason, None);
+
+        let reason = WaitingReason::show(&progress, PREPARING_DESTINATION);
+        progress.lock().unwrap().waiting_reason = Some("Mount disconnected".to_string());
+        drop(reason);
+        assert_eq!(
+            progress.lock().unwrap().waiting_reason.as_deref(),
+            Some("Mount disconnected")
+        );
+
+        // A reason shown first is neither replaced nor cleared.
+        drop(WaitingReason::show(&progress, INDEXING_DESTINATION));
+        assert_eq!(
+            progress.lock().unwrap().waiting_reason.as_deref(),
+            Some("Mount disconnected")
+        );
     }
 
     #[test]

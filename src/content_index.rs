@@ -6,9 +6,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, ReadDir};
 use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 const SCHEMA_VERSION: u32 = 1;
@@ -172,6 +172,10 @@ struct BuildRun {
     root: PathBuf,
     receiver: Receiver<BuildEvent>,
     cancelled: Arc<AtomicBool>,
+    /// Held by the worker while it checks for cancellation and saves the
+    /// index file, so a disable can wait out an in-flight save before it
+    /// deletes the file.
+    save_gate: Arc<Mutex<()>>,
     progress: BuildProgress,
     task: crate::workload::TaskHandle,
 }
@@ -265,11 +269,18 @@ impl ContentIndex {
             self.settings = previous;
             return false;
         }
-        if !enabled && self.active.as_ref().is_some_and(|run| run.root == root) {
-            self.active = None;
+        if !enabled
+            && self.active.as_ref().is_some_and(|run| run.root == root)
+            && let Some(run) = self.active.take()
+        {
+            let save_gate = Arc::clone(&run.save_gate);
+            // Dropping cancels the build; taking the gate then waits out a
+            // save that had already started, so the file removal below wins.
+            drop(run);
+            drop(save_gate.lock());
         }
         if !enabled {
-            self.evict_snapshot(&root);
+            self.forget_root_index(&root, &index_path(&root));
         }
         self.unloadable.remove(&root);
         self.settings_error = None;
@@ -369,6 +380,9 @@ impl ContentIndex {
     ) -> Result<(), crate::workload::AdmissionError> {
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
+        let save_cancelled = Arc::clone(&cancelled);
+        let save_gate = Arc::new(Mutex::new(()));
+        let worker_save_gate = Arc::clone(&save_gate);
         let idle = Arc::clone(&self.idle);
         let (sender, receiver) = mpsc::channel();
         let worker_root = root.clone();
@@ -384,6 +398,7 @@ impl ContentIndex {
             .estimated_bytes(MAX_CONTENT_BYTES as u64)
             .replace_older_generation(),
             move |scheduler_cancel| {
+                let save_scheduler_cancel = scheduler_cancel.clone();
                 let result = scan_index(
                     worker_root.clone(),
                     exclusions,
@@ -399,7 +414,13 @@ impl ContentIndex {
                     },
                 )
                 .and_then(|index| {
-                    save_index_to(&index_path(&worker_root), &index)?;
+                    save_unless_cancelled(
+                        &index_path(&worker_root),
+                        &index,
+                        &worker_save_gate,
+                        &save_cancelled,
+                        Some(&save_scheduler_cancel),
+                    )?;
                     Ok(index)
                 });
                 let _ = sender.send(BuildEvent::Complete(result));
@@ -410,6 +431,7 @@ impl ContentIndex {
             root,
             receiver,
             cancelled,
+            save_gate,
             progress: BuildProgress::default(),
             task,
         });
@@ -514,6 +536,24 @@ impl ContentIndex {
         if let Some(position) = self.snapshot_order.iter().position(|cached| cached == root) {
             let cached = self.snapshot_order.remove(position);
             self.snapshot_order.push(cached);
+        }
+    }
+
+    /// Drop a disabled root's cached index, its load error and its index
+    /// file, which holds up to `MAX_CONTENT_BYTES` of the folder's text.
+    /// Enabling always rebuilds, so nothing reusable is lost. Best effort: a
+    /// file that cannot be removed is only logged.
+    fn forget_root_index(&mut self, root: &Path, index_file: &Path) {
+        self.evict_snapshot(root);
+        self.load_errors.remove(root);
+        if let Err(error) = fs::remove_file(index_file)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(
+                target: "commander::content_index",
+                "Could not remove disabled index {}: {error}",
+                index_file.display()
+            );
         }
     }
 
@@ -900,6 +940,26 @@ pub fn build_test_index(root: &Path) -> RootIndex {
         |_| true,
     )
     .expect("test content index should build")
+}
+
+/// Save a finished build's index unless the build was cancelled after its
+/// scan: a root disabled meanwhile must not get back the file the disable
+/// deleted. The check and the write happen under `gate`, which the disable
+/// path takes before it removes the file.
+fn save_unless_cancelled(
+    path: &Path,
+    index: &RootIndex,
+    gate: &Mutex<()>,
+    cancelled: &AtomicBool,
+    scheduler_cancel: Option<&crate::workload::CancellationToken>,
+) -> Result<(), String> {
+    let _gate = gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if build_cancelled(cancelled, scheduler_cancel) {
+        return Err("Index build cancelled".to_string());
+    }
+    save_index_to(path, index)
 }
 
 fn build_cancelled(
@@ -1593,6 +1653,44 @@ mod tests {
 
         index.unloadable.clear();
         assert!(index.snapshot_from(&path, temp.path()).is_some());
+    }
+
+    #[test]
+    fn disabling_a_root_forgets_its_index_file_and_errors() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "private text");
+        let path = temp.path().join("index.json");
+        save_index_to(&path, &scan(temp.path(), Vec::new())).unwrap();
+        let mut index = test_content_index();
+        assert!(index.snapshot_from(&path, temp.path()).is_some());
+        index
+            .load_errors
+            .insert(temp.path().to_path_buf(), "old".to_string());
+
+        index.forget_root_index(temp.path(), &path);
+
+        assert!(!path.exists(), "disabled index kept its file contents");
+        assert!(!index.snapshots.contains_key(temp.path()));
+        assert!(!index.load_errors.contains_key(temp.path()));
+        // Already gone: forgetting again is a quiet no-op.
+        index.forget_root_index(temp.path(), &path);
+    }
+
+    #[test]
+    fn a_build_cancelled_after_its_scan_does_not_write_the_index() {
+        let temp = TempDir::new();
+        let path = temp.path().join("index.bin");
+        let index = scan(temp.path(), Vec::new());
+        let gate = Mutex::new(());
+        let cancelled = AtomicBool::new(true);
+
+        let result = save_unless_cancelled(&path, &index, &gate, &cancelled, None);
+
+        assert!(result.is_err());
+        assert!(!path.exists(), "a disabled root's index was written back");
+        cancelled.store(false, Ordering::Release);
+        save_unless_cancelled(&path, &index, &gate, &cancelled, None).unwrap();
+        assert!(path.exists());
     }
 
     #[test]

@@ -549,19 +549,23 @@ fn extract_zip_members(
             report.errors.push("Extraction cancelled".to_string());
             break;
         }
+        // The browser lists members by name, never by index, so errors name
+        // the member even when decoding cannot start (encrypted or an
+        // unsupported method).
+        let label = archive
+            .name_for_index(index)
+            .map_or_else(|| format!("#{index}"), str::to_owned);
         let mut entry = match archive.by_index(index) {
             Ok(entry) => entry,
             Err(error) => {
                 report
                     .errors
-                    .push(format!("Could not open member #{index}: {error}"));
+                    .push(format!("Could not open member {label}: {error}"));
                 continue;
             }
         };
         let Some(enclosed) = entry.enclosed_name() else {
-            report
-                .errors
-                .push(format!("Skipped unsafe member #{index}"));
+            report.errors.push(format!("Skipped unsafe member {label}"));
             continue;
         };
         let out_path = dest_dir.join(&enclosed);
@@ -599,8 +603,18 @@ fn extract_zip_members(
             {
                 report.skipped_existing += 1;
             }
-            Ok(mut out) => match std::io::copy(&mut entry, &mut out) {
-                Ok(_) => report.extracted += 1,
+            Ok(mut out) => match copy_until_cancelled(&mut entry, &mut out, cancelled) {
+                Ok(true) => {
+                    apply_zip_metadata(&out, &entry);
+                    report.extracted += 1;
+                }
+                Ok(false) => {
+                    // Cancelled mid-member: never leave a truncated file.
+                    drop(out);
+                    let _ = fs::remove_file(&out_path);
+                    report.errors.push("Extraction cancelled".to_string());
+                    break;
+                }
                 Err(error) => {
                     let _ = fs::remove_file(&out_path);
                     report
@@ -614,6 +628,82 @@ fn extract_zip_members(
         }
     }
     Ok(report)
+}
+
+/// Copy `reader` to `writer` in chunks, checking `cancelled` between them so
+/// closing the dialog stops a large member promptly. `Ok(false)` = cancelled.
+fn copy_until_cancelled(
+    reader: &mut impl Read,
+    writer: &mut impl std::io::Write,
+    cancelled: &AtomicBool,
+) -> std::io::Result<bool> {
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let read = match reader.read(&mut buf) {
+            Ok(0) => return Ok(true),
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        writer.write_all(&buf[..read])?;
+    }
+}
+
+/// Restore the member's permission bits and modification time, as the tar
+/// path does, so extracted scripts stay executable and files keep their
+/// dates. Best effort: a failure leaves the defaults and is only logged.
+fn apply_zip_metadata(out: &fs::File, entry: &zip::read::ZipFile<'_, fs::File>) {
+    #[cfg(unix)]
+    if let Some(mode) = entry.unix_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        // Only rwx bits: setuid/setgid/sticky from an archive are not kept.
+        if let Err(error) = out.set_permissions(fs::Permissions::from_mode(mode & 0o777)) {
+            log::debug!(
+                "zip extract: could not set mode of {}: {error}",
+                entry.name()
+            );
+        }
+    }
+    if let Some(modified) = zip_member_mtime(entry)
+        && let Err(error) = out.set_modified(modified)
+    {
+        log::debug!(
+            "zip extract: could not set mtime of {}: {error}",
+            entry.name()
+        );
+    }
+}
+
+/// A member's modification time: the UTC extended-timestamp field when the
+/// archiver wrote one, else the MS-DOS field, which is local time.
+fn zip_member_mtime(entry: &zip::read::ZipFile<'_, fs::File>) -> Option<std::time::SystemTime> {
+    let extended = entry.extra_data_fields().find_map(|field| match field {
+        zip::extra_fields::ExtraField::ExtendedTimestamp(ts) => ts.mod_time(),
+        _ => None,
+    });
+    if let Some(secs) = extended {
+        return Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(secs)));
+    }
+    dos_time_to_system(entry.last_modified()?)
+}
+
+fn dos_time_to_system(time: zip::DateTime) -> Option<std::time::SystemTime> {
+    use chrono::TimeZone;
+    let naive = chrono::NaiveDate::from_ymd_opt(
+        i32::from(time.year()),
+        u32::from(time.month()),
+        u32::from(time.day()),
+    )?
+    .and_hms_opt(
+        u32::from(time.hour()),
+        u32::from(time.minute()),
+        u32::from(time.second()),
+    )?;
+    let local = chrono::Local.from_local_datetime(&naive).earliest()?;
+    Some(local.into())
 }
 
 fn extract_tar_gz_members(
@@ -697,10 +787,22 @@ fn extract_tar_gz_members(
         .arg("-T")
         .arg(&list_path)
         .stdin(std::process::Stdio::null())
-        .output();
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|child| wait_child_or_cancel(child, cancelled));
     let _ = fs::remove_file(&list_path);
     let output =
         output.map_err(|error| format!("Could not extract {}: {error}", archive_path.display()))?;
+    let Some(output) = output else {
+        // tar was killed mid-member, so any of this run's outputs may be
+        // truncated; none existed before the run, so removing them is safe.
+        for out in &wanted_outputs {
+            let _ = fs::remove_file(out);
+        }
+        report.errors.push("Extraction cancelled".to_string());
+        return Ok(report);
+    };
     if output.status.success() {
         report.extracted += wanted.len();
     } else {
@@ -722,6 +824,42 @@ fn extract_tar_gz_members(
         ));
     }
     Ok(report)
+}
+
+/// Wait for `child`, killing it when `cancelled` is set: closing the dialog
+/// must not leave tar extracting a large archive in the background.
+/// `Ok(None)` = cancelled. Stderr is drained on a thread so a chatty tar
+/// cannot block on a full pipe.
+fn wait_child_or_cancel(
+    mut child: std::process::Child,
+    cancelled: &AtomicBool,
+) -> std::io::Result<Option<std::process::Output>> {
+    let stderr = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+    let status = loop {
+        if cancelled.load(Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    Ok(Some(std::process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr,
+    }))
 }
 
 pub struct ExtractRun {
@@ -1039,6 +1177,100 @@ mod tests {
         assert_eq!(report.extracted, 1);
         assert_eq!(report.errors, ["Unknown archive member #7"]);
         assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"a");
+    }
+
+    #[test]
+    fn chunked_copy_stops_when_cancelled_mid_member() {
+        /// Sets the cancel flag after the first chunk, like a dialog closed
+        /// while a large member is being written.
+        struct CancelAfterFirst<'a>(&'a AtomicBool);
+        impl Read for CancelAfterFirst<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.0.store(true, Ordering::Release);
+                buf.fill(b'x');
+                Ok(buf.len())
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut out = Vec::new();
+
+        let finished =
+            copy_until_cancelled(&mut CancelAfterFirst(&cancelled), &mut out, &cancelled).unwrap();
+
+        assert!(!finished);
+        assert_eq!(out.len(), 256 * 1024, "copy kept reading after cancel");
+
+        let idle = AtomicBool::new(false);
+        let mut out = Vec::new();
+        assert!(copy_until_cancelled(&mut &b"done"[..], &mut out, &idle).unwrap());
+        assert_eq!(out, b"done");
+    }
+
+    #[test]
+    fn zip_extract_names_unsafe_members() {
+        let temp = TempDir::new();
+        let archive = temp.path().join("unsafe.zip");
+        write_zip(&archive, &[("../escape.txt", b"bad")]);
+        let dest = temp.path().join("out");
+        let cancelled = AtomicBool::new(false);
+
+        let report = extract_members(&archive, &dest, &[0], &cancelled).unwrap();
+
+        assert_eq!(report.errors, ["Skipped unsafe member ../escape.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_extract_keeps_unix_mode_and_mtime() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new();
+        let archive = temp.path().join("script.zip");
+        let file = fs::File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let stamp = zip::DateTime::from_date_and_time(2020, 3, 4, 5, 6, 8).unwrap();
+        let options = zip::write::SimpleFileOptions::default()
+            .unix_permissions(0o755)
+            .last_modified_time(stamp);
+        writer.start_file("run.sh", options).unwrap();
+        writer.write_all(b"#!/bin/sh\n").unwrap();
+        writer.finish().unwrap();
+        let dest = temp.path().join("out");
+        let cancelled = AtomicBool::new(false);
+
+        let report = extract_members(&archive, &dest, &[0], &cancelled).unwrap();
+
+        assert_eq!(report.extracted, 1);
+        let meta = fs::metadata(dest.join("run.sh")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+        assert_eq!(meta.modified().unwrap(), dos_time_to_system(stamp).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_wait_kills_process_on_cancel() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let cancelled = AtomicBool::new(true);
+        let started = std::time::Instant::now();
+
+        let output = wait_child_or_cancel(child, &cancelled).unwrap();
+
+        assert!(output.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+
+        let child = std::process::Command::new("sh")
+            .args(["-c", "echo oops >&2; exit 3"])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = wait_child_or_cancel(child, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stderr, b"oops\n");
     }
 
     /// Build `<dir>/<name>.tgz` from `names` under `source` with system tar,
