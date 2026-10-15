@@ -1,20 +1,92 @@
 use super::*;
 
-fn compact_path(path: &std::path::Path, max_chars: usize) -> String {
+/// The active path elided at the start ("...tail") so that it measures at
+/// most `max_width` by `width_of`. Measuring the real text keeps wide glyphs
+/// (CJK, emoji) inside the trigger, and the tail is cut on grapheme
+/// boundaries so a decomposed accent never dangles after the ellipsis.
+/// Returns the text and whether it was shortened.
+fn compact_path(
+    path: &std::path::Path,
+    max_width: f32,
+    width_of: impl Fn(&str) -> f32,
+) -> (String, bool) {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let full = path.display().to_string();
-    if full.chars().count() <= max_chars {
-        return full;
+    if width_of(&full) <= max_width {
+        return (full, false);
     }
-    let keep = max_chars.saturating_sub(3);
-    let tail: String = full
-        .chars()
-        .rev()
-        .take(keep)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("...{tail}")
+    let starts: Vec<usize> = full.grapheme_indices(true).map(|(at, _)| at).collect();
+    if starts.len() < 2 {
+        return (full, false);
+    }
+    let elided = |index: usize| format!("...{}", &full[starts[index]..]);
+    // Dropping more leading graphemes only narrows the text, so search for
+    // the longest tail that fits; the last grapheme is kept regardless.
+    let (mut lo, mut hi) = (1, starts.len() - 1);
+    while lo < hi {
+        let mid = usize::midpoint(lo, hi);
+        if width_of(&elided(mid)) <= max_width {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    (elided(lo), true)
+}
+
+/// The omnibar trigger's accessible name: its purpose, then the folder it
+/// shows in full (the visible text is a glyph and a possibly elided path).
+fn omnibar_trigger_label(full_path: &str) -> String {
+    format!("Go to folder or command, current folder: {full_path}")
+}
+
+/// The trigger's hover text, led by the full path when the visible one is
+/// elided.
+fn omnibar_trigger_hover(full_path: &str, truncated: bool) -> String {
+    omnibar_trigger_hover_for(full_path, truncated, cfg!(target_os = "macos"))
+}
+
+fn omnibar_trigger_hover_for(full_path: &str, truncated: bool, mac: bool) -> String {
+    let [palette, go_to, recent] =
+        ["Cmd+K", "Cmd+L", "Cmd+P"].map(|shortcut| platform_shortcut_for(shortcut, mac));
+    let hint = format!("Go to folder, run a command, search ({palette}, {go_to}, {recent})");
+    if truncated {
+        format!("{full_path}\n{hint}")
+    } else {
+        hint
+    }
+}
+
+/// A catalog shortcut ("Cmd+J") as it is pressed on this platform: egui's
+/// command modifier is Ctrl outside macOS.
+pub(super) fn platform_shortcut(shortcut: &str) -> String {
+    platform_shortcut_for(shortcut, cfg!(target_os = "macos"))
+}
+
+fn platform_shortcut_for(shortcut: &str, mac: bool) -> String {
+    if mac {
+        shortcut.to_string()
+    } else {
+        shortcut.replace("Cmd+", "Ctrl+")
+    }
+}
+
+/// The shortcut the command palette lists for `command`, for this platform.
+pub(super) fn command_shortcut(command: crate::command::Command) -> Option<String> {
+    crate::command::CATALOG
+        .iter()
+        .find(|entry| entry.command == command && !entry.shortcut.is_empty())
+        .map(|entry| platform_shortcut(entry.shortcut))
+}
+
+/// A menu button showing `command`'s shortcut on its right edge.
+fn menu_item(label: &str, command: crate::command::Command) -> egui::Button<'_> {
+    let button = egui::Button::new(label);
+    match command_shortcut(command) {
+        Some(shortcut) => button.shortcut_text(shortcut),
+        None => button,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -57,39 +129,62 @@ impl App {
                     let width = (ui.available_width() - menu_width).clamp(120.0, 560.0);
                     let lead = (ui.available_width() - menu_width - width).max(0.0) / 2.0;
                     ui.add_space(lead);
-                    let max_chars = ((width - 60.0) / 7.0).max(8.0) as usize;
+                    let painter = ui.painter().clone();
+                    let (shown_path, truncated) =
+                        compact_path(&active_path, (width - 60.0).max(56.0), |text| {
+                            painter
+                                .layout_no_wrap(
+                                    text.to_string(),
+                                    egui::FontId::proportional(12.0),
+                                    t.text_secondary,
+                                )
+                                .size()
+                                .x
+                        });
+                    let full_path = active_path.display().to_string();
                     let trigger = ui
                         .add_sized(
                             Vec2::new(width, crate::accessibility::MIN_CONTROL_POINTS),
                             egui::Button::new(
-                                egui::RichText::new(format!(
-                                    "\u{2315}  {}",
-                                    compact_path(&active_path, max_chars)
-                                ))
-                                .size(12.0)
-                                .color(t.text_secondary),
+                                egui::RichText::new(format!("\u{2315}  {shown_path}"))
+                                    .size(12.0)
+                                    .color(t.text_secondary),
                             )
                             .fill(t.bg_card)
                             .stroke(Stroke::NONE)
                             .corner_radius(crate::theme::ROUNDING_MD),
                         )
-                        .on_hover_text(
-                            "Go to folder, run a command, search (\u{2318}K, \u{2318}L, \u{2318}P)",
-                        );
+                        .on_hover_text(omnibar_trigger_hover(&full_path, truncated));
+                    trigger.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            omnibar_trigger_label(&full_path),
+                        )
+                    });
                     if trigger.clicked() {
                         self.ws.execute(crate::command::Command::BeginPalette);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.menu_button(egui::RichText::new("\u{2026}").size(16.0), |ui| {
-                            // Only the open menu needs command availability;
-                            // building its context walks the selection, so
-                            // skip it on the frames where the menu is closed.
-                            let actions = ToolbarCommands::capture(&self.ws);
-                            self.view_menu(ui, ctx, actions);
-                        })
-                        .response
-                        .on_hover_text("View and settings");
+                        let menu = ui
+                            .menu_button(egui::RichText::new("\u{2026}").size(16.0), |ui| {
+                                // Only the open menu needs command availability;
+                                // building its context walks the selection, so
+                                // skip it on the frames where the menu is closed.
+                                let actions = ToolbarCommands::capture(&self.ws);
+                                self.view_menu(ui, ctx, actions);
+                            })
+                            .response
+                            .on_hover_text("View and settings");
+                        // The visible text is an ellipsis glyph; name the purpose.
+                        menu.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                true,
+                                "View and settings",
+                            )
+                        });
                         let compare_fill = if self.show_compare {
                             t.accent.linear_multiply(0.18)
                         } else {
@@ -104,6 +199,7 @@ impl App {
                             ui,
                             compare_fill,
                             compare_color,
+                            self.show_compare,
                         )
                         .on_hover_text("Compare panels: highlight differences");
                         if compare.clicked() {
@@ -116,7 +212,10 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, actions: ToolbarCommands) {
         if ui
-            .add_enabled(actions.create_dir.enabled, egui::Button::new("New folder"))
+            .add_enabled(
+                actions.create_dir.enabled,
+                menu_item("New folder", crate::command::Command::CreateDir),
+            )
             .on_disabled_hover_text(actions.create_dir.reason.unwrap_or_default())
             .clicked()
         {
@@ -126,7 +225,10 @@ impl App {
         if ui
             .add_enabled(
                 actions.move_in.enabled,
-                egui::Button::new("Move into highlighted folder"),
+                menu_item(
+                    "Move into highlighted folder",
+                    crate::command::Command::MoveIntoCursorFolder,
+                ),
             )
             .on_hover_text(
                 crate::accessibility::drag_alternative(
@@ -144,7 +246,10 @@ impl App {
         if ui
             .add_enabled(
                 actions.copy_in.enabled,
-                egui::Button::new("Copy into highlighted folder"),
+                menu_item(
+                    "Copy into highlighted folder",
+                    crate::command::Command::CopyIntoCursorFolder,
+                ),
             )
             .on_hover_text(
                 crate::accessibility::drag_alternative(
@@ -166,7 +271,7 @@ impl App {
         };
         if ui
             .add_enabled(filtered, egui::Button::new("Save filter as search"))
-            .on_disabled_hover_text("Type in the panel filter first")
+            .on_disabled_hover_text("Type in the panel filter or pick a filter chip first")
             .clicked()
         {
             self.save_active_filter_as_smart_folder(ctx);
@@ -174,17 +279,36 @@ impl App {
         }
 
         ui.separator();
+        // Hidden files and density belong to the active panel; say so, since
+        // the checkboxes around them are app-wide.
         let mut show_hidden = self.ws.active_panel_ref().show_hidden();
-        if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
+        let hidden = ui.checkbox(&mut show_hidden, "Show hidden files (this panel)");
+        let hidden = match command_shortcut(crate::command::Command::ToggleHidden) {
+            Some(shortcut) => hidden.on_hover_text(format!("Shortcut: {shortcut}")),
+            None => hidden,
+        };
+        if hidden.changed() {
             self.ws.execute(crate::command::Command::ToggleHidden);
         }
-        ui.checkbox(&mut self.show_tree, "Show folder sidebar");
+        if ui
+            .checkbox(&mut self.show_tree, "Show folder sidebar")
+            .changed()
+            && self.show_tree
+        {
+            // Open on the current folder, as the pane's sidebar toggle does.
+            let path = self.ws.active_panel_ref().current_path.clone();
+            self.tree_reveal_path(&path);
+        }
         ui.checkbox(&mut self.show_size_bars, "Show size bars");
         ui.checkbox(&mut self.show_key_bar, "Always show key bar");
+        let density_label = format!(
+            "Row density (this panel): {}",
+            crate::density::label(self.ws.active_panel_ref().density())
+        );
         if ui
-            .button(format!(
-                "Row density: {}",
-                crate::density::label(self.ws.active_panel_ref().density())
+            .add(menu_item(
+                &density_label,
+                crate::command::Command::CycleDensity,
             ))
             .clicked()
         {
@@ -202,7 +326,7 @@ impl App {
         if ui.button(theme_label).clicked() {
             self.switch_theme(ctx);
         }
-        ui.label("Text size");
+        let text_size = ui.label("Text size");
         let mut scale = self.ui_scale;
         if ui
             .add(
@@ -210,6 +334,7 @@ impl App {
                     .step_by(0.05)
                     .show_value(true),
             )
+            .labelled_by(text_size.id)
             .changed()
         {
             self.set_ui_scale(ctx, scale);
@@ -264,7 +389,79 @@ fn zoom_to_adopt(ui_scale: f32, zoom: f32) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_ui_scale, zoom_to_adopt};
+    use super::{
+        command_shortcut, compact_path, normalized_ui_scale, omnibar_trigger_hover,
+        omnibar_trigger_hover_for, omnibar_trigger_label, platform_shortcut_for, zoom_to_adopt,
+    };
+    use std::path::Path;
+
+    /// A stand-in for text measurement: CJK ideographs are twice as wide as
+    /// other characters, and combining marks take no width.
+    fn width(text: &str) -> f32 {
+        text.chars()
+            .map(|c| match c {
+                '\u{0300}'..='\u{036f}' => 0.0,
+                '\u{4e00}'..='\u{9fff}' => 14.0,
+                _ => 7.0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn compact_path_keeps_short_paths_whole() {
+        let (text, truncated) = compact_path(Path::new("/tmp/a"), 100.0, width);
+        assert_eq!(text, "/tmp/a");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn compact_path_fits_wide_glyphs_by_measured_width() {
+        let path = Path::new(
+            "/home/\u{6587}\u{6863}/\u{9879}\u{76ee}/\u{65b0}\u{5efa}\u{6587}\u{4ef6}\u{5939}",
+        );
+        let (text, truncated) = compact_path(path, 70.0, width);
+        assert!(truncated);
+        assert!(text.starts_with("..."));
+        assert!(width(&text) <= 70.0, "{text} is {} wide", width(&text));
+        assert!(text.ends_with("\u{5939}"));
+    }
+
+    #[test]
+    fn compact_path_never_starts_the_tail_with_a_combining_mark() {
+        // "cafe\u{301}" is an NFD "café". With room for one more character
+        // after the ellipsis, a per-char cut would keep only the accent.
+        let per_char = |text: &str| text.chars().count() as f32 * 7.0;
+        let (text, truncated) = compact_path(Path::new("/a/cafe\u{301}"), 28.0, per_char);
+        assert!(truncated);
+        assert_eq!(text, "...e\u{301}");
+    }
+
+    #[test]
+    fn omnibar_trigger_names_its_purpose_and_full_path() {
+        assert_eq!(
+            omnibar_trigger_label("/a/b"),
+            "Go to folder or command, current folder: /a/b"
+        );
+        assert!(omnibar_trigger_hover("/deep/path", true).starts_with("/deep/path\n"));
+        assert!(!omnibar_trigger_hover("/deep/path", false).contains("/deep/path"));
+        assert!(omnibar_trigger_hover_for("/p", false, false).contains("(Ctrl+K, Ctrl+L, Ctrl+P)"));
+        assert!(omnibar_trigger_hover_for("/p", false, true).contains("(Cmd+K, Cmd+L, Cmd+P)"));
+    }
+
+    #[test]
+    fn shortcuts_use_the_platform_command_modifier() {
+        assert_eq!(platform_shortcut_for("Cmd+Shift+D", false), "Ctrl+Shift+D");
+        assert_eq!(platform_shortcut_for("Cmd+J", true), "Cmd+J");
+        assert_eq!(platform_shortcut_for("F7", false), "F7");
+        assert_eq!(
+            command_shortcut(crate::command::Command::CreateDir).as_deref(),
+            Some("F7")
+        );
+        assert_eq!(
+            command_shortcut(crate::command::Command::FindDuplicates),
+            None
+        );
+    }
 
     #[test]
     fn keyboard_zoom_is_adopted_into_the_stored_scale() {
