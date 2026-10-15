@@ -320,6 +320,52 @@ fn accepts_row_drop(target: &std::path::Path, dragged: &[PathBuf]) -> bool {
         .any(|source| crate::fs_util::is_within_or_equal(target, source))
 }
 
+/// Whether keyboard focus should move to the cursor row, so assistive tech
+/// follows keyboard cursor moves. Only after the cursor moved
+/// (`cursor_moved`, the pending scroll) in the active, enabled pane, while
+/// no text is being edited, and only when focus is not held elsewhere:
+/// nothing has it, or a row of this list does (`focus_in_list`).
+const fn follow_cursor_focus(
+    cursor_moved: bool,
+    is_active: bool,
+    enabled: bool,
+    text_editing: bool,
+    focus_in_list: bool,
+) -> bool {
+    cursor_moved && is_active && enabled && !text_editing && focus_in_list
+}
+
+/// Per-pane id of the list row that last held keyboard focus.
+fn list_focus_key(panel_side: &str) -> egui::Id {
+    egui::Id::new(("file_list_focus", panel_side))
+}
+
+/// Book-keeping for a row that holds or takes keyboard focus: remember it
+/// as this list's, and keep egui's arrow-key focus navigation off it, since
+/// the arrows move the list cursor (and focus follows the cursor).
+fn claim_row_focus(ui: &egui::Ui, panel_side: &str, response: &egui::Response) {
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(list_focus_key(panel_side), response.id));
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            response.id,
+            egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..Default::default()
+            },
+        );
+    });
+}
+
+/// Move keyboard focus to the cursor row and cancel egui's own arrow-key
+/// focus move this frame, which would step one row past it.
+fn focus_cursor_row(ui: &egui::Ui, panel_side: &str, response: &egui::Response) {
+    response.request_focus();
+    ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+    claim_row_focus(ui, panel_side, response);
+}
+
 /// Spoken label of the ".." row. Like file rows it says "State: cursor"
 /// while the keyboard cursor sits on it.
 fn parent_row_label(is_cursor: bool) -> &'static str {
@@ -455,6 +501,26 @@ impl App {
                 .ctx()
                 .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
         let mut context_menu_request = None;
+        // Keyboard focus follows the cursor only while it is unclaimed or
+        // already on one of this list's rows.
+        let focus_in_list = {
+            let focused = ui.memory(|memory| memory.focused());
+            let ours = ui
+                .ctx()
+                .data(|data| data.get_temp::<egui::Id>(list_focus_key(panel_side)));
+            focused.is_none() || focused == ours
+        };
+        let follow_focus = |ui: &egui::Ui, cursor_moved: bool| {
+            follow_cursor_focus(
+                cursor_moved,
+                is_active,
+                ui.is_enabled(),
+                crate::accessibility::text_input_state(ui.ctx())
+                    .mode()
+                    .is_some(),
+                focus_in_list,
+            )
+        };
         // Reserve the footer first so the scroll area fills only what is left;
         // drawn after it, the footer fell below the panel and was clipped.
         egui::Panel::bottom(egui::Id::new(("file_list_status", panel_side)))
@@ -536,6 +602,7 @@ impl App {
                         paint_cursor_marker(ui.painter(), up_row.rect, t, true);
                     }
                     if up_row.has_focus() {
+                        claim_row_focus(ui, panel_side, &up_row);
                         paint_focus_ring(ui.painter(), up_row.rect, t);
                     }
 
@@ -544,6 +611,9 @@ impl App {
                         // request here, since no file row holds the cursor.
                         ui.scroll_to_rect(up_row.rect, None);
                         panel.set_scroll_to_cursor(false);
+                        if follow_focus(ui, true) {
+                            focus_cursor_row(ui, panel_side, &up_row);
+                        }
                     }
                     if up_row.double_clicked() {
                         panel.go_up();
@@ -830,6 +900,9 @@ impl App {
                         ui.scroll_to_rect(row_rect, Some(Align::Center));
                         scrolled = true;
                     }
+                    if is_cursor && follow_focus(ui, scroll_pending) {
+                        focus_cursor_row(ui, panel_side, &row_resp);
+                    }
 
                     // Paint background
                     let full_rect =
@@ -925,6 +998,7 @@ impl App {
                         );
                     }
                     if row_resp.has_focus() {
+                        claim_row_focus(ui, panel_side, &row_resp);
                         paint_focus_ring(ui.painter(), full_rect, t);
                     }
 
@@ -1439,10 +1513,10 @@ mod tests {
     use super::{
         EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
         click_range, compare_marker, cursor_chevron_fits, cursor_row_to_reveal,
-        drop_target_writable, empty_state, folder_changed, grid_row_index, highlight_name_job,
-        map_ranges_to_display, name_char_budget, name_column_width, parent_row_label,
-        row_click_kind, row_content_height, row_spoken_label, selection_size_label,
-        selection_summary_with, visible_rows, visible_selection_summary,
+        drop_target_writable, empty_state, folder_changed, follow_cursor_focus, grid_row_index,
+        highlight_name_job, map_ranges_to_display, name_char_budget, name_column_width,
+        parent_row_label, row_click_kind, row_content_height, row_spoken_label,
+        selection_size_label, selection_summary_with, visible_rows, visible_selection_summary,
     };
 
     #[test]
@@ -1738,5 +1812,19 @@ mod tests {
         assert!(!accepts_row_drop(&inner, &dragged));
         assert!(accepts_row_drop(&other, &dragged));
         assert!(accepts_row_drop(&folder, &[]));
+    }
+
+    #[test]
+    fn focus_follows_keyboard_cursor_moves_only() {
+        // Cursor moved in the active pane, focus free or on this list.
+        assert!(follow_cursor_focus(true, true, true, false, true));
+        // No cursor move: focus stays where it is.
+        assert!(!follow_cursor_focus(false, true, true, false, true));
+        // Inactive or disabled pane, a text field being edited, or focus
+        // held by another widget (a dialog button): never steal it.
+        assert!(!follow_cursor_focus(true, false, true, false, true));
+        assert!(!follow_cursor_focus(true, true, false, false, true));
+        assert!(!follow_cursor_focus(true, true, true, true, true));
+        assert!(!follow_cursor_focus(true, true, true, false, false));
     }
 }
