@@ -904,10 +904,13 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     ));
                 }
 
+                // Proving a checkpoint hashes the staged prefix, so it is
+                // computed once per failed attempt and reused below.
+                let mut checkpoint = None;
                 match &result {
                     Ok(outcome) => base_bytes = base_bytes.saturating_add(outcome.bytes),
                     Err(e) => {
-                        let checkpoint = (!renamed && !entry.is_dir)
+                        checkpoint = (!renamed && !entry.is_dir)
                             .then(|| {
                                 valid_runtime_checkpoint(
                                     &spec.operation_id,
@@ -976,7 +979,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                             ),
                                         );
                                     }
-                                    work_item.expectation.resume = checkpoint;
+                                    work_item.expectation.resume = checkpoint.take();
                                     work_item.mount_retries += 1;
                                     base_bytes = attempt_base;
                                     {
@@ -1163,18 +1166,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     }
                 }
 
-                let resumable_partial = result.is_err()
-                    && !renamed
-                    && !entry.is_dir
-                    && valid_runtime_checkpoint(
-                        &spec.operation_id,
-                        &work_item.key,
-                        &entry.path,
-                        &copy_target,
-                        spec.symlink_policy,
-                        journal_enabled,
-                    )
-                    .is_some();
+                let resumable_partial = checkpoint.is_some();
                 // A failed native (or other) directory stage may already hold
                 // successfully copied siblings under the staging root. Wiping
                 // that whole tree would discard recoverable work; leave it in
