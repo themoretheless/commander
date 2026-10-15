@@ -3126,8 +3126,18 @@ mod tests {
     #[test]
     fn a_volume_replaced_before_any_wait_is_not_reported_as_paused() {
         let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        // A generous poll interval keeps a slow thread spawn on a loaded machine
+        // from timing out the first probe and reporting Disconnected (which
+        // would set the paused flag before Replaced arrives).
+        let guard = crate::mount_guard::MountGuard {
+            policy: crate::mount_guard::ReconnectPolicy {
+                timeout_ms: 10_000,
+                poll_interval_ms: 1_000,
+            },
+            ..hung_mount_guard()
+        };
         let result = wait_for_mount_probed(
-            &hung_mount_guard(),
+            &guard,
             || crate::mount_guard::MountAvailability::Replaced,
             "Destination volume",
             &progress,
