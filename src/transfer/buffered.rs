@@ -27,11 +27,14 @@ pub(super) fn copy_file_buffered_with_limiter(
     checkpoints: Option<&mut dyn CheckpointSink>,
     preserve_sparse: bool,
 ) -> std::io::Result<u64> {
-    if preserve_sparse && resume.is_none() && super::sparse::is_sparse_file(src) {
-        return super::sparse::copy_file_sparse(src, dst, state, limiter);
-    }
     let retain_partial = checkpoints.is_some();
-    let result = copy_file_buffered_inner(src, dst, state, limiter, resume, checkpoints);
+    let result = if preserve_sparse && resume.is_none() && super::sparse::is_sparse_file(src) {
+        // Sparse copies publish no checkpoints, so their full-length,
+        // hole-filled partial is never resumable and is cleaned up below.
+        super::sparse::copy_file_sparse(src, dst, state, limiter)
+    } else {
+        copy_file_buffered_inner(src, dst, state, limiter, resume, checkpoints)
+    };
     if let Err(ref e) = result {
         // Clean up our own partial write, but never delete a destination that
         // was already there (AlreadyExists means create_new refused to clobber).
@@ -168,7 +171,12 @@ fn copy_file_buffered_inner(
         content_hasher.update(&buf[..n]);
         copied = copied.saturating_add(n as u64);
 
-        if limiter.consume(n, || false).is_err() {
+        // The throttle sleep can last many seconds per chunk on a slow limit,
+        // so it watches the cancel flag itself.
+        if limiter
+            .consume(n, || crate::lock_util::recover(state).cancelled)
+            .is_err()
+        {
             persist_checkpoint(
                 src,
                 dst,
@@ -177,7 +185,7 @@ fn copy_file_buffered_inner(
                 &content_hasher,
                 &mut checkpoints,
             )?;
-            return Err(std::io::ErrorKind::Other.into());
+            return Err(crate::transfer::cancelled_error());
         }
 
         {
@@ -206,10 +214,14 @@ fn copy_file_buffered_inner(
         &content_hasher,
         &mut checkpoints,
     )?;
-    // Apply the source's permissions only after the contents are complete, so
-    // a concurrent reader never sees a partial file already wearing its final
-    // (possibly executable) mode.
+    // Apply the source's modification time and permissions only after the
+    // contents are complete, so a concurrent reader never sees a partial file
+    // already wearing its final (possibly executable) mode. Resume binds the
+    // partial by file id, not mtime, so the stamp cannot void a checkpoint.
     if let Ok(meta) = src.metadata() {
+        if let Ok(modified) = meta.modified() {
+            let _ = writer.get_ref().set_modified(modified);
+        }
         let _ = std::fs::set_permissions(dst, meta.permissions());
     }
     // What actually landed, so a source that changed size mid-copy cannot
@@ -476,5 +488,88 @@ mod tests {
         .unwrap();
         assert!(copied > 0);
         assert_eq!(copied, std::fs::metadata(&dst).unwrap().len());
+    }
+
+    #[test]
+    fn buffered_copy_keeps_the_source_modification_time() {
+        let tmp = TempDir::new();
+        let src = tmp.file("src.txt", "dated");
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let dst = tmp.path().join("dst.txt");
+        copy_file_buffered_with_limiter(&src, &dst, &state(), &mut unlimited(), None, None, false)
+            .unwrap();
+        assert_eq!(std::fs::metadata(&dst).unwrap().modified().unwrap(), old);
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "dated");
+    }
+
+    #[test]
+    fn cancel_interrupts_a_bandwidth_throttle_sleep() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("src.bin");
+        // 256 KiB at the 64 KiB/s floor is a four-second throttle sleep.
+        std::fs::write(&src, vec![7u8; 256 * 1024]).unwrap();
+        let dst = tmp.path().join("dst.bin");
+        let progress = state();
+        let mut limiter =
+            crate::transfer_tuning::BandwidthLimiter::new(crate::transfer_tuning::VolumeRule {
+                max_bytes_per_second: Some(64 * 1024),
+                ..Default::default()
+            });
+        let canceller = {
+            let progress = Arc::clone(&progress);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                crate::lock_util::recover(&progress).request_cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+
+        let error =
+            copy_file_buffered_with_limiter(&src, &dst, &progress, &mut limiter, None, None, false)
+                .unwrap_err();
+
+        canceller.join().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "cancel waited {:?}",
+            started.elapsed()
+        );
+        assert!(!dst.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_sparse_copy_removes_its_full_length_partial() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("sparse.bin");
+        std::fs::File::create(&src)
+            .unwrap()
+            .set_len(8 * 1024 * 1024)
+            .unwrap();
+        assert!(super::super::sparse::is_sparse_file(&src));
+        let dst = tmp.path().join("dst.bin");
+        let progress = state();
+        crate::lock_util::recover(&progress).cancelled = true;
+
+        let error = copy_file_buffered_with_limiter(
+            &src,
+            &dst,
+            &progress,
+            &mut unlimited(),
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(!dst.exists());
     }
 }
