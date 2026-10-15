@@ -1115,6 +1115,18 @@ impl App {
     /// input handling and background-task polling.
     fn begin_frame(&mut self, ctx: &egui::Context) {
         self.sync_ui_scale_with_zoom(ctx);
+        // Remember the restored-state size only: a maximized or fullscreen
+        // window would otherwise reopen screen-sized but not maximized.
+        if let Some(size) = ctx.input(|input| {
+            let viewport = input.viewport();
+            let zoomed = viewport.maximized == Some(true) || viewport.fullscreen == Some(true);
+            (!zoomed)
+                .then_some(viewport.inner_rect)
+                .flatten()
+                .map(|rect| [rect.width(), rect.height()])
+        }) {
+            self.window_size = Some(size);
+        }
         self.refresh_accessibility_preferences(ctx);
         ctx.data_mut(|data| {
             data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));

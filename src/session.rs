@@ -147,6 +147,29 @@ pub struct Session {
     /// Missing folders are harmless: the tree only walks folders it lists.
     #[serde(default)]
     pub tree_expanded: Vec<PathBuf>,
+    /// Window inner size in points, restored at launch; absent in sessions
+    /// written before it was remembered.
+    #[serde(default)]
+    pub window_size: Option<[f32; 2]>,
+}
+
+/// Smallest window the app allows (matches the viewport's minimum size).
+pub const MIN_WINDOW_SIZE: [f32; 2] = [900.0, 500.0];
+
+/// Largest remembered window size accepted; anything bigger is a corrupt
+/// value, not a real display.
+const MAX_WINDOW_SIDE: f32 = 16_384.0;
+
+/// A remembered window size worth restoring: finite and clamped to the
+/// window's minimum and a sane maximum.
+pub fn restorable_window_size(size: Option<[f32; 2]>) -> Option<[f32; 2]> {
+    let [width, height] = size?;
+    (width.is_finite() && height.is_finite()).then(|| {
+        [
+            width.clamp(MIN_WINDOW_SIZE[0], MAX_WINDOW_SIDE),
+            height.clamp(MIN_WINDOW_SIZE[1], MAX_WINDOW_SIDE),
+        ]
+    })
 }
 
 /// Most expanded tree folders a session keeps.
@@ -345,7 +368,34 @@ mod tests {
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
             tree_expanded: vec![PathBuf::from("/a"), PathBuf::from("/a/b")],
+            window_size: Some([1400.0, 900.0]),
         }
+    }
+
+    #[test]
+    fn window_size_round_trips_and_defaults_when_absent() {
+        let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut val = serde_json::to_value(&s).unwrap();
+        let back: Session = serde_json::from_value(val.clone()).unwrap();
+        assert_eq!(back.window_size, Some([1400.0, 900.0]));
+        val.as_object_mut().unwrap().remove("window_size");
+        let older: Session = serde_json::from_value(val).unwrap();
+        assert_eq!(older.window_size, None);
+    }
+
+    #[test]
+    fn restorable_window_size_clamps_and_rejects_garbage() {
+        assert_eq!(restorable_window_size(None), None);
+        assert_eq!(
+            restorable_window_size(Some([1400.0, 900.0])),
+            Some([1400.0, 900.0])
+        );
+        assert_eq!(
+            restorable_window_size(Some([10.0, 1e9])),
+            Some([MIN_WINDOW_SIZE[0], MAX_WINDOW_SIDE])
+        );
+        assert_eq!(restorable_window_size(Some([f32::NAN, 900.0])), None);
+        assert_eq!(restorable_window_size(Some([1400.0, f32::INFINITY])), None);
     }
 
     #[test]

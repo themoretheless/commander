@@ -129,7 +129,7 @@ fn main() -> eframe::Result<()> {
         viewport: ViewportBuilder::default()
             .with_title("Commander")
             .with_inner_size([1280.0, 760.0])
-            .with_min_inner_size([900.0, 500.0])
+            .with_min_inner_size(session::MIN_WINDOW_SIZE)
             .with_titlebar_shown(false)
             .with_fullsize_content_view(true),
         // eframe 0.35 moved vsync/hardware-acceleration into the

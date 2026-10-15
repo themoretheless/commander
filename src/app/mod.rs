@@ -83,6 +83,9 @@ pub struct App {
     pub(crate) selection_hud_cache: Option<update::SelectionHudCache>,
     pub(crate) drag_announcement: update::DragAnnouncementMemo,
     pub(crate) tree_width: f32,
+    /// The window's inner size in points as last seen while not maximized
+    /// or fullscreen, saved with the session.
+    pub(crate) window_size: Option<[f32; 2]>,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
@@ -847,6 +850,12 @@ impl App {
         let ui_scale =
             crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
         cc.egui_ctx.set_zoom_factor(ui_scale);
+        let restored_window_size =
+            crate::session::restorable_window_size(session.as_ref().and_then(|s| s.window_size));
+        if let Some([width, height]) = restored_window_size {
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(width, height)));
+        }
 
         if let Some(s) = &session {
             ws.active = if s.active_left {
@@ -880,6 +889,7 @@ impl App {
                     .collect()
             }),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
+            window_size: restored_window_size,
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
             show_key_bar: session.as_ref().is_some_and(|s| s.show_key_bar),
@@ -1017,6 +1027,7 @@ impl App {
             selection_hud_cache: None,
             drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
+            window_size: None,
             show_size_bars: false,
             show_compare: false,
             show_key_bar: false,
@@ -1139,6 +1150,7 @@ impl App {
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
+            window_size: self.window_size,
             show_size_bars: self.show_size_bars,
             show_compare: self.show_compare,
             show_key_bar: self.show_key_bar,
