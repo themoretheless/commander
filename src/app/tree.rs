@@ -71,6 +71,60 @@ pub(super) fn expand_through(
     expanded.insert(path.to_path_buf());
 }
 
+/// Lay out `text` on one line, cut to `max_width` with a trailing "…".
+fn elided_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+/// Paint a one-line label left-aligned at `left`, vertically centred in
+/// `row`, elided at the row's right edge.
+fn paint_row_label(
+    ui: &egui::Ui,
+    row: egui::Rect,
+    left: f32,
+    text: &str,
+    size: f32,
+    color: Color32,
+) {
+    let galley = elided_galley(
+        ui,
+        text,
+        egui::FontId::proportional(size),
+        color,
+        row.right() - left - 4.0,
+    );
+    let pos = egui::pos2(left, row.center().y - galley.size().y / 2.0);
+    ui.painter().galley(pos, galley, color);
+}
+
+/// The keyboard focus ring for a painter-drawn sidebar row.
+fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.shrink(1.0),
+            CornerRadius::same(2),
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// A favorite's tooltip: its path, plus the Cmd+digit jump when it has a slot.
+fn favorite_tooltip(path: &std::path::Path, slot: Option<u8>) -> String {
+    match slot {
+        Some(n) => format!("{}  (Cmd+{n})", path.display()),
+        None => path.display().to_string(),
+    }
+}
+
 impl App {
     /// Render the global tree sidebar. Returns Some(path) if user clicked a folder.
     pub(crate) fn render_global_tree(
@@ -138,6 +192,7 @@ impl App {
                     t.bg_hover.linear_multiply(0.3),
                 );
             }
+            paint_focus_ring(ui, &resp);
             let mut x = rect.left() + 6.0;
             // Slot digit (fixed-width gutter so names align with/without a slot).
             let slot_text = row.slot.map(|n| n.to_string()).unwrap_or_default();
@@ -149,21 +204,19 @@ impl App {
                 t.accent,
             );
             x += 14.0;
-            ui.painter().text(
-                egui::pos2(x, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &row.name,
-                egui::FontId::proportional(12.0),
-                if row.is_current {
-                    t.text_primary
-                } else {
-                    t.text_secondary
-                },
-            );
+            let name_color = if row.is_current {
+                t.text_primary
+            } else {
+                t.text_secondary
+            };
+            paint_row_label(ui, rect, x, &row.name, 12.0, name_color);
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &row.name)
+            });
             if resp.clicked() {
                 nav = Some(row.path.clone());
             }
-            resp.on_hover_text(row.path.display().to_string());
+            resp.on_hover_text(favorite_tooltip(&row.path, row.slot));
         }
         ui.add_space(6.0);
         nav
@@ -484,5 +537,31 @@ mod tests {
             PathBuf::from(format!("/tmp/{TREE_CHILD_CACHE_LIMIT}")),
             TREE_CHILD_CACHE_LIMIT.is_multiple_of(2)
         )));
+    }
+
+    #[test]
+    fn favorite_tooltips_mention_the_jump_shortcut() {
+        let path = std::path::Path::new("/work");
+        assert_eq!(favorite_tooltip(path, Some(3)), "/work  (Cmd+3)");
+        assert_eq!(favorite_tooltip(path, None), "/work");
+    }
+
+    #[test]
+    fn long_sidebar_names_are_elided_to_the_row() {
+        let ctx = egui::Context::default();
+        let mut elided = None;
+        crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+            let galley = elided_galley(
+                ui,
+                &"very long folder name ".repeat(20),
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+                120.0,
+            );
+            elided = Some((galley.elided, galley.size().x));
+        }));
+        let (was_elided, width) = elided.expect("ran");
+        assert!(was_elided);
+        assert!(width <= 120.0);
     }
 }
