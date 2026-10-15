@@ -76,7 +76,8 @@ impl ToastQueue {
     /// refreshed (timer, kind, Undo) and moved to the newest position under
     /// its existing id rather than stacking a duplicate. Otherwise append,
     /// capping the queue at [`MAX_TOASTS`] by dropping the oldest toast that
-    /// is not an error (errors go last, oldest first).
+    /// is not an error (errors go last, oldest first). The toast just pushed
+    /// is never the one evicted: the user's latest feedback always shows.
     pub fn push(&mut self, mut toast: Toast) {
         if let Some(index) = self.toasts.iter().position(|t| t.message == toast.message) {
             let mut existing = self.toasts.remove(index);
@@ -94,8 +95,8 @@ impl ToastQueue {
             .expect("toast ID space exhausted");
         self.toasts.push(toast);
         while self.toasts.len() > MAX_TOASTS {
-            let evict = self
-                .toasts
+            let older = self.toasts.len() - 1;
+            let evict = self.toasts[..older]
                 .iter()
                 .position(|t| t.kind != ToastKind::Error)
                 .unwrap_or(0);
@@ -203,6 +204,17 @@ mod tests {
             q.push(Toast::new(m, ToastKind::Error, false, 0.0));
         }
         assert_eq!(q.active()[0].message, "e2");
+    }
+
+    #[test]
+    fn a_new_success_is_shown_even_when_errors_fill_the_stack() {
+        let mut q = ToastQueue::default();
+        for m in ["e1", "e2", "e3"] {
+            q.push(Toast::new(m, ToastKind::Error, false, 0.0));
+        }
+        q.push(Toast::new("Moved 2 items", ToastKind::Success, true, 1.0));
+        let msgs: Vec<&str> = q.active().iter().map(|t| t.message.as_str()).collect();
+        assert_eq!(msgs, vec!["e2", "e3", "Moved 2 items"]);
     }
 
     #[test]
