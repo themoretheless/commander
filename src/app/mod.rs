@@ -72,6 +72,8 @@ pub struct App {
     pub theme_mode: ThemeMode,
     pub colors: ThemeColors,
     pub(crate) accessibility_preferences: crate::accessibility::Preferences,
+    /// Re-reads [`Self::accessibility_preferences`] on window focus gain.
+    pub(crate) accessibility_watch: crate::accessibility::PreferenceWatch,
     pub(crate) prev_window_width: f32,
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
@@ -996,6 +998,7 @@ impl App {
             theme_mode,
             colors: ThemeColors::for_preferences(theme_mode, accessibility_preferences),
             accessibility_preferences,
+            accessibility_watch: crate::accessibility::PreferenceWatch::default(),
             prev_window_width: 0.0,
             image_cache,
             show_tree: false,

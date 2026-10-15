@@ -357,6 +357,24 @@ impl App {
         apply_theme(ctx, self.theme_mode, self.accessibility_preferences);
     }
 
+    /// Re-reads Reduce Motion / Increase Contrast when the window regains
+    /// focus and re-applies the theme if they changed, so a System Settings
+    /// toggle takes effect without a restart.
+    pub(super) fn refresh_accessibility_preferences(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|input| input.focused);
+        if let Some(fresh) = self
+            .accessibility_watch
+            .poll(focused, self.accessibility_preferences)
+        {
+            self.accessibility_preferences = fresh;
+            self.colors = ThemeColors::for_preferences(self.theme_mode, fresh);
+            apply_theme(ctx, self.theme_mode, fresh);
+        }
+        if self.accessibility_watch.refreshing() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
     fn set_ui_scale(&mut self, ctx: &egui::Context, scale: f32) {
         self.ui_scale = normalized_ui_scale(scale);
         ctx.set_zoom_factor(self.ui_scale);

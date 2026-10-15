@@ -1114,6 +1114,7 @@ impl App {
     /// input handling and background-task polling.
     fn begin_frame(&mut self, ctx: &egui::Context) {
         self.sync_ui_scale_with_zoom(ctx);
+        self.refresh_accessibility_preferences(ctx);
         ctx.data_mut(|data| {
             data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
