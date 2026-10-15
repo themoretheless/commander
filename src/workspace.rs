@@ -2694,84 +2694,30 @@ impl Workspace {
 
     // ── Duplicates ──────────────────────────────────────────────────────
 
-    /// Find duplicate files in the active panel's directory (files only,
-    /// non-recursive for now). Size-prefilters so only files whose size
-    /// collides are hashed, groups by (size, digest prefix), then confirms
-    /// each group by the full 256-bit digest (a 64-bit prefix match is not
-    /// proof) before reporting it, so the dialog never offers to trash a
-    /// false positive. Each candidate is read once: the verified BLAKE3
-    /// digest that groups it also confirms it.
-    pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
-        use std::collections::HashMap;
-        // Empty files all "match" (a folder of `__init__.py`/`.gitkeep`
-        // markers is not clutter), and a hard link shares its twin's bytes:
-        // trashing either frees nothing, so each inode is offered once.
+    /// Files of the active panel's directory (non-recursive) that can have a
+    /// duplicate worth trashing. Empty files all "match" (a folder of
+    /// `__init__.py`/`.gitkeep` markers is not clutter), and a hard link
+    /// shares its twin's bytes: trashing either frees nothing, so each inode
+    /// is offered once. No IO: hashing happens in [`crate::dedup_scan`].
+    pub fn duplicate_candidates(&self) -> Vec<FileEntry> {
         let mut inodes = std::collections::HashSet::new();
-        let files: Vec<&FileEntry> = self
-            .active_panel_ref()
+        self.active_panel_ref()
             .entries()
             .iter()
             .filter(|e| !e.is_dir && e.size > 0)
             .filter(|e| hard_link_key(e).is_none_or(|key| inodes.insert(key)))
-            .collect();
-        let mut size_counts: HashMap<u64, usize> = HashMap::new();
-        for f in &files {
-            *size_counts.entry(f.size).or_insert(0) += 1;
-        }
-        let mut keys: Vec<crate::dedup::FileKey> = Vec::new();
-        let mut digests: HashMap<PathBuf, crate::verified_hash::VerifiedHash> = HashMap::new();
-        for f in &files {
-            if size_counts.get(&f.size).copied().unwrap_or(0) < 2 {
-                continue; // a unique size cannot have a duplicate
-            }
-            // Unreadable, non-regular or changing files fail closed.
-            let Ok(digest) = crate::verified_hash::file(&f.path) else {
-                continue;
-            };
-            let mut prefix = [0_u8; 8];
-            prefix.copy_from_slice(&digest[..8]);
-            keys.push(crate::dedup::FileKey {
-                path: f.path.clone(),
-                identity: f.identity.clone(),
-                size: f.size,
-                hash: u64::from_be_bytes(prefix),
-                modified: f.modified,
-            });
-            digests.insert(f.path.clone(), digest);
-        }
-        crate::dedup::group_duplicates(&keys)
-            .into_iter()
-            .flat_map(|group| Self::confirm_dup_group(group, &digests))
+            .cloned()
             .collect()
     }
 
-    /// Split a prefix-matched group into clusters with the same full digest,
-    /// keeping only those with two or more members. Guards against 64-bit
-    /// prefix collisions being trashed as duplicates.
-    fn confirm_dup_group(
-        group: crate::dedup::DupGroup,
-        digests: &std::collections::HashMap<PathBuf, crate::verified_hash::VerifiedHash>,
-    ) -> Vec<crate::dedup::DupGroup> {
-        let size = group.size;
-        let mut clusters: Vec<(
-            crate::verified_hash::VerifiedHash,
-            Vec<crate::dedup::FileKey>,
-        )> = Vec::new();
-        for file in group.files {
-            let Some(digest) = digests.get(&file.path).copied() else {
-                continue;
-            };
-            if let Some((_, cluster)) = clusters.iter_mut().find(|(other, _)| *other == digest) {
-                cluster.push(file);
-            } else {
-                clusters.push((digest, vec![file]));
-            }
-        }
-        clusters
-            .into_iter()
-            .filter(|(_, files)| files.len() >= 2)
-            .map(|(_, files)| crate::dedup::DupGroup { size, files })
-            .collect()
+    /// Synchronous duplicate scan of the active folder, for tests.
+    #[cfg(test)]
+    pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
+        crate::dedup_scan::hash_duplicates(
+            &self.duplicate_candidates(),
+            &std::sync::atomic::AtomicBool::new(false),
+            &std::sync::atomic::AtomicUsize::new(0),
+        )
     }
 
     pub fn trash_entries(

@@ -44,25 +44,53 @@ fn keep_radio_name(label: &str, group: usize, groups: usize, copies: usize) -> S
     )
 }
 
+/// Progress line shown while the duplicate scan hashes files.
+fn scan_progress_text(hashed: usize, to_hash: usize) -> String {
+    format!(
+        "Comparing file contents\u{2026} {} of {to_hash} files",
+        hashed.min(to_hash)
+    )
+}
+
 /// The folder the groups were found in (all members share one listing).
 fn scanned_folder(groups: &[crate::dedup::DupGroup]) -> Option<&std::path::Path> {
     groups.first()?.files.first()?.path.parent()
 }
 
 impl App {
-    pub(crate) fn open_duplicates(&mut self) {
-        let policy = KeepPolicy::KeepShortestPath;
-        let groups = self.ws.find_duplicates();
-        let keep = groups
-            .iter()
-            .map(|group| Some(default_keep(group, policy)))
-            .collect();
+    /// Opens the tool and starts hashing the active folder's candidates in
+    /// the background; the groups appear when the scan finishes.
+    pub(crate) fn open_duplicates(&mut self, ctx: &egui::Context) {
+        let repaint = ctx.clone();
+        let scan = crate::dedup_scan::spawn(self.ws.duplicate_candidates(), move || {
+            repaint.request_repaint();
+        });
         self.ui.tools.replace_on(self.ws.active.other());
         self.ui.tools.duplicates = Some(DupState {
-            groups,
-            keep,
-            policy,
+            groups: Vec::new(),
+            keep: Vec::new(),
+            policy: KeepPolicy::KeepShortestPath,
+            scan: Some(scan),
         });
+    }
+
+    /// Takes the finished scan's groups into the tool. Returns the progress
+    /// line while the scan still runs.
+    fn poll_duplicate_scan(&mut self, ctx: &egui::Context) -> Option<String> {
+        let state = self.ui.tools.duplicates.as_mut()?;
+        let scan = state.scan.as_ref()?;
+        let Some(groups) = scan.poll() else {
+            let progress = scan_progress_text(scan.hashed(), scan.to_hash);
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            return Some(progress);
+        };
+        state.keep = groups
+            .iter()
+            .map(|group| Some(default_keep(group, state.policy)))
+            .collect();
+        state.groups = groups;
+        state.scan = None;
+        None
     }
 
     pub(crate) fn show_duplicates_tool(&mut self, ui: &mut egui::Ui) {
@@ -74,6 +102,38 @@ impl App {
             return;
         }
         let t = self.colors;
+        if let Some(progress) = self.poll_duplicate_scan(ctx) {
+            let mut cancel = escape_requested;
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("Duplicate files")
+                        .size(13.0)
+                        .strong()
+                        .color(t.text_primary),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(progress).size(12.0).color(t.text_muted));
+                });
+                ui.add_space(12.0);
+                if ui
+                    .add(super::dialog_button(
+                        t,
+                        super::ButtonRole::Secondary,
+                        egui::RichText::new("Cancel").size(13.0),
+                    ))
+                    .clicked()
+                {
+                    cancel = true;
+                }
+            });
+            if cancel {
+                // Dropping the scan stops its worker.
+                self.ui.tools.duplicates = None;
+            }
+            return;
+        }
 
         // Snapshot display data so the window body only mutates `keep`.
         let now = std::time::SystemTime::now();
@@ -297,7 +357,7 @@ impl App {
         }
         if rescan {
             // The active pane is the scanned one (the tool covers the other).
-            self.open_duplicates();
+            self.open_duplicates(ctx);
             return;
         }
         if let Some(p) = new_policy
@@ -356,7 +416,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_label, keep_radio_name, scanned_folder, trash_refused_message};
+    use super::{
+        copy_label, keep_radio_name, scan_progress_text, scanned_folder, trash_refused_message,
+    };
     use std::path::{Path, PathBuf};
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -368,6 +430,15 @@ mod tests {
             hash: 1,
             modified: modified.map(|secs| UNIX_EPOCH + Duration::from_secs(secs)),
         }
+    }
+
+    #[test]
+    fn scan_progress_counts_hashed_files() {
+        assert_eq!(
+            scan_progress_text(2, 5),
+            "Comparing file contents\u{2026} 2 of 5 files"
+        );
+        assert!(scan_progress_text(9, 5).ends_with("5 of 5 files"));
     }
 
     #[test]

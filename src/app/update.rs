@@ -1291,7 +1291,7 @@ impl App {
             UiRequest::Palette => self.open_palette(ctx),
             UiRequest::BatchRename => self.open_batch_rename(ctx),
             UiRequest::Sync => self.open_sync(),
-            UiRequest::FindDuplicates => self.open_duplicates(),
+            UiRequest::FindDuplicates => self.open_duplicates(ctx),
             UiRequest::DiffFiles => self.open_diff(ctx),
             UiRequest::DiskTreemap => self.open_treemap(ctx),
             UiRequest::Find => self.open_find(ctx),

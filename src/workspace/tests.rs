@@ -2751,7 +2751,7 @@ fn duplicate_groups_are_confirmed_by_the_full_digest() {
     .map(|(name, digest)| (PathBuf::from(format!("/dups/{name}")), digest))
     .collect();
 
-    let confirmed = Workspace::confirm_dup_group(group, &digests);
+    let confirmed = crate::dedup_scan::confirm_group(group, &digests);
 
     assert_eq!(confirmed.len(), 1);
     let paths: Vec<&Path> = confirmed[0]

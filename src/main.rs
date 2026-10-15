@@ -27,6 +27,7 @@ mod content_index;
 mod crumbs;
 mod decoder_breaker;
 mod dedup;
+mod dedup_scan;
 mod delta_copy;
 mod density;
 #[cfg(not(target_os = "macos"))]

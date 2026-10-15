@@ -543,6 +543,8 @@ pub struct DupState {
     /// every copy of that group ("Keep all").
     pub keep: Vec<Option<usize>>,
     pub policy: crate::dedup::KeepPolicy,
+    /// The background hash scan while it runs; `groups` fill in when done.
+    pub scan: Option<crate::dedup_scan::DupScan>,
 }
 
 /// UI state for the directory-synchronise sheet. The diff lives in
