@@ -220,6 +220,42 @@ fn empty_state(
     }
 }
 
+/// Spoken stand-in for the "…" a folder shows while its size is measured;
+/// screen readers would read the glyph as "horizontal ellipsis".
+const PENDING_SIZE_SPOKEN: &str = "calculating";
+
+/// Compare-mode marker for a row: the symbol shown beside it and what it
+/// means, for hover text and assistive tech.
+fn compare_marker(status: crate::compare::CompareStatus) -> (&'static str, &'static str) {
+    use crate::compare::CompareStatus;
+    match status {
+        CompareStatus::Unique => ("+", "Only in this pane"),
+        CompareStatus::Differs => ("\u{2260}", "Differs"),
+        CompareStatus::Identical => ("=", "Identical"),
+        CompareStatus::DirectoryPair => ("?", "Folder pair; contents not compared"),
+        CompareStatus::TypeConflict => ("!", "File/folder type conflict"),
+    }
+}
+
+/// A row's accessible label: the shared file-row semantics plus what the
+/// row only paints, a folder's item count and its compare status.
+fn row_spoken_label(base: &str, item_count: Option<usize>, compare: Option<&str>) -> String {
+    let mut label = base.to_string();
+    if let Some(count) = item_count {
+        label.push_str(&format!("; Items: {count}"));
+    }
+    if let Some(compare) = compare {
+        label.push_str(&format!("; Compare: {compare}"));
+    }
+    label
+}
+
+/// Row index of a file row in the list's grid node: the ".." row, when
+/// shown, is row 0.
+fn grid_row_index(filtered_index: usize, has_parent_row: bool) -> usize {
+    filtered_index + usize::from(has_parent_row)
+}
+
 /// Spoken label of the ".." row. Like file rows it says "State: cursor"
 /// while the keyboard cursor sits on it.
 fn parent_row_label(is_cursor: bool) -> &'static str {
@@ -422,6 +458,7 @@ impl App {
                     });
                     ui.ctx().accesskit_node_builder(up_row.id, |node| {
                         node.set_role(egui::accesskit::Role::Row);
+                        node.set_row_index(0);
                     });
                     if is_cursor_on_up {
                         if is_active && ui.is_enabled() {
@@ -506,6 +543,16 @@ impl App {
                     });
                     return;
                 }
+
+                // The rows are virtualized, so AT learns the full row count
+                // and each row's position from a grid node, not from the
+                // handful of rows laid out this frame.
+                let grid_rows = filtered.len() + usize::from(can_go_up);
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Grid);
+                    node.set_row_count(grid_rows);
+                    node.set_column_count(1);
+                });
 
                 // Deferred row interactions (applied after the loop).
                 let mut pending_cursor: Option<usize> = None;
@@ -639,18 +686,25 @@ impl App {
                         Some(modified) => crate::reldate::relative_date(modified, now),
                         None => entry.modified_display().to_string(),
                     };
-                    let size_text = if entry.is_dir {
+                    let measured = if entry.is_dir {
                         size_snapshot
                             .size_of(&entry.path)
                             .map(crate::panel::format_size)
-                            .unwrap_or_else(|| "\u{2026}".to_string())
                     } else {
-                        entry.size_display().to_string()
+                        Some(entry.size_display().to_string())
+                    };
+                    let size_text = measured.as_deref().unwrap_or("\u{2026}");
+                    let compare_status =
+                        compare.map(|map| crate::compare::classify_entry(entry, map));
+                    let item_count = if entry.is_dir {
+                        size_snapshot.count_of(&entry.path)
+                    } else {
+                        None
                     };
                     let semantics = crate::accessibility::file_row_semantics(
                         &entry.name,
                         crate::selection_summary::kind_of(entry).label(),
-                        &size_text,
+                        measured.as_deref().unwrap_or(PENDING_SIZE_SPOKEN),
                         &modified_label,
                         is_selected,
                         is_cursor,
@@ -661,11 +715,16 @@ impl App {
                             egui::WidgetType::SelectableLabel,
                             ui.is_enabled(),
                             semantics.selected,
-                            &semantics.label,
+                            row_spoken_label(
+                                &semantics.label,
+                                item_count,
+                                compare_status.map(|status| compare_marker(status).1),
+                            ),
                         )
                     });
                     ui.ctx().accesskit_node_builder(row_resp.id, |node| {
                         node.set_role(egui::accesskit::Role::Row);
+                        node.set_row_index(grid_row_index(idx, can_go_up));
                         node.set_selected(semantics.selected);
                         if ui.is_enabled() {
                             node.add_action(egui::accesskit::Action::ShowContextMenu);
@@ -742,9 +801,9 @@ impl App {
 
                     // Compare mode: a left-edge stripe showing how this entry
                     // relates to the other panel.
-                    if let Some(map) = compare {
+                    if let Some(status) = compare_status {
                         use crate::compare::CompareStatus;
-                        let stripe = match crate::compare::classify_entry(entry, map) {
+                        let stripe = match status {
                             CompareStatus::Unique => Some(t.accent),
                             CompareStatus::Differs => Some(t.accent_warning),
                             CompareStatus::TypeConflict => Some(t.accent_red),
@@ -786,6 +845,13 @@ impl App {
                         egui::UiBuilder::new().max_rect(row_rect.shrink2(egui::vec2(6.0, 3.0))),
                     );
                     child_ui.style_mut().interaction.selectable_labels = false;
+                    // The row node already carries the composed label; the
+                    // painted glyphs and texts would be read a second time.
+                    child_ui
+                        .ctx()
+                        .accesskit_node_builder(child_ui.unique_id(), |node| {
+                            node.set_hidden();
+                        });
                     child_ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
 
@@ -801,8 +867,7 @@ impl App {
                         }
 
                         if entry.is_dir {
-                            let count = size_snapshot.count_of(&entry.path);
-                            Self::paint_folder_icon(ui, count);
+                            Self::paint_folder_icon(ui, item_count);
                         } else {
                             ui.add_space(3.0);
                             let (red, green, blue) = crate::file_color::kind_color(
@@ -895,20 +960,8 @@ impl App {
                                             .size(metrics.meta_pt)
                                             .color(t.text_muted),
                                     );
-                                    if let Some(map) = compare {
-                                        use crate::compare::CompareStatus;
-                                        let (symbol, hint) =
-                                            match crate::compare::classify_entry(entry, map) {
-                                                CompareStatus::Unique => ("+", "Only in this pane"),
-                                                CompareStatus::Differs => ("\u{2260}", "Differs"),
-                                                CompareStatus::Identical => ("=", "Identical"),
-                                                CompareStatus::DirectoryPair => {
-                                                    ("?", "Folder pair; contents not compared")
-                                                }
-                                                CompareStatus::TypeConflict => {
-                                                    ("!", "File/folder type conflict")
-                                                }
-                                            };
+                                    if let Some(status) = compare_status {
+                                        let (symbol, hint) = compare_marker(status);
                                         ui.label(
                                             egui::RichText::new(symbol)
                                                 .size(metrics.meta_pt)
@@ -1247,8 +1300,9 @@ fn highlight_name_job(
 #[cfg(test)]
 mod tests {
     use super::{
-        EmptyAction, cursor_row_to_reveal, drop_target_writable, empty_state, folder_changed,
-        map_ranges_to_display, name_char_budget, parent_row_label, selection_size_label,
+        EmptyAction, PENDING_SIZE_SPOKEN, compare_marker, cursor_row_to_reveal,
+        drop_target_writable, empty_state, folder_changed, grid_row_index, map_ranges_to_display,
+        name_char_budget, parent_row_label, row_spoken_label, selection_size_label,
         selection_summary_with, visible_rows, visible_selection_summary,
     };
 
@@ -1432,5 +1486,40 @@ mod tests {
         if !cfg!(target_os = "macos") {
             assert!(!label.contains("Finder"), "{label}");
         }
+    }
+
+    #[test]
+    fn row_label_speaks_what_the_row_only_paints() {
+        use crate::compare::CompareStatus;
+        let base = crate::accessibility::file_row_semantics(
+            "docs",
+            "Folder",
+            PENDING_SIZE_SPOKEN,
+            "today",
+            false,
+            false,
+            true,
+        )
+        .label;
+        assert!(base.contains("Size: calculating"), "{base}");
+        assert!(!PENDING_SIZE_SPOKEN.contains('\u{2026}'));
+        let label = row_spoken_label(
+            &base,
+            Some(12),
+            Some(compare_marker(CompareStatus::Differs).1),
+        );
+        assert!(label.ends_with("; Items: 12; Compare: Differs"), "{label}");
+        assert_eq!(row_spoken_label(&base, None, None), base);
+        assert_eq!(
+            compare_marker(CompareStatus::Unique),
+            ("+", "Only in this pane")
+        );
+    }
+
+    #[test]
+    fn grid_rows_count_the_parent_row_first() {
+        assert_eq!(grid_row_index(0, true), 1);
+        assert_eq!(grid_row_index(0, false), 0);
+        assert_eq!(grid_row_index(41, true), 42);
     }
 }
