@@ -434,6 +434,9 @@ pub struct FindState {
     pub elapsed: std::time::Duration,
     pub truncated: bool,
     pub content_skipped: usize,
+    /// The first archive open error of the last search, shown with the
+    /// skipped count.
+    pub archive_error: Option<String>,
     pub error: Option<String>,
     pub stable_order: Vec<crate::search::FileIdentity>,
     pub last_query: Option<(String, crate::query::MatchMode, PathBuf)>,
@@ -498,6 +501,7 @@ impl Default for FindState {
             elapsed: std::time::Duration::ZERO,
             truncated: false,
             content_skipped: 0,
+            archive_error: None,
             error: None,
             stable_order: Vec::new(),
             last_query: None,

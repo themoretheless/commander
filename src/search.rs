@@ -6,7 +6,7 @@ use crate::panel::FileEntry;
 use crate::ports::SearchProvider;
 use crate::query::{MatchMode, Predicate, Query, QueryError};
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io::Read;
@@ -132,6 +132,9 @@ pub struct SearchSummary {
     /// Entries that could not be searched: binary or unreadable files,
     /// folders the walk could not read, and archives that would not open.
     pub content_skipped: usize,
+    /// Why the first archive that would not open was skipped (corrupt,
+    /// encrypted, unreadable), so the count above has a reason to show.
+    pub archive_error: Option<String>,
     pub elapsed: Duration,
     pub truncated: bool,
     pub cancelled: bool,
@@ -184,6 +187,8 @@ pub struct ProviderRequest {
     unsearched: Cell<usize>,
     /// The per-search archive budget stopped archive scanning early.
     archives_capped: Cell<bool>,
+    /// The first archive open error of this search.
+    archive_error: RefCell<Option<String>>,
 }
 
 impl ProviderRequest {
@@ -194,6 +199,12 @@ impl ProviderRequest {
 
     fn note_unsearched(&self) {
         self.unsearched.set(self.unsearched.get().saturating_add(1));
+    }
+
+    fn note_archive_error(&self, error: &str) {
+        self.archive_error
+            .borrow_mut()
+            .get_or_insert_with(|| error.to_string());
     }
 
     fn note_archive_budget(&self, budget: &crate::archive::SearchBudget) {
@@ -380,6 +391,7 @@ impl ArchiveProvider {
             Err(error) => {
                 // A corrupt or encrypted archive: its members are not searched.
                 request.note_unsearched();
+                request.note_archive_error(&error);
                 log::info!(target: "commander::search", "archive not searched: {error}");
                 if keep_going {
                     keep_going = emit(None);
@@ -552,6 +564,7 @@ impl SearchEngine {
                         requires_content: compiled.requires_content,
                         unsearched: Cell::new(0),
                         archives_capped: Cell::new(false),
+                        archive_error: RefCell::new(None),
                     },
                     compiled,
                     cap.max(1),
@@ -1014,6 +1027,7 @@ fn run_worker(
         scanned,
         matched,
         content_skipped,
+        archive_error: request.archive_error.take(),
         elapsed: started.elapsed(),
         truncated,
         cancelled,
@@ -1479,6 +1493,8 @@ mod tests {
         tmp.file("broken.zip", "not a zip archive");
         let summary = name_search(tmp.path(), "nothing-matches-this");
         assert_eq!(summary.content_skipped, 1);
+        let error = summary.archive_error.expect("the open error is reported");
+        assert!(error.contains("broken.zip"), "{error}");
     }
 
     #[test]
@@ -1535,6 +1551,7 @@ mod tests {
                 requires_content: false,
                 unsearched: Cell::new(0),
                 archives_capped: Cell::new(false),
+                archive_error: RefCell::new(None),
             },
             CompiledQuery::new(Query::default()).unwrap(),
             100,

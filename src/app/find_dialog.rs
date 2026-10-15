@@ -246,6 +246,7 @@ impl App {
                         state.elapsed = summary.elapsed;
                         state.truncated = summary.truncated;
                         state.content_skipped = summary.content_skipped;
+                        state.archive_error = summary.archive_error.clone();
                         state.run = None;
                         if !summary.cancelled {
                             let (expression, mode, root) = state.last_query.clone().unwrap_or((
@@ -295,6 +296,7 @@ impl App {
                 state.elapsed = std::time::Duration::ZERO;
                 state.truncated = false;
                 state.content_skipped = 0;
+                state.archive_error = None;
                 state.explanation_open = None;
                 state.error = Some(error);
                 state.pending_rerun = false;
@@ -375,6 +377,7 @@ impl App {
             state.elapsed = std::time::Duration::ZERO;
             state.truncated = false;
             state.content_skipped = 0;
+            state.archive_error = None;
             state.error = index_refusal;
             state.pending_rerun = false;
             state.explanation_open = None;
@@ -831,6 +834,18 @@ impl App {
                             }
                         });
                     });
+                    if let Some(error) = &state.archive_error {
+                        // Why the skipped count includes an archive.
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(error)
+                                    .size(11.0)
+                                    .color(t.accent_warning),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(error);
+                    }
                     if let Some(error) = &state.error {
                         ui.label(egui::RichText::new(error).size(11.0).color(t.accent_red));
                     }
