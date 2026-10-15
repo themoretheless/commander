@@ -95,6 +95,31 @@ pub fn elide_crumbs(list: &[Crumb], max_visible: usize) -> CrumbLayout {
     }
 }
 
+/// How many crumbs (head included) to show in `available` width, for
+/// [`elide_crumbs`]. `widths` are the drawn widths of `list`'s crumbs,
+/// separators included; `ellipsis` is the width of the "..." chip shown when
+/// anything is hidden. Keeps the head and as many of the deepest segments as
+/// fit, so long names elide sooner and short ones stay visible. Never below
+/// 2: the current folder always shows, even when it alone overflows.
+pub fn visible_crumb_count(widths: &[f32], ellipsis: f32, available: f32) -> usize {
+    let total: f32 = widths.iter().sum();
+    if widths.len() <= 2 || total <= available {
+        return widths.len().max(2);
+    }
+    // Head, "...", and the current folder are always drawn.
+    let mut used = widths[0] + ellipsis + widths[widths.len() - 1];
+    let mut tail = 1;
+    // Fill from the end, leaving at least one segment behind the "...".
+    for width in widths[2..widths.len() - 1].iter().rev() {
+        if used + width > available {
+            break;
+        }
+        used += width;
+        tail += 1;
+    }
+    1 + tail
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +202,23 @@ mod tests {
         assert_eq!(layout.head.label, "/");
         assert!(layout.tail.is_empty());
         assert!(!layout.is_elided());
+    }
+
+    #[test]
+    fn visible_crumb_count_follows_label_widths() {
+        // Everything fits: no elision.
+        assert_eq!(visible_crumb_count(&[20.0, 50.0, 50.0], 20.0, 200.0), 3);
+        // Short names: many fit, where a fixed per-chip estimate hid them.
+        let short = [20.0, 30.0, 30.0, 30.0, 30.0, 30.0];
+        assert_eq!(visible_crumb_count(&short, 20.0, 150.0), 4);
+        // A long shallow name is hidden; the short deeper ones stay.
+        let long = [20.0, 400.0, 30.0, 30.0, 30.0];
+        assert_eq!(visible_crumb_count(&long, 20.0, 200.0), 4);
+        // A long name right above the current folder ends the tail there.
+        let long = [20.0, 30.0, 30.0, 400.0, 30.0];
+        assert_eq!(visible_crumb_count(&long, 20.0, 200.0), 2);
+        // Even an overflowing current folder keeps the two-crumb minimum.
+        assert_eq!(visible_crumb_count(&[20.0, 30.0, 900.0], 20.0, 100.0), 2);
+        assert_eq!(visible_crumb_count(&[20.0], 20.0, 0.0), 2);
     }
 }
