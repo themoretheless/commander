@@ -154,7 +154,10 @@ mod tests {
         file.seek(SeekFrom::Start(size - 1)).unwrap();
         file.write_all(&[9]).unwrap();
         file.sync_all().unwrap();
-        assert!(is_sparse_file(&src));
+        // Whether set_len plus scattered writes leaves holes is the
+        // filesystem's choice (APFS may allocate them); the byte-exact copy
+        // is checked either way, hole preservation only when there are holes.
+        let source_is_holey = is_sparse_file(&src);
         let dst = tmp.path().join("copy.bin");
         let state = Arc::new(Mutex::new(TransferProgress::new(size, 1)));
         let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
@@ -169,9 +172,11 @@ mod tests {
             src.metadata().unwrap().blocks(),
             dst.metadata().unwrap().blocks(),
         );
-        assert!(
-            dst_blocks <= src_blocks.saturating_add(16),
-            "{dst_blocks} > {src_blocks}"
-        );
+        if source_is_holey {
+            assert!(
+                dst_blocks <= src_blocks.saturating_add(16),
+                "{dst_blocks} > {src_blocks}"
+            );
+        }
     }
 }
