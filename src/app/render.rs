@@ -184,6 +184,78 @@ fn toggle_age_chip(facets: &mut FacetSet, chip: AgeChip) {
     }
 }
 
+/// Frame margin plus stroke around a breadcrumb label.
+const CRUMB_CHROME_WIDTH: f32 = 2.0 * 8.0 + 2.0;
+/// Width of the chevron drawn between crumbs.
+const CRUMB_SEPARATOR_WIDTH: f32 = 12.0;
+const HIDDEN_CRUMBS_LABEL: &str = "Show hidden parent folders";
+
+/// What a breadcrumb chip announces: a link to its folder, or the current
+/// folder itself.
+fn crumb_accessible_label(path: &std::path::Path, is_current: bool) -> String {
+    if is_current {
+        format!("Current folder {}", path.display())
+    } else {
+        format!("Go to {}", path.display())
+    }
+}
+
+/// A step through a pane's navigation history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryStep {
+    Back,
+    Forward,
+}
+
+/// The mouse's side buttons: Extra1 is "back" and Extra2 "forward" on
+/// every platform egui supports. Both at once cancel out.
+const fn mouse_history_step(back: bool, forward: bool) -> Option<HistoryStep> {
+    match (back, forward) {
+        (true, false) => Some(HistoryStep::Back),
+        (false, true) => Some(HistoryStep::Forward),
+        _ => None,
+    }
+}
+
+/// A painted 28px path-bar button with an accessible name, a tooltip, hover
+/// feedback and a focus ring. A disabled button only senses hover: it keeps
+/// its tooltip but neither takes focus nor reacts to clicks.
+fn path_bar_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    tooltip: &str,
+    t: &ThemeColors,
+) -> (egui::Rect, egui::Response) {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), sense);
+    if enabled && response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::ZERO, t.bg_hover.linear_multiply(0.3));
+    }
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0_f32, t.border),
+        egui::StrokeKind::Outside,
+    );
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            CornerRadius::ZERO,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let response = response.on_hover_text(tooltip);
+    (rect, response)
+}
+
 impl App {
     /// A row of toggleable quick-filter chips under the filter box.
     fn facet_chips(ui: &mut egui::Ui, panel: &mut PanelState, t: &ThemeColors) -> bool {
@@ -294,6 +366,23 @@ impl App {
         let mut tree_toggle = false;
         let mut context_menu_request = None;
 
+        // The mouse's side buttons step through this pane's history while
+        // the pointer is over it, like the Back/Forward buttons.
+        let pane_rect = ui.available_rect_before_wrap();
+        if ui.rect_contains_pointer(pane_rect) {
+            let step = ui.input(|input| {
+                mouse_history_step(
+                    input.pointer.button_pressed(egui::PointerButton::Extra1),
+                    input.pointer.button_pressed(egui::PointerButton::Extra2),
+                )
+            });
+            match step {
+                Some(HistoryStep::Back) if panel.can_go_back() => panel.go_back(),
+                Some(HistoryStep::Forward) if panel.can_go_forward() => panel.go_forward(),
+                _ => {}
+            }
+        }
+
         Frame::NONE
             .fill(panel_bg)
             .inner_margin(Margin::same(0))
@@ -315,22 +404,14 @@ impl App {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
-                            // Back button
-                            let btn_size = Vec2::new(28.0, 28.0);
                             let can_back = panel.can_go_back();
                             let (back_rect, back_resp) =
-                                ui.allocate_exact_size(btn_size, Sense::click());
+                                path_bar_button(ui, can_back, "Back", "Back (Cmd+[)", t);
                             let back_color = if can_back {
                                 t.text_primary
                             } else {
                                 t.text_muted
                             };
-                            ui.painter().rect_stroke(
-                                back_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0_f32, t.border),
-                                egui::StrokeKind::Outside,
-                            );
                             crate::app::glyphs::navigation_triangle(
                                 ui, back_rect, false, back_color,
                             );
@@ -338,21 +419,14 @@ impl App {
                                 panel.go_back();
                             }
 
-                            // Forward button
                             let can_fwd = panel.can_go_forward();
                             let (fwd_rect, fwd_resp) =
-                                ui.allocate_exact_size(btn_size, Sense::click());
+                                path_bar_button(ui, can_fwd, "Forward", "Forward (Cmd+])", t);
                             let fwd_color = if can_fwd {
                                 t.text_primary
                             } else {
                                 t.text_muted
                             };
-                            ui.painter().rect_stroke(
-                                fwd_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0_f32, t.border),
-                                egui::StrokeKind::Outside,
-                            );
                             crate::app::glyphs::navigation_triangle(ui, fwd_rect, true, fwd_color);
                             if fwd_resp.clicked() && can_fwd {
                                 panel.go_forward();
@@ -360,14 +434,21 @@ impl App {
 
                             // Tree toggle button
                             let tree_color = if tree_open { t.accent } else { t.text_muted };
+                            let tree_tip = if tree_open {
+                                "Hide folder tree"
+                            } else {
+                                "Show folder tree"
+                            };
                             let (tree_rect, tree_resp) =
-                                ui.allocate_exact_size(btn_size, Sense::click());
-                            ui.painter().rect_stroke(
-                                tree_rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0_f32, t.border),
-                                egui::StrokeKind::Outside,
-                            );
+                                path_bar_button(ui, true, "Folder tree", tree_tip, t);
+                            tree_resp.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    tree_open,
+                                    "Folder tree",
+                                )
+                            });
                             // Mini folder icon
                             {
                                 let p = ui.painter();
@@ -417,22 +498,82 @@ impl App {
                             // so the root and the current folder stay visible.
                             let mut nav_to_crumb: Option<std::path::PathBuf> = None;
                             let all = crate::crumbs::crumbs(&panel.current_path);
-                            // Roughly one chip per ~130px; always keep two.
-                            let max_visible = ((ui.available_width() / 130.0) as usize).max(2);
+                            // Keep the deepest crumbs that fit the measured
+                            // width of their labels; always keep two.
+                            let crumb_width = |label: &str| {
+                                ui.painter()
+                                    .layout_no_wrap(
+                                        label.to_owned(),
+                                        egui::FontId::proportional(12.0),
+                                        t.text_primary,
+                                    )
+                                    .size()
+                                    .x
+                                    + CRUMB_CHROME_WIDTH
+                                    + CRUMB_SEPARATOR_WIDTH
+                            };
+                            let widths: Vec<f32> =
+                                all.iter().map(|c| crumb_width(&c.label)).collect();
+                            let ellipsis_width = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    "\u{2026}".to_owned(),
+                                    egui::TextStyle::Button.resolve(ui.style()),
+                                    t.text_primary,
+                                )
+                                .size()
+                                .x
+                                + 2.0 * ui.spacing().button_padding.x
+                                + CRUMB_SEPARATOR_WIDTH;
+                            let max_visible = crate::crumbs::visible_crumb_count(
+                                &widths,
+                                ellipsis_width,
+                                ui.available_width(),
+                            );
                             let layout = crate::crumbs::elide_crumbs(&all, max_visible);
 
-                            // Draw one clickable crumb chip; returns its response.
-                            let chip = |ui: &mut egui::Ui, label: &str, fg: Color32| {
-                                Frame::NONE
+                            // Draw one crumb chip; returns its response. The
+                            // current folder's chip is not a link, so it only
+                            // senses hover and never takes keyboard focus.
+                            let chip = |ui: &mut egui::Ui,
+                                        crumb: &crate::crumbs::Crumb,
+                                        fg: Color32,
+                                        is_current: bool| {
+                                let response = Frame::NONE
                                     .fill(Color32::TRANSPARENT)
                                     .corner_radius(CornerRadius::ZERO)
                                     .stroke(Stroke::new(1.0_f32, t.border))
                                     .inner_margin(Margin::symmetric(8, 3))
                                     .show(ui, |ui| {
-                                        ui.label(egui::RichText::new(label).size(12.0).color(fg));
+                                        ui.label(
+                                            egui::RichText::new(&crumb.label).size(12.0).color(fg),
+                                        );
                                     })
                                     .response
-                                    .interact(Sense::click())
+                                    .interact(if is_current {
+                                        Sense::hover()
+                                    } else {
+                                        Sense::click()
+                                    });
+                                let accessible =
+                                    crumb_accessible_label(&crumb.full_path, is_current);
+                                let kind = if is_current {
+                                    egui::WidgetType::Label
+                                } else {
+                                    egui::WidgetType::Button
+                                };
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(kind, ui.is_enabled(), &accessible)
+                                });
+                                if response.has_focus() {
+                                    ui.painter().rect_stroke(
+                                        response.rect.shrink(1.0),
+                                        CornerRadius::ZERO,
+                                        ui.visuals().selection.stroke,
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                response
                             };
                             let sep = |ui: &mut egui::Ui| {
                                 crate::app::glyphs::breadcrumb_chevron(ui, t.text_muted);
@@ -449,7 +590,7 @@ impl App {
                                 } else {
                                     t.text_secondary
                                 };
-                                let resp = chip(ui, &layout.head.label, fg);
+                                let resp = chip(ui, &layout.head, fg, head_is_current);
                                 if resp.clicked() && !head_is_current {
                                     nav_to_crumb = Some(layout.head.full_path.clone());
                                 }
@@ -462,7 +603,7 @@ impl App {
 
                                 // Collapsed ancestors behind a "..." menu.
                                 if layout.is_elided() {
-                                    ui.menu_button("\u{2026}", |ui| {
+                                    let menu = ui.menu_button("\u{2026}", |ui| {
                                         for c in &layout.collapsed {
                                             if ui.button(&c.label).clicked() {
                                                 nav_to_crumb = Some(c.full_path.clone());
@@ -470,6 +611,14 @@ impl App {
                                             }
                                         }
                                     });
+                                    menu.response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            ui.is_enabled(),
+                                            HIDDEN_CRUMBS_LABEL,
+                                        )
+                                    });
+                                    menu.response.on_hover_text(HIDDEN_CRUMBS_LABEL);
                                     sep(ui);
                                 }
 
@@ -482,7 +631,7 @@ impl App {
                                     } else {
                                         t.text_secondary
                                     };
-                                    let resp = chip(ui, &c.label, fg);
+                                    let resp = chip(ui, c, fg, is_last);
                                     if resp.clicked() && !is_last {
                                         nav_to_crumb = Some(c.full_path.clone());
                                     }
@@ -919,5 +1068,33 @@ mod tests {
         assert_eq!(label, "24h");
         assert!(hover.contains("24 hours"));
         assert!(AGE_CHIPS.iter().all(|(label, ..)| *label != "Today"));
+    }
+
+    #[test]
+    fn path_bar_buttons_are_named_and_disabled_ones_are_marked() {
+        let t = ThemeColors::dark();
+        let nodes = accesskit_nodes(|ui| {
+            path_bar_button(ui, false, "Back", "Back", &t);
+            path_bar_button(ui, true, "Forward", "Forward", &t);
+        });
+        assert!(node_labelled(&nodes, "Back").is_disabled());
+        let forward = node_labelled(&nodes, "Forward");
+        assert!(!forward.is_disabled());
+        assert_eq!(forward.role(), egui::accesskit::Role::Button);
+    }
+
+    #[test]
+    fn crumbs_announce_their_target_folder() {
+        let path = std::path::Path::new("/a/b");
+        assert_eq!(crumb_accessible_label(path, false), "Go to /a/b");
+        assert_eq!(crumb_accessible_label(path, true), "Current folder /a/b");
+    }
+
+    #[test]
+    fn mouse_side_buttons_step_through_history() {
+        assert_eq!(mouse_history_step(true, false), Some(HistoryStep::Back));
+        assert_eq!(mouse_history_step(false, true), Some(HistoryStep::Forward));
+        assert_eq!(mouse_history_step(false, false), None);
+        assert_eq!(mouse_history_step(true, true), None);
     }
 }
