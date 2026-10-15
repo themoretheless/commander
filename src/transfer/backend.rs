@@ -28,6 +28,9 @@ pub(super) struct PlanInput {
     pub symlink_policy: SymlinkPolicy,
     pub delta_capable: bool,
     pub sparse_capable: bool,
+    /// The destination can clone and the source lives on the same volume,
+    /// so a native clone keeps the source's holes (and compression) itself.
+    pub clone_same_volume: bool,
     pub resumable_capable: bool,
     pub slow_link: bool,
     pub bandwidth_limited: bool,
@@ -85,9 +88,14 @@ impl BackendPlanner {
         let force_buffered = input.bandwidth_limited
             || force_resumable
             || (input.is_dir && input.symlink_policy != SymlinkPolicy::Preserve);
+        // A clone keeps holes, and APFS-compressed files also look sparse
+        // here: prefer the clone over a read-copy when it can happen.
+        let clone_preferred =
+            input.clone_same_volume && input.method == CopyMethod::Native && !force_buffered;
         if !input.is_dir
             && input.resume_layout.is_none()
             && !force_resumable
+            && !clone_preferred
             && input.sparse_capable
             && input.source_is_sparse
         {
@@ -240,6 +248,8 @@ impl BackendPorts {
             symlink_policy: request.symlink_policy,
             delta_capable: request.profile.capabilities.delta,
             sparse_capable: request.profile.capabilities.sparse,
+            clone_same_volume: request.profile.capabilities.clone
+                && same_volume(&metadata, request.staging),
             resumable_capable: request.profile.capabilities.resumable,
             slow_link: request.profile.backend.is_slow_link(),
             bandwidth_limited: request.rule.max_bytes_per_second.is_some(),
@@ -465,6 +475,24 @@ impl BufferedBackend for ProductionBuffered {
     }
 }
 
+/// Whether `source_metadata` and the parent folder of `staging` are on the
+/// same volume. Unknown (non-Unix) counts as different.
+fn same_volume(source_metadata: &std::fs::Metadata, staging: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        staging
+            .parent()
+            .and_then(|parent| parent.metadata().ok())
+            .is_some_and(|parent| parent.dev() == source_metadata.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (source_metadata, staging);
+        false
+    }
+}
+
 pub(super) fn receipt(
     staging: &Path,
     bytes: u64,
@@ -571,6 +599,7 @@ mod tests {
             symlink_policy: SymlinkPolicy::Preserve,
             delta_capable: false,
             sparse_capable: false,
+            clone_same_volume: false,
             resumable_capable: false,
             slow_link: false,
             bandwidth_limited: false,
@@ -665,6 +694,30 @@ mod tests {
         input.source_is_sparse = true;
         input.sparse_capable = true;
         assert_eq!(BackendPlanner::select(input).unwrap(), BackendPlan::Sparse);
+        // A same-volume clone keeps holes (and APFS compression, which also
+        // looks sparse) without reading the file.
+        assert_eq!(
+            BackendPlanner::select(PlanInput {
+                clone_same_volume: true,
+                ..input
+            })
+            .unwrap(),
+            BackendPlan::NativeClone
+        );
+        for forced in [
+            PlanInput {
+                clone_same_volume: true,
+                method: CopyMethod::Buffered,
+                ..input
+            },
+            PlanInput {
+                clone_same_volume: true,
+                bandwidth_limited: true,
+                ..input
+            },
+        ] {
+            assert_eq!(BackendPlanner::select(forced).unwrap(), BackendPlan::Sparse);
+        }
 
         input.resume_layout = Some(CheckpointLayout::Prefix);
         assert_eq!(

@@ -2071,6 +2071,7 @@ mod tests {
                 symlink_policy: crate::filesystem_policy::SymlinkPolicy::Preserve,
                 delta_capable: false,
                 sparse_capable: false,
+                clone_same_volume: false,
                 resumable_capable: profile.capabilities.resumable,
                 slow_link: profile.backend.is_slow_link(),
                 bandwidth_limited: false,
