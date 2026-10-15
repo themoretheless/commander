@@ -125,9 +125,15 @@ pub fn validate_new_name(name: &str, siblings: &[String]) -> Result<(), NewNameE
 
 /// [`validate_new_name`] for a volume whose case sensitivity is known. On a
 /// case-insensitive volume (APFS and NTFS by default) `readme.md` collides
-/// with a sibling `README.md` (compared case-folded and NFC-normalized, as
-/// such volumes do). `siblings` still excludes the entry being renamed, so a
-/// case-only rename of that entry stays valid.
+/// with a sibling `README.md` (compared case-folded and NFC-normalized).
+/// `siblings` still excludes the entry being renamed, so a case-only rename
+/// of that entry stays valid.
+///
+/// Known gap: NFC folding matches APFS/HFS+, which are also
+/// normalization-insensitive. NTFS and exFAT fold case but not
+/// normalization, so there an NFD name beside its NFC twin is reported as a
+/// collision although the volume would accept it. The volume profile does
+/// not expose normalization behaviour, and such NFD/NFC twin pairs are rare.
 pub fn validate_new_name_on_volume(
     name: &str,
     siblings: &[String],
