@@ -773,12 +773,16 @@ impl App {
                     });
                     ui.horizontal_wrapped(|ui| {
                         let mut btn = |ui: &mut egui::Ui, label: &str, fill, fg, policy| {
-                            let response = ui.add_enabled(
-                                policy_enabled,
+                            let mut button =
                                 egui::Button::new(egui::RichText::new(label).size(12.0).color(fg))
                                     .fill(fill)
-                                    .corner_radius(CornerRadius::ZERO),
-                            );
+                                    .corner_radius(CornerRadius::ZERO);
+                            // The saved rule's button is outlined too, so the
+                            // marker shows even on Overwrite All's warning fill.
+                            if saved_policy == Some(policy) {
+                                button = button.stroke(egui::Stroke::new(1.5, t.text_primary));
+                            }
+                            let response = ui.add_enabled(policy_enabled, button);
                             let response = if saved_policy == Some(policy) {
                                 response.on_hover_text("Saved rule for these folders and file type")
                             } else {
@@ -789,7 +793,8 @@ impl App {
                             }
                             ui.add_space(4.0);
                         };
-                        // Overwrite All keeps its warning fill either way.
+                        // Overwrite All keeps its warning fill either way; a
+                        // saved Overwrite All rule is marked by the outline.
                         for (label, policy) in [
                             ("Keep Both", RelationPolicy::KeepBoth),
                             ("Keep Newer", RelationPolicy::KeepNewer),
