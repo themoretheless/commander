@@ -909,6 +909,7 @@ fn every_fixed_ui_command_emits_the_expected_typed_request() {
         (Command::DiffFiles, UiRequest::DiffFiles),
         (Command::DiskTreemap, UiRequest::DiskTreemap),
         (Command::BeginFind, UiRequest::Find),
+        (Command::FocusFilter, UiRequest::FocusFilter),
         (Command::OpenSavedSearch, UiRequest::SavedSearch),
         (
             Command::OpenProjectCollections,

@@ -1233,6 +1233,7 @@ impl Workspace {
             Command::DiffFiles => self.emit_ui_request(UiRequest::DiffFiles),
             Command::DiskTreemap => self.emit_ui_request(UiRequest::DiskTreemap),
             Command::BeginFind => self.emit_ui_request(UiRequest::Find),
+            Command::FocusFilter => self.emit_ui_request(UiRequest::FocusFilter),
             Command::OpenSavedSearch => self.emit_ui_request(UiRequest::SavedSearch),
             Command::OpenProjectCollections => self.emit_ui_request(UiRequest::ProjectCollections),
             Command::CopyPath => {

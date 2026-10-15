@@ -38,6 +38,8 @@ pub enum UiRequest {
     DiffFiles,
     DiskTreemap,
     Find,
+    /// Put keyboard focus in the active pane's filter box.
+    FocusFilter,
     Archive(PathBuf),
     SavedSearch,
     ProjectCollections,
@@ -47,8 +49,14 @@ pub enum UiRequest {
     ReviewRecovery(crate::operation::OperationId),
     OpenExternal(crate::ports::OpenRequest),
     CopyPaths(PathStyle),
-    CopyText { text: String, label: String },
-    Notice { message: String, error: bool },
+    CopyText {
+        text: String,
+        label: String,
+    },
+    Notice {
+        message: String,
+        error: bool,
+    },
     ChecksumReport(crate::checksum::ChecksumReport),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
@@ -83,7 +91,8 @@ impl UiRequest {
             | Self::CopyText { .. }
             | Self::Notice { .. }
             | Self::ChecksumReport(_)
-            | Self::HiddenFilesOutcome(_) => None,
+            | Self::HiddenFilesOutcome(_)
+            | Self::FocusFilter => None,
         }
     }
 

@@ -1295,6 +1295,13 @@ impl App {
             UiRequest::DiffFiles => self.open_diff(ctx),
             UiRequest::DiskTreemap => self.open_treemap(ctx),
             UiRequest::Find => self.open_find(ctx),
+            UiRequest::FocusFilter => {
+                let side = match self.ws.active {
+                    ActivePanel::Left => "left",
+                    ActivePanel::Right => "right",
+                };
+                ctx.memory_mut(|memory| memory.request_focus(super::render::pane_filter_id(side)));
+            }
             UiRequest::Archive(path) => self.open_archive(path, ctx),
             UiRequest::SavedSearch => self.open_saved_search(),
             UiRequest::ProjectCollections => self.open_collections(ctx),

@@ -89,6 +89,8 @@ pub enum Command {
     DiskTreemap,
     /// Cmd+F: open the recursive find sheet.
     BeginFind,
+    /// Cmd+Shift+F: move keyboard focus into the active pane's filter box.
+    FocusFilter,
     /// Open the saved-search (smart folder) picker.
     OpenSavedSearch,
     /// Open named multi-root project collections.
@@ -575,6 +577,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Diff files", "Cmd+D", "view diff compare text", Command::DiffFiles),
     entry("Disk usage map", "Cmd+Shift+M", "view disk usage map treemap size", Command::DiskTreemap),
     entry("Find files", "Cmd+F", "file find recursive search", Command::BeginFind),
+    entry("Filter this pane", "Cmd+Shift+F", "filter pane narrow quick search focus", Command::FocusFilter),
     entry("Open saved search", "", "file saved search smart folder", Command::OpenSavedSearch),
     entry("Project collections", "", "project collection workspace roots virtual view", Command::OpenProjectCollections),
     entry("Copy path", "Cmd+Shift+C", "clipboard copy path", Command::CopyPath),
@@ -903,6 +906,7 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         D if press.command => Some(Command::DiffFiles),
         M if press.command && press.shift => Some(Command::DiskTreemap),
         N if press.command && press.shift => Some(Command::GatherIntoFolder),
+        F if press.command && press.shift => Some(Command::FocusFilter),
         F if press.command => Some(Command::BeginFind),
         C if press.command && press.shift => Some(Command::CopyPath),
         F3 => Some(Command::TogglePreview),
@@ -1496,6 +1500,20 @@ mod tests {
     fn cmd_f_opens_find() {
         assert_eq!(map_key(cmd_press(KeyCode::F)), Some(Command::BeginFind));
         assert_eq!(map_key(press(KeyCode::F)), None);
+    }
+
+    #[test]
+    fn cmd_shift_f_focuses_the_pane_filter() {
+        let cmd_shift_f = KeyPress {
+            code: KeyCode::F,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_f), Some(Command::FocusFilter));
+        assert_eq!(
+            filter_commands("filter pane")[0].command,
+            Command::FocusFilter
+        );
     }
 
     #[test]

@@ -390,6 +390,11 @@ fn pane_accessible_label(panel_side: &str, is_active: bool) -> String {
     }
 }
 
+/// Stable id of a pane's filter box, so a command can focus it.
+pub fn pane_filter_id(panel_side: &str) -> egui::Id {
+    egui::Id::new(("pane_filter", panel_side))
+}
+
 /// The pane's filter box. Both panes share the hint text, so the field is
 /// named after its pane for screen readers.
 fn pane_filter_field(
@@ -401,6 +406,7 @@ fn pane_filter_field(
     let response = ui.add_sized(
         Vec2::new(width, 26.0),
         egui::TextEdit::singleline(query)
+            .id(pane_filter_id(panel_side))
             .hint_text("\u{1f50d} Filter\u{2026}")
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 4.0)),
