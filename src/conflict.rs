@@ -92,6 +92,27 @@ pub struct Resolution {
     pub decision: Decision,
 }
 
+/// How many folder conflicts `policy` drops without merging: Keep Newer and
+/// Keep Larger never merge a folder into a same-named destination.
+pub fn folders_not_merged(conflicts: &[Conflict], policy: RelationPolicy) -> usize {
+    match policy {
+        RelationPolicy::KeepNewer | RelationPolicy::KeepLarger => conflicts
+            .iter()
+            .filter(|c| c.src_is_dir || c.dst_is_dir)
+            .count(),
+        RelationPolicy::ReplaceAll | RelationPolicy::SkipAll | RelationPolicy::KeepBoth => 0,
+    }
+}
+
+/// Notice for folders a conditional policy skipped; `None` when there are none.
+pub fn folders_not_merged_note(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 folder skipped (not merged)".to_string()),
+        n => Some(format!("{n} folders skipped (not merged)")),
+    }
+}
+
 /// Decide which sources to transfer and the engine decision for `policy`.
 /// Non-conflicting sources are always kept; only conflict losers are dropped.
 pub fn resolve(
@@ -218,6 +239,38 @@ mod tests {
             resolve(&sources, &conflicts, RelationPolicy::KeepLarger)
                 .keep
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn conditional_policies_count_the_folders_they_skip() {
+        let sources = vec![
+            dir(entry("folder", 0, Some(300))),
+            entry("a.txt", 10, Some(300)),
+        ];
+        let destinations = vec![dir(dst("folder", 0, Some(100))), dst("a.txt", 5, Some(100))];
+        let conflicts = detect(&sources, &destinations);
+        for policy in [RelationPolicy::KeepNewer, RelationPolicy::KeepLarger] {
+            assert_eq!(folders_not_merged(&conflicts, policy), 1);
+            // The folder really is dropped from the transfer.
+            let keep = resolve(&sources, &conflicts, policy).keep;
+            assert!(!keep.contains(&sources[0].path));
+        }
+        for policy in [
+            RelationPolicy::ReplaceAll,
+            RelationPolicy::SkipAll,
+            RelationPolicy::KeepBoth,
+        ] {
+            assert_eq!(folders_not_merged(&conflicts, policy), 0);
+        }
+        assert_eq!(folders_not_merged_note(0), None);
+        assert_eq!(
+            folders_not_merged_note(1).as_deref(),
+            Some("1 folder skipped (not merged)")
+        );
+        assert_eq!(
+            folders_not_merged_note(3).as_deref(),
+            Some("3 folders skipped (not merged)")
         );
     }
 
