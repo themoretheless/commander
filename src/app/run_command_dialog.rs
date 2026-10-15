@@ -656,6 +656,7 @@ mod tests {
         let path = PathBuf::from(path);
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         crate::panel::FileEntry {
+            permissions: None,
             name_lower: name.to_lowercase(),
             name,
             path,

@@ -157,6 +157,7 @@ mod tests {
 
     fn entry(name: &str, size: u64, secs: Option<u64>) -> FileEntry {
         FileEntry {
+            permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from(format!("/src/{name}")),

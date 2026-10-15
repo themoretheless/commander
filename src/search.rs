@@ -1220,6 +1220,7 @@ pub fn synthetic_entry(
         .map(|extension| extension.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     Some(FileEntry {
+        permissions: None,
         name_lower: name.to_lowercase(),
         name,
         path,
@@ -1310,6 +1311,7 @@ mod tests {
 
     fn file_entry(path: PathBuf, size: u64) -> FileEntry {
         FileEntry {
+            permissions: None,
             name: path.file_name().unwrap().to_string_lossy().to_string(),
             name_lower: path.file_name().unwrap().to_string_lossy().to_lowercase(),
             extension: path

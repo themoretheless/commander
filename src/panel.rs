@@ -147,6 +147,10 @@ pub struct FileEntry {
     pub modified_str: String,
     /// Pre-formatted size string for files ("…" for dirs).
     pub size_str: String,
+    /// Permissions observed with the listing (a link's target's), so Get
+    /// Info never stats on the UI thread. `None` when not observed: a
+    /// dangling link, or a row that was never stat-ed.
+    pub permissions: Option<fs::Permissions>,
 }
 
 impl FileEntry {
@@ -183,6 +187,7 @@ impl FileEntry {
             modified,
             modified_str,
             size_str,
+            permissions: Some(meta.permissions()),
         })
     }
 
@@ -196,9 +201,14 @@ impl FileEntry {
             .is_symlink()
             .then(|| fs::metadata(&path).ok())
             .flatten();
+        let dangling = lexical.file_type().is_symlink() && followed.is_none();
         let identity = crate::path_identity::PathIdentity::from_metadata(path.clone(), &lexical);
         let mut entry = Self::from_meta(path, followed.as_ref().unwrap_or(&lexical))?;
         entry.identity = ListingIdentity::Captured(identity);
+        if dangling {
+            // The link's own mode says nothing about a target that is gone.
+            entry.permissions = None;
+        }
         Some(entry)
     }
 
@@ -1175,6 +1185,8 @@ impl PanelState {
                         // content: a broken link has no size to show.
                         file_entry.size = 0;
                         file_entry.size_str = "–".to_string();
+                        // Nor a target mode: there is no target.
+                        file_entry.permissions = None;
                     }
                     file_entry.identity = match lexical {
                         Ok(metadata) => ListingIdentity::Captured(
@@ -1724,6 +1736,7 @@ mod tests {
     /// In-memory entry for pure sort/filter/selection tests.
     fn entry(name: &str, is_dir: bool, size: u64) -> FileEntry {
         FileEntry {
+            permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from(format!("/test/{name}")),
@@ -3219,15 +3232,25 @@ mod tests {
         let tmp = TempDir::new();
         let f = tmp.file("gone.txt", "hello");
         let meta = std::fs::metadata(&f).unwrap();
-        let fe = FileEntry::from_meta(f.clone(), &meta).unwrap();
-        std::fs::remove_file(&f).unwrap();
+        let mut fe = FileEntry::from_meta(f, &meta).unwrap();
+        fe.permissions = None;
         let card = make_info(&fe, None, None);
         // Not a fake mode string indistinguishable from a real `000` file.
-        assert!(
-            card.permissions.starts_with("unavailable ("),
-            "{}",
-            card.permissions
-        );
+        assert_eq!(card.permissions, "unavailable");
+    }
+
+    #[test]
+    fn make_info_reads_permissions_from_the_listing_not_the_disk() {
+        let tmp = TempDir::new();
+        let f = tmp.file("listed.txt", "hello");
+        let meta = std::fs::metadata(&f).unwrap();
+        let fe = FileEntry::from_meta(f.clone(), &meta).unwrap();
+        let listed = make_info(&fe, None, None).permissions;
+        // Gone (or on a hung mount) by the time Get Info opens: the card
+        // still shows what the listing saw, without touching the disk.
+        std::fs::remove_file(&f).unwrap();
+        assert_eq!(make_info(&fe, None, None).permissions, listed);
+        assert_ne!(listed, "unavailable");
     }
 
     #[test]

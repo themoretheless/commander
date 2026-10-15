@@ -706,6 +706,7 @@ mod tests {
     fn entry(path: &Path, is_dir: bool, size: u64) -> FileEntry {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         FileEntry {
+            permissions: None,
             name_lower: name.to_lowercase(),
             name,
             path: path.to_path_buf(),

@@ -185,6 +185,7 @@ mod tests {
                 .unwrap_or_default()
         };
         FileEntry {
+            permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: std::path::PathBuf::from(format!("/t/{name}")),

@@ -263,6 +263,7 @@ mod tests {
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         FileEntry {
+            permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from(format!("/x/{name}")),

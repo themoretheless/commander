@@ -1265,6 +1265,7 @@ mod tests {
         let path = PathBuf::from(format!("/x/{name}"));
         crate::search::SearchHit {
             entry: crate::panel::FileEntry {
+                permissions: None,
                 name: name.to_string(),
                 name_lower: name.to_lowercase(),
                 path: path.clone(),

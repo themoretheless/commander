@@ -387,6 +387,7 @@ mod tests {
 
     fn fake(name: &str, size: u64, modified: Option<SystemTime>) -> FileEntry {
         FileEntry {
+            permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from(format!("/x/{name}")),
@@ -490,6 +491,7 @@ mod tests {
 
     fn fake_dir(name: &str) -> FileEntry {
         FileEntry {
+            permissions: None,
             is_dir: true,
             ..fake(name, 0, None)
         }
@@ -510,6 +512,7 @@ mod tests {
             // A folder pair with different sizes and mtimes is still not
             // known to differ: its contents were never compared.
             FileEntry {
+                permissions: None,
                 size: 4096,
                 modified: t,
                 ..fake_dir("folders")
