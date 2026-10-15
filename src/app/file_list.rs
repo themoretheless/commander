@@ -786,10 +786,8 @@ impl App {
                 // the pre-density default).
                 let row_content = row_content_height(metrics);
                 let row_h = row_content + 1.0;
-                // Dark theme? Derived from the panel background luminance, so the
-                // semantic kind stub can pick the right toned palette.
-                let dark =
-                    (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
+                // The semantic kind stub picks the matching toned palette.
+                let dark = t.is_dark();
                 let total_rows = filtered.len();
                 let viewport = ui.clip_rect();
                 // Measured from where file rows start, i.e. below "..".

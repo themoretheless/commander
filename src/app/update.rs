@@ -2217,7 +2217,7 @@ impl App {
             return;
         };
         let now = ctx.input(|i| i.time);
-        if now - last > 1.5 {
+        if now - last > super::keys::TYPE_AHEAD_IDLE {
             if allow_state_updates {
                 self.ui.type_ahead = None;
             }

@@ -140,7 +140,7 @@ impl App {
         self.poll_disk_usage_scan();
 
         let t = self.colors;
-        let dark = (t.bg_panel.r() as u16 + t.bg_panel.g() as u16 + t.bg_panel.b() as u16) < 384;
+        let dark = t.is_dark();
         let window_open = true;
         let mut stop = false;
         let mut rescan = false;
