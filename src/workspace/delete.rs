@@ -241,7 +241,6 @@ impl DeleteController {
                     kind: NativeFailureKind::Busy,
                     message: format!("Could not start Trash worker: {error}"),
                 },
-                false,
             ),
         });
         if immediate.is_some() {
@@ -528,16 +527,8 @@ fn outcome_from_results(
             )
         })
         .map(|item| classify_failure(&item.path, &item.outcome))
-        .collect();
-    let failed = results
-        .iter()
-        .filter(|item| {
-            !matches!(
-                item.outcome,
-                TrashItemOutcome::Trashed | TrashItemOutcome::Cancelled
-            )
-        })
-        .count();
+        .collect::<Vec<_>>();
+    let failed = failures.len();
     let indeterminate = results
         .iter()
         .any(|item| matches!(item.outcome, TrashItemOutcome::Indeterminate(_)));
@@ -585,11 +576,9 @@ fn indeterminate_outcome(
     outcome_from_results(context, results)
 }
 
-fn failed_outcome(
-    context: &DeleteRunContext,
-    failure: NativeFailure,
-    indeterminate: bool,
-) -> DeleteOutcome {
+/// Every item failed before any of them reached the Trash (the worker could
+/// not start), so the whole batch is retryable.
+fn failed_outcome(context: &DeleteRunContext, failure: NativeFailure) -> DeleteOutcome {
     let items = context
         .paths
         .iter()
@@ -600,16 +589,13 @@ fn failed_outcome(
             version: None,
         })
         .collect::<Vec<_>>();
-    let class = if indeterminate {
-        FailureClass::IntegrityUncertain
-    } else {
-        FailureClass::Retryable
-    };
     let failures = context
         .paths
         .iter()
         .cloned()
-        .map(|path| ClassifiedFailure::message(class, Some(path), failure.message.clone()))
+        .map(|path| {
+            ClassifiedFailure::message(FailureClass::Retryable, Some(path), failure.message.clone())
+        })
         .collect();
     DeleteOutcome {
         attempt_id: context.attempt_id,
@@ -620,7 +606,7 @@ fn failed_outcome(
         items,
         trashed: 0,
         failures,
-        indeterminate,
+        indeterminate: false,
         cancelled: false,
     }
 }
@@ -1393,5 +1379,34 @@ mod tests {
         let outcome = controller.trash_one(&target(path));
 
         assert!(matches!(outcome, TrashItemOutcome::Indeterminate(_)));
+    }
+
+    #[test]
+    fn worker_start_failure_marks_every_item_retryable() {
+        let items = vec![
+            TrashBatchItem::CaptureFailed {
+                path: PathBuf::from("/a.txt"),
+                failure: denied("unused"),
+            },
+            TrashBatchItem::CaptureFailed {
+                path: PathBuf::from("/b.txt"),
+                failure: denied("unused"),
+            },
+        ];
+        let context = DeleteRunContext::capture(&items, DeleteOrigin::Confirmation);
+
+        let outcome = failed_outcome(&context, denied("no thread"));
+
+        assert_eq!(outcome.failed, 2);
+        assert_eq!(outcome.trashed, 0);
+        assert!(!outcome.indeterminate);
+        assert!(!outcome.cancelled);
+        assert_eq!(outcome.failures.len(), 2);
+        assert!(
+            outcome
+                .failures
+                .iter()
+                .all(|failure| failure.class == FailureClass::Retryable)
+        );
     }
 }
