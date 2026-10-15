@@ -3,14 +3,13 @@
 //! Streams the source walk: destination directories are created as discovered,
 //! and leaf file jobs are fed through a bounded queue so workers start copying
 //! before the scan finishes. Symlink policy is Preserve-only; other policies
-//! use the sequential buffered walk.
+//! use the sequential buffered walk. Each copy runs its own scoped workers,
+//! so one stalled transfer cannot hold threads another transfer waits for.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-
-use rayon::prelude::*;
 
 use super::TransferState;
 use super::buffered::{
@@ -32,7 +31,6 @@ pub(super) fn copy_dir_buffered_parallel(
     preserve_sparse: bool,
 ) -> std::io::Result<u64> {
     let workers = workers.max(1);
-    let pool = directory_copy_pool(workers)?;
     {
         let mut progress = crate::lock_util::recover(state);
         progress.active_workers = workers;
@@ -65,35 +63,68 @@ pub(super) fn copy_dir_buffered_parallel(
         })
         .map_err(std::io::Error::other)?;
 
-    // Mutex so rayon::par_bridge can pull jobs from multiple worker threads.
-    // Intake is serialized; the buffered copy work still runs in parallel.
+    // Mutex so several workers can pull from one receiver. Intake is
+    // serialized; the buffered copy work still runs in parallel.
     let rx = Mutex::new(rx);
     let copied = AtomicU64::new(0);
-    let copy_result = pool.install(|| {
-        std::iter::from_fn(|| crate::lock_util::recover(&rx).recv().ok())
-            .par_bridge()
-            .try_for_each(|(source, destination)| {
-                if crate::lock_util::recover(state).cancelled {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        "cancelled while copying the directory tree",
-                    ));
-                }
-                let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
-                let bytes = copy_file_buffered_with_limiter(
-                    &source,
-                    &destination,
-                    state,
-                    &mut limiter,
-                    None,
-                    None,
-                    preserve_sparse,
-                )
-                .map_err(|e| with_path(e, &source))?;
-                copied.fetch_add(bytes, Ordering::Relaxed);
-                Ok(())
-            })
+    let stop = AtomicBool::new(false);
+    let first_error = Mutex::new(None::<std::io::Error>);
+    let fail = |error: std::io::Error| {
+        stop.store(true, Ordering::Relaxed);
+        let mut slot = crate::lock_util::recover(&first_error);
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    };
+    let copy_job = |source: &Path, destination: &Path| -> std::io::Result<()> {
+        if crate::lock_util::recover(state).cancelled {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled while copying the directory tree",
+            ));
+        }
+        let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
+        let bytes = copy_file_buffered_with_limiter(
+            source,
+            destination,
+            state,
+            &mut limiter,
+            None,
+            None,
+            preserve_sparse,
+        )
+        .map_err(|e| with_path(e, source))?;
+        copied.fetch_add(bytes, Ordering::Relaxed);
+        Ok(())
+    };
+    thread::scope(|scope| {
+        for index in 0..workers {
+            let spawned = thread::Builder::new()
+                .name(format!("commander-copy-{index}"))
+                .spawn_scoped(scope, || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let Ok((source, destination)) = crate::lock_util::recover(&rx).recv()
+                        else {
+                            break;
+                        };
+                        // Another worker may have failed while this one waited.
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Err(error) = copy_job(&source, &destination) {
+                            fail(error);
+                        }
+                    }
+                });
+            if let Err(error) = spawned {
+                fail(error);
+                break;
+            }
+        }
     });
+    let copy_result = crate::lock_util::recover(&first_error)
+        .take()
+        .map_or(Ok(()), Err);
 
     // Drop the receiver so a scan thread blocked on a full queue can exit
     // after workers stop early (copy failure / cancel).
@@ -158,27 +189,6 @@ fn stream_buffered_tree(
         }
     }
     Ok(())
-}
-
-fn directory_copy_pool(workers: usize) -> std::io::Result<Arc<rayon::ThreadPool>> {
-    static POOLS: std::sync::OnceLock<
-        Mutex<std::collections::HashMap<usize, Arc<rayon::ThreadPool>>>,
-    > = std::sync::OnceLock::new();
-    let pools = POOLS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    if let Some(pool) = crate::lock_util::recover(pools).get(&workers).cloned() {
-        return Ok(pool);
-    }
-    let candidate = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .thread_name(|index| format!("commander-copy-{index}"))
-            .build()
-            .map_err(std::io::Error::other)?,
-    );
-    let mut pools = crate::lock_util::recover(pools);
-    Ok(Arc::clone(
-        pools.entry(workers).or_insert_with(|| candidate),
-    ))
 }
 
 #[cfg(test)]
@@ -257,5 +267,76 @@ mod tests {
         let error = copy_dir_buffered_parallel(&src, &dst, &progress(), 2, false).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(error.to_string().contains("taken"), "{error}");
+    }
+
+    #[test]
+    fn a_stalled_tree_copy_does_not_block_another_with_the_same_worker_count() {
+        let tmp = TempDir::new();
+        let src_a = tmp.dir("a");
+        for index in 0..300 {
+            tmp.file(&format!("a/{index:03}.txt"), "x");
+        }
+        let src_b = tmp.dir("b");
+        tmp.file("b/one.txt", "1");
+        let (dst_a, dst_b) = (tmp.path().join("dst-a"), tmp.path().join("dst-b"));
+        let state_a = progress();
+        crate::lock_util::recover(&state_a).active_workers = 0;
+
+        let copy_a = {
+            let (state_a, src_a, dst_a) = (Arc::clone(&state_a), src_a.clone(), dst_a.clone());
+            thread::spawn(move || copy_dir_buffered_parallel(&src_a, &dst_a, &state_a, 2, false))
+        };
+        // Stall copy A mid-tree: its scan and workers all wait on its progress.
+        let stalled = loop {
+            let guard = crate::lock_util::recover(&state_a);
+            if guard.active_workers == 2 {
+                break guard;
+            }
+            drop(guard);
+            thread::yield_now();
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let copy_b = thread::spawn(move || {
+            let result = copy_dir_buffered_parallel(&src_b, &dst_b, &progress(), 2, false);
+            let _ = done_tx.send(result.map_err(|e| e.to_string()));
+        });
+
+        let finished = done_rx.recv_timeout(std::time::Duration::from_secs(5));
+        drop(stalled);
+        copy_b.join().unwrap();
+        assert_eq!(copy_a.join().unwrap().unwrap(), 300);
+        assert_eq!(finished.expect("copy B waited for copy A").unwrap(), 1);
+    }
+
+    #[test]
+    fn cancel_mid_tree_stops_workers_and_scan_without_hanging() {
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        // Far more files than the queue holds, so the scan is still feeding
+        // workers (or blocked on the full queue) when the cancel lands.
+        for index in 0..(file_job_queue_bound(2) * 20) {
+            tmp.file(&format!("src/{index:04}.txt"), "x");
+        }
+        let dst = tmp.path().join("dst");
+        let state = progress();
+        crate::lock_util::recover(&state).active_workers = 0;
+        let copy = {
+            let (state, src, dst) = (Arc::clone(&state), src.clone(), dst.clone());
+            thread::spawn(move || copy_dir_buffered_parallel(&src, &dst, &state, 2, false))
+        };
+        loop {
+            let mut guard = crate::lock_util::recover(&state);
+            if guard.active_workers == 2 {
+                guard.request_cancel();
+                break;
+            }
+            drop(guard);
+            thread::yield_now();
+        }
+
+        let error = copy.join().unwrap().unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(crate::lock_util::recover(&state).active_workers, 1);
     }
 }
