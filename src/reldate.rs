@@ -1,10 +1,11 @@
 //! Relative ("time ago") formatting for the Modified column, Finder/Things
-//! style. Pure and deterministic: the relative bands are plain duration math
-//! and the calendar bands format in UTC, so a fixed `now` yields fixed output
-//! regardless of the machine's timezone (handy for golden tests, and the exact
-//! local timestamp stays available as the row's hover tooltip).
+//! style. The relative bands are plain duration math; the calendar bands
+//! (weekday, date) format in local time so they agree with the row's local
+//! hover timestamp. [`relative_date_in`] takes the timezone explicitly, so
+//! tests pin UTC and stay deterministic on any machine.
 
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
+use std::fmt::Display;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Shown when a timestamp lies outside the range chrono can represent (an mtime
@@ -38,10 +39,22 @@ fn to_utc(t: SystemTime) -> Option<DateTime<Utc>> {
 /// - under an hour -> "Nm"
 /// - under a day -> "Nh"
 /// - under two days -> "Yesterday"
-/// - under a week -> the weekday name ("Tuesday")
+/// - under a week and under 7 calendar days back -> the weekday name
+///   ("Tuesday"), so it never repeats today's weekday
 /// - same calendar year -> "Mon D" ("Jun 5")
 /// - older -> "Mon D YYYY" ("May 11 2020")
+///
+/// Calendar bands use the local timezone.
 pub fn relative_date(modified: SystemTime, now: SystemTime) -> String {
+    relative_date_in(modified, now, &chrono::Local)
+}
+
+/// [`relative_date`] with the calendar bands in timezone `tz`.
+pub fn relative_date_in<Tz>(modified: SystemTime, now: SystemTime, tz: &Tz) -> String
+where
+    Tz: TimeZone,
+    Tz::Offset: Display,
+{
     const MINUTE: u64 = 60;
     const HOUR: u64 = 60 * MINUTE;
     const DAY: u64 = 24 * HOUR;
@@ -61,10 +74,11 @@ pub fn relative_date(modified: SystemTime, now: SystemTime) -> String {
             let (Some(modified_utc), Some(now_utc)) = (to_utc(modified), to_utc(now)) else {
                 return OUT_OF_RANGE.to_string();
             };
-            return if modified_utc.year() == now_utc.year() {
-                modified_utc.format("%b %-d").to_string()
+            let (modified_tz, now_tz) = (modified_utc.with_timezone(tz), now_utc.with_timezone(tz));
+            return if modified_tz.year() == now_tz.year() {
+                modified_tz.format("%b %-d").to_string()
             } else {
-                modified_utc.format("%b %-d %Y").to_string()
+                modified_tz.format("%b %-d %Y").to_string()
             };
         }
     };
@@ -83,20 +97,19 @@ pub fn relative_date(modified: SystemTime, now: SystemTime) -> String {
         return "Yesterday".to_string();
     }
 
-    let Some(modified_utc) = to_utc(modified) else {
+    let (Some(modified_utc), Some(now_utc)) = (to_utc(modified), to_utc(now)) else {
         return OUT_OF_RANGE.to_string();
     };
-    if secs < WEEK {
-        return modified_utc.format("%A").to_string();
+    let (modified_tz, now_tz) = (modified_utc.with_timezone(tz), now_utc.with_timezone(tz));
+    let calendar_days = (now_tz.date_naive() - modified_tz.date_naive()).num_days();
+    if secs < WEEK && calendar_days < 7 {
+        return modified_tz.format("%A").to_string();
     }
 
-    let Some(now_utc) = to_utc(now) else {
-        return OUT_OF_RANGE.to_string();
-    };
-    if modified_utc.year() == now_utc.year() {
-        modified_utc.format("%b %-d").to_string()
+    if modified_tz.year() == now_tz.year() {
+        modified_tz.format("%b %-d").to_string()
     } else {
-        modified_utc.format("%b %-d %Y").to_string()
+        modified_tz.format("%b %-d %Y").to_string()
     }
 }
 
@@ -119,7 +132,7 @@ mod tests {
     const DAY: u64 = 24 * HOUR;
 
     fn rel(modified_secs: u64) -> String {
-        relative_date(at(modified_secs), at(NOW))
+        relative_date_in(at(modified_secs), at(NOW), &Utc)
     }
 
     #[test]
@@ -168,8 +181,25 @@ mod tests {
         assert_eq!(rel(NOW - 2 * DAY), "Sunday");
         // 3 days ago is 2021-06-12, a Saturday.
         assert_eq!(rel(NOW - 3 * DAY), "Saturday");
-        // One second under a week still falls in the weekday band.
-        assert_eq!(rel(NOW - (7 * DAY - 1)), "Tuesday");
+        // 6 days ago is 2021-06-09, a Wednesday.
+        assert_eq!(rel(NOW - 6 * DAY), "Wednesday");
+        // One second under a week is 2021-06-08, also a Tuesday like today:
+        // a weekday name would read as today, so it shows the date.
+        assert_eq!(rel(NOW - (7 * DAY - 1)), "Jun 8");
+    }
+
+    #[test]
+    fn calendar_bands_follow_the_given_timezone() {
+        // Saturday 2021-06-12 23:30 UTC is already Sunday at UTC+2.
+        let modified = at(NOW - 3 * DAY + 11 * HOUR + 30 * MINUTE);
+        let plus_two = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(relative_date_in(modified, at(NOW), &Utc), "Saturday");
+        assert_eq!(relative_date_in(modified, at(NOW), &plus_two), "Sunday");
+        // Near New Year the year suffix follows the zone too:
+        // 2020-12-31 23:30 UTC is 2021-01-01 at UTC+2.
+        let new_year = at(1_609_457_400);
+        assert_eq!(relative_date_in(new_year, at(NOW), &Utc), "Dec 31 2020");
+        assert_eq!(relative_date_in(new_year, at(NOW), &plus_two), "Jan 1");
     }
 
     #[test]
