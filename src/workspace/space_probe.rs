@@ -528,6 +528,155 @@ mod tests {
         assert!(port.seen.lock().unwrap().contains(&external));
     }
 
+    /// Answers `volume_relation` from a per-source script (default `Same`)
+    /// and records every source it was asked about, in order.
+    struct ScriptedRelation {
+        script: Vec<(PathBuf, VolumeRelation)>,
+        seen: Mutex<Vec<PathBuf>>,
+    }
+
+    impl ScriptedRelation {
+        fn new(script: Vec<(PathBuf, VolumeRelation)>) -> Self {
+            Self {
+                script,
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn seen(&self) -> Vec<PathBuf> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl FreeSpacePort for ScriptedRelation {
+        fn probe(&self, _path: &Path) -> crate::ports::SpaceProbeOutcome {
+            unreachable!("the relation tests do not probe free space")
+        }
+
+        fn volume_relation(&self, source: &Path, _target: &Path) -> VolumeRelation {
+            self.seen.lock().unwrap().push(source.to_path_buf());
+            self.script
+                .iter()
+                .find(|(path, _)| path == source)
+                .map_or(VolumeRelation::Same, |(_, relation)| relation.clone())
+        }
+    }
+
+    fn unknown(message: &str) -> VolumeRelation {
+        VolumeRelation::Unknown(NativeFailure {
+            kind: NativeFailureKind::Unknown,
+            message: message.to_string(),
+        })
+    }
+
+    fn relation_of(
+        entries: &[FileEntry],
+        policy: crate::filesystem_policy::SymlinkPolicy,
+        target: &Path,
+        port: &dyn FreeSpacePort,
+    ) -> VolumeRelation {
+        let scan = crate::scan::transfer_preflight(entries, policy);
+        batch_volume_relation(
+            entries,
+            &scan.source_identities,
+            target,
+            policy,
+            port,
+            &AtomicBool::new(false),
+        )
+    }
+
+    fn lexical_entry(path: PathBuf) -> FileEntry {
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        FileEntry::from_meta(path, &metadata).unwrap()
+    }
+
+    #[test]
+    fn a_later_same_volume_answer_does_not_clear_an_unknown_one() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("value.bin", "123");
+        // The parent sorts before the file, so Unknown comes first.
+        let port = ScriptedRelation::new(vec![(
+            source.path().to_path_buf(),
+            unknown("parent unreadable"),
+        )]);
+
+        let relation = relation_of(
+            &[lexical_entry(file.clone())],
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+            target.path(),
+            &port,
+        );
+
+        assert_eq!(relation, unknown("parent unreadable"));
+        assert_eq!(port.seen(), vec![source.path().to_path_buf(), file]);
+    }
+
+    #[test]
+    fn a_different_volume_stops_asking_about_further_sources() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("value.bin", "123");
+        let port = ScriptedRelation::new(vec![(
+            source.path().to_path_buf(),
+            VolumeRelation::Different,
+        )]);
+
+        let relation = relation_of(
+            &[lexical_entry(file)],
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+            target.path(),
+            &port,
+        );
+
+        assert_eq!(relation, VolumeRelation::Different);
+        assert_eq!(port.seen(), vec![source.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn an_incomplete_or_empty_source_set_is_unknown_without_asking() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let entry = lexical_entry(source.file("value.bin", "123"));
+        let port = ScriptedRelation::new(Vec::new());
+        let cancel = AtomicBool::new(false);
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+
+        let mismatched =
+            batch_volume_relation(&[entry], &[], target.path(), policy, &port, &cancel);
+        let empty = batch_volume_relation(&[], &[], target.path(), policy, &port, &cancel);
+
+        assert!(
+            matches!(&mismatched, VolumeRelation::Unknown(failure)
+                if failure.message.contains("incomplete source set")),
+            "{mismatched:?}"
+        );
+        assert!(
+            matches!(&empty, VolumeRelation::Unknown(failure)
+                if failure.kind == NativeFailureKind::InvalidInput),
+            "{empty:?}"
+        );
+        assert!(port.seen().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_preserved_top_level_symlink_is_judged_by_its_folder_only() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let link = source.path().join("dangling");
+        std::os::unix::fs::symlink(source.path().join("missing"), &link).unwrap();
+        // Asking about the link's own path would follow it to nowhere.
+        let port = ScriptedRelation::new(vec![(link.clone(), unknown("followed the link"))]);
+
+        let relation = relation_of(
+            &[lexical_entry(link)],
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+            target.path(),
+            &port,
+        );
+
+        assert_eq!(relation, VolumeRelation::Same);
+        assert_eq!(port.seen(), vec![source.path().to_path_buf()]);
+    }
+
     #[test]
     fn cancellation_before_scan_skips_native_space_effects() {
         let source = TempDir::new();
