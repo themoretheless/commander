@@ -21,6 +21,8 @@ pub(super) struct SizeScanInput<'a> {
     pub(super) scroll_anchor: usize,
     pub(super) page_rows: usize,
     pub(super) notify: Option<Notify>,
+    /// Whether item counts include dotfiles, as the listing does.
+    pub(super) show_hidden: bool,
 }
 
 /// Immutable, revisioned view of directory metrics. Building it clones the
@@ -440,9 +442,12 @@ impl SizeIndex {
             let epoch = Arc::clone(&scan_epoch);
             let revision = Arc::clone(&self.revision);
             let wake = input.notify.clone();
+            let show_hidden = input.show_hidden;
             pool.spawn_fifo(move || {
                 use rayon::prelude::*;
-                fn count(path: &PathBuf, epoch: &ScanEpoch) -> Option<(PathBuf, usize)> {
+                // Counts what opening the folder lists: dotfiles only while
+                // hidden files are shown.
+                let count = |path: &PathBuf, epoch: &ScanEpoch| -> Option<(PathBuf, usize)> {
                     if epoch.is_cancelled() {
                         return None;
                     }
@@ -452,10 +457,12 @@ impl SizeIndex {
                         if epoch.is_cancelled() {
                             return None;
                         }
-                        count += usize::from(entry.is_ok());
+                        count += usize::from(entry.is_ok_and(|entry| {
+                            show_hidden || !super::is_hidden_name(&entry.file_name())
+                        }));
                     }
                     (!epoch.is_cancelled()).then(|| (path.clone(), count))
-                }
+                };
 
                 let visible_results: Vec<_> = visible_counts
                     .iter()
@@ -726,6 +733,7 @@ mod tests {
                 scroll_anchor: 0,
                 page_rows: 10,
                 notify: None,
+                show_hidden: true,
             },
             true,
             true,
@@ -741,6 +749,51 @@ mod tests {
         // Both were scheduled together; the link was never queued for a walk.
         assert_eq!(index.snapshot().size_of(&link.path), None);
         assert_eq!(index.folder_overview(1, &entries).total, Some(5));
+    }
+
+    #[test]
+    fn folder_item_counts_follow_the_hidden_files_setting() {
+        let tmp = crate::testutil::TempDir::new();
+        let folder = tmp.dir("box");
+        tmp.file("box/a.txt", "a");
+        tmp.file("box/.hidden", "h");
+        let crate::panel::DirectoryRead::Complete(entries) =
+            crate::panel::PanelState::read_dir(tmp.path(), true)
+        else {
+            panic!("listing should be complete");
+        };
+        let index = SizeIndex::new(tmp.path().to_path_buf());
+        let counted = |show_hidden: bool| {
+            let filtered: Arc<[usize]> = (0..entries.len()).collect::<Vec<_>>().into();
+            index.schedule(
+                &SizeScanInput {
+                    path: tmp.path(),
+                    entries: &entries,
+                    filtered,
+                    scroll_anchor: 0,
+                    page_rows: 10,
+                    notify: None,
+                    show_hidden,
+                },
+                true,
+                true,
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let expected = if show_hidden { 2 } else { 1 };
+                if let Some(count) = index.snapshot().count_of(&folder)
+                    && (count == expected || std::time::Instant::now() >= deadline)
+                {
+                    return count;
+                }
+                assert!(std::time::Instant::now() < deadline, "folder never counted");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+
+        // Opening the folder with hidden files off lists one row.
+        assert_eq!(counted(false), 1);
+        assert_eq!(counted(true), 2);
     }
 
     #[test]
@@ -881,6 +934,7 @@ mod tests {
                 scroll_anchor: 0,
                 page_rows: 10,
                 notify: Some(Arc::clone(&notify)),
+                show_hidden: true,
             });
         }
         assert_eq!(wakes.load(Ordering::SeqCst), 0, "no wake per frame");

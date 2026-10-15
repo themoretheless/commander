@@ -41,7 +41,6 @@ pub use preview::{
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
 use size_index::{SizeIndex, SizeScanInput};
-#[cfg(test)]
 use sort::natural_cmp;
 use sort::sort_entries;
 pub use view::ViewConfig;
@@ -290,7 +289,36 @@ pub fn format_size(bytes: u64) -> String {
     if (mb * 10.0).round() < 10240.0 {
         return format!("{:.1} MB", mb);
     }
-    format!("{:.2} GB", mb / 1024.0)
+    // Larger units print two decimals; a multi-TiB folder or volume reads
+    // "5.00 TB" rather than "5120.00 GB".
+    let mut value = mb / 1024.0;
+    for unit in ["GB", "TB"] {
+        if (value * 100.0).round() < 102_400.0 {
+            return format!("{value:.2} {unit}");
+        }
+        value /= 1024.0;
+    }
+    format!("{value:.2} PB")
+}
+
+/// Whether a directory child is a dotfile, which listings, the tree and
+/// folder item counts leave out while hidden files are off.
+fn is_hidden_name(name: &std::ffi::OsStr) -> bool {
+    name.to_string_lossy().starts_with('.')
+}
+
+/// Cursor row after a filter change. The `..` row stays put; a focused
+/// entry that still matches keeps the cursor (`found`); otherwise the first
+/// match (or `..` when nothing matches) takes it.
+const fn filtered_cursor(old_cursor: usize, found: Option<usize>, count: usize) -> usize {
+    if old_cursor == 0 {
+        return 0;
+    }
+    match found {
+        Some(row) => row,
+        None if count > 0 => 1,
+        None => 0,
+    }
 }
 
 /// Glob match supporting `*` (any run) and `?` (one char). Inputs are
@@ -349,13 +377,25 @@ pub fn parse_mask(mask: &str) -> Vec<(String, bool)> {
 
 /// Whether a single lowercased `term` matches an entry. A term with no
 /// wildcard and no `.` matches by extension ("jpg" selects all *.jpg);
-/// otherwise it is globbed against the full name.
+/// otherwise it is globbed against the full name. A dotted term with no
+/// wildcard also matches as a name suffix, so ".jpg" and "tar.gz" select
+/// what they look like they should.
 fn term_matches(term: &str, name_lower: &str, ext: &str) -> bool {
     let wild = term.contains('*') || term.contains('?');
     if !wild && !term.contains('.') {
         return ext == term;
     }
-    glob_match(term, name_lower)
+    if glob_match(term, name_lower) {
+        return true;
+    }
+    if wild {
+        return false;
+    }
+    let suffix = term.trim_start_matches('.');
+    !suffix.is_empty()
+        && name_lower
+            .strip_suffix(suffix)
+            .is_some_and(|stem| stem.ends_with('.'))
 }
 
 /// What a parsed mask does to `entry`: `Some(false)` deselects (subtraction
@@ -696,7 +736,7 @@ impl PanelState {
     }
 
     pub fn set_search_query(&mut self, query: impl Into<String>) {
-        self.preserving_focus(|panel| panel.view.set_search_query(query));
+        self.preserving_focus_while_filtering(|panel| panel.view.set_search_query(query));
     }
 
     pub const fn facets(&self) -> FacetSet {
@@ -704,7 +744,7 @@ impl PanelState {
     }
 
     pub fn set_facets(&mut self, facets: FacetSet) {
-        self.preserving_focus(|panel| *panel.view.facets_mut() = facets);
+        self.preserving_focus_while_filtering(|panel| *panel.view.facets_mut() = facets);
     }
 
     #[cfg(test)]
@@ -891,7 +931,7 @@ impl PanelState {
                 self.set_scroll_to_cursor(self.cursor() > 0);
             }
             PendingFocus::NamedChild(name) => {
-                if let Some(idx) = self.filtered_position(|entry| entry.name == name) {
+                if let Some(idx) = self.named_child_position(&name) {
                     self.reveal_cursor(idx + 1);
                 }
             }
@@ -1019,6 +1059,7 @@ impl PanelState {
                 scroll_anchor,
                 page_rows,
                 notify,
+                show_hidden: self.view.show_hidden(),
             },
             forced,
         );
@@ -1034,6 +1075,7 @@ impl PanelState {
             scroll_anchor: self.scroll_anchor(),
             page_rows: self.page_rows(),
             notify: self.watcher.notify(),
+            show_hidden: self.view.show_hidden(),
         };
         self.sizes.poll(input);
     }
@@ -1075,11 +1117,7 @@ impl PanelState {
                 }
             };
             let path = entry.path();
-            if !show_hidden
-                && path
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-            {
+            if !show_hidden && path.file_name().is_some_and(is_hidden_name) {
                 continue;
             }
             let file_type = match entry.file_type() {
@@ -1098,6 +1136,7 @@ impl PanelState {
                 .is_symlink()
                 .then(|| fs::metadata(&path).ok())
                 .flatten();
+            let dangling = file_type.is_symlink() && followed.is_none();
             let display_metadata = followed.as_ref().or_else(|| lexical.as_ref().ok());
             let Some(display_metadata) = display_metadata else {
                 complete = false;
@@ -1105,6 +1144,12 @@ impl PanelState {
             };
             match FileEntry::from_meta(path.clone(), display_metadata) {
                 Some(mut file_entry) => {
+                    if dangling {
+                        // The lstat size is the link text's length, not
+                        // content: a broken link has no size to show.
+                        file_entry.size = 0;
+                        file_entry.size_str = "–".to_string();
+                    }
                     file_entry.identity = match lexical {
                         Ok(metadata) => ListingIdentity::Captured(
                             crate::path_identity::PathIdentity::from_metadata(path, &metadata),
@@ -1364,6 +1409,23 @@ impl PanelState {
         self.restore_cursor_focus(focus, old_cursor);
     }
 
+    /// Like [`Self::preserving_focus`] for a query or facet change: when the
+    /// focused entry no longer matches, the cursor lands on the first match
+    /// rather than on whatever row now sits at the old (unfiltered) index.
+    fn preserving_focus_while_filtering(&mut self, change: impl FnOnce(&mut Self)) {
+        let focus = self.focused_path();
+        let old_cursor = self.cursor();
+        change(self);
+        if old_cursor == 0 {
+            self.set_cursor(0);
+            return;
+        }
+        let found = focus
+            .and_then(|path| self.filtered_position(|entry| entry.path == path))
+            .map(|index| index + 1);
+        self.reveal_cursor(filtered_cursor(old_cursor, found, self.filtered_count()));
+    }
+
     fn restore_cursor_focus(&mut self, focused: Option<PathBuf>, old_cursor: usize) {
         if old_cursor == 0 {
             self.set_cursor(0);
@@ -1402,7 +1464,7 @@ impl PanelState {
 
     /// Clear both text and facet filters as one invariant-preserving action.
     pub fn clear_filters(&mut self) {
-        self.preserving_focus(|panel| panel.view.clear_filters());
+        self.preserving_focus_while_filtering(|panel| panel.view.clear_filters());
     }
 
     /// The i-th entry of the filtered view (no allocation).
@@ -1593,7 +1655,7 @@ impl PanelState {
         let Ok(rd) = fs::read_dir(path) else {
             return Vec::new();
         };
-        let mut dirs: Vec<PathBuf> = rd
+        let dirs: Vec<PathBuf> = rd
             .filter_map(|e| e.ok())
             // Folder symlinks are folders here, as in the file list; the
             // tree expands lazily, so following them cannot loop.
@@ -1603,20 +1665,22 @@ impl PanelState {
                 Err(_) => false,
             })
             .map(|e| e.path())
-            .filter(|p| {
-                show_hidden
-                    || !p
-                        .file_name()
-                        .map(|n| n.to_string_lossy().starts_with('.'))
-                        .unwrap_or(false)
+            .filter(|p| show_hidden || !p.file_name().is_some_and(is_hidden_name))
+            .collect();
+        // Natural order, like the file list's default, so "dir2" sits above
+        // "dir10" in both views.
+        let mut keyed: Vec<(String, PathBuf)> = dirs
+            .into_iter()
+            .map(|path| {
+                let key = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                (key, path)
             })
             .collect();
-        dirs.sort_by(|a, b| {
-            a.file_name()
-                .map(|n| n.to_string_lossy().to_lowercase())
-                .cmp(&b.file_name().map(|n| n.to_string_lossy().to_lowercase()))
-        });
-        dirs
+        keyed.sort_by(|(a, _), (b, _)| natural_cmp(a, b));
+        keyed.into_iter().map(|(_, path)| path).collect()
     }
 
     pub fn sort_order_for(&self, col: SortColumn) -> Option<SortOrder> {
@@ -1705,6 +1769,21 @@ mod tests {
         assert_eq!(PanelState::subdirs(temp.path(), false), vec![link, target]);
     }
 
+    #[test]
+    fn tree_subdirs_use_the_file_lists_natural_order() {
+        let temp = TempDir::new();
+        let dir10 = temp.dir("dir10");
+        let dir2 = temp.dir("dir2");
+        let alpha = temp.dir("Alpha");
+        temp.dir(".hidden");
+        temp.file("file.txt", "");
+
+        assert_eq!(
+            PanelState::subdirs(temp.path(), false),
+            vec![alpha, dir2, dir10]
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn selection_elsewhere_reads_folder_symlinks_like_the_listing() {
@@ -1756,6 +1835,19 @@ mod tests {
             ListingIdentity::Captured(identity)
                 if identity.kind == Some(crate::path_identity::PathKind::Symlink)
         ));
+        // Not sized by the length of the link text ("missing" = 7 B).
+        assert_eq!(broken.size, 0);
+        assert_eq!(broken.size_display(), "–");
+
+        // Get Info says what the rows are, and where a working link points.
+        let card = make_info(folder, None, None);
+        assert_eq!(card.kind, "Symlink to Folder");
+        assert!(
+            card.path.ends_with("folder-link \u{2192} target"),
+            "{}",
+            card.path
+        );
+        assert_eq!(make_info(broken, None, None).kind, "Broken symlink");
     }
 
     fn panel_with(entries: Vec<FileEntry>) -> PanelState {
@@ -1821,6 +1913,12 @@ mod tests {
         assert_eq!(format_size(1024 * 1024 - 1), "1.0 MB");
         assert_eq!(format_size(1024 * 1024 * 1024 - 1), "1.00 GB");
         assert_eq!(format_size(1024 * 1024 - 52), "1023.9 KB");
+        // Terabytes and beyond get their own units.
+        let tib = 1024_u64.pow(4);
+        assert_eq!(format_size(5 * tib), "5.00 TB");
+        assert_eq!(format_size(tib - 1), "1.00 TB");
+        assert_eq!(format_size(3 * 1024 * tib), "3.00 PB");
+        assert_eq!(format_size(u64::MAX), "16384.00 PB");
     }
 
     #[test]
@@ -2284,6 +2382,29 @@ mod tests {
     }
 
     #[test]
+    fn filtering_out_the_focused_row_lands_on_the_first_match() {
+        let mut p = panel_with(vec![
+            entry("alpha.txt", false, 1),
+            entry("beta.txt", false, 1),
+            entry("gamma.rs", false, 1),
+            entry("delta.rs", false, 1),
+            entry("omega.txt", false, 1),
+        ]);
+        p.sort_entries();
+        // alpha, beta, delta, gamma, omega: focus omega (row 5).
+        p.set_cursor(5);
+        assert_eq!(p.cursor_entry().unwrap().name, "omega.txt");
+
+        p.set_search_query(".rs");
+
+        assert_eq!(p.cursor(), 1);
+        assert_eq!(p.cursor_entry().unwrap().name, "delta.rs");
+        assert_eq!(filtered_cursor(0, None, 3), 0, "the .. row stays put");
+        assert_eq!(filtered_cursor(4, Some(2), 3), 2);
+        assert_eq!(filtered_cursor(4, None, 0), 0);
+    }
+
+    #[test]
     fn sort_and_filter_keep_focus_on_the_same_path() {
         let mut p = panel_with(vec![
             entry("beta.txt", false, 20),
@@ -2629,6 +2750,22 @@ mod tests {
     }
 
     #[test]
+    fn focus_child_falls_back_to_a_case_insensitive_name() {
+        let mut p = panel_with(vec![
+            entry("Desktop", true, 0),
+            entry("Downloads", true, 0),
+            entry("downloads.txt", false, 1),
+        ]);
+        p.sort_entries();
+        // A path typed in another case on a case-insensitive volume.
+        p.focus_child("downloads".to_string());
+        assert_eq!(p.cursor_entry().unwrap().name, "Downloads");
+        // An exact match still wins over a case variant.
+        p.focus_child("downloads.txt".to_string());
+        assert_eq!(p.cursor_entry().unwrap().name, "downloads.txt");
+    }
+
+    #[test]
     fn navigate_to_restores_the_view_remembered_for_that_directory() {
         let tmp = TempDir::new();
         let downloads = tmp.dir("downloads");
@@ -2946,6 +3083,11 @@ mod tests {
         assert_eq!(format_mode(0o600), "rw-------");
         assert_eq!(format_mode(0o000), "---------");
         assert_eq!(format_mode(0o777), "rwxrwxrwx");
+        // Special bits, as `ls -l` shows them.
+        assert_eq!(format_mode(0o1777), "rwxrwxrwt");
+        assert_eq!(format_mode(0o4755), "rwsr-xr-x");
+        assert_eq!(format_mode(0o2755), "rwxr-sr-x");
+        assert_eq!(format_mode(0o7644), "rwSr-Sr-T");
     }
 
     #[test]
@@ -3123,6 +3265,21 @@ mod tests {
         // A bare subtraction marker is not an (empty) term.
         assert!(parse_mask("-").is_empty());
         assert_eq!(parse_mask("*.jpg, !"), vec![("*.jpg".to_string(), false)]);
+    }
+
+    #[test]
+    fn dotted_mask_terms_match_name_suffixes() {
+        // A leading dot or a multi-part extension still selects by suffix.
+        assert!(term_matches(".jpg", "photo.jpg", "jpg"));
+        assert!(term_matches("tar.gz", "backup.tar.gz", "gz"));
+        assert!(term_matches(".tar.gz", "backup.tar.gz", "gz"));
+        assert!(!term_matches("tar.gz", "backup.gz", "gz"));
+        assert!(!term_matches("tar.gz", "backuptar.gz", "gz"));
+        // Whole names still match exactly, and wildcards stay pure globs.
+        assert!(term_matches(".gitignore", ".gitignore", ""));
+        assert!(term_matches("readme.md", "readme.md", "md"));
+        assert!(!term_matches("*.tar", "backup.tar.gz", "gz"));
+        assert!(!term_matches(".", "a.", ""));
     }
 
     #[test]

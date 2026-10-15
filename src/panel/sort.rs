@@ -56,6 +56,17 @@ fn strip_leading_zeros(run: &[u8]) -> &[u8] {
     &run[first..]
 }
 
+/// Name order as the user configured it: natural ("file2" before "file10")
+/// or plain A-Z. Every column breaks its ties with this, so equal keys read
+/// alphabetically instead of in byte path order ("Zeta" before "alpha").
+fn name_cmp(a: &FileEntry, b: &FileEntry, config: ViewConfig) -> Ordering {
+    if config.natural_name_sort() {
+        natural_cmp(&a.name_lower, &b.name_lower)
+    } else {
+        a.name_lower.cmp(&b.name_lower)
+    }
+}
+
 pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
     entries.sort_by(|a, b| {
         if config.folders_first() {
@@ -67,20 +78,15 @@ pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
         }
 
         let primary = match config.sort_column() {
-            SortColumn::Name if config.natural_name_sort() => {
-                natural_cmp(&a.name_lower, &b.name_lower)
-            }
-            SortColumn::Name => a.name_lower.cmp(&b.name_lower),
+            SortColumn::Name => Ordering::Equal,
             SortColumn::Size => a.size.cmp(&b.size),
             SortColumn::Modified => a.modified.cmp(&b.modified),
-            SortColumn::Extension => a
-                .extension
-                .cmp(&b.extension)
-                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
-            SortColumn::Kind => crate::selection_summary::kind_of(a)
-                .cmp(&crate::selection_summary::kind_of(b))
-                .then_with(|| natural_cmp(&a.name_lower, &b.name_lower)),
-        };
+            SortColumn::Extension => a.extension.cmp(&b.extension),
+            SortColumn::Kind => {
+                crate::selection_summary::kind_of(a).cmp(&crate::selection_summary::kind_of(b))
+            }
+        }
+        .then_with(|| name_cmp(a, b, config));
         let ordered = match config.sort_order() {
             SortOrder::Asc => primary,
             SortOrder::Desc => primary.reverse(),
@@ -92,6 +98,53 @@ pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn named(name: &str, is_dir: bool, size: u64) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            name_lower: name.to_lowercase(),
+            path: std::path::PathBuf::from(format!("/t/{name}")),
+            identity: super::super::ListingIdentity::Unavailable,
+            is_dir,
+            size,
+            extension: name
+                .rsplit_once('.')
+                .map(|(_, e)| e.to_string())
+                .unwrap_or_default(),
+            modified: None,
+            modified_str: String::new(),
+            size_str: String::new(),
+        }
+    }
+
+    fn sorted(mut entries: Vec<FileEntry>, config: ViewConfig) -> Vec<String> {
+        sort_entries(&mut entries, config);
+        entries.into_iter().map(|e| e.name).collect()
+    }
+
+    #[test]
+    fn equal_keys_break_ties_by_name_not_byte_path() {
+        let config = ViewConfig::default().with_sort(SortColumn::Size, SortOrder::Asc);
+        let names = sorted(
+            vec![
+                named("Zeta", true, 0),
+                named("alpha", true, 0),
+                named("beta", true, 0),
+            ],
+            config,
+        );
+        assert_eq!(names, ["alpha", "beta", "Zeta"]);
+    }
+
+    #[test]
+    fn extension_ties_follow_the_natural_sort_setting() {
+        let entries = || vec![named("f10.txt", false, 1), named("f2.txt", false, 1)];
+        let natural = ViewConfig::default().with_sort(SortColumn::Extension, SortOrder::Asc);
+        assert!(natural.natural_name_sort());
+        assert_eq!(sorted(entries(), natural), ["f2.txt", "f10.txt"]);
+        let plain = natural.with_natural_name_sort(false);
+        assert_eq!(sorted(entries(), plain), ["f10.txt", "f2.txt"]);
+    }
 
     #[test]
     fn natural_numbers_are_ordered_by_value_then_leading_zero_count() {
