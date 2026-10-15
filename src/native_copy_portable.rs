@@ -20,6 +20,17 @@ pub struct NativeCopyOutcome {
     pub cloned: bool,
 }
 
+/// `read` that retries a signal interruption (possible on network and FUSE
+/// mounts). Cancellation is the progress flag, never `ErrorKind::Interrupted`.
+fn read_retrying(input: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match input.read(buf) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            other => return other,
+        }
+    }
+}
+
 /// Copy one file's bytes into a destination that must not exist yet.
 fn copy_bytes(
     src: &Path,
@@ -35,7 +46,7 @@ fn copy_bytes(
     let result = (|| {
         loop {
             crate::transfer::check_cancelled(state)?;
-            let n = input.read(&mut buf)?;
+            let n = read_retrying(&mut input, &mut buf)?;
             if n == 0 {
                 break;
             }
@@ -45,6 +56,7 @@ fn copy_bytes(
                 let mut s = crate::lock_util::recover(state);
                 s.current_file_copied = copied;
                 s.copied_bytes = base_bytes.saturating_add(copied);
+                s.maybe_sample();
             }
         }
         output.flush()?;
@@ -115,9 +127,7 @@ pub fn copy_dir_native(
     fs::create_dir(dst)?;
     let mut copied = 0u64;
     copy_tree(src, dst, state, base_bytes, &mut copied)?;
-    if let Ok(metadata) = fs::metadata(src) {
-        let _ = fs::set_permissions(dst, metadata.permissions());
-    }
+    copy_dir_attributes(src, dst);
     let mut s = crate::lock_util::recover(state);
     if s.errors.len() > errors_before {
         return Err(std::io::Error::other(
@@ -144,7 +154,16 @@ fn copy_tree(
         let outcome = if file_type.is_symlink() {
             crate::fs_util::copy_symlink(&from, &to)
         } else if file_type.is_dir() {
-            fs::create_dir(&to).and_then(|()| copy_tree(&from, &to, state, base_bytes, copied))
+            fs::create_dir(&to)
+                .and_then(|()| copy_tree(&from, &to, state, base_bytes, copied))
+                .map(|()| copy_dir_attributes(&from, &to))
+        } else if !file_type.is_file() {
+            // Opening a FIFO blocks until a writer appears, with no cancel
+            // check; devices and sockets have no bytes to copy either.
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "special file (FIFO, socket or device) skipped",
+            ))
         } else {
             {
                 let mut s = crate::lock_util::recover(state);
@@ -157,7 +176,9 @@ fn copy_tree(
         };
         match outcome {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Err(error),
+            Err(_) if crate::lock_util::recover(state).cancelled => {
+                return Err(crate::transfer::cancelled_error());
+            }
             Err(error) => {
                 crate::lock_util::recover(state)
                     .errors
@@ -168,10 +189,27 @@ fn copy_tree(
     Ok(())
 }
 
+/// Best-effort copy of a folder's mode and modification time, applied after
+/// its children so a read-only folder does not block their creation.
+fn copy_dir_attributes(src: &Path, dst: &Path) {
+    let Ok(metadata) = fs::metadata(src) else {
+        return;
+    };
+    // Directory handles for `futimens` need no write access on Unix; Windows
+    // cannot open a folder through `File::open`, so it keeps the copy time.
+    #[cfg(unix)]
+    if let (Ok(modified), Ok(dir)) = (metadata.modified(), fs::File::open(dst)) {
+        let _ = dir.set_modified(modified);
+    }
+    let _ = fs::set_permissions(dst, metadata.permissions());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    #[cfg(unix)]
+    use std::ffi::CString;
 
     fn progress() -> Arc<Mutex<TransferProgress>> {
         Arc::new(Mutex::new(TransferProgress::new(0, 1)))
@@ -242,5 +280,111 @@ mod tests {
             .push("earlier transfer error".into());
         copy_dir_native(&src, &dst, &state, 0).unwrap();
         assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "aa");
+    }
+
+    #[test]
+    fn file_copy_samples_speed_while_copying() {
+        let tmp = TempDir::new();
+        let src = tmp.file("a.txt", "hello");
+        let dst = tmp.path().join("b.txt");
+        let state = progress();
+        {
+            let mut s = crate::lock_util::recover(&state);
+            s.started_at = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(2))
+                .unwrap();
+        }
+        copy_file_native(&src, &dst, &state, 0, false).unwrap();
+        let samples = crate::lock_util::recover(&state).speed_samples.clone();
+        assert!(samples.len() >= 2, "{samples:?}");
+        assert_eq!(samples.last().unwrap().1, 5.0);
+    }
+
+    #[test]
+    fn read_retrying_retries_a_signal_interruption() {
+        struct Flaky(bool);
+        impl Read for Flaky {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::replace(&mut self.0, false) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                buf[0] = 7;
+                Ok(1)
+            }
+        }
+        let mut buf = [0u8; 4];
+        assert_eq!(read_retrying(&mut Flaky(true), &mut buf).unwrap(), 1);
+        assert_eq!(buf[0], 7);
+    }
+
+    #[test]
+    fn tree_copy_records_child_errors_and_stops_only_on_a_user_cancel() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("a")).unwrap();
+        fs::write(src.join("b.txt"), "bb").unwrap();
+        let dst = tmp.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+        // The pre-existing "a" makes create_dir fail; any error that is not a
+        // user cancel must be recorded and the walk continued.
+        fs::create_dir(dst.join("a")).unwrap();
+        let state = progress();
+        let mut copied = 0;
+        copy_tree(&src, &dst, &state, 0, &mut copied).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("b.txt")).unwrap(), "bb");
+        assert_eq!(crate::lock_util::recover(&state).errors.len(), 1);
+
+        crate::lock_util::recover(&state).cancelled = true;
+        let error = copy_tree(&src, &tmp.path().join("other"), &state, 0, &mut copied).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_copy_restores_nested_folder_modes_and_times() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new();
+        let src = tmp.path().join("src");
+        let nested = src.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("f.txt"), "abc").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o700)).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        fs::File::open(&nested).unwrap().set_modified(old).unwrap();
+        let dst = tmp.path().join("dst");
+
+        copy_dir_native(&src, &dst, &progress(), 0).unwrap();
+
+        let copied = fs::metadata(dst.join("nested")).unwrap();
+        assert_eq!(copied.permissions().mode() & 0o777, 0o700);
+        assert_eq!(copied.modified().unwrap(), old);
+        assert_eq!(fs::read_to_string(dst.join("nested/f.txt")).unwrap(), "abc");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_copy_skips_fifos_with_an_error_instead_of_blocking() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), "aa").unwrap();
+        let fifo = CString::new(src.join("pipe").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let dst = tmp.path().join("dst");
+        let state = progress();
+
+        let error = copy_dir_native(&src, &dst, &state, 0).unwrap_err();
+
+        assert!(error.to_string().contains("per-file failures"));
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "aa");
+        assert!(!dst.join("pipe").exists());
+        let errors = crate::lock_util::recover(&state).errors.clone();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("pipe") && e.contains("special file")),
+            "{errors:?}"
+        );
     }
 }
