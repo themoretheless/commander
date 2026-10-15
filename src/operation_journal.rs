@@ -1529,6 +1529,7 @@ pub fn mark_skipped(operation_id: &OperationId, key: &IdempotencyKey) -> Result<
             .map_err(|error| error.to_string())?;
         step.staging = None;
         step.checkpoint = None;
+        step.failure = None;
         Ok(())
     })
 }
@@ -1543,7 +1544,13 @@ pub fn mark_failed(
             .status
             .transition(StepEvent::Fail)
             .map_err(|error| error.to_string())?;
-        if failure.class != FailureClass::IntegrityUncertain && step.checkpoint.is_none() {
+        // An overwrite or placement proof is bound to the staging path, so
+        // the path stays recorded until resume reconciles that proof.
+        let proof_holds_staging = step.replacement.is_some() || step.placement.is_some();
+        if failure.class != FailureClass::IntegrityUncertain
+            && step.checkpoint.is_none()
+            && !proof_holds_staging
+        {
             step.staging = None;
         }
         step.failure = Some(failure);
@@ -2480,7 +2487,18 @@ fn prepare_rollback_receipt(
         .iter()
         .find(|step| &step.key == key)
         .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
-    let version = rollback_version_receipt(step, effect)?;
+    // A receipt that already holds its version is reused below; the stored
+    // version is re-proved by identity before restore, so a version-store
+    // record pruned since the first attempt must not block the retry.
+    let version = if step
+        .rollback
+        .as_ref()
+        .is_some_and(|receipt| receipt.version.is_some())
+    {
+        None
+    } else {
+        rollback_version_receipt(step, effect)?
+    };
     mutate(|journal| {
         let operation = operation_mut(&mut journal.operations, operation_id)?;
         if !matches!(

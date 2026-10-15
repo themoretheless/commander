@@ -2120,3 +2120,85 @@ fn rollback_names_both_paths_when_a_move_cannot_go_back() {
         "moved bytes"
     );
 }
+
+#[test]
+fn a_failure_after_prepared_placement_keeps_the_staging_its_proof_binds() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("fail-placement-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "new bytes");
+    let destination = target.join("source.txt");
+    let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("fail-after-placement", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+
+    mark_failed(
+        &spec.operation_id,
+        &key,
+        ClassifiedFailure::message(FailureClass::Blocked, None, "final placement failed"),
+    )
+    .unwrap();
+
+    let step = &operation(&spec.operation_id).unwrap().steps[0];
+    assert_eq!(step.status, StepStatus::Failed);
+    assert_eq!(step.staging.as_ref(), Some(&staging));
+    assert_eq!(
+        step.placement.as_ref().map(|placement| placement.phase),
+        Some(PlacementPhase::Prepared)
+    );
+}
+
+#[test]
+fn skipping_a_failed_step_clears_its_stale_failure() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("skip-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "source");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("skip-after-failure", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &target.join("source.txt"));
+    mark_failed(
+        &spec.operation_id,
+        &key,
+        ClassifiedFailure::message(FailureClass::IntegrityUncertain, None, "commit unknown"),
+    )
+    .unwrap();
+
+    mark_skipped(&spec.operation_id, &key).unwrap();
+
+    let step = &operation(&spec.operation_id).unwrap().steps[0];
+    assert_eq!(step.status, StepStatus::Skipped);
+    assert!(step.failure.is_none(), "{:?}", step.failure);
+}
+
+#[test]
+fn a_rollback_retry_reuses_the_version_its_receipt_already_holds() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("retry-journal.json"));
+    let versions = crate::version_store::use_test_versions_dir(temp.dir("retry-versions"));
+    let (operation_id, key, _source, destination, _completed) =
+        completed_overwrite(&temp, "retry", TransferKind::Copy);
+    let first = prepare_rollback_receipt(&operation_id, &key, &destination).unwrap();
+    assert!(first.version.is_some());
+    drop(versions);
+    // The version-store record is gone (pruned or blocked manifest), but the
+    // durable receipt still carries the version and its identity.
+    let _empty = crate::version_store::use_test_versions_dir(temp.dir("pruned-versions"));
+    assert!(crate::version_store::record_for_key(&key).is_none());
+
+    let retried = prepare_rollback_receipt(&operation_id, &key, &destination).unwrap();
+
+    assert_eq!(retried, first);
+}
