@@ -1916,3 +1916,23 @@ fn repair_plan_removes_an_operation_created_folder_only_when_it_holds_only_effec
     assert_eq!(plan.remaining[1].path, folder);
     assert!(!plan.remaining[1].automatic);
 }
+
+#[test]
+fn store_lock_excludes_another_handle_until_released() {
+    let temp = TempDir::new();
+    let path = temp.path().join("locked").join("operation-journal.json");
+    let held = acquire_store_lock(&path).unwrap();
+    let lock_path = path.parent().unwrap().join(".operation-journal.lock");
+    let other = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+
+    assert!(matches!(
+        other.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(held);
+    other.try_lock().unwrap();
+}

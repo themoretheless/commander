@@ -423,26 +423,29 @@ fn acquire_store_lock(path: &Path) -> Result<StoreLock, String> {
     options.read(true).write(true).create(true);
     #[cfg(unix)]
     {
-        use std::os::fd::AsRawFd;
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        let file = options
-            .open(&lock_path)
-            .map_err(|error| format!("Could not open operation journal lock: {error}"))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(format!(
-                "Could not acquire operation journal lock: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(StoreLock { _file: file })
     }
-    #[cfg(not(unix))]
-    {
-        let file = options
-            .open(&lock_path)
-            .map_err(|error| format!("Could not open operation journal lock: {error}"))?;
-        Ok(StoreLock { _file: file })
+    let file = options.open(&lock_path).map_err(|error| {
+        format!(
+            "Could not open operation journal lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    // `File::lock` is an exclusive advisory lock on every platform (flock on
+    // unix, LockFileEx on Windows), so a second instance waits instead of
+    // interleaving its load/modify/save. A signal only interrupts the wait.
+    loop {
+        match file.lock() {
+            Ok(()) => return Ok(StoreLock { _file: file }),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not acquire operation journal lock {}: {error}",
+                    lock_path.display()
+                ));
+            }
+        }
     }
 }
 
