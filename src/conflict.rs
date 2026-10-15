@@ -382,9 +382,9 @@ mod tests {
         assert_eq!(conflicts.len(), 2);
         assert!(!conflicts[0].src_is_dir && conflicts[0].dst_is_dir);
         assert!(conflicts[1].src_is_dir && !conflicts[1].dst_is_dir);
-        // ReplaceAll is the explicit "overwrite everything" choice: the type
-        // conflicts are kept and handed to the engine as overwrites, with the
-        // type flags above left for the confirmation dialog to surface.
+        // ReplaceAll is the explicit "overwrite everything" choice: resolve()
+        // keeps the type conflicts as overwrites. How the executor handles a
+        // file-vs-folder overwrite is not checked here.
         let resolution = resolve(&sources, &conflicts, RelationPolicy::ReplaceAll);
         assert_eq!(
             resolution.keep,
