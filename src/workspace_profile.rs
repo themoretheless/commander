@@ -161,11 +161,28 @@ pub fn capture(params: CaptureParams<'_>) -> WorkspaceProfile {
     profile.name_policy = params.name_policy;
     profile.symlink_policy = params.symlink_policy;
     profile.trusted_command_templates = params.trusted_command_templates;
-    // The failure is already surfaced as an error toast by `save`. Callers
-    // that show a success notice (workspace.rs, developer_panel.rs) do not
-    // see this outcome yet; returning it from `capture` is follow-up work.
-    let _saved = upsert(profile.clone());
     profile
+}
+
+/// Captures a profile and persists it into the book. The notice says
+/// whether the write was committed, so a failed save is never reported as
+/// saved; `.1` is true for a failure.
+pub fn capture_and_save(params: CaptureParams<'_>) -> (String, bool) {
+    let profile = capture(params);
+    let name = profile.name.clone();
+    save_notice(&name, upsert(profile))
+}
+
+/// User-facing outcome of saving the profile `name`, and whether it is an error.
+fn save_notice(name: &str, saved: bool) -> (String, bool) {
+    if saved {
+        (format!("Saved workspace profile \"{name}\""), false)
+    } else {
+        (
+            format!("Could not save workspace profile \"{name}\"; see persistence health"),
+            true,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +224,16 @@ mod tests {
         assert!(after_load.unreadable_stores > before.unreadable_stores);
         assert!(!save_store_at(&persist, &path, &ProfileBook::default()));
         assert!(crate::persistence::health_snapshot().save_failures > after_load.save_failures);
+    }
+
+    #[test]
+    fn failed_profile_save_is_reported_as_an_error() {
+        let (message, error) = save_notice("current", false);
+        assert!(error);
+        assert!(message.starts_with("Could not save"), "{message}");
+        let (message, error) = save_notice("current", true);
+        assert!(!error);
+        assert_eq!(message, "Saved workspace profile \"current\"");
     }
 
     #[test]

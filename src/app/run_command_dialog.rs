@@ -300,6 +300,14 @@ impl App {
                     .size(11.0)
                     .color(t.text_muted),
                 );
+                if let Some(warning) = opening.stale_cursor_warning() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(warning)
+                            .size(11.0)
+                            .color(t.accent_warning),
+                    );
+                }
                 ui.add_space(6.0);
 
                 let resp = ui.add(
@@ -320,6 +328,19 @@ impl App {
                     egui::Label::new(preview_job(&segs, t.text_secondary, t.accent, t.text_muted))
                         .wrap(),
                 );
+                let unencodable = crate::cmdtemplate::non_utf8_path(&state.line, &sctx);
+                if let Some(path) = unencodable {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Cannot run: {} is not valid UTF-8 and would expand to a different name",
+                            path.display()
+                        ))
+                        .size(11.0)
+                        .color(t.accent_warning),
+                    );
+                }
+                let unencodable = unencodable.is_some();
 
                 // Saved templates that apply to this selection.
                 if !matching.is_empty() {
@@ -361,7 +382,7 @@ impl App {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     let has_line = !state.line.trim().is_empty();
-                    let can_run = has_line && state.run.is_none();
+                    let can_run = has_line && state.run.is_none() && !unencodable;
                     if ui
                         .add_enabled(
                             can_run,
@@ -648,6 +669,7 @@ mod tests {
         let path = PathBuf::from(path);
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         crate::panel::FileEntry {
+            permissions: None,
             name_lower: name.to_lowercase(),
             name,
             path,
@@ -790,6 +812,7 @@ mod tests {
             selection: selection.to_vec(),
             left_dir: PathBuf::from("/opening"),
             right_dir: PathBuf::from("/other"),
+            stale_cursor: false,
         }
         .selection_context();
         let segs = preview_segments("cat {paths}", &context);
@@ -856,12 +879,27 @@ mod tests {
     }
 
     #[test]
+    fn stale_cursor_is_warned_about_instead_of_silently_empty() {
+        let mut opening = RunCommandOpeningContext {
+            active_panel: ActivePanel::Left,
+            selection: Vec::new(),
+            left_dir: PathBuf::from("/opening"),
+            right_dir: PathBuf::from("/other"),
+            stale_cursor: false,
+        };
+        assert_eq!(opening.stale_cursor_warning(), None);
+        opening.stale_cursor = true;
+        assert!(opening.stale_cursor_warning().is_some());
+    }
+
+    #[test]
     fn run_command_remains_bound_to_its_opening_context() {
         let opening = RunCommandOpeningContext {
             active_panel: ActivePanel::Left,
             selection: vec![entry("/opening/selected.txt")],
             left_dir: PathBuf::from("/opening"),
             right_dir: PathBuf::from("/other"),
+            stale_cursor: false,
         };
 
         let external_active = ActivePanel::Right;

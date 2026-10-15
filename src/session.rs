@@ -104,6 +104,9 @@ pub struct Session {
     pub right_path: PathBuf,
     pub active_left: bool,
     pub theme_dark: bool,
+    /// Follow the OS light/dark appearance instead of `theme_dark`.
+    #[serde(default)]
+    pub theme_follow_system: bool,
     pub ui_scale: f32,
     pub show_tree: bool,
     pub tree_width: f32,
@@ -143,6 +146,54 @@ pub struct Session {
     pub name_policy: crate::filesystem_policy::NamePolicy,
     #[serde(default)]
     pub symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+    /// Folders expanded in the folder tree, at most [`TREE_EXPANDED_CAP`].
+    /// Missing folders are harmless: the tree only walks folders it lists.
+    #[serde(default)]
+    pub tree_expanded: Vec<PathBuf>,
+    /// Window inner size in points, restored at launch; absent in sessions
+    /// written before it was remembered.
+    #[serde(default)]
+    pub window_size: Option<[f32; 2]>,
+}
+
+/// Smallest window the app allows (matches the viewport's minimum size).
+pub const MIN_WINDOW_SIZE: [f32; 2] = [900.0, 500.0];
+
+/// Largest remembered window size accepted; anything bigger is a corrupt
+/// value, not a real display.
+const MAX_WINDOW_SIDE: f32 = 16_384.0;
+
+/// A remembered window size worth restoring: finite and clamped to the
+/// window's minimum and a sane maximum.
+pub fn restorable_window_size(size: Option<[f32; 2]>) -> Option<[f32; 2]> {
+    let [width, height] = size?;
+    (width.is_finite() && height.is_finite()).then(|| {
+        [
+            width.clamp(MIN_WINDOW_SIZE[0], MAX_WINDOW_SIDE),
+            height.clamp(MIN_WINDOW_SIZE[1], MAX_WINDOW_SIDE),
+        ]
+    })
+}
+
+/// Most expanded tree folders a session keeps.
+pub const TREE_EXPANDED_CAP: usize = 256;
+
+/// The expanded-folder set as persisted: shallowest folders first (they
+/// matter most for restoring the visible tree), then by path, capped at
+/// [`TREE_EXPANDED_CAP`]. The order is deterministic so an unchanged tree
+/// writes an unchanged session.
+pub fn persisted_tree_expanded<'a>(
+    expanded: impl IntoIterator<Item = &'a PathBuf>,
+) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = expanded.into_iter().cloned().collect();
+    paths.sort_by(|a, b| {
+        a.components()
+            .count()
+            .cmp(&b.components().count())
+            .then_with(|| a.cmp(b))
+    });
+    paths.truncate(TREE_EXPANDED_CAP);
+    paths
 }
 
 /// Serde default for booleans that should restore as `true` (the live
@@ -290,6 +341,7 @@ mod tests {
             right_path: right,
             active_left: true,
             theme_dark: true,
+            theme_follow_system: true,
             ui_scale: 1.1,
             show_tree: true,
             tree_width: 220.0,
@@ -319,7 +371,35 @@ mod tests {
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
             name_policy: crate::filesystem_policy::NamePolicy::default(),
             symlink_policy: crate::filesystem_policy::SymlinkPolicy::default(),
+            tree_expanded: vec![PathBuf::from("/a"), PathBuf::from("/a/b")],
+            window_size: Some([1400.0, 900.0]),
         }
+    }
+
+    #[test]
+    fn window_size_round_trips_and_defaults_when_absent() {
+        let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut val = serde_json::to_value(&s).unwrap();
+        let back: Session = serde_json::from_value(val.clone()).unwrap();
+        assert_eq!(back.window_size, Some([1400.0, 900.0]));
+        val.as_object_mut().unwrap().remove("window_size");
+        let older: Session = serde_json::from_value(val).unwrap();
+        assert_eq!(older.window_size, None);
+    }
+
+    #[test]
+    fn restorable_window_size_clamps_and_rejects_garbage() {
+        assert_eq!(restorable_window_size(None), None);
+        assert_eq!(
+            restorable_window_size(Some([1400.0, 900.0])),
+            Some([1400.0, 900.0])
+        );
+        assert_eq!(
+            restorable_window_size(Some([10.0, 1e9])),
+            Some([MIN_WINDOW_SIZE[0], MAX_WINDOW_SIDE])
+        );
+        assert_eq!(restorable_window_size(Some([f32::NAN, 900.0])), None);
+        assert_eq!(restorable_window_size(Some([1400.0, f32::INFINITY])), None);
     }
 
     #[test]
@@ -355,6 +435,20 @@ mod tests {
     }
 
     #[test]
+    fn tree_expansion_persists_shallow_folders_first_and_capped() {
+        let mut expanded: std::collections::HashSet<PathBuf> = (0..TREE_EXPANDED_CAP + 10)
+            .map(|index| PathBuf::from(format!("/deep/a/f{index}")))
+            .collect();
+        expanded.insert(PathBuf::from("/deep"));
+        expanded.insert(PathBuf::from("/deep/a"));
+        let persisted = persisted_tree_expanded(&expanded);
+        assert_eq!(persisted.len(), TREE_EXPANDED_CAP);
+        assert_eq!(persisted[0], PathBuf::from("/deep"));
+        assert_eq!(persisted[1], PathBuf::from("/deep/a"));
+        assert_eq!(persisted, persisted_tree_expanded(&expanded));
+    }
+
+    #[test]
     fn recent_history_defaults_when_absent() {
         let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
         let mut val = serde_json::to_value(&s).unwrap();
@@ -366,7 +460,9 @@ mod tests {
         obj.remove("version_retention");
         obj.remove("name_policy");
         obj.remove("symlink_policy");
+        obj.remove("tree_expanded");
         let back: Session = serde_json::from_value(val).unwrap();
+        assert!(back.tree_expanded.is_empty());
         assert!(back.recent_paths.is_empty());
         assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
         assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);
@@ -437,6 +533,17 @@ mod tests {
         }
         assert!(!object.contains_key("left_view"));
         assert!(!object.contains_key("right_view"));
+    }
+
+    #[test]
+    fn a_session_saved_before_system_theme_keeps_its_fixed_theme() {
+        let session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        let mut value = serde_json::to_value(session).unwrap();
+        assert_eq!(value["theme_follow_system"], true);
+        value.as_object_mut().unwrap().remove("theme_follow_system");
+        let old: Session = serde_json::from_value(value).unwrap();
+        assert!(!old.theme_follow_system);
+        assert!(old.theme_dark);
     }
 
     #[test]

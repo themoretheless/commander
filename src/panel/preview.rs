@@ -75,25 +75,26 @@ pub fn format_mode(mode: u32) -> String {
     s
 }
 
-/// The Get-Info permissions row. A failed stat says so (with its reason)
-/// rather than showing a mode string a real `000` file would also show.
-fn permissions_text(metadata: std::io::Result<fs::Metadata>) -> String {
-    match metadata {
+/// The Get-Info permissions row, from what the listing observed. Rows the
+/// listing could not stat say so rather than showing a mode string a real
+/// `000` file would also show.
+fn permissions_text(permissions: Option<&fs::Permissions>) -> String {
+    match permissions {
         #[cfg(unix)]
-        Ok(metadata) => {
+        Some(permissions) => {
             use std::os::unix::fs::PermissionsExt;
-            format_mode(metadata.permissions().mode())
+            format_mode(permissions.mode())
         }
         #[cfg(not(unix))]
-        Ok(metadata) => {
-            let text = if metadata.permissions().readonly() {
+        Some(permissions) => {
+            let text = if permissions.readonly() {
                 "read-only"
             } else {
                 "read/write"
             };
             text.to_string()
         }
-        Err(error) => format!("unavailable ({error})"),
+        None => "unavailable".to_string(),
     }
 }
 
@@ -122,17 +123,19 @@ pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usiz
         .is_symlink()
         .then(|| fs::read_link(&entry.path).ok())
         .flatten();
+    // The listing records no target permissions for a dangling link, so
+    // this needs no stat on the UI thread (a hung mount would freeze it).
     let kind = info_kind(
         target_kind,
         entry.is_symlink(),
-        entry.is_symlink() && fs::metadata(&entry.path).is_err(),
+        entry.is_symlink() && entry.permissions.is_none(),
     );
     let size = if entry.is_dir {
         dir_size.map_or_else(|| MEASURING.to_string(), format_size)
     } else {
         format_size(entry.size)
     };
-    let permissions = permissions_text(fs::metadata(&entry.path));
+    let permissions = permissions_text(entry.permissions.as_ref());
     let path = match link_target {
         Some(target) => format!("{} \u{2192} {}", entry.path.display(), target.display()),
         None => entry.path.display().to_string(),

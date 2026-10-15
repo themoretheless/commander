@@ -25,6 +25,36 @@ fn saved_search_transition<T>(cancel_requested: bool, open: Option<T>) -> SavedS
 const DELETE_ARMED: &str = "saved_search_delete_armed";
 /// Temp-memory flag: the sheet was open last frame (detects the opening frame).
 const SHEET_SHOWN: &str = "saved_search_sheet_shown";
+/// Temp-memory `(original name, draft)` of the row being renamed.
+const RENAMING: &str = "saved_search_renaming";
+/// Temp-memory flag: focus the rename field on its first frame.
+const RENAME_FOCUS: &str = "saved_search_rename_focus";
+
+/// A rename row change requested by this frame's buttons.
+enum RenameAction {
+    Start(String),
+    Cancel,
+}
+
+/// Rename `old` to `new` and persist. A refused rename changes nothing; a
+/// failed save restores the previous list, like [`remove_and_save`].
+fn rename_and_save(
+    store: &mut crate::smart_folder::SmartFolders,
+    old: &str,
+    new: &str,
+    save: impl FnOnce(&crate::smart_folder::SmartFolders) -> bool,
+) -> Result<(), &'static str> {
+    let previous = store.clone();
+    store.rename(old, new).map_err(|e| e.message())?;
+    if save(store) {
+        Ok(())
+    } else {
+        *store = previous;
+        Err(
+            "Could not save saved searches, so the name was not changed. Check that the settings folder is writable.",
+        )
+    }
+}
 
 /// Remove `name` and persist. A failed save restores the previous list, so
 /// the search is not gone in memory yet back after a restart. Returns
@@ -65,8 +95,12 @@ impl App {
             self.take_modal_escape(crate::accessibility::ModalSurface::SavedSearch);
         let shown_id = egui::Id::new(SHEET_SHOWN);
         let armed_id = egui::Id::new(DELETE_ARMED);
+        let renaming_id = egui::Id::new(RENAMING);
         if !self.ui.modals.saved_search_open {
-            ctx.data_mut(|data| data.remove::<bool>(shown_id));
+            ctx.data_mut(|data| {
+                data.remove::<bool>(shown_id);
+                data.remove::<(String, String)>(renaming_id);
+            });
             return;
         }
         // `open_saved_search` has no context to mark the modal opened, so
@@ -80,6 +114,16 @@ impl App {
             super::ui_state::set_armed_row(ctx, armed_id, None);
         }
         let mut armed = super::ui_state::armed_row(ctx, armed_id);
+        let mut renaming: Option<(String, String)> = ctx.data(|data| data.get_temp(renaming_id));
+        // Escape while renaming abandons the rename, not the whole sheet.
+        let escape_requested = if escape_requested && renaming.is_some() {
+            renaming = None;
+            false
+        } else {
+            escape_requested
+        };
+        let mut rename_action: Option<RenameAction> = None;
+        let mut commit_rename: Option<(String, String)> = None;
         let t = self.colors;
         let mut open_def: Option<crate::smart_folder::Definition> = None;
         let mut delete: Option<String> = None;
@@ -127,13 +171,49 @@ impl App {
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             for def in items {
+                                if let Some((old, draft)) =
+                                    renaming.as_mut().filter(|(old, _)| *old == def.name)
+                                {
+                                    ui.horizontal(|ui| {
+                                        let edit = ui.add(
+                                            egui::TextEdit::singleline(draft).desired_width(
+                                                (ui.available_width() - 120.0).max(80.0),
+                                            ),
+                                        );
+                                        edit.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::WidgetType::TextEdit,
+                                                true,
+                                                format!("New name for saved search {old}"),
+                                            )
+                                        });
+                                        let focus_now = ui.ctx().data_mut(|data| {
+                                            data.remove_temp::<bool>(egui::Id::new(RENAME_FOCUS))
+                                        });
+                                        if focus_now == Some(true) {
+                                            edit.request_focus();
+                                        }
+                                        let enter = edit.lost_focus()
+                                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        if ui.small_button("Save").clicked() || enter {
+                                            commit_rename = Some((old.clone(), draft.clone()));
+                                        }
+                                        if ui.small_button("Cancel").clicked() {
+                                            rename_action = Some(RenameAction::Cancel);
+                                        }
+                                        if first_focus.is_none() {
+                                            first_focus = Some(edit);
+                                        }
+                                    });
+                                    continue;
+                                }
                                 ui.horizontal(|ui| {
                                     let text =
                                         format!("{}   \u{00b7}   {}", def.name, def.root.display());
                                     // A focusable button, so Tab and Enter
                                     // open it; it comes before the delete
                                     // button in the focus order.
-                                    let open_width = (ui.available_width() - 64.0).max(0.0);
+                                    let open_width = (ui.available_width() - 120.0).max(0.0);
                                     let resp = ui
                                         .scope(|ui| {
                                             ui.set_max_width(open_width);
@@ -159,6 +239,19 @@ impl App {
                                         first_focus = Some(resp);
                                     }
                                     ui.add_space(4.0);
+                                    let rename_resp = ui
+                                        .small_button("Rename")
+                                        .on_hover_text("Rename this saved search");
+                                    rename_resp.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            format!("Rename saved search {}", def.name),
+                                        )
+                                    });
+                                    if rename_resp.clicked() {
+                                        rename_action = Some(RenameAction::Start(def.name.clone()));
+                                    }
                                     let is_armed = armed.as_deref() == Some(def.name.as_str());
                                     let (glyph, hover, label) = if is_armed {
                                         (
@@ -212,6 +305,33 @@ impl App {
             });
         }
         super::ui_state::set_armed_row(ctx, armed_id, armed);
+        match rename_action {
+            Some(RenameAction::Start(name)) => {
+                renaming = Some((name.clone(), name));
+                ctx.data_mut(|data| data.insert_temp(egui::Id::new(RENAME_FOCUS), true));
+            }
+            Some(RenameAction::Cancel) => renaming = None,
+            None => {}
+        }
+        if let Some((old, new)) = commit_rename {
+            match rename_and_save(
+                self.smart_folders_mut(),
+                &old,
+                &new,
+                crate::smart_folder::save,
+            ) {
+                Ok(()) => renaming = None,
+                Err(message) => {
+                    self.toast(ctx, crate::toasts::ToastKind::Error, message, false);
+                }
+            }
+        }
+        ctx.data_mut(|data| match renaming {
+            Some(state) => {
+                data.insert_temp(renaming_id, state);
+            }
+            None => data.remove::<(String, String)>(renaming_id),
+        });
 
         let transition = saved_search_transition(close, open_def);
         if transition == SavedSearchTransition::Close {
@@ -256,7 +376,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        SavedSearchTransition, missing_root_error, remove_and_save, saved_search_transition,
+        SavedSearchTransition, missing_root_error, remove_and_save, rename_and_save,
+        saved_search_transition,
     };
     use crate::smart_folder::{Definition, SmartFolders};
 
@@ -297,6 +418,17 @@ mod tests {
         }));
         assert_eq!(folders, store(&["b"]));
         assert_eq!(saved, Some(store(&["b"])));
+    }
+
+    #[test]
+    fn failed_save_after_rename_restores_the_name() {
+        let mut folders = store(&["a", "b"]);
+        assert!(rename_and_save(&mut folders, "a", "c", |_| false).is_err());
+        assert_eq!(folders, store(&["a", "b"]));
+        assert!(rename_and_save(&mut folders, "a", "b", |_| panic!("not saved")).is_err());
+        assert_eq!(folders, store(&["a", "b"]));
+        assert_eq!(rename_and_save(&mut folders, "a", "c", |_| true), Ok(()));
+        assert_eq!(folders, store(&["c", "b"]));
     }
 
     #[test]

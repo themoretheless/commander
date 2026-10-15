@@ -14,12 +14,13 @@ pub struct Receipt {
     pub timestamp: f64,
     /// Where "Jump" navigates the active panel.
     pub jump_to: PathBuf,
-    /// The action to replay for "Undo", cloned at push time. `None` for a
-    /// delete that did not preserve restore versions. The undo button is
-    /// only live while this is still the exact top of the undo stack (see
+    /// The history entry "Undo" reverses, captured at push time. `None` for
+    /// a delete that did not preserve restore versions. The undo button is
+    /// only live while this entry is still the top of the undo stack (see
     /// [`Receipt::still_undoable`]), so undoing an older receipt out of
-    /// order can never desync from what Cmd+Z would actually do.
-    pub undo_action: Option<crate::undo::Action>,
+    /// order can never desync from what Cmd+Z would actually do, even when
+    /// an older entry recorded an equal action (A->B, B->A, A->B).
+    pub undo_entry: Option<crate::undo::HistoryEntryId>,
 }
 
 impl Receipt {
@@ -32,10 +33,10 @@ impl Receipt {
         format!("{} {} {}", self.verb, self.item_count, item)
     }
 
-    /// Whether this receipt's action is still exactly the top of `stack`,
+    /// Whether this receipt's entry is still the top of the undo stack,
     /// i.e. whether its Undo button should be live right now.
-    pub fn still_undoable(&self, top_of_undo_stack: Option<&crate::undo::Action>) -> bool {
-        self.undo_action.as_ref() == top_of_undo_stack
+    pub fn still_undoable(&self, top_of_undo_stack: Option<crate::undo::HistoryEntryId>) -> bool {
+        self.undo_entry.is_some() && self.undo_entry == top_of_undo_stack
     }
 }
 
@@ -92,14 +93,27 @@ impl ReceiptLog {
 mod tests {
     use super::*;
 
-    fn receipt(verb: &'static str, jump_to: &str, action: Option<crate::undo::Action>) -> Receipt {
+    fn receipt(
+        verb: &'static str,
+        jump_to: &str,
+        entry: Option<crate::undo::HistoryEntryId>,
+    ) -> Receipt {
         Receipt {
             verb,
             item_count: 1,
             timestamp: 0.0,
             jump_to: PathBuf::from(jump_to),
-            undo_action: action,
+            undo_entry: entry,
         }
+    }
+
+    /// Record `action` and return the receipt entry id now on top.
+    fn record(
+        center: &mut crate::undo::UndoCenter,
+        action: &crate::undo::Action,
+    ) -> Option<crate::undo::HistoryEntryId> {
+        center.record(action.clone()).unwrap();
+        center.top_undo_entry()
     }
 
     #[test]
@@ -156,11 +170,16 @@ mod tests {
         let other = crate::undo::Action::Move {
             pairs: vec![(PathBuf::from("/a/y"), PathBuf::from("/b/y"))],
         };
-        let r = receipt("Moved", "/b", Some(a.clone()));
+        let mut center = crate::undo::UndoCenter::default();
+        let r = receipt("Moved", "/b", record(&mut center, &a));
 
-        assert!(r.still_undoable(Some(&a)), "matches the live stack top");
         assert!(
-            !r.still_undoable(Some(&other)),
+            r.still_undoable(center.top_undo_entry()),
+            "matches the live stack top"
+        );
+        let newer = record(&mut center, &other);
+        assert!(
+            !r.still_undoable(newer),
             "a different action is now on top (e.g. a newer Move happened)"
         );
         assert!(
@@ -170,8 +189,29 @@ mod tests {
 
         let delete_receipt = receipt("Deleted", "/c", None);
         assert!(
-            !delete_receipt.still_undoable(Some(&a)),
+            !delete_receipt.still_undoable(newer),
             "a delete receipt never has an undo action"
         );
+        assert!(!delete_receipt.still_undoable(None));
+    }
+
+    #[test]
+    fn an_older_receipt_for_an_equal_action_is_not_undoable() {
+        // A->B, B->A, A->B: the first and last moves are equal actions, but
+        // only the newest receipt is the entry Cmd+Z would reverse.
+        let there = crate::undo::Action::Move {
+            pairs: vec![(PathBuf::from("/a/x"), PathBuf::from("/b/x"))],
+        };
+        let back = crate::undo::Action::Move {
+            pairs: vec![(PathBuf::from("/b/x"), PathBuf::from("/a/x"))],
+        };
+        let mut center = crate::undo::UndoCenter::default();
+        let first = receipt("Moved", "/b", record(&mut center, &there));
+        let _ = record(&mut center, &back);
+        let last = receipt("Moved", "/b", record(&mut center, &there));
+
+        let top = center.top_undo_entry();
+        assert!(last.still_undoable(top));
+        assert!(!first.still_undoable(top));
     }
 }

@@ -38,17 +38,30 @@ pub enum UiRequest {
     DiffFiles,
     DiskTreemap,
     Find,
+    /// Put keyboard focus in the active pane's filter box.
+    FocusFilter,
     Archive(PathBuf),
     SavedSearch,
     ProjectCollections,
     ToggleQueuePanel,
+    /// App-wide view toggles the toolbar also offers.
+    ToggleCompare,
+    ToggleTheme,
+    ToggleSizeBars,
+    ToggleFolderSidebar,
     OperationHistory,
     OpenRecoveryCenter,
     ReviewRecovery(crate::operation::OperationId),
     OpenExternal(crate::ports::OpenRequest),
     CopyPaths(PathStyle),
-    CopyText { text: String, label: String },
-    Notice { message: String, error: bool },
+    CopyText {
+        text: String,
+        label: String,
+    },
+    Notice {
+        message: String,
+        error: bool,
+    },
     ChecksumReport(crate::checksum::ChecksumReport),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
@@ -70,6 +83,10 @@ impl UiRequest {
             Self::GatherIntoFolder
             | Self::TransferIntoCursorFolder(_)
             | Self::ToggleQueuePanel
+            | Self::ToggleCompare
+            | Self::ToggleTheme
+            | Self::ToggleSizeBars
+            | Self::ToggleFolderSidebar
             | Self::OperationHistory
             | Self::OpenRecoveryCenter
             | Self::Sync
@@ -83,7 +100,8 @@ impl UiRequest {
             | Self::CopyText { .. }
             | Self::Notice { .. }
             | Self::ChecksumReport(_)
-            | Self::HiddenFilesOutcome(_) => None,
+            | Self::HiddenFilesOutcome(_)
+            | Self::FocusFilter => None,
         }
     }
 

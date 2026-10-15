@@ -28,6 +28,9 @@ pub(super) struct PlanInput {
     pub symlink_policy: SymlinkPolicy,
     pub delta_capable: bool,
     pub sparse_capable: bool,
+    /// The destination can clone and the source lives on the same volume,
+    /// so a native clone keeps the source's holes (and compression) itself.
+    pub clone_same_volume: bool,
     pub resumable_capable: bool,
     pub slow_link: bool,
     pub bandwidth_limited: bool,
@@ -85,9 +88,14 @@ impl BackendPlanner {
         let force_buffered = input.bandwidth_limited
             || force_resumable
             || (input.is_dir && input.symlink_policy != SymlinkPolicy::Preserve);
+        // A clone keeps holes, and APFS-compressed files also look sparse
+        // here: prefer the clone over a read-copy when it can happen.
+        let clone_preferred =
+            input.clone_same_volume && input.method == CopyMethod::Native && !force_buffered;
         if !input.is_dir
             && input.resume_layout.is_none()
             && !force_resumable
+            && !clone_preferred
             && input.sparse_capable
             && input.source_is_sparse
         {
@@ -240,6 +248,8 @@ impl BackendPorts {
             symlink_policy: request.symlink_policy,
             delta_capable: request.profile.capabilities.delta,
             sparse_capable: request.profile.capabilities.sparse,
+            clone_same_volume: request.profile.capabilities.clone
+                && same_volume(&metadata, request.staging),
             resumable_capable: request.profile.capabilities.resumable,
             slow_link: request.profile.backend.is_slow_link(),
             bandwidth_limited: request.rule.max_bytes_per_second.is_some(),
@@ -316,21 +326,23 @@ impl DeltaBackend for ProductionDelta {
             crate::delta_copy::DeltaMode::Fixed => CheckpointLayout::DeltaFixed,
             crate::delta_copy::DeltaMode::ContentDefined => CheckpointLayout::DeltaCdc,
         };
-        if let Some(checkpoint) = request.resume {
-            if checkpoint.content_digest.is_none() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Delta checkpoint has no content proof",
-                ));
-            }
-            if !checkpoint.proof_matches(request.source, request.staging)? {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Delta checkpoint content proof does not match source and staging",
-                ));
-            }
-        }
-        let resume_offset = request.resume.map(|checkpoint| checkpoint.offset);
+        // The delta copy proves both prefixes against this digest before
+        // resuming, so the backend does not re-read them here as well.
+        let resume = request
+            .resume
+            .map(|checkpoint| {
+                let content_digest = checkpoint.content_digest.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Delta checkpoint has no content proof",
+                    )
+                })?;
+                Ok::<_, std::io::Error>(crate::delta_copy::DeltaResume {
+                    offset: checkpoint.offset,
+                    content_digest,
+                })
+            })
+            .transpose()?;
         let source = request.source;
         let staging = request.staging;
         let mut publish = |offset, content_digest| {
@@ -351,7 +363,8 @@ impl DeltaBackend for ProductionDelta {
                 state: request.progress.state(),
                 base_bytes: request.base_bytes,
                 allow_clone_seed: request.profile.capabilities.clone,
-                resume_offset,
+                resume,
+                bandwidth: request.rule,
                 reverify_staging: request.durability.verifies(),
             },
             &mut publish,
@@ -462,6 +475,24 @@ impl BufferedBackend for ProductionBuffered {
     }
 }
 
+/// Whether `source_metadata` and the parent folder of `staging` are on the
+/// same volume. Unknown (non-Unix) counts as different.
+fn same_volume(source_metadata: &std::fs::Metadata, staging: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        staging
+            .parent()
+            .and_then(|parent| parent.metadata().ok())
+            .is_some_and(|parent| parent.dev() == source_metadata.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (source_metadata, staging);
+        false
+    }
+}
+
 pub(super) fn receipt(
     staging: &Path,
     bytes: u64,
@@ -568,6 +599,7 @@ mod tests {
             symlink_policy: SymlinkPolicy::Preserve,
             delta_capable: false,
             sparse_capable: false,
+            clone_same_volume: false,
             resumable_capable: false,
             slow_link: false,
             bandwidth_limited: false,
@@ -662,6 +694,30 @@ mod tests {
         input.source_is_sparse = true;
         input.sparse_capable = true;
         assert_eq!(BackendPlanner::select(input).unwrap(), BackendPlan::Sparse);
+        // A same-volume clone keeps holes (and APFS compression, which also
+        // looks sparse) without reading the file.
+        assert_eq!(
+            BackendPlanner::select(PlanInput {
+                clone_same_volume: true,
+                ..input
+            })
+            .unwrap(),
+            BackendPlan::NativeClone
+        );
+        for forced in [
+            PlanInput {
+                clone_same_volume: true,
+                method: CopyMethod::Buffered,
+                ..input
+            },
+            PlanInput {
+                clone_same_volume: true,
+                bandwidth_limited: true,
+                ..input
+            },
+        ] {
+            assert_eq!(BackendPlanner::select(forced).unwrap(), BackendPlan::Sparse);
+        }
 
         input.resume_layout = Some(CheckpointLayout::Prefix);
         assert_eq!(

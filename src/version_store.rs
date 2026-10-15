@@ -753,17 +753,13 @@ pub fn records_or_blocked() -> Result<Vec<VersionRecord>, String> {
     }
 }
 
-pub fn record_for_key(key: &IdempotencyKey) -> Option<VersionRecord> {
-    let root = versions_dir();
-    let loaded = load_manifest_with(manifest_persist(), &root);
-    if loaded.blocked {
-        return None;
-    }
-    loaded
-        .manifest
-        .records
+/// The version preserved for `key`. An unreadable or incompatible manifest
+/// is an error, so rollback can say the store is unreadable instead of
+/// claiming no version was preserved.
+pub fn record_for_key(key: &IdempotencyKey) -> Result<Option<VersionRecord>, String> {
+    Ok(records_or_blocked()?
         .into_iter()
-        .find(|record| &record.key == key)
+        .find(|record| &record.key == key))
 }
 
 fn versions_dir() -> PathBuf {

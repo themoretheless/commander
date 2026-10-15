@@ -53,6 +53,8 @@ pub struct BatchRenameContext {
     pub panel: ActivePanel,
     pub dir: PathBuf,
     pub targets: Vec<String>,
+    /// The targets that are folders: their whole name is renamed as a stem.
+    pub dirs: std::collections::HashSet<String>,
     pub existing: std::collections::HashSet<String>,
 }
 
@@ -443,6 +445,15 @@ fn smart_select_message(added: usize, noun: (&str, &str), none: &str) -> String 
 
 /// Toast for a sort with no header column (extension, kind): which column
 /// and direction is now active, since nothing on screen shows it.
+/// A change offered by the Favorites rail's context menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FavoriteEdit {
+    Remove,
+    ClearSlot,
+    MoveUp,
+    MoveDown,
+}
+
 fn sort_notice(column: &str, order: crate::panel::SortOrder) -> String {
     let direction = match order {
         crate::panel::SortOrder::Asc => "ascending",
@@ -483,6 +494,24 @@ fn trust_notice(root: &Path, label: crate::trust::TrustLabel) -> String {
         [rest @ .., last] => format!("{} and {last} are blocked", rest.join(", ")),
     };
     format!("Marked {} as {}: {effect}", root.display(), label.label())
+}
+
+/// The toast after a trust change and whether it is an error: a label that
+/// could not be saved still applies, but only until restart.
+fn trust_change_notice(
+    root: &Path,
+    label: crate::trust::TrustLabel,
+    saved: bool,
+) -> (String, bool) {
+    let notice = trust_notice(root, label);
+    if saved {
+        (notice, false)
+    } else {
+        (
+            format!("{notice} (not saved; applies until restart, see persistence health)"),
+            true,
+        )
+    }
 }
 
 /// Toast for applying a workspace profile, naming saved folders that no
@@ -897,6 +926,7 @@ impl Workspace {
             },
             selected_entries,
             cursor_entry: cursor.is_some(),
+            cursor_selected: cursor.is_some_and(|entry| active.is_selected(&entry.path)),
             cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
             cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
             can_go_up: active.current_path.parent().is_some(),
@@ -966,6 +996,26 @@ impl Workspace {
 
     // ── Command dispatch ────────────────────────────────────────────────
 
+    /// Shift+Home/End/PageUp/PageDown: select every entry between the
+    /// cursor and `target`'s row (both included, never the ".." row), then
+    /// move the cursor there.
+    fn extend_select_to(&mut self, target: impl FnOnce(&PanelState) -> usize) {
+        let panel = self.active_panel();
+        let count = panel.filtered_count();
+        if count == 0 {
+            return;
+        }
+        let from = panel.cursor().clamp(1, count);
+        let to = target(panel).clamp(1, count);
+        let rows = from.min(to)..=from.max(to);
+        let picks: Vec<PathBuf> = rows
+            .filter_map(|row| panel.filtered_get(row - 1).map(|entry| entry.path.clone()))
+            .collect();
+        panel.extend_selection(picks);
+        panel.set_cursor(to);
+        panel.set_scroll_to_cursor(true);
+    }
+
     pub fn execute(&mut self, cmd: Command) {
         if self.mutation_commits_blocked() && cmd.mutates_filesystem() {
             return;
@@ -997,6 +1047,10 @@ impl Workspace {
                     | Command::CursorMove(_)
                     | Command::ExtendSelectUp
                     | Command::ExtendSelectDown
+                    | Command::ExtendSelectHome
+                    | Command::ExtendSelectEnd
+                    | Command::ExtendSelectPageUp
+                    | Command::ExtendSelectPageDown
                     | Command::ToggleSelect
                     | Command::SwitchPanel
             ) {
@@ -1074,6 +1128,17 @@ impl Workspace {
                 panel.select_cursor();
                 panel.set_scroll_to_cursor(true);
             }
+            Command::ExtendSelectHome => self.extend_select_to(|_| 1),
+            Command::ExtendSelectEnd => self.extend_select_to(|panel| panel.filtered_count()),
+            Command::ExtendSelectPageUp => self.extend_select_to(|panel| {
+                panel
+                    .cursor()
+                    .saturating_sub(panel.page_rows().max(1))
+                    .max(1)
+            }),
+            Command::ExtendSelectPageDown => self.extend_select_to(|panel| {
+                (panel.cursor() + panel.page_rows().max(1)).min(panel.filtered_count())
+            }),
             Command::Activate => {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
                 if self.active_panel_ref().cursor() == 0 {
@@ -1233,6 +1298,7 @@ impl Workspace {
             Command::DiffFiles => self.emit_ui_request(UiRequest::DiffFiles),
             Command::DiskTreemap => self.emit_ui_request(UiRequest::DiskTreemap),
             Command::BeginFind => self.emit_ui_request(UiRequest::Find),
+            Command::FocusFilter => self.emit_ui_request(UiRequest::FocusFilter),
             Command::OpenSavedSearch => self.emit_ui_request(UiRequest::SavedSearch),
             Command::OpenProjectCollections => self.emit_ui_request(UiRequest::ProjectCollections),
             Command::CopyPath => {
@@ -1274,6 +1340,10 @@ impl Workspace {
             Command::SelectIdentical => self.select_by_relation(|r| &r.identical),
             Command::ClearSelection => self.active_panel().clear_selection_everywhere(),
             Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
+            Command::ToggleCompare => self.emit_ui_request(UiRequest::ToggleCompare),
+            Command::ToggleTheme => self.emit_ui_request(UiRequest::ToggleTheme),
+            Command::ToggleSizeBars => self.emit_ui_request(UiRequest::ToggleSizeBars),
+            Command::ToggleFolderSidebar => self.emit_ui_request(UiRequest::ToggleFolderSidebar),
             Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {
@@ -1292,17 +1362,22 @@ impl Workspace {
                 let on = panel.view_config().natural_name_sort();
                 self.notice(toggle_notice("Natural name sort", on));
             }
-            Command::SortByExtension => {
+            Command::SortByName
+            | Command::SortBySize
+            | Command::SortByModified
+            | Command::SortByExtension
+            | Command::SortByKind => {
+                let (column, label) = match cmd {
+                    Command::SortByName => (crate::panel::SortColumn::Name, "name"),
+                    Command::SortBySize => (crate::panel::SortColumn::Size, "size"),
+                    Command::SortByModified => (crate::panel::SortColumn::Modified, "modified"),
+                    Command::SortByExtension => (crate::panel::SortColumn::Extension, "extension"),
+                    _ => (crate::panel::SortColumn::Kind, "kind"),
+                };
                 let panel = self.active_panel();
-                panel.set_sort(crate::panel::SortColumn::Extension);
+                panel.set_sort(column);
                 let order = panel.view_config().sort_order();
-                self.notice(sort_notice("extension", order));
-            }
-            Command::SortByKind => {
-                let panel = self.active_panel();
-                panel.set_sort(crate::panel::SortColumn::Kind);
-                let order = panel.view_config().sort_order();
-                self.notice(sort_notice("kind", order));
+                self.notice(sort_notice(label, order));
             }
             Command::SelectJunk => {
                 let added = self.active_panel().select_junk();
@@ -1399,8 +1474,9 @@ impl Workspace {
 
     fn set_active_trust(&mut self, label: crate::trust::TrustLabel) {
         let root = self.active_panel_ref().current_path.clone();
-        crate::trust::set_label(&root, label);
-        self.notice(trust_notice(&root, label));
+        let saved = crate::trust::set_label(&root, label);
+        let (message, error) = trust_change_notice(&root, label, saved);
+        self.emit_ui_request(UiRequest::Notice { message, error });
     }
 
     /// Emit a non-error toast.
@@ -1416,21 +1492,19 @@ impl Workspace {
         let right = self.right.current_path.clone();
         let left_filter = self.left.search_query().to_string();
         let right_filter = self.right.search_query().to_string();
-        let _profile = crate::workspace_profile::capture(crate::workspace_profile::CaptureParams {
-            name: "default".to_string(),
-            left_root: &left,
-            right_root: &right,
-            left_filter,
-            right_filter,
-            durability: self.durability_profile,
-            name_policy: self.name_policy,
-            symlink_policy: self.symlink_policy,
-            trusted_command_templates: Vec::new(),
-        });
-        self.emit_ui_request(UiRequest::Notice {
-            message: "Saved workspace profile \"default\"".to_string(),
-            error: false,
-        });
+        let (message, error) =
+            crate::workspace_profile::capture_and_save(crate::workspace_profile::CaptureParams {
+                name: "default".to_string(),
+                left_root: &left,
+                right_root: &right,
+                left_filter,
+                right_filter,
+                durability: self.durability_profile,
+                name_policy: self.name_policy,
+                symlink_policy: self.symlink_policy,
+                trusted_command_templates: Vec::new(),
+            });
+        self.emit_ui_request(UiRequest::Notice { message, error });
     }
 
     fn apply_workspace_profile(&mut self) {
@@ -1754,11 +1828,7 @@ impl Workspace {
     ) {
         let conflicts = scan::find_conflicts(&entries, &target);
         let flat = scan::pending_flat_list();
-        let policy = match self.name_policy.collision {
-            crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
-            crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
-            crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
-        };
+        let policy = OverwritePolicy::from(self.name_policy.collision);
         let asks = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
         let generation = self.start_space_probe(
             entries.clone(),
@@ -1914,7 +1984,14 @@ impl Workspace {
                 FileEntry::from_meta(path, &meta)
             })
             .collect::<Vec<_>>();
-        crate::conflict::detect(&tr.entries, &dest)
+        // `detect` folds case, but only names the on-disk check found taken
+        // really clash: on a case-sensitive volume `a.txt` beside an
+        // existing `A.txt` is a fresh name, and SkipAll must not drop it.
+        let mut conflicts = crate::conflict::detect(&tr.entries, &dest);
+        let taken: std::collections::HashSet<&str> =
+            tr.conflicts.iter().map(String::as_str).collect();
+        conflicts.retain(|conflict| taken.contains(conflict.name.as_str()));
+        conflicts
     }
 
     /// Apply a relation policy to the pending Copy: filter its entries to the
@@ -2124,6 +2201,12 @@ impl Workspace {
 
     pub fn top_undo_action(&self) -> Option<&crate::undo::Action> {
         self.undo.top_undo()
+    }
+
+    /// The history entry on top of the undo stack, for binding a receipt's
+    /// Undo button to that exact entry.
+    pub fn top_undo_entry(&self) -> Option<crate::undo::HistoryEntryId> {
+        self.undo.top_undo_entry()
     }
 
     #[cfg(test)]
@@ -2570,6 +2653,28 @@ impl Workspace {
         Ok(true)
     }
 
+    /// Apply a Favorites rail context-menu `edit` to the favorite at `path`
+    /// and persist it. Unknown paths and no-op moves change and save nothing.
+    pub fn edit_favorite(&mut self, path: &Path, edit: FavoriteEdit) {
+        let index = self.bookmarks.items.iter().position(|b| b.path == path);
+        let Some(index) = index else {
+            return;
+        };
+        let changed = match edit {
+            FavoriteEdit::Remove => self.bookmarks.remove(path),
+            FavoriteEdit::ClearSlot => {
+                self.bookmarks.items[index].slot.is_some() && self.bookmarks.clear_slot(path)
+            }
+            FavoriteEdit::MoveUp => index > 0 && self.bookmarks.reorder(index, index - 1),
+            FavoriteEdit::MoveDown => {
+                index + 1 < self.bookmarks.items.len() && self.bookmarks.reorder(index, index + 1)
+            }
+        };
+        if changed {
+            self.save_bookmarks();
+        }
+    }
+
     /// Add `dir` to the bookmarks if it is not already present, naming it after
     /// its final path component (the volume root falls back to its display
     /// path). A no-op when already bookmarked, so a slot assign keeps the name.
@@ -2699,84 +2804,30 @@ impl Workspace {
 
     // ── Duplicates ──────────────────────────────────────────────────────
 
-    /// Find duplicate files in the active panel's directory (files only,
-    /// non-recursive for now). Size-prefilters so only files whose size
-    /// collides are hashed, groups by (size, digest prefix), then confirms
-    /// each group by the full 256-bit digest (a 64-bit prefix match is not
-    /// proof) before reporting it, so the dialog never offers to trash a
-    /// false positive. Each candidate is read once: the verified BLAKE3
-    /// digest that groups it also confirms it.
-    pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
-        use std::collections::HashMap;
-        // Empty files all "match" (a folder of `__init__.py`/`.gitkeep`
-        // markers is not clutter), and a hard link shares its twin's bytes:
-        // trashing either frees nothing, so each inode is offered once.
+    /// Files of the active panel's directory (non-recursive) that can have a
+    /// duplicate worth trashing. Empty files all "match" (a folder of
+    /// `__init__.py`/`.gitkeep` markers is not clutter), and a hard link
+    /// shares its twin's bytes: trashing either frees nothing, so each inode
+    /// is offered once. No IO: hashing happens in [`crate::dedup_scan`].
+    pub fn duplicate_candidates(&self) -> Vec<FileEntry> {
         let mut inodes = std::collections::HashSet::new();
-        let files: Vec<&FileEntry> = self
-            .active_panel_ref()
+        self.active_panel_ref()
             .entries()
             .iter()
             .filter(|e| !e.is_dir && e.size > 0)
             .filter(|e| hard_link_key(e).is_none_or(|key| inodes.insert(key)))
-            .collect();
-        let mut size_counts: HashMap<u64, usize> = HashMap::new();
-        for f in &files {
-            *size_counts.entry(f.size).or_insert(0) += 1;
-        }
-        let mut keys: Vec<crate::dedup::FileKey> = Vec::new();
-        let mut digests: HashMap<PathBuf, crate::verified_hash::VerifiedHash> = HashMap::new();
-        for f in &files {
-            if size_counts.get(&f.size).copied().unwrap_or(0) < 2 {
-                continue; // a unique size cannot have a duplicate
-            }
-            // Unreadable, non-regular or changing files fail closed.
-            let Ok(digest) = crate::verified_hash::file(&f.path) else {
-                continue;
-            };
-            let mut prefix = [0_u8; 8];
-            prefix.copy_from_slice(&digest[..8]);
-            keys.push(crate::dedup::FileKey {
-                path: f.path.clone(),
-                identity: f.identity.clone(),
-                size: f.size,
-                hash: u64::from_be_bytes(prefix),
-                modified: f.modified,
-            });
-            digests.insert(f.path.clone(), digest);
-        }
-        crate::dedup::group_duplicates(&keys)
-            .into_iter()
-            .flat_map(|group| Self::confirm_dup_group(group, &digests))
+            .cloned()
             .collect()
     }
 
-    /// Split a prefix-matched group into clusters with the same full digest,
-    /// keeping only those with two or more members. Guards against 64-bit
-    /// prefix collisions being trashed as duplicates.
-    fn confirm_dup_group(
-        group: crate::dedup::DupGroup,
-        digests: &std::collections::HashMap<PathBuf, crate::verified_hash::VerifiedHash>,
-    ) -> Vec<crate::dedup::DupGroup> {
-        let size = group.size;
-        let mut clusters: Vec<(
-            crate::verified_hash::VerifiedHash,
-            Vec<crate::dedup::FileKey>,
-        )> = Vec::new();
-        for file in group.files {
-            let Some(digest) = digests.get(&file.path).copied() else {
-                continue;
-            };
-            if let Some((_, cluster)) = clusters.iter_mut().find(|(other, _)| *other == digest) {
-                cluster.push(file);
-            } else {
-                clusters.push((digest, vec![file]));
-            }
-        }
-        clusters
-            .into_iter()
-            .filter(|(_, files)| files.len() >= 2)
-            .map(|(_, files)| crate::dedup::DupGroup { size, files })
-            .collect()
+    /// Synchronous duplicate scan of the active folder, for tests.
+    #[cfg(test)]
+    pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
+        crate::dedup_scan::hash_duplicates(
+            &self.duplicate_candidates(),
+            &std::sync::atomic::AtomicBool::new(false),
+            &std::sync::atomic::AtomicUsize::new(0),
+        )
     }
 
     pub fn trash_entries(

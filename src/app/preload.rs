@@ -149,7 +149,7 @@ impl App {
         let image_stats = self.image_cache.stats();
         let forward = forward_preload_window(image_stats.bytes);
         let slots = PRELOAD_BACK_WINDOW.saturating_add(forward);
-        let paths: Vec<PathBuf> = prioritized_indices(
+        let stamped: Vec<(PathBuf, crate::image_cache::FileStamp)> = prioritized_indices(
             source.filtered_count(),
             source.scroll_anchor(),
             source.page_rows(),
@@ -159,9 +159,11 @@ impl App {
         .filter_map(|index| source.filtered_get(index))
         .filter(|e| e.is_image())
         .take(slots)
-        .map(|e| e.path.clone())
+        .map(|e| (e.path.clone(), (e.size, e.modified)))
         .collect();
 
+        self.image_cache.invalidate_changed(&stamped);
+        let paths: Vec<PathBuf> = stamped.into_iter().map(|(path, _)| path).collect();
         self.image_cache.preload(ctx, &paths, &source.current_path);
     }
 }

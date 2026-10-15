@@ -186,6 +186,57 @@ fn workspace_uses_the_injected_persistence_for_bookmark_load_and_save() {
     assert_eq!(written["payload"]["items"].as_array().unwrap().len(), 2);
 }
 
+#[test]
+fn favorite_edits_reorder_clear_slot_remove_and_persist() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(
+            br#"{"items":[{"name":"a","path":"/a","slot":1},{"name":"b","path":"/b"},{"name":"c","path":"/c"}]}"#
+                .to_vec(),
+        ),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    let names = |ws: &Workspace| -> Vec<String> {
+        ws.bookmarks.items.iter().map(|b| b.name.clone()).collect()
+    };
+    let commits = || persistence.commits.load(Ordering::Relaxed);
+
+    // No-op edits change and save nothing.
+    ws.edit_favorite(Path::new("/a"), FavoriteEdit::MoveUp);
+    ws.edit_favorite(Path::new("/c"), FavoriteEdit::MoveDown);
+    ws.edit_favorite(Path::new("/b"), FavoriteEdit::ClearSlot);
+    ws.edit_favorite(Path::new("/missing"), FavoriteEdit::Remove);
+    assert_eq!(commits(), 0);
+
+    ws.edit_favorite(Path::new("/c"), FavoriteEdit::MoveUp);
+    assert_eq!(names(&ws), ["a", "c", "b"]);
+    ws.edit_favorite(Path::new("/a"), FavoriteEdit::MoveDown);
+    assert_eq!(names(&ws), ["c", "a", "b"]);
+    ws.edit_favorite(Path::new("/a"), FavoriteEdit::ClearSlot);
+    assert_eq!(ws.bookmarks.by_slot(1), None);
+    ws.edit_favorite(Path::new("/b"), FavoriteEdit::Remove);
+    assert_eq!(names(&ws), ["c", "a"]);
+    assert_eq!(commits(), 4);
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&persistence.bytes.lock().unwrap()).unwrap();
+    let saved: Vec<&str> = written["payload"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(saved, ["c", "a"]);
+}
+
 fn test_transfer_spec(operation_id: &str, target: &Path) -> TransferSpec {
     TransferSpec {
         operation_id: crate::operation::OperationId(operation_id.to_string()),
@@ -909,6 +960,7 @@ fn every_fixed_ui_command_emits_the_expected_typed_request() {
         (Command::DiffFiles, UiRequest::DiffFiles),
         (Command::DiskTreemap, UiRequest::DiskTreemap),
         (Command::BeginFind, UiRequest::Find),
+        (Command::FocusFilter, UiRequest::FocusFilter),
         (Command::OpenSavedSearch, UiRequest::SavedSearch),
         (
             Command::OpenProjectCollections,
@@ -941,6 +993,10 @@ fn every_fixed_ui_command_emits_the_expected_typed_request() {
         (Command::Undo, UiRequest::Undo),
         (Command::Redo, UiRequest::Redo),
         (Command::ToggleQueuePanel, UiRequest::ToggleQueuePanel),
+        (Command::ToggleCompare, UiRequest::ToggleCompare),
+        (Command::ToggleTheme, UiRequest::ToggleTheme),
+        (Command::ToggleSizeBars, UiRequest::ToggleSizeBars),
+        (Command::ToggleFolderSidebar, UiRequest::ToggleFolderSidebar),
         (Command::OpenReceipts, UiRequest::OperationHistory),
         (Command::OpenRecoveryCenter, UiRequest::OpenRecoveryCenter),
     ];
@@ -1164,6 +1220,53 @@ fn shift_arrows_build_a_contiguous_selection() {
 
     assert_eq!(ws.left.cursor(), 3);
     assert_eq!(ws.left.selected_count(), 3, "a, b and c are selected");
+}
+
+#[test]
+fn shift_home_and_end_select_through_the_listing_edges() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let c = l.file("c.txt", "x");
+    let d = l.file("d.txt", "x");
+    let mut ws = workspace(&l, &r);
+
+    ws.left.set_cursor(2); // b.txt
+    ws.execute(Command::ExtendSelectEnd);
+    assert_eq!(ws.left.cursor(), 4);
+    assert_eq!(
+        ws.left.selected_paths().clone(),
+        [b.clone(), c.clone(), d.clone()].into_iter().collect()
+    );
+
+    ws.left.clear_selection();
+    ws.left.set_cursor(3); // c.txt
+    ws.execute(Command::ExtendSelectHome);
+    assert_eq!(ws.left.cursor(), 1, "Home stops on the first entry, not ..");
+    assert_eq!(
+        ws.left.selected_paths().clone(),
+        [a, b, c].into_iter().collect()
+    );
+}
+
+#[test]
+fn shift_page_keys_select_a_page_of_rows() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    for i in 0..20 {
+        l.file(&format!("f{i:02}.txt"), "x");
+    }
+    let mut ws = workspace(&l, &r);
+    ws.left.set_page_rows(5);
+
+    ws.left.set_cursor(1);
+    ws.execute(Command::ExtendSelectPageDown);
+    assert_eq!(ws.left.cursor(), 6);
+    assert_eq!(ws.left.selected_count(), 6, "rows 1 through 6");
+
+    ws.execute(Command::ExtendSelectPageUp);
+    ws.execute(Command::ExtendSelectPageUp);
+    assert_eq!(ws.left.cursor(), 1, "PageUp clamps at the first entry");
+    assert_eq!(ws.left.selected_count(), 6);
 }
 
 #[test]
@@ -2750,7 +2853,7 @@ fn duplicate_groups_are_confirmed_by_the_full_digest() {
     .map(|(name, digest)| (PathBuf::from(format!("/dups/{name}")), digest))
     .collect();
 
-    let confirmed = Workspace::confirm_dup_group(group, &digests);
+    let confirmed = crate::dedup_scan::confirm_group(group, &digests);
 
     assert_eq!(confirmed.len(), 1);
     let paths: Vec<&Path> = confirmed[0]
@@ -4935,6 +5038,20 @@ fn feedback_text_uses_singular_and_plural_nouns() {
 }
 
 #[test]
+fn unsaved_trust_change_is_reported_as_an_error() {
+    let root = Path::new("/x/y");
+    let label = crate::trust::TrustLabel::Untrusted;
+    assert_eq!(
+        trust_change_notice(root, label, true),
+        (trust_notice(root, label), false)
+    );
+    let (message, error) = trust_change_notice(root, label, false);
+    assert!(error);
+    assert!(message.starts_with(&trust_notice(root, label)), "{message}");
+    assert!(message.contains("not saved"), "{message}");
+}
+
+#[test]
 fn listing_copy_label_counts_a_single_row() {
     let (l, r) = (TempDir::new(), TempDir::new());
     l.file("only.txt", "x");
@@ -5011,6 +5128,48 @@ fn sort_and_view_toggles_say_what_changed() {
             "Sorted by extension, ascending",
             "Sorted by extension, descending",
             "Natural name sort: off",
+        ]
+    );
+}
+
+#[test]
+fn sort_by_name_size_modified_commands_set_the_column() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::SortBySize);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Size
+    );
+    ws.execute(Command::SortByModified);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Modified
+    );
+    ws.execute(Command::SortByModified);
+    ws.execute(Command::SortByName);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Name
+    );
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "Sorted by size, ascending",
+            "Sorted by modified, ascending",
+            "Sorted by modified, descending",
+            "Sorted by name, ascending",
         ]
     );
 }
@@ -5973,4 +6132,40 @@ fn undo_of_a_cross_folder_move_is_refused_instead_of_misplacing_items() {
     assert!(r.path().join("x.txt").is_file() && r.path().join("y.txt").is_file());
     assert!(!one.join("x.txt").exists() && !two.join("y.txt").exists());
     assert!(ws.safe_state.is_none(), "a refused undo changes nothing");
+}
+
+#[test]
+fn command_context_reports_whether_the_cursor_row_is_selected() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+    assert!(!ws.command_context().cursor_selected);
+    ws.execute(Command::ToggleSelect);
+    ws.left.set_cursor(1);
+    assert!(ws.command_context().cursor_selected);
+    assert!(ws.action_bar_command_context().cursor_selected);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn case_variant_without_an_on_disk_clash_is_not_a_conflict() {
+    // Case-sensitive destination: `a.txt` does not clash with an existing
+    // `A.txt`, so SkipAll must still copy it.
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let lower = l.file("a.txt", "lower");
+    l.file("A.txt", "upper");
+    r.file("A.txt", "existing");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_all();
+    ws.request_copy();
+
+    let names: Vec<String> = ws.pending_conflicts().into_iter().map(|c| c.name).collect();
+    assert_eq!(names, vec!["A.txt".to_string()]);
+    assert!(ws.resolve_pending_conflicts(crate::conflict::RelationPolicy::SkipAll));
+    let Some(PendingOp::Transfer(tr)) = &ws.pending_op else {
+        panic!("pending copy");
+    };
+    let kept: Vec<&PathBuf> = tr.entries.iter().map(|e| &e.path).collect();
+    assert_eq!(kept, vec![&lower]);
 }

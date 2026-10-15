@@ -20,6 +20,71 @@ impl Preferences {
     }
 }
 
+/// Re-reads the system preferences when the window regains focus, so a
+/// Reduce Motion / Increase Contrast toggle made in System Settings applies
+/// without restarting. Detection runs off the UI thread (it spawns
+/// `defaults` on macOS); [`Self::poll`] hands back a changed result.
+#[derive(Debug)]
+pub struct PreferenceWatch {
+    focused: bool,
+    pending: Option<std::sync::mpsc::Receiver<Preferences>>,
+}
+
+impl Default for PreferenceWatch {
+    fn default() -> Self {
+        // The startup read is fresh; only a later focus gain re-reads.
+        Self {
+            focused: true,
+            pending: None,
+        }
+    }
+}
+
+impl PreferenceWatch {
+    /// Call once per frame with the window's focus state. Returns the new
+    /// preferences when a refresh finished and they differ from `current`.
+    pub fn poll(&mut self, focused: bool, current: Preferences) -> Option<Preferences> {
+        self.poll_with(focused, current, detect_preferences)
+    }
+
+    fn poll_with(
+        &mut self,
+        focused: bool,
+        current: Preferences,
+        detect: fn() -> Preferences,
+    ) -> Option<Preferences> {
+        let regained = focused && !self.focused;
+        self.focused = focused;
+        if regained && self.pending.is_none() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("accessibility-prefs".into())
+                .spawn(move || {
+                    let _ = sender.send(detect());
+                });
+            if spawned.is_ok() {
+                self.pending = Some(receiver);
+            }
+        }
+        let receiver = self.pending.as_ref()?;
+        let fresh = match receiver.try_recv() {
+            Ok(fresh) => fresh,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                return None;
+            }
+        };
+        self.pending = None;
+        (fresh != current).then_some(fresh)
+    }
+
+    /// Whether a refresh is still running (the caller keeps repainting).
+    pub const fn refreshing(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
 fn detect_preferences() -> Preferences {
     let reduced_motion = bool_env("COMMANDER_REDUCED_MOTION")
         .unwrap_or_else(|| macos_universal_access("reduceMotion"));
@@ -470,6 +535,39 @@ pub fn file_row_semantics(
     }
 }
 
+/// Publishes a file row's semantics on its response: the spoken label and
+/// selection as widget info, and the AccessKit row node with its grid index.
+/// The context-menu action is offered only while the row is enabled, since
+/// a disabled row ignores the request.
+pub fn publish_row_semantics(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    semantics: &FileRowSemantics,
+    spoken_label: String,
+    row_index: usize,
+) {
+    let enabled = ui.is_enabled();
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            enabled,
+            semantics.selected,
+            &spoken_label,
+        )
+    });
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Row);
+        node.set_row_index(row_index);
+        node.set_selected(semantics.selected);
+        if enabled {
+            node.add_action(egui::accesskit::Action::ShowContextMenu);
+        }
+        if let Some(expanded) = semantics.expanded {
+            node.set_expanded(expanded);
+        }
+    });
+}
+
 pub const fn sanitize_text_scale(scale: f32) -> f32 {
     if scale.is_finite() {
         scale.clamp(0.8, 2.0)
@@ -627,6 +725,54 @@ pub fn drag_alternative(workflow: DragWorkflow) -> DragAlternative {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn high_contrast() -> Preferences {
+        Preferences {
+            reduced_motion: false,
+            high_contrast: true,
+        }
+    }
+
+    /// Polls until the background refresh lands (or a few seconds pass).
+    fn settle(watch: &mut PreferenceWatch, current: Preferences) -> Option<Preferences> {
+        for _ in 0..500 {
+            if let Some(fresh) = watch.poll_with(true, current, high_contrast) {
+                return Some(fresh);
+            }
+            if !watch.refreshing() {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        None
+    }
+
+    #[test]
+    fn preferences_refresh_when_the_window_regains_focus() {
+        let mut watch = PreferenceWatch::default();
+        // Staying focused never re-reads.
+        assert_eq!(
+            watch.poll_with(true, Preferences::default(), high_contrast),
+            None
+        );
+        assert!(!watch.refreshing());
+        // Losing focus does not either.
+        assert_eq!(
+            watch.poll_with(false, Preferences::default(), high_contrast),
+            None
+        );
+        assert!(!watch.refreshing());
+        // Regaining it re-reads and reports the change.
+        assert_eq!(
+            settle(&mut watch, Preferences::default()),
+            Some(high_contrast())
+        );
+        assert!(!watch.refreshing());
+
+        // An unchanged result is not reported.
+        watch.poll_with(false, high_contrast(), high_contrast);
+        assert_eq!(settle(&mut watch, high_contrast()), None);
+    }
 
     #[test]
     fn preference_parser_accepts_explicit_boolean_spellings() {

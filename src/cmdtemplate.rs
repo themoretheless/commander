@@ -86,6 +86,25 @@ fn substitutions(template: &str, ctx: &SelectionCtx) -> [(&'static str, Option<S
     ]
 }
 
+/// The first path a placeholder used by `template` would expand that is not
+/// valid UTF-8. Such a path is shown with U+FFFD replacement characters, so
+/// the command would target a different (or nonexistent) file; the bar
+/// refuses to run while this returns `Some`.
+pub fn non_utf8_path<'a>(template: &str, ctx: &'a SelectionCtx) -> Option<&'a std::path::Path> {
+    let wanted = |tok: &str| template.contains(tok);
+    let selection = (wanted("{paths}") || wanted("{names}")).then_some(ctx.paths.iter());
+    let dirs = [
+        wanted("{dir}").then_some(&ctx.dir),
+        wanted("{dir_other}").then_some(&ctx.dir_other),
+    ];
+    selection
+        .into_iter()
+        .flatten()
+        .chain(dirs.into_iter().flatten())
+        .map(PathBuf::as_path)
+        .find(|path| path.to_str().is_none())
+}
+
 /// A bare file name that starts with `-` would be parsed as an option by the
 /// command it is passed to (`rm {names}` on a file named `-rf`); quoting does
 /// not help, so such names are anchored to the current directory with `./`.
@@ -522,5 +541,27 @@ mod tests {
         assert!(store.remove(0));
         assert_eq!(store.items[0].name, "a");
         assert!(!store.remove(9));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_paths_are_reported_only_for_used_placeholders() {
+        use std::os::unix::ffi::OsStrExt;
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9.txt"));
+        let mut c = ctx(&["/tmp/ok.txt"], "/tmp", "/other");
+        c.paths.push(bad.clone());
+        assert_eq!(non_utf8_path("cat {paths}", &c), Some(bad.as_path()));
+        assert_eq!(non_utf8_path("cat {names}", &c), Some(bad.as_path()));
+        // The bad path is not expanded by these lines, so they may run.
+        assert_eq!(non_utf8_path("ls {dir} {dir_other}", &c), None);
+        assert_eq!(non_utf8_path("make", &c), None);
+
+        let mut c = ctx(&["/tmp/ok.txt"], "/tmp", "/other");
+        c.dir_other = bad.clone();
+        assert_eq!(
+            non_utf8_path("cp {paths} {dir_other}", &c),
+            Some(bad.as_path())
+        );
+        assert_eq!(non_utf8_path("cp {paths} {dir}", &c), None);
     }
 }

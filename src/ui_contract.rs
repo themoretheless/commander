@@ -284,48 +284,49 @@ fn routed_escape_is_consumed_once_by_its_exact_owner() {
 
 #[test]
 fn file_row_semantics_reach_the_headless_accesskit_tree() {
-    let ctx = egui::Context::default();
-    ctx.enable_accesskit();
     let semantics =
         file_row_semantics("Projects", "Folder", "12 items", "Today", true, false, true);
-    let output = crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
-        let response = ui.selectable_label(semantics.selected, "Projects");
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::WidgetType::SelectableLabel,
-                ui.is_enabled(),
-                semantics.selected,
-                &semantics.label,
-            )
-        });
-        ui.ctx().accesskit_node_builder(response.id, |node| {
-            node.set_role(egui::accesskit::Role::Row);
-            node.set_selected(semantics.selected);
-            node.add_action(egui::accesskit::Action::ShowContextMenu);
-            if let Some(expanded) = semantics.expanded {
-                node.set_expanded(expanded);
-            }
-        });
-    }));
+    let row_node = |enabled: bool| {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    let response = ui.selectable_label(semantics.selected, "Projects");
+                    crate::accessibility::publish_row_semantics(
+                        ui,
+                        &response,
+                        &semantics,
+                        semantics.label.clone(),
+                        3,
+                    );
+                });
+            }));
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output");
+        update
+            .nodes
+            .into_iter()
+            .map(|(_, node)| node)
+            .find(|node| node.role() == egui::accesskit::Role::Row)
+            .expect("file row node")
+    };
 
-    let update = output
-        .platform_output
-        .accesskit_update
-        .expect("headless AccessKit output");
-    let row = update
-        .nodes
-        .iter()
-        .map(|(_, node)| node)
-        .find(|node| node.role() == egui::accesskit::Role::Row)
-        .expect("file row node");
+    let row = row_node(true);
     assert_eq!(
         row.label(),
         Some("Name: Projects; Kind: Folder; Size: 12 items; Modified: Today; State: selected")
     );
     assert_eq!(row.is_selected(), Some(true));
     assert_eq!(row.is_expanded(), None);
+    assert_eq!(row.row_index(), Some(3));
     assert!(row.supports_action(egui::accesskit::Action::Focus));
     assert!(row.supports_action(egui::accesskit::Action::ShowContextMenu));
+    // A disabled row (behind a modal) ignores context-menu requests, so it
+    // must not offer the action.
+    assert!(!row_node(false).supports_action(egui::accesskit::Action::ShowContextMenu));
 }
 
 #[test]

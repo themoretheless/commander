@@ -171,6 +171,14 @@ fn backspace_edits_type_ahead(presses: &[KeyPress], live_search: bool) -> bool {
             .any(|p| p.code == KeyCode::Backspace && !p.command && !p.shift)
 }
 
+/// Drops a plain `.` from this frame's presses while a type-ahead search is
+/// live, so typing "a.txt" extends the search instead of running Repeat Last.
+fn yield_period_to_type_ahead(presses: &mut Vec<KeyPress>, live_search: bool) {
+    if live_search {
+        presses.retain(|p| p.code != KeyCode::Period || p.command);
+    }
+}
+
 /// The search left after Backspace removes its last character, or `None`
 /// once nothing is left to search for.
 fn type_ahead_after_backspace(buffer: &str) -> Option<String> {
@@ -223,6 +231,7 @@ impl App {
             presses.retain(|p| p.code != KeyCode::Backspace || p.command || p.shift);
             self.type_ahead_backspace(ctx, now);
         }
+        yield_period_to_type_ahead(&mut presses, live_search);
         // Space/Period also arrive as text; once they ran a command they must
         // not extend type-ahead too.
         let mut consumed: Vec<char> = presses
@@ -406,11 +415,12 @@ impl App {
             {
                 let buffer = buffer.clone();
                 self.ui.type_ahead_jumped = true;
-                self.ws.active_panel().type_ahead(&buffer);
+                self.ui.type_ahead_miss = !self.ws.active_panel().type_ahead(&buffer);
             }
             return;
         }
         self.ui.type_ahead_jumped = false;
+        self.ui.type_ahead_miss = false;
         let buffer = match &mut self.ui.type_ahead {
             Some((b, t)) => {
                 b.push_str(&typed);
@@ -423,7 +433,7 @@ impl App {
             }
         };
         if type_ahead_jumps(&buffer) {
-            self.ws.active_panel().type_ahead(&buffer);
+            self.ui.type_ahead_miss = !self.ws.active_panel().type_ahead(&buffer);
         } else {
             // Wake up to jump once the count window passes without a motion.
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(COUNT_WINDOW));
@@ -442,8 +452,9 @@ impl App {
         };
         self.ui.type_ahead = Some((rest.clone(), now));
         self.ui.type_ahead_jumped = false;
+        self.ui.type_ahead_miss = false;
         if type_ahead_jumps(&rest) {
-            self.ws.active_panel().type_ahead(&rest);
+            self.ui.type_ahead_miss = !self.ws.active_panel().type_ahead(&rest);
         } else {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(COUNT_WINDOW));
         }
@@ -696,6 +707,19 @@ mod tests {
             command,
             shift: false,
         }
+    }
+
+    #[test]
+    fn period_extends_a_live_search_instead_of_repeating() {
+        let mut presses = vec![press(KeyCode::Period, false)];
+        yield_period_to_type_ahead(&mut presses, false);
+        // No search running: `.` still repeats the last command.
+        assert_eq!(presses.len(), 1);
+        yield_period_to_type_ahead(&mut presses, true);
+        assert!(presses.is_empty());
+        let mut other = vec![press(KeyCode::Down, false)];
+        yield_period_to_type_ahead(&mut other, true);
+        assert_eq!(other.len(), 1);
     }
 
     #[test]

@@ -398,6 +398,8 @@ pub struct RedoInvalidation {
     pub caused_by: String,
 }
 
+/// Identity of one recorded history entry. An undo and its redo keep the
+/// same id, while recording an equal action again gets a new one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HistoryEntryId(u64);
 

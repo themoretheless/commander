@@ -22,6 +22,11 @@ This complements [architecture.md](architecture.md) (structural debt) and
 feeds [recommendation.md](recommendation.md) (the plan, including the
 unscoped ideas backlog in Track E and the compact Top-500 digest in Track F).
 
+> **October 2026:** every still-open item below was re-verified against
+> current code and tracked in [improvements.md](improvements.md) (sources
+> `au#T<n>` / `au#B<n>`), with its fix commit or a written proposal. Treat
+> that catalog as the live status; this file is kept as the historical audit.
+
 ## How to read this
 
 Each row carries a reviewer `severity`/`confidence` and a `Src` (the round

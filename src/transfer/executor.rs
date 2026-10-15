@@ -383,6 +383,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 }
                 terminal_guard.journal_started();
             }
+            let settled_steps = journal_enabled
+                .then(|| crate::operation_journal::SettledSteps::load(&spec.operation_id));
             match wait_for_mount(
                 &target_mount,
                 "Destination volume",
@@ -513,11 +515,12 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     }
                 }
 
-                if journal_enabled {
-                    match crate::operation_journal::step_is_settled(
-                        &spec.operation_id,
-                        &work_item.key,
-                    ) {
+                if let Some(settled_steps) = &settled_steps {
+                    match settled_steps
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|steps| steps.is_settled(&work_item.key))
+                    {
                         Ok(true) => {
                             complete_without_copy(
                                 &progress,
@@ -1087,7 +1090,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 if clean
                     && spec.durability.verifies()
                     && !renamed
-                    && !transfer_paths_equal(&entry.path, &copy_target, spec.symlink_policy)
+                    && let Some(mismatch) =
+                        transfer_paths_mismatch(&entry.path, &copy_target, spec.symlink_policy)
                 {
                     record_failure(
                         &progress,
@@ -1095,7 +1099,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                         ClassifiedFailure::message(
                             FailureClass::IntegrityUncertain,
                             Some(copy_target.clone()),
-                            "copy verification failed",
+                            format!("copy verification failed: {mismatch}"),
                         ),
                     );
                     clean = false;
@@ -1352,8 +1356,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 error,
                             );
                         }
-                    } else if placed
-                        && let Err(error) = crate::operation_journal::mark_completed(
+                    } else if placed {
+                        match crate::operation_journal::mark_completed(
                             &spec.operation_id,
                             &work_item.key,
                             &landing,
@@ -1361,9 +1365,24 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 .as_ref()
                                 .expect("placed transfer has an outcome")
                                 .fast_path,
-                        )
-                    {
-                        record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
+                        ) {
+                            Ok(None) => {}
+                            Ok(Some(warning)) => record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(landing.clone()),
+                                    warning,
+                                ),
+                            ),
+                            Err(error) => record_journal_error(
+                                &progress,
+                                &entry.name,
+                                Some(landing.clone()),
+                                error,
+                            ),
+                        }
                     }
                 }
 
