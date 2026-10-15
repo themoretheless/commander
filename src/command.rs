@@ -224,6 +224,8 @@ pub struct CommandContext {
     pub selected_entries: usize,
     pub listing_entries: usize,
     pub cursor_entry: bool,
+    /// The cursor row is already selected, so Space would deselect it.
+    pub cursor_selected: bool,
     pub cursor_is_dir: bool,
     pub cursor_is_file: bool,
     pub cursor_has_extension: bool,
@@ -499,7 +501,11 @@ pub fn contextual_shortcuts(context: &CommandContext) -> Vec<ShortcutHint> {
         },
         ShortcutHint {
             key: "Space",
-            label: "Select",
+            label: if context.cursor_selected {
+                "Deselect"
+            } else {
+                "Select"
+            },
             command: Command::ToggleSelect,
         },
         ShortcutHint {
@@ -1176,6 +1182,25 @@ mod tests {
                 .iter()
                 .all(|hint| matches!(hint.command, Command::RequestCopy | Command::RequestMove))
         );
+    }
+
+    #[test]
+    fn space_hint_names_the_toggle_it_would_perform() {
+        let space_label = |cursor_selected| {
+            let context = CommandContext {
+                cursor_entry: true,
+                cursor_is_file: true,
+                cursor_selected,
+                picked_entries: 1,
+                ..CommandContext::default()
+            };
+            contextual_shortcuts(&context)
+                .into_iter()
+                .find(|hint| hint.command == Command::ToggleSelect)
+                .map(|hint| hint.label)
+        };
+        assert_eq!(space_label(false), Some("Select"));
+        assert_eq!(space_label(true), Some("Deselect"));
     }
 
     #[test]

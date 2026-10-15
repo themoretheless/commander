@@ -6132,3 +6132,16 @@ fn undo_of_a_cross_folder_move_is_refused_instead_of_misplacing_items() {
     assert!(!one.join("x.txt").exists() && !two.join("y.txt").exists());
     assert!(ws.safe_state.is_none(), "a refused undo changes nothing");
 }
+
+#[test]
+fn command_context_reports_whether_the_cursor_row_is_selected() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+    assert!(!ws.command_context().cursor_selected);
+    ws.execute(Command::ToggleSelect);
+    ws.left.set_cursor(1);
+    assert!(ws.command_context().cursor_selected);
+    assert!(ws.action_bar_command_context().cursor_selected);
+}

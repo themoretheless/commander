@@ -924,6 +924,7 @@ impl Workspace {
             },
             selected_entries,
             cursor_entry: cursor.is_some(),
+            cursor_selected: cursor.is_some_and(|entry| active.is_selected(&entry.path)),
             cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
             cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
             can_go_up: active.current_path.parent().is_some(),
