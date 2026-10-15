@@ -408,12 +408,15 @@ impl App {
         } else {
             "Transferring..."
         };
-        ui.label(
+        let title_label = ui.label(
             egui::RichText::new(title)
                 .size(13.0)
                 .strong()
                 .color(t.text_primary),
         );
+        // Speak the terminal state (Completed with Errors, Stopped Safely).
+        announce(ui, title_label.id, false);
+        let mut reveal: Option<std::path::PathBuf> = None;
         let details = ui.vertical(|ui| {
             if let Some(summary) = &submitted {
                 ui.label(
@@ -429,7 +432,7 @@ impl App {
                 );
                 ui.add_space(6.0);
             }
-            ui.horizontal(|ui| {
+            let phases = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let width = ((ui.available_width() - 8.0) / 5.0).max(58.0);
                 for candidate in crate::operation_view::OperationPhase::ALL {
@@ -447,18 +450,21 @@ impl App {
                     } else {
                         t.bg_card.linear_multiply(0.45)
                     };
-                    ui.add_sized(
-                        [width, 22.0],
-                        egui::Button::new(
-                            egui::RichText::new(candidate.label())
-                                .size(10.0)
-                                .color(color),
-                        )
-                        .fill(fill)
-                        .corner_radius(CornerRadius::ZERO)
-                        .sense(Sense::hover()),
+                    // Painted, not buttons: the phases are status, not
+                    // controls, and the row speaks as one label below.
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
+                    ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        candidate.label(),
+                        egui::FontId::proportional(10.0),
+                        color,
                     );
                 }
+            });
+            phases.response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, phase_progress_text(phase))
             });
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -510,6 +516,13 @@ impl App {
                         .size(12.0)
                         .color(t.text_primary),
                 );
+            } else if current_file.is_empty() {
+                // Scan and plan run before the first file starts.
+                ui.label(
+                    egui::RichText::new("Preparing...")
+                        .size(12.0)
+                        .color(t.text_primary),
+                );
             } else {
                 ui.label(
                     egui::RichText::new(format!("File: {}", current_file))
@@ -519,7 +532,8 @@ impl App {
                 ui.add_space(4.0);
                 Self::draw_progress_bar(
                     ui,
-                    file_frac,
+                    "Current file",
+                    Some(file_frac),
                     &format!(
                         "{} / {}",
                         format_size(current_file_copied),
@@ -531,13 +545,13 @@ impl App {
             }
             if delta_reused_bytes > 0 {
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Delta reused {}  \u{00b7}  source {}",
-                        format_size(delta_reused_bytes),
-                        format_size(delta_source_bytes)
-                    ))
-                    .size(10.0)
-                    .color(t.text_secondary),
+                    egui::RichText::new(delta_text(delta_reused_bytes, delta_source_bytes))
+                        .size(10.0)
+                        .color(t.text_secondary),
+                )
+                .on_hover_text(
+                    "Unchanged parts of the file already at the destination were kept \
+                     instead of being copied again",
                 );
             }
 
@@ -547,7 +561,8 @@ impl App {
             ui.add_space(2.0);
             Self::draw_progress_bar(
                 ui,
-                progress_frac.unwrap_or(0.0),
+                "Total progress",
+                progress_frac,
                 &progress_frac.map_or_else(
                     || "Estimating total...".to_string(),
                     |fraction| {
@@ -566,13 +581,11 @@ impl App {
             // Speed + ETA + files
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{}/s", format_size(speed as u64)))
-                        .size(11.0)
-                        .color(t.text_muted),
-                );
-
-                ui.add_space(16.0);
+                // A finished transfer has no current rate to report.
+                if let Some(speed) = speed_text(speed, finished) {
+                    ui.label(egui::RichText::new(speed).size(11.0).color(t.text_muted));
+                    ui.add_space(16.0);
+                }
                 if let Some(eta) = eta.filter(|eta| *eta > 0.0 && !finished) {
                     let mins = (eta / 60.0) as u64;
                     let secs = (eta % 60.0) as u64;
@@ -604,7 +617,7 @@ impl App {
             }
             if requeued_files > 0 {
                 ui.label(
-                    egui::RichText::new(format!("{requeued_files} changed file(s) requeued"))
+                    egui::RichText::new(requeued_text(requeued_files))
                         .size(11.0)
                         .color(t.accent_warning),
                 );
@@ -618,7 +631,7 @@ impl App {
             if error_count > 0 {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!("{error_count} error(s):"))
+                    egui::RichText::new(format!("{}:", plural(error_count, "error")))
                         .size(12.0)
                         .strong()
                         .color(t.accent_red),
@@ -630,13 +643,36 @@ impl App {
                         let hidden = error_count - error_rows.len();
                         if hidden > 0 {
                             ui.label(
-                                egui::RichText::new(format!("{hidden} earlier error(s) not shown"))
-                                    .size(11.0)
-                                    .color(t.text_muted),
+                                egui::RichText::new(format!(
+                                    "{} not shown",
+                                    plural(hidden, "earlier error")
+                                ))
+                                .size(11.0)
+                                .color(t.text_muted),
                             );
                         }
-                        for text in &error_rows {
-                            ui.label(egui::RichText::new(text).size(11.0).color(t.accent_red));
+                        for row in &error_rows {
+                            let text = egui::RichText::new(&row.text)
+                                .size(11.0)
+                                .color(t.accent_red);
+                            // A row that names its file links to it.
+                            match &row.path {
+                                Some(path) => {
+                                    if ui
+                                        .add(egui::Link::new(text))
+                                        .on_hover_text(format!(
+                                            "Show {} in the active panel",
+                                            path.display()
+                                        ))
+                                        .clicked()
+                                    {
+                                        reveal = Some(path.clone());
+                                    }
+                                }
+                                None => {
+                                    ui.label(text);
+                                }
+                            }
                         }
                     });
             }
@@ -647,7 +683,7 @@ impl App {
                     .add(super::dialog_button(
                         t,
                         super::ButtonRole::Primary,
-                        egui::RichText::new("OK").size(13.0),
+                        egui::RichText::new("Dismiss").size(13.0),
                     ))
                     .clicked()
                 {
@@ -680,6 +716,7 @@ impl App {
                             ),
                         )
                         .on_hover_text(stop.consequence())
+                        .on_disabled_hover_text(stop.consequence())
                         .clicked()
                     {
                         self.ws.stop_transfer_after_current();
@@ -688,18 +725,15 @@ impl App {
                         let cancel_pending =
                             crate::operation_view::CancellationAction::CancelPending;
                         if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(format!(
-                                        "{} ({queued})",
-                                        cancel_pending.label()
-                                    ))
-                                    .size(13.0)
-                                    .color(t.text_primary),
-                                )
-                                .fill(t.bg_card)
-                                .corner_radius(CornerRadius::ZERO),
-                            )
+                            .add(super::dialog_button(
+                                t,
+                                super::ButtonRole::Secondary,
+                                egui::RichText::new(format!(
+                                    "{} ({queued})",
+                                    cancel_pending.label()
+                                ))
+                                .size(13.0),
+                            ))
                             .on_hover_text(cancel_pending.consequence())
                             .clicked()
                         {
@@ -722,6 +756,9 @@ impl App {
             }
         });
 
+        if let Some(path) = reveal {
+            self.ws.reveal(&path);
+        }
         if error_count > 0 {
             ctx.data_mut(|data| {
                 data.insert_temp(egui::Id::new("active_error_surface"), details.response.rect);
@@ -780,37 +817,52 @@ impl App {
         );
     }
 
-    /// Draw a flat progress bar without rounding.
+    /// Draw a flat progress bar without rounding. `name` and the fraction
+    /// reach assistive tech as a progressbar; `None` is still estimating.
     fn draw_progress_bar(
         ui: &mut egui::Ui,
-        frac: f32,
+        name: &str,
+        frac: Option<f32>,
         text: &str,
         fill_color: Color32,
         t: &ThemeColors,
     ) {
         let bar_h = 18.0;
         let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, bar_h), Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, bar_h), Sense::hover());
+        response.widget_info(|| progress_info(name, frac));
         let p = ui.painter();
 
         // Background
         p.rect_filled(rect, CornerRadius::ZERO, t.bg_card.linear_multiply(0.5));
 
         // Filled portion
-        let filled_w = rect.width() * frac.clamp(0.0, 1.0);
+        let filled_w = rect.width() * frac.unwrap_or(0.0).clamp(0.0, 1.0);
+        let filled_rect = egui::Rect::from_min_size(rect.min, Vec2::new(filled_w, bar_h));
         if filled_w > 0.0 {
-            let filled_rect = egui::Rect::from_min_size(rect.min, Vec2::new(filled_w, bar_h));
             p.rect_filled(filled_rect, CornerRadius::ZERO, fill_color);
         }
 
-        // Text centered
-        p.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            text,
-            egui::FontId::proportional(10.0),
+        // Text centered, in a color that reads on each side of the fill edge.
+        let caption = |painter: egui::Painter, color: Color32| {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::proportional(10.0),
+                color,
+            );
+        };
+        caption(
+            p.with_clip_rect(rect.with_min_x(filled_rect.right())),
             t.text_primary,
         );
+        if filled_w > 0.0 {
+            caption(
+                p.with_clip_rect(filled_rect),
+                caption_on_fill(fill_color, t.bg_panel, t.text_primary),
+            );
+        }
     }
 }
 
@@ -925,6 +977,81 @@ fn operations_panel_hint() -> String {
     )
 }
 
+/// The phase row as one sentence for assistive tech ("Phase 3 of 5: Transfer").
+fn phase_progress_text(phase: crate::operation_view::OperationPhase) -> String {
+    let total = crate::operation_view::OperationPhase::ALL.len();
+    format!(
+        "Phase {} of {total}: {}",
+        phase.ordinal() + 1,
+        phase.label()
+    )
+}
+
+/// What a delta copy saved, in words rather than the backend's terms.
+fn delta_text(reused: u64, source: u64) -> String {
+    format!(
+        "Reused {} of {} from the existing file",
+        format_size(reused),
+        format_size(source)
+    )
+}
+
+/// The details view's rate; none once the transfer has finished.
+fn speed_text(speed: f64, finished: bool) -> Option<String> {
+    (!finished).then(|| format!("{}/s", format_size(speed as u64)))
+}
+
+/// Files that changed mid-copy and go back in the queue.
+fn requeued_text(count: usize) -> String {
+    format!(
+        "{} changed while copying and will be copied again",
+        plural(count, "file")
+    )
+}
+
+/// Caption color over a progress fill: white or `dark`, whichever contrasts
+/// more with `fill` as it shows over `base` (fills may be translucent).
+fn caption_on_fill(fill: Color32, base: Color32, dark: Color32) -> Color32 {
+    let alpha = f32::from(fill.a()) / 255.0;
+    // Color32 is premultiplied: blending over an opaque base adds the rest.
+    let shown = |fill: u8, base: u8| f32::from(fill) + f32::from(base) * (1.0 - alpha);
+    let luminance = |rgb: [f32; 3]| {
+        let lin = |c: f32| {
+            let c = c / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
+    };
+    let contrast = |a: f32, b: f32| (a.max(b) + 0.05) / (a.min(b) + 0.05);
+    let under = luminance([
+        shown(fill.r(), base.r()),
+        shown(fill.g(), base.g()),
+        shown(fill.b(), base.b()),
+    ]);
+    let white = luminance([255.0; 3]);
+    let dark_luminance = luminance([
+        f32::from(dark.r()),
+        f32::from(dark.g()),
+        f32::from(dark.b()),
+    ]);
+    if contrast(white, under) >= contrast(dark_luminance, under) {
+        Color32::WHITE
+    } else {
+        dark
+    }
+}
+
+/// One row of the details view's error list.
+#[derive(Debug, PartialEq)]
+struct ErrorRow {
+    text: String,
+    path: Option<std::path::PathBuf>,
+}
+
 /// Newest transfer errors shown in the details view. Older ones stay in the
 /// report; cloning and laying out thousands of rows each frame stalls the UI.
 const DETAIL_ERROR_ROWS: usize = 200;
@@ -935,25 +1062,30 @@ const DETAIL_ERROR_ROWS: usize = 200;
 /// wrong rows. Each failure is recorded right after its own error as
 /// "<context>: <message>", so pair them by that suffix, walking back from the
 /// newest entries. Matching from the end means the tails of both lists give
-/// the same rows as the full lists.
+/// the same rows as the full lists. A row keeps its failure's path, so the
+/// details view can link to the file.
 fn labeled_error_rows(
     errors: &[String],
     failures: &[crate::operation::ClassifiedFailure],
-) -> Vec<String> {
+) -> Vec<ErrorRow> {
     let mut pending = failures.iter().rev().peekable();
-    let mut rows: Vec<String> = errors
+    let mut rows: Vec<ErrorRow> = errors
         .iter()
         .rev()
         .map(|err| {
-            let class = pending
-                .next_if(|failure| {
-                    err.strip_suffix(failure.message.as_str())
-                        .is_some_and(|head| head.ends_with(": "))
-                })
-                .map(|failure| failure.class);
-            match class {
-                Some(class) => format!("{}: {err}", class.label()),
-                None => err.clone(),
+            let failure = pending.next_if(|failure| {
+                err.strip_suffix(failure.message.as_str())
+                    .is_some_and(|head| head.ends_with(": "))
+            });
+            match failure {
+                Some(failure) => ErrorRow {
+                    text: format!("{}: {err}", failure.class.label()),
+                    path: failure.path.clone(),
+                },
+                None => ErrorRow {
+                    text: err.clone(),
+                    path: None,
+                },
             }
         })
         .collect();
@@ -986,9 +1118,10 @@ fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackgroundTransfer, TransferLine, background_transfer_text, graph_speeds,
-        labeled_error_rows, operations_panel_hint, review_text, right_aligned_in_reading_order,
-        strip_bar, transfer_status_text,
+        BackgroundTransfer, TransferLine, background_transfer_text, caption_on_fill, delta_text,
+        graph_speeds, labeled_error_rows, operations_panel_hint, phase_progress_text,
+        requeued_text, review_text, right_aligned_in_reading_order, speed_text, strip_bar,
+        transfer_status_text,
     };
     use crate::operation::{ClassifiedFailure, FailureClass};
 
@@ -1009,7 +1142,10 @@ mod tests {
                 "permission denied".to_string(),
             ),
         ];
-        let rows = labeled_error_rows(&errors, &failures);
+        let rows: Vec<String> = labeled_error_rows(&errors, &failures)
+            .into_iter()
+            .map(|row| row.text)
+            .collect();
         assert_eq!(
             rows,
             vec![
@@ -1162,5 +1298,62 @@ mod tests {
             (rects[1].right() - right_edge).abs() < 1.0,
             "{rects:?} vs {right_edge}"
         );
+    }
+
+    #[test]
+    fn error_rows_keep_their_failure_path_for_reveal() {
+        let path = std::path::PathBuf::from("/data/b.txt");
+        let errors = vec![
+            "Failed to copy: a.txt".to_string(),
+            "b.txt: permission denied".to_string(),
+        ];
+        let failures = vec![ClassifiedFailure::message(
+            FailureClass::UserDecision,
+            Some(path.clone()),
+            "permission denied".to_string(),
+        )];
+        let rows = labeled_error_rows(&errors, &failures);
+        assert_eq!(rows[0].path, None);
+        assert_eq!(rows[1].path, Some(path));
+    }
+
+    #[test]
+    fn details_text_is_plain_and_counted() {
+        use crate::operation_view::OperationPhase;
+        assert_eq!(
+            phase_progress_text(OperationPhase::Transfer),
+            "Phase 3 of 5: Transfer"
+        );
+        assert_eq!(
+            phase_progress_text(OperationPhase::Scan),
+            "Phase 1 of 5: Scan"
+        );
+        assert_eq!(
+            requeued_text(1),
+            "1 file changed while copying and will be copied again"
+        );
+        assert_eq!(
+            requeued_text(3),
+            "3 files changed while copying and will be copied again"
+        );
+        assert!(delta_text(40, 120).starts_with("Reused "));
+        assert!(delta_text(40, 120).ends_with(" from the existing file"));
+        assert!(speed_text(1024.0, false).is_some());
+        assert_eq!(speed_text(0.0, true), None);
+    }
+
+    #[test]
+    fn bar_caption_contrasts_with_the_accent_fill() {
+        let dark_text = egui::Color32::from_rgb(46, 42, 38);
+        let light_bg = egui::Color32::from_rgb(253, 252, 249);
+        // The light theme's accent: dark text there reads at about 2.4:1.
+        let accent = egui::Color32::from_rgb(22, 102, 170);
+        assert_eq!(
+            caption_on_fill(accent, light_bg, dark_text),
+            egui::Color32::WHITE
+        );
+        // A pale fill keeps the dark caption.
+        let pale = egui::Color32::from_rgb(230, 236, 245);
+        assert_eq!(caption_on_fill(pale, light_bg, dark_text), dark_text);
     }
 }
