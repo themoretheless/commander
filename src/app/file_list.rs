@@ -393,7 +393,6 @@ fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<
     }
 }
 
-/// A name cut to the footer's fixed budget, keeping its extension.
 /// The footer's filter note: the facet count, or "Filter text" when only
 /// the search query filters the list.
 fn filter_footer(active_facets: usize) -> String {
@@ -414,6 +413,7 @@ fn selection_footer(selected: usize, visible: usize, size: &str) -> String {
     }
 }
 
+/// A name cut to the footer's fixed budget, keeping its extension.
 fn footer_name(name: &str) -> std::borrow::Cow<'_, str> {
     crate::display_name::truncate_preserving_extension(name, 16)
 }
