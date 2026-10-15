@@ -258,6 +258,7 @@ impl App {
         compare: Option<&crate::compare::CompareMap>,
         opener: &dyn Fn(crate::ports::OpenRequest),
         dragging: bool,
+        dragged: &[std::path::PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
     ) -> PanelRenderOutcome {
@@ -810,6 +811,7 @@ impl App {
                         compare,
                         opener,
                         dragging,
+                        dragged,
                         metrics,
                         reduced_motion,
                     );
