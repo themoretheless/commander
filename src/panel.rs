@@ -4969,4 +4969,24 @@ mod tests {
         assert_eq!(kept, [key(1).path, key(2).path, key(3).path]);
         assert!(merged.capacity() <= hash_map_capacity_upper_bound(4));
     }
+
+    #[test]
+    fn tree_subdirs_show_dot_folders_on_request_and_nothing_for_a_missing_path() {
+        let temp = TempDir::new();
+        let hidden = temp.dir(".hidden");
+        let visible = temp.dir("visible");
+        temp.file(".dotfile", "");
+
+        assert_eq!(
+            PanelState::subdirs(temp.path(), false),
+            vec![visible.clone()]
+        );
+        assert_eq!(
+            PanelState::subdirs(temp.path(), true),
+            vec![hidden, visible]
+        );
+        assert!(PanelState::subdirs(&temp.path().join("missing"), true).is_empty());
+        let file = temp.file("plain.txt", "x");
+        assert!(PanelState::subdirs(&file, true).is_empty());
+    }
 }
