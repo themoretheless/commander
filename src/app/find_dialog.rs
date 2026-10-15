@@ -223,7 +223,6 @@ impl App {
                             .iter()
                             .map(|hit| hit.identity.clone())
                             .collect();
-                        state.searching = false;
                         state.scanned = summary.scanned;
                         state.matched = summary.matched;
                         state.elapsed = summary.elapsed;
@@ -242,8 +241,7 @@ impl App {
                     _ => {}
                 }
             }
-            if disconnected && state.searching {
-                state.searching = false;
+            if disconnected && state.searching() {
                 state.run = None;
                 state.error = Some("Search worker stopped before completion".to_string());
             }
@@ -357,7 +355,6 @@ impl App {
             state.results.clear();
             state.stable_order = previous;
             state.last_query = Some(query_key);
-            state.searching = true;
             state.ran = true;
             state.scanned = 0;
             state.matched = 0;
@@ -374,7 +371,6 @@ impl App {
         self.search_engine.cancel();
         if let Some(state) = self.ui.modals.find.as_mut() {
             state.run = None;
-            state.searching = false;
             state.pending_rerun = true;
             state.last_edit_at = ctx.input(|input| input.time);
             state.error = None;
@@ -572,7 +568,7 @@ impl App {
                                 .add(super::dialog_button(
                                     t,
                                     super::ButtonRole::Primary,
-                                    egui::RichText::new(if state.searching {
+                                    egui::RichText::new(if state.searching() {
                                         "Restart"
                                     } else {
                                         "Search"
@@ -779,7 +775,7 @@ impl App {
 
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        let status = if state.searching {
+                        let status = if state.searching() {
                             format!(
                                 "{}  |  Scanning {} items  |  {} matches",
                                 state.search_source,
@@ -939,7 +935,7 @@ impl App {
                         });
 
                     if state.ran
-                        && !state.searching
+                        && !state.searching()
                         && state.results.is_empty()
                         && state.error.is_none()
                     {

@@ -1031,7 +1031,7 @@ impl App {
                 .modals
                 .find
                 .as_ref()
-                .is_none_or(|state| !state.searching);
+                .is_none_or(|state| !state.searching());
         if !index_idle {
             crate::io_budget::note_foreground_activity();
         }
