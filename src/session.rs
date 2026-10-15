@@ -199,11 +199,17 @@ impl Session {
     }
 }
 
-/// `path` itself or its nearest ancestor that `is_dir` accepts. The bare
-/// filesystem root does not count: a panel restored there is rarely what the
-/// user wants, so the caller falls back to home instead.
+/// `path` itself or its nearest ancestor that `is_dir` accepts. A saved path
+/// that still exists is always kept, even a drive or filesystem root. Only as
+/// an *ancestor* does the bare root not count: a deleted folder restored to
+/// `/` or `C:\` is rarely what the user wants, so the caller falls back to
+/// home instead.
 fn nearest_surviving_dir(path: &Path, is_dir: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    if is_dir(path) {
+        return Some(path.to_path_buf());
+    }
     path.ancestors()
+        .skip(1)
         .filter(|ancestor| ancestor.parent().is_some())
         .find(|ancestor| is_dir(ancestor))
         .map(Path::to_path_buf)
@@ -451,6 +457,23 @@ mod tests {
         let (l, r) = s.sanitized_paths(home.path());
         assert_eq!(l, projects);
         assert_eq!(r, projects);
+    }
+
+    #[test]
+    fn nearest_surviving_dir_keeps_a_saved_root_but_skips_root_ancestors() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_path_buf();
+        assert_eq!(nearest_surviving_dir(&root, |_| true), Some(root.clone()));
+        let gone = root.join("no-such-dir-xyz");
+        let only_root = {
+            let root = root.clone();
+            move |p: &Path| p == root
+        };
+        assert_eq!(nearest_surviving_dir(&gone, only_root), None);
     }
 
     #[test]
