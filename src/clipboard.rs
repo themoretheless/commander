@@ -38,6 +38,7 @@ pub const fn style_label(style: PathStyle) -> &'static str {
 /// folder yield that folder once.
 pub fn format(paths: &[PathBuf], style: PathStyle, other_root: Option<&Path>) -> String {
     let mut lines: Vec<String> = Vec::with_capacity(paths.len());
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for p in paths {
         let line = format_one(p, style, other_root);
         let line = match style {
@@ -45,7 +46,7 @@ pub fn format(paths: &[PathBuf], style: PathStyle, other_root: Option<&Path>) ->
             PathStyle::ShellEscaped | PathStyle::FileUrl => line,
             _ => one_line(line),
         };
-        if style == PathStyle::ParentPath && lines.contains(&line) {
+        if style == PathStyle::ParentPath && !seen.insert(line.clone()) {
             continue;
         }
         lines.push(line);
