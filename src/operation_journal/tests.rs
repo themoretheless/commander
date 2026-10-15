@@ -2409,3 +2409,48 @@ fn restart_reports_a_destination_taken_while_placement_was_prepared() {
     assert_eq!(std::fs::read_to_string(&staging).unwrap(), "new bytes");
     assert_eq!(std::fs::read_to_string(&destination).unwrap(), "foreign");
 }
+
+#[test]
+fn resume_without_file_ids_accepts_an_appended_prefix_tail_but_proves_its_bytes() {
+    let temp = TempDir::new();
+    let source = temp.file("source.txt", "source contents");
+    let destination = temp.path().join("destination.txt");
+    let staging = temp.file(".destination.cmdr-tmp.0", "source");
+    let offset = staging.metadata().unwrap().len();
+    let mut partial = PathIdentity::observe_deep(&staging).unwrap();
+    // Platforms without stable file ids record none.
+    partial.volume = None;
+    partial.file_id = None;
+    let mut record = incomplete_record(&source, &destination, StepStatus::Running);
+    record.steps[0].staging = Some(staging.clone());
+    record.steps[0].checkpoint = Some(ResumeCheckpoint {
+        staging: staging.clone(),
+        offset,
+        source: PathIdentity::observe_deep(&source).unwrap(),
+        partial,
+        layout: crate::transfer::CheckpointLayout::Prefix,
+        content_digest: Some(crate::transfer::prefix_digest(&staging, offset).unwrap()),
+    });
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&staging)
+        .unwrap()
+        .write_all(b" contents written after the checkpoint")
+        .unwrap();
+
+    let spec = build_resume_spec_from(record.clone()).unwrap();
+    assert_eq!(
+        spec.expectations[0]
+            .resume
+            .as_ref()
+            .map(|checkpoint| checkpoint.offset),
+        Some(offset)
+    );
+
+    let mut tampered = std::fs::read(&staging).unwrap();
+    tampered[0] = b'x';
+    std::fs::write(&staging, tampered).unwrap();
+    let error = build_resume_spec_from(record).err().unwrap();
+    assert!(error.contains("bytes changed"), "{error}");
+}

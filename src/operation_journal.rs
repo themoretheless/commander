@@ -2248,18 +2248,21 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
     }
     let partial = PathIdentity::observe_deep(staging)
         .map_err(|error| format!("Could not verify checkpoint staging: {error}"))?;
-    let same_object = match (
-        checkpoint.partial.volume.zip(checkpoint.partial.file_id),
-        partial.volume.zip(partial.file_id),
-    ) {
-        (Some(expected), Some(current)) => {
-            checkpoint.partial.exists
-                && partial.exists
-                && checkpoint.partial.kind == partial.kind
-                && expected == current
-        }
-        _ => checkpoint.partial.same_version(&partial),
-    };
+    let ids_known = checkpoint
+        .partial
+        .volume
+        .zip(checkpoint.partial.file_id)
+        .is_some()
+        && partial.volume.zip(partial.file_id).is_some();
+    // Without file ids (Windows) a prefix staging cannot be followed by
+    // identity, and the tail written after the last checkpoint changes its
+    // size and mtime. The prefix digests below prove the resumed bytes.
+    let same_object =
+        if !ids_known && checkpoint.layout == crate::transfer::CheckpointLayout::Prefix {
+            checkpoint.partial.exists && partial.exists && checkpoint.partial.kind == partial.kind
+        } else {
+            checkpoint.partial.same_object(&partial)
+        };
     if !same_object
         || partial.kind != Some(crate::path_identity::PathKind::File)
         || !checkpoint.size_fits(&partial)
