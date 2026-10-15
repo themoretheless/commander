@@ -5323,3 +5323,148 @@ fn hard_linking_a_folder_is_refused_with_an_error_toast() {
         }]
     );
 }
+
+#[test]
+fn treemap_orders_by_size_using_measured_folder_sizes() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("one.bin", "1");
+    l.file("five.bin", "12345");
+    l.file("three.bin", "123");
+    let folder = l.dir("box");
+    l.file("box/ten.bin", "1234567890");
+    let ws = workspace(&l, &r);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.size_snapshot().size_of(&folder).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "folder never measured"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let snapshot = ws.treemap_snapshot();
+
+    let items = snapshot
+        .items
+        .iter()
+        .map(|(entry, bytes)| (entry.name.as_str(), *bytes))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        items,
+        vec![
+            ("box", 10),
+            ("five.bin", 5),
+            ("three.bin", 3),
+            ("one.bin", 1)
+        ]
+    );
+}
+
+#[test]
+fn applying_a_profile_restores_both_folders_filters_and_policies() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let left_saved = l.dir("photos");
+    let right_saved = r.dir("backup");
+    let mut ws = workspace(&l, &r);
+    let mut profile = crate::workspace_profile::WorkspaceProfile::new(
+        "default",
+        left_saved.clone(),
+        right_saved.clone(),
+    );
+    profile.left_filter = "jpg".to_string();
+    profile.right_filter = "raw".to_string();
+    profile.durability = crate::operation::DurabilityProfile::Versioned;
+    profile.name_policy.collision = crate::filesystem_policy::CollisionPolicy::KeepBoth;
+    profile.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Follow;
+    ws.drain_ui_requests();
+
+    ws.apply_profile(&profile);
+
+    assert_eq!(ws.left.current_path, left_saved);
+    assert_eq!(ws.right.current_path, right_saved);
+    assert_eq!(ws.left.search_query(), "jpg");
+    assert_eq!(ws.right.search_query(), "raw");
+    assert_eq!(
+        ws.durability_profile,
+        crate::operation::DurabilityProfile::Versioned
+    );
+    assert_eq!(ws.name_policy, profile.name_policy);
+    assert_eq!(
+        ws.symlink_policy,
+        crate::filesystem_policy::SymlinkPolicy::Follow
+    );
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Applied workspace profile \"default\"".to_string(),
+            error: false,
+        }]
+    );
+
+    // Policies are not tied to a folder: a missing root still applies them.
+    let mut gone = profile.clone();
+    gone.left_root = l.path().join("removed");
+    gone.right_root = r.path().join("removed");
+    gone.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Skip;
+    ws.apply_profile(&gone);
+    assert_eq!(ws.left.current_path, left_saved);
+    assert_eq!(ws.right.current_path, right_saved);
+    assert_eq!(
+        ws.symlink_policy,
+        crate::filesystem_policy::SymlinkPolicy::Skip
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn find_duplicates_does_not_pair_a_symlink_with_its_target() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let original = l.file("original.bin", "same bytes");
+    let copy = l.file("copy.bin", "same bytes");
+    std::os::unix::fs::symlink(&original, l.path().join("alias.bin")).unwrap();
+    let ws = workspace(&l, &r);
+
+    let groups = ws.find_duplicates();
+
+    assert_eq!(groups.len(), 1, "{groups:?}");
+    let mut paths = groups[0]
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    paths.sort();
+    assert_eq!(paths, vec![copy, original], "the link is not a duplicate");
+}
+
+#[test]
+fn undo_of_a_cross_folder_move_is_refused_instead_of_misplacing_items() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let one = l.dir("one");
+    let two = l.dir("two");
+    l.file("one/x.txt", "x");
+    l.file("two/y.txt", "y");
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(one.clone());
+    ws.left.select_path(one.join("x.txt"));
+    ws.left.navigate_to(two.clone());
+    ws.left.select_path(two.join("y.txt"));
+
+    ws.request_move();
+    wait_transfer(&mut ws);
+    assert!(r.path().join("x.txt").is_file() && r.path().join("y.txt").is_file());
+    assert!(matches!(
+        ws.top_undo_action(),
+        Some(crate::undo::Action::Move { .. })
+    ));
+
+    // One undo transfer cannot return items to two different folders.
+    let error = ws.perform_undo(|| {}).unwrap_err();
+    assert!(
+        error.contains("Items came from different folders"),
+        "{error}"
+    );
+    drain_transfers(&mut ws);
+    assert!(r.path().join("x.txt").is_file() && r.path().join("y.txt").is_file());
+    assert!(!one.join("x.txt").exists() && !two.join("y.txt").exists());
+    assert!(ws.safe_state.is_none(), "a refused undo changes nothing");
+}
