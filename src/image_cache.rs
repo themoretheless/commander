@@ -592,9 +592,27 @@ fn decode_text_bytes(mut bytes: Vec<u8>) -> Result<Arc<str>, PreviewError> {
     if !bytes.is_empty() && controls.saturating_mul(20) > bytes.len() {
         return Err(PreviewError::Binary);
     }
-    String::from_utf8(bytes)
-        .map(Arc::from)
-        .map_err(|_| PreviewError::InvalidUtf8)
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Arc::from(text)),
+        // A stray Latin-1/CP1252 byte in otherwise UTF-8 text (a pasted
+        // "café") shows as U+FFFD instead of rejecting the whole preview.
+        Err(error) if mostly_utf8(error.as_bytes()) => {
+            Ok(Arc::from(String::from_utf8_lossy(error.as_bytes())))
+        }
+        Err(_) => Err(PreviewError::InvalidUtf8),
+    }
+}
+
+/// At most one invalid UTF-8 sequence per `MIN_BYTES_PER_INVALID_SEQUENCE`
+/// bytes: few enough that the replacement characters stay incidental. A
+/// file in a legacy encoding throughout still fails as `InvalidUtf8`.
+fn mostly_utf8(bytes: &[u8]) -> bool {
+    const MIN_BYTES_PER_INVALID_SEQUENCE: usize = 200;
+    let invalid = bytes
+        .utf8_chunks()
+        .filter(|chunk| !chunk.invalid().is_empty())
+        .count();
+    invalid.saturating_mul(MIN_BYTES_PER_INVALID_SEQUENCE) <= bytes.len()
 }
 
 trait TextPreviewTaskHandle {
@@ -1306,7 +1324,9 @@ impl ImageCache {
                         .to_string();
                     let texture = ctx.load_texture(&name, decoded.image, TextureOptions::LINEAR);
                     self.total_bytes = self.total_bytes.saturating_add(decoded.byte_size);
-                    self.entries.insert(
+                    // A sharper re-decode replaces the smaller texture that
+                    // stayed on screen while it loaded.
+                    if let Some(replaced) = self.entries.insert(
                         path,
                         CacheEntry {
                             texture,
@@ -1314,7 +1334,9 @@ impl ImageCache {
                             last_used: self.frame,
                             decoded_for: decoded.decoded_for,
                         },
-                    );
+                    ) {
+                        self.total_bytes = self.total_bytes.saturating_sub(replaced.byte_size);
+                    }
                 }
             }
         }
@@ -1337,9 +1359,9 @@ impl ImageCache {
                 }
                 continue;
             }
-            if let Some(entry) = self.entries.remove(path) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-            }
+            // A cached texture smaller than the pane (it just grew) stays
+            // until the sharper decode publishes, so the preview never blanks
+            // while it loads or while every worker slot is busy.
             if available_slots == 0 || failed.contains_key(path) {
                 continue;
             }
@@ -2072,6 +2094,11 @@ unsafe fn nsstring_lossy(string: *mut objc::runtime::Object) -> String {
 /// unsupported format, not a damaged file.
 const AVFOUNDATION_UNSUPPORTED: &[&str] = &["mkv", "webm", "wmv", "flv"];
 
+/// Video thumbnail frame times, in order of preference: 1 s skips black
+/// lead-in frames, 0 s covers clips shorter than that.
+#[cfg(target_os = "macos")]
+const VIDEO_THUMBNAIL_SECONDS: [i64; 2] = [1, 0];
+
 /// `AVErrorFileFormatNotRecognized` and `AVErrorDecoderNotFound`.
 const AV_UNSUPPORTED_CODES: &[i64] = &[-11828, -11833];
 
@@ -2157,8 +2184,9 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         };
         let _: () = msg_send![generator, setMaximumSize: maximum_size];
 
-        // CMTime for 1 second (or 0 if short video)
-        // CMTimeMake(1, 1) = 1 second
+        // Grab the frame at 1 s, past black lead-in frames. A clip shorter
+        // than that can yield no image there, so fall back to the first
+        // frame before reporting a failure.
         #[repr(C)]
         #[derive(Copy, Clone)]
         struct CMTime {
@@ -2167,14 +2195,13 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
             flags: u32,
             epoch: i64,
         }
-        let time = CMTime {
-            value: 1,
+        let at_seconds = |value: i64| CMTime {
+            value,
             timescale: 1,
+            // kCMTimeFlags_Valid
             flags: 1,
             epoch: 0,
         };
-
-        // copyCGImageAtTime:actualTime:error:
         let mut actual_time = CMTime {
             value: 0,
             timescale: 0,
@@ -2182,11 +2209,19 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
             epoch: 0,
         };
         let mut error: *mut Object = std::ptr::null_mut();
-        let cg_image: *mut Object = msg_send![generator,
-            copyCGImageAtTime: time
-            actualTime: &mut actual_time as *mut CMTime
-            error: &mut error as *mut *mut Object
-        ];
+        let mut cg_image: *mut Object = std::ptr::null_mut();
+        for seconds in VIDEO_THUMBNAIL_SECONDS {
+            // copyCGImageAtTime:actualTime:error:
+            error = std::ptr::null_mut();
+            cg_image = msg_send![generator,
+                copyCGImageAtTime: at_seconds(seconds)
+                actualTime: &mut actual_time as *mut CMTime
+                error: &mut error as *mut *mut Object
+            ];
+            if !cg_image.is_null() || has_extension_in(path, AVFOUNDATION_UNSUPPORTED) {
+                break;
+            }
+        }
 
         let _: () = msg_send![generator, release];
 
@@ -2816,6 +2851,65 @@ mod tests {
     }
 
     #[test]
+    fn growing_the_pane_keeps_the_smaller_texture_until_the_redecode_lands() {
+        let ctx = egui::Context::default();
+        let mut cache = ImageCache::new();
+        let dir = PathBuf::from("/preview-dir");
+        let path = dir.join("photo.png");
+        cache.current_dir = Some(dir.clone());
+        let small = PreviewTarget {
+            width: 10,
+            height: 10,
+        };
+        cache.entries.insert(
+            path.clone(),
+            super::CacheEntry {
+                texture: ctx.load_texture(
+                    "small",
+                    egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                    egui::TextureOptions::LINEAR,
+                ),
+                byte_size: 4,
+                last_used: 0,
+                decoded_for: small,
+            },
+        );
+        cache.total_bytes = 4;
+        // The re-decode is already in flight, so preload starts no worker.
+        let generation = cache.generation.load(Ordering::Acquire);
+        crate::lock_util::recover(&cache.pending).insert(
+            path.clone(),
+            super::PendingLoad {
+                generation,
+                decoded: None,
+            },
+        );
+        cache.set_preview_extent(400.0, 300.0, 1.0);
+
+        cache.preload(&ctx, std::slice::from_ref(&path), &dir);
+
+        assert!(
+            cache.get(&path).is_some(),
+            "preview blanked while re-decoding"
+        );
+        assert_eq!(cache.total_bytes, 4);
+
+        let sharp = cache.preview_target;
+        crate::lock_util::recover(&cache.pending)
+            .get_mut(&path)
+            .unwrap()
+            .decoded = Some(super::DecodedPreview {
+            image: egui::ColorImage::filled([2, 2], egui::Color32::WHITE),
+            byte_size: 16,
+            decoded_for: sharp,
+        });
+        cache.preload(&ctx, std::slice::from_ref(&path), &dir);
+
+        assert_eq!(cache.entries[&path].decoded_for, sharp);
+        assert_eq!(cache.total_bytes, 16, "replaced texture bytes not released");
+    }
+
+    #[test]
     fn retry_clears_negative_and_pending_cache_entries() {
         let mut cache = ImageCache::new();
         let path = std::path::PathBuf::from("broken.png");
@@ -3136,6 +3230,16 @@ mod tests {
         );
         assert_eq!(
             decode_text_bytes(vec![0xff]),
+            Err(PreviewError::InvalidUtf8)
+        );
+        // One stray CP1252 byte in a page of UTF-8 text still previews.
+        let mut stray = "line of plain text\n".repeat(20).into_bytes();
+        stray.extend_from_slice(b"caf\xe9\n");
+        let text = decode_text_bytes(stray).unwrap();
+        assert!(text.ends_with("caf\u{fffd}\n"));
+        // A file in a legacy encoding throughout is still rejected.
+        assert_eq!(
+            decode_text_bytes(b"caf\xe9 cr\xe8me br\xfbl\xe9e".repeat(20)),
             Err(PreviewError::InvalidUtf8)
         );
     }
