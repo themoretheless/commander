@@ -843,6 +843,9 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     attempt_started.elapsed(),
                     result.is_ok(),
                 );
+                // Whether the stage itself failed, before the commit checks
+                // below can reject a stage that completed in full.
+                let stage_failed = result.is_err();
                 let tuning = crate::transfer_tuning::snapshot(&target_profile);
                 {
                     let mut state = crate::lock_util::recover(&progress);
@@ -917,6 +920,17 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                             })
                             .flatten();
                         let resumable_partial = checkpoint.is_some();
+                        // A failed directory stage is kept (see below); name
+                        // the hidden tree so the partial copy can be found.
+                        let kept_partial = if stage_failed
+                            && !renamed
+                            && entry.is_dir
+                            && fs_util::path_is_taken(&copy_target)
+                        {
+                            format!("; partial copy kept at {}", copy_target.display())
+                        } else {
+                            String::new()
+                        };
                         if crate::lock_util::recover(&progress).cancelled {
                             // For a rename this is a no-op (a failed rename never
                             // created `copy_target`); for a copy it drops the
@@ -992,28 +1006,20 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                     &entry.name,
                                     ClassifiedFailure::io(
                                         Some(entry.path.clone()),
-                                        "mount reconnect failed",
+                                        &format!("mount reconnect failed{kept_partial}"),
                                         &wait_error,
                                     ),
                                 ),
                             }
                         } else {
-                            // A failed directory stage is kept (see below); name
-                            // the hidden tree so the partial copy can be found.
-                            let context =
-                                if !renamed && entry.is_dir && fs_util::path_is_taken(&copy_target)
-                                {
-                                    format!(
-                                        "copy failed; partial copy kept at {}",
-                                        copy_target.display()
-                                    )
-                                } else {
-                                    "copy failed".to_string()
-                                };
                             record_failure(
                                 &progress,
                                 &entry.name,
-                                ClassifiedFailure::io(Some(entry.path.clone()), &context, e),
+                                ClassifiedFailure::io(
+                                    Some(entry.path.clone()),
+                                    &format!("copy failed{kept_partial}"),
+                                    e,
+                                ),
                             );
                         }
                         crate::volume_profile::invalidate(target_profile.volume_id);
@@ -1129,9 +1135,10 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 // successfully copied siblings under the staging root. Wiping
                 // that whole tree would discard recoverable work; leave it in
                 // place and report the failure instead. A stage that completed
-                // but was rejected afterwards (destination or source changed)
-                // is a full duplicate of the source and is removed.
-                let preserve_partial_dir = result.is_err()
+                // but was rejected afterwards (destination or source changed,
+                // artifact changed, no durability receipt) is a full duplicate
+                // of the source and is removed.
+                let preserve_partial_dir = stage_failed
                     && !renamed
                     && entry.is_dir
                     && fs_util::path_is_taken(&copy_target);
@@ -2513,6 +2520,102 @@ mod tests {
             "{:?}",
             state.errors
         );
+    }
+
+    #[test]
+    fn failed_dir_stage_kept_after_a_lost_mount_names_its_hidden_path() {
+        use std::sync::atomic::AtomicBool;
+
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let dir = source.dir("folder");
+        source.file("folder/good.txt", "kept sibling");
+        let mut request = spec(TransferKind::Copy, vec![entry_for(&dir)], target.path());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let wait_dropped = Arc::clone(&dropped);
+        request.mount_wait_override = Some(Arc::new(move || {
+            if wait_dropped.load(Ordering::SeqCst) {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "fixture share never came back",
+                ))
+            } else {
+                Ok(())
+            }
+        }));
+
+        let state = run_with_backends(
+            request,
+            scripted(move |request| {
+                std::fs::create_dir(request.staging)?;
+                std::fs::write(request.staging.join("good.txt"), "kept sibling")?;
+                dropped.store(true, Ordering::SeqCst);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "fixture share dropped",
+                ))
+            }),
+        );
+
+        let staging = target.path().join(".folder.cmdr-tmp.0");
+        assert_eq!(
+            std::fs::read_to_string(staging.join("good.txt")).unwrap(),
+            "kept sibling"
+        );
+        let kept = format!(
+            "mount reconnect failed; partial copy kept at {}",
+            staging.display()
+        );
+        assert!(
+            state.errors.iter().any(|error| error.contains(&kept)),
+            "{:?}",
+            state.errors
+        );
+    }
+
+    #[test]
+    fn complete_dir_stage_without_a_durability_receipt_is_removed() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let dir = source.dir("folder");
+        source.file("folder/a.txt", "a");
+        let mut request = spec(TransferKind::Copy, vec![entry_for(&dir)], target.path());
+        request.durability = DurabilityProfile::Verified;
+
+        let state = run_with_backends(
+            request,
+            scripted(|request| {
+                std::fs::create_dir(request.staging)?;
+                std::fs::write(request.staging.join("a.txt"), "a")?;
+                request.progress.complete_file(request.base_bytes, 1);
+                backend::receipt(
+                    request.staging,
+                    1,
+                    crate::transfer_tuning::FastPath::Buffered,
+                    DurabilityProfile::Fast,
+                )
+            }),
+        );
+
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("no durability receipt")),
+            "{:?}",
+            state.errors
+        );
+        assert!(
+            !state
+                .errors
+                .iter()
+                .any(|error| error.contains("partial copy kept")),
+            "{:?}",
+            state.errors
+        );
+        assert!(
+            hidden_entries(target.path()).is_empty(),
+            "a complete staged duplicate must not be left behind"
+        );
+        assert!(!target.path().join("folder").exists());
     }
 
     #[test]
