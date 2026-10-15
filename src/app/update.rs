@@ -2095,6 +2095,7 @@ impl App {
             dragged,
             metrics,
             self.accessibility_preferences.reduced_motion,
+            self.ws.nav_lock,
         )
     }
 

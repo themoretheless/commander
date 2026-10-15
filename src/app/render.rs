@@ -419,6 +419,36 @@ fn path_bar_button(
     (rect, response)
 }
 
+/// What the nav-lock badge announces, so a pane that moves on its own has a
+/// visible reason for as long as the lock lasts (the toast fades in seconds).
+const NAV_LOCK_BADGE_LABEL: &str =
+    "Navigation lock on: Enter and Go Up in either pane move both panes";
+
+/// A small, non-interactive "Nav lock" chip drawn in each path bar while the
+/// navigation lock is on.
+fn nav_lock_badge(ui: &mut egui::Ui, t: &ThemeColors) {
+    let response = Frame::NONE
+        .fill(Color32::TRANSPARENT)
+        .corner_radius(CornerRadius::ZERO)
+        .stroke(Stroke::new(1.0_f32, t.accent))
+        .inner_margin(Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new("Nav lock").size(11.0).color(t.accent));
+        })
+        .response
+        .interact(Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Label,
+            ui.is_enabled(),
+            NAV_LOCK_BADGE_LABEL,
+        )
+    });
+    response.on_hover_text(format!(
+        "{NAV_LOCK_BADGE_LABEL}.\nTurn it off with \"Toggle navigation lock\" in the command palette."
+    ));
+}
+
 /// Name a pane's region for assistive tech, so moving focus into a pane
 /// announces which one it is and whether it is active.
 fn mark_pane_region(ui: &egui::Ui, panel_side: &str, is_active: bool) {
@@ -652,6 +682,7 @@ impl App {
         dragged: &[std::path::PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
+        nav_locked: bool,
     ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
@@ -773,6 +804,11 @@ impl App {
                             }
                             if tree_resp.clicked() {
                                 tree_toggle = true;
+                            }
+
+                            if nav_locked {
+                                ui.add_space(6.0);
+                                nav_lock_badge(ui, t);
                             }
 
                             ui.add_space(6.0);
@@ -1451,6 +1487,30 @@ mod tests {
             stack.extend(node.children().iter().rev());
         }
         labels
+    }
+
+    #[test]
+    fn nav_lock_badge_announces_what_the_lock_does() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.horizontal(|ui| nav_lock_badge(ui, &crate::theme::ThemeColors::dark()));
+            }));
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output");
+        // egui announces a Label role's text as its value.
+        let values: Vec<String> = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.value().map(str::to_string))
+            .collect();
+        assert!(
+            values.iter().any(|value| value == NAV_LOCK_BADGE_LABEL),
+            "no nav-lock badge in {values:?}"
+        );
     }
 
     #[test]
