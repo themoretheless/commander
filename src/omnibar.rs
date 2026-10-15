@@ -56,7 +56,7 @@ fn is_relative_path(input: &str) -> bool {
 /// For relative Path-mode input, the absolute path it names from `base` (the
 /// active folder), with `.` and `..` resolved lexically like a shell `cd`;
 /// `None` for absolute or `~` input, which the path probe handles as typed.
-pub(crate) fn resolve_relative(input: &str, base: &std::path::Path) -> Option<String> {
+pub fn resolve_relative(input: &str, base: &std::path::Path) -> Option<String> {
     use std::path::Component;
     if !is_relative_path(input) {
         return None;
