@@ -45,12 +45,45 @@ where
     paths
 }
 
+/// Resolve launch arguments to folders: a folder opens as given, a file
+/// opens its containing folder (`commander ~/notes.txt`), and a missing path
+/// is dropped with a log warning instead of silently.
 pub fn sanitize_launch_paths(paths: LaunchPaths) -> LaunchPaths {
-    let accept = |path: PathBuf| absolutize(&path).filter(|path| path.is_dir());
+    let accept = |path: PathBuf| {
+        let resolved = launch_folder(&path, |p| p.is_dir(), |p| p.exists());
+        if resolved.is_none() {
+            log::warn!(
+                target: "commander::launch",
+                "Ignoring launch path that does not exist: {}",
+                path.display()
+            );
+        }
+        resolved
+    };
     LaunchPaths {
         left: paths.left.and_then(accept),
         right: paths.right.and_then(accept),
     }
+}
+
+/// The folder a launch argument opens: itself when `is_dir`, its parent when
+/// it `exists` as something else (a file), `None` when it is missing.
+fn launch_folder(
+    path: &Path,
+    is_dir: impl Fn(&Path) -> bool,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let absolute = absolutize(path)?;
+    if is_dir(&absolute) {
+        return Some(absolute);
+    }
+    if !exists(&absolute) {
+        return None;
+    }
+    absolute
+        .parent()
+        .filter(|parent| is_dir(parent))
+        .map(Path::to_path_buf)
 }
 
 /// Resolves a relative launch path (`.`, `..`, `sub/dir`) against the working
@@ -129,6 +162,18 @@ mod tests {
             parse_launch_args([OsStr::new("commander"), raw]).left,
             Some(PathBuf::from(raw))
         );
+    }
+
+    #[test]
+    fn file_arguments_open_their_folder_and_missing_ones_are_dropped() {
+        let root = crate::testutil::TempDir::new();
+        let file = root.file("notes.txt", "n");
+        let sanitized = sanitize_launch_paths(LaunchPaths {
+            left: Some(file),
+            right: Some(root.path().join("missing.txt")),
+        });
+        assert_eq!(sanitized.left.as_deref(), Some(root.path()));
+        assert_eq!(sanitized.right, None);
     }
 
     #[test]
