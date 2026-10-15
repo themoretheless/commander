@@ -267,6 +267,17 @@ impl TransferProgress {
         }
     }
 
+    /// Move `copied_bytes` to `copied` for work that moved no data (a skip,
+    /// a failure or a settled entry). Every speed sample shifts by the same
+    /// amount so the credited bytes never show up as throughput.
+    fn credit_without_throughput(&mut self, copied: u64) {
+        let credited = copied as f64 - self.copied_bytes as f64;
+        for (_, bytes) in &mut self.speed_samples {
+            *bytes += credited;
+        }
+        self.copied_bytes = copied;
+    }
+
     /// Record a sample if at least 500ms passed since the last one.
     pub fn maybe_sample(&mut self) {
         let now = self.started_at.elapsed().as_secs_f64();
@@ -702,8 +713,21 @@ fn wait_for_mount_probed(
                 state.pause_reason = None;
             }
             notify();
+            result
+        } else {
+            // The generic error says "while the operation was paused"; a
+            // volume found swapped before any wait is reported as just that.
+            result.map_err(|error| {
+                if error.kind() == std::io::ErrorKind::StaleNetworkFileHandle {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!("{label} changed: a different volume is mounted there"),
+                    )
+                } else {
+                    error
+                }
+            })
         }
-        result
     };
 
     match result {
@@ -828,21 +852,17 @@ fn record_step_failure(
     failure: ClassifiedFailure,
     journal_enabled: bool,
 ) {
-    if journal_enabled
-        && let Err(error) =
-            crate::operation_journal::mark_failed(operation_id, key, failure.clone())
-    {
-        record_failure(
-            progress,
-            entry_name,
-            ClassifiedFailure::message(
-                FailureClass::IntegrityUncertain,
-                failure.path.clone(),
-                format!("operation journal update failed: {error}"),
-            ),
-        );
-    }
+    let journal_error = if journal_enabled {
+        crate::operation_journal::mark_failed(operation_id, key, failure.clone()).err()
+    } else {
+        None
+    };
+    // The real cause first; a journal failure is secondary to it.
+    let path = failure.path.clone();
     record_failure(progress, entry_name, failure);
+    if let Some(error) = journal_error {
+        record_journal_error(progress, entry_name, path, error);
+    }
 }
 
 fn record_journal_error(
@@ -871,9 +891,9 @@ fn complete_without_copy(
     journal: Option<(&OperationId, &IdempotencyKey, bool)>,
     notify: &impl Fn(),
 ) {
-    *completed_bytes += size;
+    *completed_bytes = completed_bytes.saturating_add(size);
     let mut state = crate::lock_util::recover(progress);
-    state.copied_bytes = *completed_bytes;
+    state.credit_without_throughput(*completed_bytes);
     state.files_done += 1;
     drop(state);
     if let Some(failure) = failure {
@@ -2979,6 +2999,81 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn entries_completed_without_copying_add_no_throughput() {
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(20_000, 2)));
+        {
+            let mut state = progress.lock().unwrap();
+            state.speed_samples = vec![(0.0, 0.0), (4.0, 400.0)];
+            state.copied_bytes = 600;
+        }
+        let mut completed = 600;
+        complete_without_copy(
+            &progress,
+            &mut completed,
+            10_000,
+            "skipped",
+            None,
+            None,
+            &|| {},
+        );
+
+        let state = progress.lock().unwrap();
+        assert_eq!(completed, 10_600);
+        assert_eq!(state.copied_bytes, 10_600);
+        assert_eq!(state.files_done, 1);
+        // Still the 100 B/s actually copied, not a 5 KB/s spike.
+        assert!((state.speed_bps_at(6.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn step_failure_reports_its_cause_before_a_journal_failure() {
+        let temp = TempDir::new();
+        let _journal = crate::operation_journal::use_test_journal(temp.path().join("journal.json"));
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(0, 1)));
+        record_step_failure(
+            &progress,
+            &OperationId::new(),
+            &IdempotencyKey("unknown-step".to_string()),
+            "a.txt",
+            ClassifiedFailure::message(FailureClass::Blocked, None, "disk full".to_string()),
+            true,
+        );
+
+        let state = progress.lock().unwrap();
+        assert_eq!(state.errors.len(), 2, "{:?}", state.errors);
+        assert_eq!(state.errors[0], "a.txt: disk full");
+        assert!(
+            state.errors[1].contains("operation journal update failed"),
+            "{:?}",
+            state.errors
+        );
+        assert_eq!(state.failures[0].class, FailureClass::Blocked);
+    }
+
+    #[test]
+    fn a_volume_replaced_before_any_wait_is_not_reported_as_paused() {
+        let progress: TransferState = Arc::new(Mutex::new(TransferProgress::new(1, 1)));
+        let result = wait_for_mount_probed(
+            &hung_mount_guard(),
+            || crate::mount_guard::MountAvailability::Replaced,
+            "Destination volume",
+            &progress,
+            &crate::workload::CancellationToken::new(),
+            None,
+            &|| {},
+        );
+
+        let Err(MountWaitError::Unavailable(error)) = result else {
+            panic!("a replaced volume must fail the wait");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::StaleNetworkFileHandle);
+        let message = error.to_string();
+        assert!(message.contains("Destination volume"), "{message}");
+        assert!(!message.contains("paused"), "{message}");
+        assert!(crate::lock_util::recover(&progress).pause_reason.is_none());
     }
 
     #[test]
