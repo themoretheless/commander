@@ -439,17 +439,21 @@ fn undo_recorded_toast(action: &crate::undo::Action) -> String {
     }
 }
 
-/// The receipt for `action`, the undo entry an operation just recorded: it
-/// replays that same action, so its Undo stays in sync with Cmd+Z. An action
-/// with no folder to jump back to gets none.
-fn undo_receipt(action: crate::undo::Action, now: f64) -> Option<crate::receipts::Receipt> {
+/// The receipt for `action`, the undo entry `entry` an operation just
+/// recorded: its Undo is live only while that entry is the one Cmd+Z would
+/// reverse. An action with no folder to jump back to gets none.
+fn undo_receipt(
+    action: &crate::undo::Action,
+    entry: crate::undo::HistoryEntryId,
+    now: f64,
+) -> Option<crate::receipts::Receipt> {
     let jump_to = action.jump_to()?;
     Some(crate::receipts::Receipt {
         verb: action.verb(),
         item_count: action.item_count(),
         timestamp: now,
         jump_to,
-        undo_action: Some(action),
+        undo_entry: Some(entry),
     })
 }
 
@@ -898,7 +902,8 @@ impl App {
     /// return that action.
     pub(crate) fn push_receipt_for_top_undo(&mut self, now: f64) -> Option<crate::undo::Action> {
         let action = self.ws.top_undo_action().cloned()?;
-        if let Some(receipt) = undo_receipt(action.clone(), now) {
+        let entry = self.ws.top_undo_entry()?;
+        if let Some(receipt) = undo_receipt(&action, entry, now) {
             self.receipts.push(receipt);
         }
         Some(action)
@@ -1303,13 +1308,13 @@ impl App {
         );
         // Only this delete's own history record may back the Undo: when it
         // recorded none, the top entry is an older Trash.
-        let undo_action = self
+        let undo_entry = self
             .ws
             .top_undo_action()
             .filter(|action| trash_undo_matches(&outcome.items, action))
             .filter(|_| outcome.trashed > 0 && !outcome.indeterminate)
-            .cloned();
-        self.toast(ctx, kind, message, undo_action.is_some());
+            .and_then(|_| self.ws.top_undo_entry());
+        self.toast(ctx, kind, message, undo_entry.is_some());
 
         if outcome.trashed > 0 {
             let jump_to = outcome
@@ -1323,7 +1328,7 @@ impl App {
                 item_count: outcome.trashed,
                 timestamp: now,
                 jump_to,
-                undo_action,
+                undo_entry,
             });
         }
 
@@ -3191,14 +3196,17 @@ mod tests {
                 ("b.jpg".into(), "x-b.jpg".into()),
             ],
         };
-        let receipt = undo_receipt(rename.clone(), 12.5).expect("receipt");
+        let mut center = crate::undo::UndoCenter::default();
+        center.record(rename.clone()).unwrap();
+        let entry = center.top_undo_entry().expect("recorded entry");
+        let receipt = undo_receipt(&rename, entry, 12.5).expect("receipt");
         assert_eq!(receipt.verb, rename.verb());
         assert_eq!(receipt.item_count, 2);
         assert_eq!(receipt.timestamp, 12.5);
         assert_eq!(receipt.jump_to, PathBuf::from("/photos"));
-        assert_eq!(receipt.undo_action, Some(rename));
+        assert_eq!(receipt.undo_entry, Some(entry));
         // A move with no pairs has nowhere to jump back to.
-        assert!(undo_receipt(Action::Move { pairs: Vec::new() }, 1.0).is_none());
+        assert!(undo_receipt(&Action::Move { pairs: Vec::new() }, entry, 1.0).is_none());
     }
 
     #[test]

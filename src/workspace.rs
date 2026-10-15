@@ -2203,6 +2203,12 @@ impl Workspace {
         self.undo.top_undo()
     }
 
+    /// The history entry on top of the undo stack, for binding a receipt's
+    /// Undo button to that exact entry.
+    pub fn top_undo_entry(&self) -> Option<crate::undo::HistoryEntryId> {
+        self.undo.top_undo_entry()
+    }
+
     #[cfg(test)]
     pub(crate) fn record_history_for_test(&mut self, action: crate::undo::Action) {
         self.undo.record(action).expect("test history record");

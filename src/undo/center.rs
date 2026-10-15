@@ -133,6 +133,11 @@ impl UndoCenter {
         self.stack.peek_undo()
     }
 
+    /// The id of the entry a Cmd+Z would reverse.
+    pub(crate) fn top_undo_entry(&self) -> Option<HistoryEntryId> {
+        self.stack.peek_undo_entry().map(|entry| entry.id)
+    }
+
     pub(crate) fn preview_undo_action(&self) -> Option<Action> {
         self.stack.peek_undo_inverse()
     }

@@ -537,12 +537,7 @@ impl App {
                 .margin(egui::vec2(7.0, 5.0)),
         );
         ui.add_space(6.0);
-        let receipts = self
-            .receipts
-            .search(&self.operations_search)
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let receipts = self.receipts.search(&self.operations_search);
         if receipts.is_empty() {
             ui.label(
                 egui::RichText::new(history_empty_text(&self.operations_search))
@@ -552,7 +547,7 @@ impl App {
             return;
         }
         let now = ui.input(|input| input.time);
-        let top = self.ws.top_undo_action();
+        let top = self.ws.top_undo_entry();
         let mut jump = None;
         let mut undo = false;
         egui::ScrollArea::vertical()
