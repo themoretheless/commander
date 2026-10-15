@@ -211,12 +211,45 @@ fn rules_path() -> PathBuf {
     crate::fs_util::config_dir().join("transfer-rules.json")
 }
 
+/// Load the persisted rules. A file that does not parse, or that a newer
+/// version wrote, is moved aside to `<name>.bak` so the next [`set_rule`]
+/// cannot silently replace the user's rules with an otherwise empty store.
 fn load_store_at(path: &Path) -> RuleStore {
-    std::fs::File::open(path)
-        .ok()
-        .and_then(|file| serde_json::from_reader::<_, RuleStore>(file).ok())
-        .filter(|store| store.schema == RULE_SCHEMA)
-        .unwrap_or_default()
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return RuleStore::default(),
+        Err(error) => {
+            log::warn!(
+                target: "commander::transfer_tuning",
+                "Could not read transfer rules {}: {error}",
+                path.display()
+            );
+            return RuleStore::default();
+        }
+    };
+    let problem = match serde_json::from_slice::<RuleStore>(&bytes) {
+        Ok(store) if store.schema == RULE_SCHEMA => return store,
+        Ok(store) => format!("unsupported schema {}", store.schema),
+        Err(error) => error.to_string(),
+    };
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".bak");
+    let backup = PathBuf::from(backup);
+    match std::fs::rename(path, &backup) {
+        Ok(()) => log::warn!(
+            target: "commander::transfer_tuning",
+            "Ignoring transfer rules {} ({problem}); kept as {}",
+            path.display(),
+            backup.display()
+        ),
+        Err(error) => log::warn!(
+            target: "commander::transfer_tuning",
+            "Ignoring transfer rules {} ({problem}); could not keep a backup at {}: {error}",
+            path.display(),
+            backup.display()
+        ),
+    }
+    RuleStore::default()
 }
 
 fn save_store_at(path: &Path, store: &RuleStore) -> Result<(), String> {
@@ -496,6 +529,28 @@ mod tests {
         let started = Instant::now();
         limiter.consume(64 * 1024 / 10, || false).unwrap();
         assert!(started.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn unreadable_or_newer_rules_are_kept_aside_instead_of_overwritten() {
+        let temp = TempDir::new();
+        let path = temp.path().join("rules.json");
+        let backup = temp.path().join("rules.json.bak");
+        assert!(load_store_at(&path).volumes.is_empty());
+        assert!(!backup.exists(), "a missing file needs no backup");
+
+        for contents in [
+            "{ not json".to_string(),
+            format!(
+                r#"{{"schema": {}, "volumes": {{"one": {{"max_bytes_per_second": 1048576}}}}}}"#,
+                RULE_SCHEMA + 1
+            ),
+        ] {
+            std::fs::write(&path, &contents).unwrap();
+            assert!(load_store_at(&path).volumes.is_empty());
+            assert!(!path.exists());
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), contents);
+        }
     }
 
     #[test]
