@@ -642,6 +642,45 @@ mod tests {
     }
 
     #[test]
+    fn trash_errors_map_to_failure_kinds() {
+        // The OS code picks the kind; a non-empty description replaces the
+        // generic OS text, an empty one keeps it.
+        #[cfg(unix)]
+        let denied = libc::EACCES;
+        #[cfg(windows)]
+        let denied = 5; // ERROR_ACCESS_DENIED
+        let described = classify_trash_failure(trash::Error::Os {
+            code: denied,
+            description: "Trash refused the item".to_string(),
+        });
+        assert_eq!(described.kind, NativeFailureKind::Denied);
+        assert_eq!(described.message, "Trash refused the item");
+        let bare = classify_trash_failure(trash::Error::Os {
+            code: denied,
+            description: String::new(),
+        });
+        assert_eq!(bare.kind, NativeFailureKind::Denied);
+        assert_eq!(
+            bare.message,
+            std::io::Error::from_raw_os_error(denied).to_string()
+        );
+
+        let root = classify_trash_failure(trash::Error::TargetedRoot);
+        assert_eq!(root.kind, NativeFailureKind::InvalidInput);
+        assert!(root.message.contains("roots"), "{}", root.message);
+        let stale = classify_trash_failure(trash::Error::CanonicalizePath {
+            original: std::path::PathBuf::from("gone").join("item.txt"),
+        });
+        assert_eq!(stale.kind, NativeFailureKind::Stale);
+        assert!(stale.message.contains("item.txt"), "{}", stale.message);
+        let unknown = classify_trash_failure(trash::Error::Unknown {
+            description: "dbus said no".to_string(),
+        });
+        assert_eq!(unknown.kind, NativeFailureKind::Unknown);
+        assert_eq!(unknown.message, "dbus said no");
+    }
+
+    #[test]
     fn free_space_product_distinguishes_exact_and_saturated_values() {
         assert_eq!(
             classify_space_product(4, 512),

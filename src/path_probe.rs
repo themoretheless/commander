@@ -728,6 +728,97 @@ mod tests {
         ));
     }
 
+    /// Runs nothing: every submission is abandoned before it can start.
+    struct AbandoningBackend;
+
+    impl WorkloadBackend for AbandoningBackend {
+        fn submit_boxed(
+            self: Arc<Self>,
+            spec: TaskSpec,
+            work: WorkloadJob,
+            on_abandoned: Option<crate::workload::AbandonmentCallback>,
+        ) -> Result<TaskSnapshot, AdmissionError> {
+            drop(work);
+            if let Some(on_abandoned) = on_abandoned {
+                on_abandoned(AbandonReason::SpawnFailed);
+            }
+            Ok(TaskSnapshot {
+                id: crate::workload::TaskId(1),
+                kind: spec.kind,
+                root: spec.root,
+                generation: spec.generation,
+                priority: spec.priority,
+                estimated_bytes: spec.estimated_bytes,
+                submitted_tick: 1,
+                replace_older_generation: spec.replace_older_generation,
+            })
+        }
+
+        fn cancel_task(self: Arc<Self>, _id: crate::workload::TaskId) -> bool {
+            false
+        }
+
+        fn stats(&self) -> SchedulerStats {
+            SchedulerStats::default()
+        }
+    }
+
+    struct MissingProbe;
+
+    impl DirectoryProbePort for MissingProbe {
+        fn probe(&self, _path: &Path) -> Result<(), DirInputError> {
+            Err(DirInputError::Missing)
+        }
+    }
+
+    #[test]
+    fn failed_probe_reports_its_error_and_never_validates() {
+        let runtime = DeterministicWorkload::new(SchedulerLimits::default());
+        let mut controller = controller("gone");
+        controller.drive(
+            0.2,
+            &runtime.handle(),
+            Arc::new(MissingProbe),
+            silent_notify(),
+        );
+        assert!(runtime.run_next());
+        controller.drive(
+            0.3,
+            &runtime.handle(),
+            Arc::new(MissingProbe),
+            silent_notify(),
+        );
+
+        assert_eq!(
+            controller.status(),
+            &ProbeStatus::Error(DirInputError::Missing)
+        );
+        assert!(controller.validated_path("gone").is_none());
+        assert_eq!(controller.repaint_after(0.3), None);
+        assert!(controller.in_flight.is_empty());
+    }
+
+    #[test]
+    fn abandoned_probe_says_the_check_could_not_run() {
+        let workload = WorkloadHandle::new(Arc::new(AbandoningBackend));
+        let mut controller = controller(".");
+        controller.drive(
+            0.2,
+            &workload,
+            Arc::new(RecordingProbe::default()),
+            silent_notify(),
+        );
+
+        assert_eq!(
+            controller.status(),
+            &ProbeStatus::WorkerFailed(
+                "Folder check could not run: worker thread spawn failed".to_string()
+            )
+        );
+        assert!(controller.validated_path(".").is_none());
+        assert!(controller.in_flight.is_empty());
+    }
+
     #[test]
     fn synchronous_completion_is_observed_without_scheduler_freshness_keys() {
         let backend = Arc::new(ImmediateBackend::default());

@@ -650,6 +650,59 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_root_finishes_with_it_listed_as_inaccessible() {
+        let temp = TempDir::new();
+        let missing = temp.path().join("gone");
+
+        let run = spawn(missing.clone(), Arc::new(|| {}));
+        let snapshot = completed(&run);
+
+        assert_eq!(snapshot.inaccessible_count, 1);
+        assert_eq!(snapshot.inaccessible_paths, [missing]);
+        assert!(snapshot.nodes.is_empty());
+        assert!(!snapshot.cancelled);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_subfolder_is_counted_and_ends_its_compressed_chain() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+        if unsafe { libc::geteuid() } == 0 {
+            // Root reads the folder despite its mode.
+            return;
+        }
+        let temp = TempDir::new();
+        temp.file("a/locked/hidden.bin", "secret");
+        temp.file("b/seen.bin", "12");
+        let locked = temp.path().join("a/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let run = spawn(temp.path().to_path_buf(), Arc::new(|| {}));
+        let snapshot = completed(&run);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(snapshot.inaccessible_count, 1);
+        assert_eq!(snapshot.inaccessible_paths, [locked]);
+        assert_eq!(snapshot.progress.bytes, 2);
+        // `a` compresses into its only child, and the chain stops at the
+        // unreadable folder, which is flagged with no bytes counted.
+        let unreadable: Vec<_> = snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.unreadable)
+            .map(|node| (node.label.as_str(), node.bytes, node.files))
+            .collect();
+        assert_eq!(unreadable, [("a/locked", 0, 0)]);
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.label == "b" && !node.unreadable)
+        );
+    }
+
+    #[test]
     fn single_child_directories_are_compressed_without_losing_totals() {
         let temp = TempDir::new();
         temp.file("a/b/c/data.bin", "12345");

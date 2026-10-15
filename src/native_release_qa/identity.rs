@@ -1,6 +1,5 @@
-use super::contract::{DisplayTopology, QaSubject, ScreenRect};
+use super::contract::{DisplayTopology, QaSubject, ScreenRect, duplicate_display_id};
 use serde::Serialize;
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 #[cfg(target_os = "macos")]
@@ -39,21 +38,18 @@ pub(super) fn topology_fingerprint(displays: &[DisplayTopology]) -> Result<Strin
     if !displays.is_empty() && displays.iter().filter(|display| display.main).count() != 1 {
         return Err("display topology must contain exactly one main display".to_string());
     }
-    let mut ids = HashSet::new();
+    if let Some(id) = duplicate_display_id(displays) {
+        return Err(format!("display id is empty or duplicated: {id:?}"));
+    }
     let mut canonical = Vec::with_capacity(displays.len());
     for display in displays {
-        if display.id.trim().is_empty() || !ids.insert(display.id.clone()) {
+        if !display.has_valid_id() {
             return Err(format!(
                 "display id is empty or duplicated: {:?}",
                 display.id
             ));
         }
-        if !display.frame.is_valid()
-            || !display.visible_frame.is_valid()
-            || !display.frame.contains_rect(display.visible_frame)
-            || !display.backing_scale.is_finite()
-            || display.backing_scale <= 0.0
-        {
+        if !display.has_valid_geometry() {
             return Err(format!("invalid display topology entry: {}", display.id));
         }
         canonical.push(CanonicalDisplay {
@@ -336,6 +332,49 @@ mod tests {
         );
         left[1].id = left[0].id.clone();
         assert!(topology_fingerprint(&left).is_err());
+    }
+
+    #[test]
+    fn fingerprint_rejects_bad_main_counts_and_invalid_entries() {
+        assert!(
+            topology_fingerprint(&[]).is_ok(),
+            "no displays needs no main"
+        );
+        let mut no_main = topology();
+        no_main[1].main = false;
+        let mut two_mains = topology();
+        two_mains[0].main = true;
+        for displays in [no_main, two_mains] {
+            let error = topology_fingerprint(&displays).unwrap_err();
+            assert!(error.contains("exactly one main display"), "{error}");
+        }
+
+        let mut blank_id = topology();
+        blank_id[0].id = "  ".to_string();
+        assert!(
+            topology_fingerprint(&blank_id)
+                .unwrap_err()
+                .contains("empty or duplicated")
+        );
+        let invalid: [fn(&mut DisplayTopology); 4] = [
+            |display| display.backing_scale = f64::NAN,
+            |display| display.backing_scale = 0.0,
+            |display| display.visible_frame = ScreenRect::new(-1.0, 0.0, 10.0, 10.0),
+            |display| display.frame = ScreenRect::new(0.0, 0.0, 0.0, 982.0),
+        ];
+        for corrupt in invalid {
+            let mut displays = topology();
+            corrupt(&mut displays[1]);
+            let error = topology_fingerprint(&displays).unwrap_err();
+            assert_eq!(error, "invalid display topology entry: display-1");
+        }
+
+        // Valid geometry, but beyond the fixed-point range.
+        let mut far = topology();
+        far[0].frame = ScreenRect::new(2e9, 0.0, 1920.0, 1080.0);
+        far[0].visible_frame = ScreenRect::new(2e9, 24.0, 1920.0, 1056.0);
+        let error = topology_fingerprint(&far).unwrap_err();
+        assert!(error.starts_with("invalid display frame"), "{error}");
     }
 
     #[test]

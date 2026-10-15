@@ -515,6 +515,48 @@ mod tests {
     }
 
     #[test]
+    fn quota_evicts_oldest_first_and_always_keeps_the_newest_record() {
+        let blob = |size, refs| ContentBlob {
+            size,
+            refs,
+            exemplar: PathBuf::from("x"),
+            copies: BTreeMap::from([(0, refs)]),
+            exemplar_copy: 0,
+        };
+        let file = |digest: &str, size| PayloadFile {
+            relative: PathBuf::from(digest),
+            digest: digest.to_string(),
+            size,
+            copy: 0,
+        };
+        // "big" is one physical copy shared by records 1 and 2.
+        let blobs = BTreeMap::from([
+            ("big".to_string(), blob(10, 2)),
+            ("small".to_string(), blob(3, 1)),
+        ]);
+        let files = BTreeMap::from([
+            ("1".to_string(), vec![file("big", 10)]),
+            ("2".to_string(), vec![file("big", 10)]),
+            ("3".to_string(), vec![file("small", 3)]),
+        ]);
+        let order = ["1", "2", "3"].map(String::from);
+        let keys = |max_bytes, order: &[String]| {
+            quota_overflow_keys(order, &blobs, &files, VersionStoreQuota { max_bytes })
+        };
+
+        assert!(keys(13, &order).is_empty(), "at the quota nothing goes");
+        // Expiring 1 frees nothing while 2 still references the blob, so 2
+        // must go too; then usage (3) fits and 3 is kept.
+        assert_eq!(keys(5, &order), ["1", "2"]);
+        // Even a zero quota never expires the newest record.
+        assert_eq!(keys(0, &order), ["1", "2"]);
+        assert!(keys(0, &order[2..]).is_empty());
+        // A record missing from the payload index still counts as expired.
+        let unknown = ["0", "1", "2", "3"].map(String::from);
+        assert_eq!(keys(5, &unknown), ["0", "1", "2"]);
+    }
+
+    #[test]
     fn corrupt_huge_blob_sizes_saturate_usage_and_quota() {
         let blob = |size| ContentBlob {
             size,

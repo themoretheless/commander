@@ -912,6 +912,52 @@ mod tests {
     }
 
     #[test]
+    fn copy_dir_all_failure_removes_the_destination_it_created() {
+        // Copying a file as if it were a folder fails after the destination
+        // root was created; the error must not leave that root behind.
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let file = src.file("plain.txt", "x");
+        let copy = dst.path().join("copy");
+
+        let error = copy_dir_all(&file, &copy).unwrap_err();
+
+        assert!(!error.to_string().contains("cleanup failed"), "{error}");
+        assert!(!copy.exists());
+        // An existing destination is refused before anything is touched.
+        let taken = dst.dir("taken");
+        dst.file("taken/keep.txt", "keep");
+        let error = copy_dir_all(src.path(), &taken).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(taken.join("keep.txt")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn copy_names_split_dotfiles_bare_and_multi_dot_names() {
+        let tmp = TempDir::new();
+        for (name, copy) in [
+            (".env", ".env copy"),
+            ("Makefile", "Makefile copy"),
+            ("a.tar.gz", "a.tar copy.gz"),
+            (".config.toml", ".config copy.toml"),
+        ] {
+            let file = tmp.file(name, "x");
+            assert_eq!(available_copy_name(&file), tmp.path().join(copy), "{name}");
+        }
+        // A folder keeps its whole dotted name as the stem.
+        let dir = tmp.dir(".git");
+        assert_eq!(available_copy_name(&dir), tmp.path().join(".git copy"));
+        // A taken copy name moves on to the numbered form.
+        tmp.file("Makefile copy", "taken");
+        assert_eq!(
+            available_copy_name(&tmp.path().join("Makefile")),
+            tmp.path().join("Makefile copy 2")
+        );
+    }
+
+    #[test]
     fn duplicate_never_overwrites_a_name_taken_after_the_probe() {
         let tmp = TempDir::new();
         let f = tmp.file("doc.txt", "data");
@@ -1184,6 +1230,23 @@ mod tests {
         // dest does not exist yet but its parent (a/sub) does.
         tmp.dir("a/sub");
         assert!(is_within_or_equal(&a.join("sub").join("new"), &a));
+    }
+
+    #[test]
+    fn is_within_or_equal_falls_back_to_a_lexical_check_without_a_parent() {
+        let tmp = TempDir::new();
+        let a = tmp.dir("a");
+        // Neither `missing` nor its parent exists, so nothing canonicalizes.
+        assert!(is_within_or_equal(&a.join("missing").join("new"), &a));
+        assert!(!is_within_or_equal(
+            &tmp.path().join("other").join("missing").join("new"),
+            &a
+        ));
+        // Still a path-component check, not a string prefix.
+        assert!(!is_within_or_equal(
+            &tmp.path().join("ab").join("missing").join("new"),
+            &a
+        ));
     }
 
     #[test]

@@ -20,6 +20,11 @@ impl Rect {
 /// are in input order and their areas are proportional to the weights (summing
 /// to the region area). Non-positive weights are treated as 0; an empty or
 /// all-zero input yields an empty layout.
+///
+/// Weights should be sorted in descending order: row growth takes the row's
+/// first weight as its largest and the newest as its smallest. Unsorted input
+/// still tiles the whole region with proportional areas, but its tiles can be
+/// far from square.
 pub fn squarify(weights: &[f64], rect: Rect) -> Vec<Rect> {
     let n = weights.len();
     if n == 0 || rect.w <= 0.0 || rect.h <= 0.0 {
@@ -217,6 +222,33 @@ mod tests {
         for t in &tiles {
             let aspect = (t.w / t.h).max(t.h / t.w);
             assert!(aspect <= 3.0, "tile aspect {aspect} too oblong: {t:?}");
+        }
+    }
+
+    #[test]
+    fn unsorted_weights_still_fill_the_region_proportionally() {
+        let weights = [1.0, 10.0, 0.0, 3.0, -2.0, 6.0, 2.0];
+        let tiles = squarify(&weights, R);
+        assert_eq!(tiles.len(), weights.len());
+        let total: f64 = tiles.iter().map(|t| t.area()).sum();
+        assert!((total - R.area()).abs() < 1e-6, "area {total}");
+        let scale = R.area() / 22.0;
+        for (tile, weight) in tiles.iter().zip(weights) {
+            assert!(within(tile, &R, 1e-6), "tile {tile:?} escaped {R:?}");
+            let expected = weight.max(0.0) * scale;
+            assert!(
+                (tile.area() - expected).abs() < 1e-6,
+                "weight {weight}: area {} vs {expected}",
+                tile.area()
+            );
+        }
+        // Tiles never overlap: pairwise intersections have no area.
+        for (index, a) in tiles.iter().enumerate() {
+            for b in &tiles[index + 1..] {
+                let w = (a.x + a.w).min(b.x + b.w) - a.x.max(b.x);
+                let h = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
+                assert!(w <= 1e-6 || h <= 1e-6, "{a:?} overlaps {b:?}");
+            }
         }
     }
 }
