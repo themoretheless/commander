@@ -1883,14 +1883,14 @@ pub(super) fn cleanup_moved_source(
     let observed = match observe_like(expected, &quarantine) {
         Ok(observed) if expected.same_version(&observed) => observed,
         Ok(_) => {
-            return Err(restore_cleanup_quarantine(
+            return Err(restore_quarantine(
                 path,
                 &quarantine,
                 "source changed while it was quarantined for cleanup",
             ));
         }
         Err(error) => {
-            return Err(restore_cleanup_quarantine(
+            return Err(restore_quarantine(
                 path,
                 &quarantine,
                 &format!("source cleanup proof failed: {error}"),
@@ -1907,7 +1907,7 @@ pub(super) fn cleanup_moved_source(
         Ok(true) => fs_util::sync_parent_namespace(&quarantine),
         Ok(false) => crate::fs_at::rename_sibling(&quarantine, path, false)
             .and_then(|()| fs_util::sync_parent_namespace(path)),
-        Err(error) => Err(restore_cleanup_quarantine(
+        Err(error) => Err(restore_quarantine(
             path,
             &quarantine,
             &format!("selective source cleanup failed: {error}"),
@@ -1917,19 +1917,6 @@ pub(super) fn cleanup_moved_source(
 
 fn source_cleanup_path(path: &Path) -> PathBuf {
     hidden_sibling(path, "cmdr-source-cleanup")
-}
-
-fn restore_cleanup_quarantine(path: &Path, quarantine: &Path, reason: &str) -> std::io::Error {
-    match crate::fs_at::rename_sibling(quarantine, path, false) {
-        Ok(()) => {
-            let _ = fs_util::sync_parent_namespace(path);
-            std::io::Error::other(reason.to_string())
-        }
-        Err(error) => std::io::Error::other(format!(
-            "{reason}; source object preserved at {} because its pathname could not be restored: {error}",
-            quarantine.display()
-        )),
-    }
 }
 
 /// Remove the entries transferred under `Skip`, while leaving omitted
@@ -2035,7 +2022,7 @@ fn swap_into_place(
                 journal.operation_id,
                 journal.key,
             ) {
-                return Err(restore_overwrite_quarantine(
+                return Err(restore_quarantine(
                     dest,
                     &prepared.path,
                     &format!("overwrite backup proof failed: {error}"),
@@ -2109,12 +2096,12 @@ pub(super) fn quarantine_expected_path(
     crate::fs_at::rename_sibling(path, quarantine, false)?;
     match observe_like(expected, quarantine) {
         Ok(observed) if expected.same_version(&observed) => Ok(()),
-        Ok(_) => Err(restore_overwrite_quarantine(
+        Ok(_) => Err(restore_quarantine(
             path,
             quarantine,
             "overwrite destination changed during the commit fence",
         )),
-        Err(error) => Err(restore_overwrite_quarantine(
+        Err(error) => Err(restore_quarantine(
             path,
             quarantine,
             &format!("overwrite backup could not be verified: {error}"),
@@ -2122,7 +2109,10 @@ pub(super) fn quarantine_expected_path(
     }
 }
 
-fn restore_overwrite_quarantine(path: &Path, quarantine: &Path, reason: &str) -> std::io::Error {
+/// Rename a quarantined object back to `path` after its proof failed, and
+/// return `reason` as the error. If even that fails, the error names where
+/// the object was left so it can be recovered.
+fn restore_quarantine(path: &Path, quarantine: &Path, reason: &str) -> std::io::Error {
     match crate::fs_at::rename_sibling(quarantine, path, false) {
         Ok(()) => {
             let _ = fs_util::sync_parent_namespace(path);
