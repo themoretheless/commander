@@ -125,9 +125,28 @@ impl CheckpointDigests {
 struct CheckpointWriter<'a> {
     digests: &'a mut CheckpointDigests,
     publish: &'a mut dyn FnMut(u64, [u8; 32]) -> std::io::Result<()>,
+    limiter: crate::transfer_tuning::BandwidthLimiter,
 }
 
 impl CheckpointWriter<'_> {
+    /// Hold the copy to the volume's bandwidth limit after `bytes` more
+    /// source bytes. The throttle sleep watches the cancel flag; a cancel
+    /// during it checkpoints `offset` like a cancel between blocks.
+    fn throttle(
+        &mut self,
+        bytes: usize,
+        state: &TransferState,
+        destination: &std::fs::File,
+        destination_path: &Path,
+        offset: u64,
+    ) -> std::io::Result<()> {
+        if self.limiter.consume(bytes, || is_cancelled(state)).is_err() {
+            self.sync(destination, destination_path, offset, false)?;
+            return Err(interrupted());
+        }
+        Ok(())
+    }
+
     fn publish_initial(&mut self) -> std::io::Result<()> {
         let digest = *self.digests.source.clone().finalize().as_bytes();
         (self.publish)(0, digest)
@@ -166,6 +185,8 @@ pub struct DeltaRequest<'a> {
     pub base_bytes: u64,
     pub allow_clone_seed: bool,
     pub resume: Option<DeltaResume>,
+    /// The volume's bandwidth limit, applied to every source byte processed.
+    pub bandwidth: crate::transfer_tuning::VolumeRule,
     /// Re-hash the whole staging file at the end. The incremental checkpoint
     /// digests already read every staging byte once, so this extra full read
     /// (over the slow link) is kept only for verifying durability profiles.
@@ -242,6 +263,7 @@ fn copy_file_inner(
         base_bytes,
         allow_clone_seed,
         resume,
+        bandwidth,
         reverify_staging,
     } = *request;
     let resume_offset = resume.map(|resume| resume.offset);
@@ -272,6 +294,7 @@ fn copy_file_inner(
     let mut checkpoints = CheckpointWriter {
         digests: &mut digests,
         publish: checkpoint,
+        limiter: crate::transfer_tuning::BandwidthLimiter::new(bandwidth),
     };
     if resume_offset.is_none() {
         checkpoints.publish_initial()?;
@@ -384,6 +407,13 @@ fn copy_fixed(
             checkpoints.sync(&destination, destination_path, stats.logical_bytes, false)?;
             checkpoint_at = next_checkpoint(stats.logical_bytes);
         }
+        checkpoints.throttle(
+            read,
+            state,
+            &destination,
+            destination_path,
+            stats.logical_bytes,
+        )?;
     }
     Ok(stats)
 }
@@ -479,6 +509,13 @@ fn copy_content_defined(
             checkpoints.sync(&destination, destination_path, stats.logical_bytes, false)?;
             checkpoint_at = next_checkpoint(stats.logical_bytes);
         }
+        checkpoints.throttle(
+            chunk.length,
+            state,
+            &destination,
+            destination_path,
+            stats.logical_bytes,
+        )?;
     }
     Ok(stats)
 }
@@ -747,6 +784,7 @@ mod tests {
                     base_bytes: 0,
                     allow_clone_seed: true,
                     resume: None,
+                    bandwidth: Default::default(),
                     reverify_staging,
                 },
                 &mut corrupt,
@@ -776,6 +814,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume: None,
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |_, _| Ok(()),
@@ -785,6 +824,60 @@ mod tests {
         assert_eq!(std::fs::read(destination).unwrap(), bytes);
         assert_eq!(stats.reused_bytes, (FIXED_BLOCK_SIZE * 2) as u64);
         assert_eq!(stats.source_bytes, FIXED_BLOCK_SIZE as u64);
+    }
+
+    #[test]
+    fn delta_copy_honours_the_volume_bandwidth_limit() {
+        let temp = TempDir::new();
+        let basis = temp.path().join("basis-throttle.bin");
+        let source = temp.path().join("source-throttle.bin");
+        let destination = temp.path().join("staging-throttle.bin");
+        // Two blocks at the 64 KiB/s floor would take half a minute.
+        std::fs::write(&basis, vec![1_u8; FIXED_BLOCK_SIZE * 2]).unwrap();
+        std::fs::write(&source, vec![2_u8; FIXED_BLOCK_SIZE * 2]).unwrap();
+        let progress = state((FIXED_BLOCK_SIZE * 2) as u64);
+        let canceller = {
+            let progress = Arc::clone(&progress);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                crate::lock_util::recover(&progress).request_cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let mut checkpoints = Vec::new();
+
+        let error = copy_file(
+            DeltaRequest {
+                source: &source,
+                basis: &basis,
+                destination: &destination,
+                mode: DeltaMode::Fixed,
+                state: &progress,
+                base_bytes: 0,
+                allow_clone_seed: true,
+                resume: None,
+                bandwidth: crate::transfer_tuning::VolumeRule {
+                    max_bytes_per_second: Some(64 * 1024),
+                    ..Default::default()
+                },
+                reverify_staging: true,
+            },
+            &mut |offset, _| {
+                checkpoints.push(offset);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        canceller.join().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancel waited {:?}",
+            started.elapsed()
+        );
+        // The throttled block is checkpointed so a later resume keeps it.
+        assert_eq!(checkpoints, vec![0, FIXED_BLOCK_SIZE as u64]);
     }
 
     #[test]
@@ -814,6 +907,7 @@ mod tests {
                     offset: FIXED_BLOCK_SIZE as u64,
                     content_digest: recorded,
                 }),
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |_, _| Ok(()),
@@ -862,6 +956,7 @@ mod tests {
                     )
                     .unwrap(),
                 }),
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |offset, _| {
@@ -896,6 +991,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume: None,
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |offset, _| {
@@ -941,6 +1037,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume: None,
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |_, _| Ok(()),
@@ -987,6 +1084,7 @@ mod tests {
                     offset,
                     content_digest: crate::transfer::prefix_digest(source, offset).unwrap(),
                 }),
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |offset, _| {
@@ -1113,6 +1211,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume: None,
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |_, _| {
@@ -1147,6 +1246,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume: None,
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |_, _| Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
@@ -1177,6 +1277,7 @@ mod tests {
                 base_bytes: 0,
                 allow_clone_seed: true,
                 resume: None,
+                bandwidth: Default::default(),
                 reverify_staging: true,
             },
             &mut |_, _| {
