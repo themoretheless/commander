@@ -15,6 +15,16 @@ enum NativeEffectStatus {
     Failure,
 }
 
+/// Type-ahead capsule text. A miss is spelled out as well as tinted, so it
+/// does not rely on color alone.
+fn type_ahead_label(buffer: &str, miss: bool) -> String {
+    if miss {
+        format!("\u{00bb} {buffer}  \u{2014} no match")
+    } else {
+        format!("\u{00bb} {buffer}")
+    }
+}
+
 fn perform_clipboard_write(
     port: &dyn crate::ports::ClipboardPort,
     text: &str,
@@ -2230,7 +2240,8 @@ impl App {
             return;
         }
         let t = self.colors;
-        let label = format!("\u{00bb} {buffer}");
+        let miss = self.ui.type_ahead_miss;
+        let label = type_ahead_label(buffer, miss);
         egui::Area::new(egui::Id::new("type_ahead_overlay"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -50.0])
             .order(egui::Order::Tooltip)
@@ -2243,7 +2254,7 @@ impl App {
                             egui::RichText::new(label)
                                 .size(13.0)
                                 .strong()
-                                .color(t.accent),
+                                .color(if miss { t.accent_red } else { t.accent }),
                         );
                     });
             });
@@ -2442,7 +2453,7 @@ mod tests {
     };
     use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
-        hidden_files_rejection_message, perform_clipboard_write, perform_open,
+        hidden_files_rejection_message, perform_clipboard_write, perform_open, type_ahead_label,
     };
     use super::{
         MenuFocusStep, fallback_menu_focus_step, fallback_menu_pos, fallback_menu_restores_focus,
@@ -2510,6 +2521,12 @@ mod tests {
             ModalOwnershipSnapshot::capture(prior_modal_open),
             current_modal_open,
         )
+    }
+
+    #[test]
+    fn type_ahead_capsule_spells_out_a_miss() {
+        assert_eq!(type_ahead_label("rea", false), "\u{00bb} rea");
+        assert!(type_ahead_label("zzz", true).ends_with("no match"));
     }
 
     #[test]
