@@ -878,12 +878,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     result = Err(error);
                 }
                 if let Ok(receipt) = &result {
-                    let current = if receipt.artifact.tree_fingerprint.is_some() {
-                        PathIdentity::observe_deep(&copy_target)
-                    } else {
-                        PathIdentity::observe(&copy_target)
-                    };
-                    match current {
+                    match observe_like(&receipt.artifact, &copy_target) {
                         Ok(current) if receipt.artifact.same_binding(&current) => {}
                         Ok(_) => {
                             result = Err(std::io::Error::other(
@@ -1130,12 +1125,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     clean = false;
                 }
                 if clean {
-                    let current = if expected_landing.tree_fingerprint.is_some() {
-                        PathIdentity::observe_deep(&landing)
-                    } else {
-                        PathIdentity::observe(&landing)
-                    };
-                    match current {
+                    match observe_like(&expected_landing, &landing) {
                         Ok(current) if expected_landing.same_version(&current) => {}
                         Ok(_) => {
                             record_failure(
@@ -1890,12 +1880,7 @@ pub(super) fn cleanup_moved_source(
 ) -> std::io::Result<()> {
     let quarantine = source_cleanup_path(path);
     crate::fs_at::rename_sibling(path, &quarantine, false)?;
-    let observed = if expected.tree_fingerprint.is_some() {
-        PathIdentity::observe_deep(&quarantine)
-    } else {
-        PathIdentity::observe(&quarantine)
-    };
-    let observed = match observed {
+    let observed = match observe_like(expected, &quarantine) {
         Ok(observed) if expected.same_version(&observed) => observed,
         Ok(_) => {
             return Err(restore_cleanup_quarantine(
@@ -2008,11 +1993,7 @@ fn swap_into_place(
     expected_dest: &PathIdentity,
     journal: JournalStep<'_>,
 ) -> std::io::Result<Option<String>> {
-    let current = if expected_dest.tree_fingerprint.is_some() {
-        PathIdentity::observe_deep(dest)?
-    } else {
-        PathIdentity::observe(dest)?
-    };
+    let current = observe_like(expected_dest, dest)?;
     if !expected_dest.same_binding(&current) {
         return Err(std::io::Error::other(
             "destination changed after conflict review",
@@ -2110,18 +2091,23 @@ fn swap_into_place(
     }
 }
 
+/// Observe `path` the way `expected` was captured: a tree proof can only be
+/// compared with a deep observation, a single-object proof with a shallow one.
+fn observe_like(expected: &PathIdentity, path: &Path) -> std::io::Result<PathIdentity> {
+    if expected.tree_fingerprint.is_some() {
+        PathIdentity::observe_deep(path)
+    } else {
+        PathIdentity::observe(path)
+    }
+}
+
 pub(super) fn quarantine_expected_path(
     path: &Path,
     quarantine: &Path,
     expected: &PathIdentity,
 ) -> std::io::Result<()> {
     crate::fs_at::rename_sibling(path, quarantine, false)?;
-    let observed = if expected.tree_fingerprint.is_some() {
-        PathIdentity::observe_deep(quarantine)
-    } else {
-        PathIdentity::observe(quarantine)
-    };
-    match observed {
+    match observe_like(expected, quarantine) {
         Ok(observed) if expected.same_version(&observed) => Ok(()),
         Ok(_) => Err(restore_overwrite_quarantine(
             path,
