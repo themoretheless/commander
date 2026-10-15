@@ -49,9 +49,9 @@ workspace delete/fileops/transfer queue), test-first.
 | P4 | 72 | 60 |
 | P5 | 88 | 73 |
 | P6 | 398 | 360 |
-| P7 | 268 | 251 |
+| P7 | 268 | 249 |
 | P8 | 209 | 169 |
-| **Total** | **1371** | **1178** |
+| **Total** | **1371** | **1176** |
 
 ## Items
 
@@ -726,7 +726,7 @@ workspace delete/fileops/transfer queue), test-first.
 | I-0667 | sw2:surfaces-8 | refactor | low | y | S | `src/app/confirm_dialog.rs:869` resource_policy_row | Quiet-hour presets and labels are written twice (combo list and quiet_hours_label); editing one makes the combo show 'Custom quiet hours' → Define one const QUIET_HOUR_PRESETS table and use it for both the combo options and quiet_hours_label | P7 | done:710f6d6 |
 | I-0668 | sw:app-dialogs-a-22 | refactor | low | y | M | `src/app/confirm_dialog.rs:241` show_confirm_dialog | Space-fit message selection (size failure/pending/no-space/fits/approx/overflow/unknown) is inline UI code with no tests. → Extract fn fit_message(...) -> (String, Severity) and unit-test each branch incl. SaturatedLowerBound and overflow. | P7 | done:710f6d6 |
 | I-0669 | sw:app-dialogs-a-11 | refactor | low | y | S | `src/app/confirm_dialog.rs:423` show_confirm_dialog | Conflict roots/names/kind computation is duplicated verbatim in the render (333-342) and apply (423-432) branches. → Compute (left_root, right_root, names, kind) once before the conflict UI and reuse in both places. | P7 | done:710f6d6 |
-| I-0670 | sw:app-dialogs-a-12 | refactor | low | y | S | `src/app/confirm_dialog.rs:433` show_confirm_dialog | sample_preview result is computed and discarded on apply — dead work. → Delete the discarded `let _ = sample_preview(...)` call. | P7 | done:710f6d6 |
+| I-0670 | sw:app-dialogs-a-12 | refactor | low | n | S | `src/app/confirm_dialog.rs:433` show_confirm_dialog | sample_preview result is computed and discarded on apply — dead work. → Delete the discarded `let _ = sample_preview(...)` call. | P7 | done:710f6d6 |
 | I-0671 | sw2:surfaces-1 | refactor | low | y | S | `src/app/confirm_dialog.rs:445` show_confirm_dialog | Post-resolve confirm_pending_op is dead: resolve sets space=Pending so start_transfer always returns early; start_when_ready auto-starts → Drop the still_overflows/confirm_pending_op branch after resolve_pending_conflicts; rely on start_when_ready (keep dismiss on false) | P7 | done:710f6d6 |
 | I-0672 | sw2:list-render-23 | test | low? | y | S | `src/app/file_list.rs:930` highlight_name_job | highlight_name_job has no tests; char-index alignment with fuzzy ranges for multibyte/emoji names is unverified → Add tests: ASCII hit ranges, non-ASCII name (é, 日本), no-match fallback; assert section colors per char | P7 | done:18e86ba |
 | I-0673 | bl#436 | refactor | low | y | S | `src/app/file_list.rs:227` render_file_list | Dark-theme RGB-sum heuristic duplicated verbatim in file_list.rs:227 and treemap_dialog.rs:107 → Add ThemeColors::is_dark() (same heuristic, or luminance after dropping #[cfg(test)] on file_color::relative_luminance) and call it at both sites | P7 | done:9e22a1b |
@@ -750,7 +750,7 @@ workspace delete/fileops/transfer queue), test-first.
 | I-0691 | sw2:update-13 | refactor | low | y | M | `src/app/update.rs:551` apply_delete_outcome | Five-branch delete toast message/kind logic is inline in an egui method with no tests → Extract fn delete_toast(&DeleteOutcome)->(String, ToastKind) and unit-test indeterminate/cancelled/success/all-failed/partial | P7 | refuted |
 | I-0692 | sw2:update-18 | refactor | low? | y | S | `src/app/update.rs:500` begin_frame | (time*1_000.0) as u64 frame-millis conversion is repeated at 8 sites (update, queue_dialog, recovery_dialog, activity) → Add fn frame_millis(ctx)->u64 helper and use it at all sites | P7 | done:313164e |
 | I-0693 | bl#321 | refactor | low | y | S | `src/app/update.rs:172` clipped_label | Three ad-hoc char-truncation helpers: clipped_label ('...') and two identical `short` closures ('…') in file_list.rs:801 and update.rs:1014. → Add one truncate_chars(text, max) helper (e.g. in display_name.rs) with unit tests; replace clipped_label and both `short` closures. | P7 | done:dee8e37 |
-| I-0694 | sw2:update-6 | refactor | low | y | S | `src/app/update.rs:1716` handle_drop | if/else is redundant: drop_dragged is just drop_dragged_as(TransferKind::Move) → Replace the branch with a single self.ws.drop_dragged_as(kind, move ¦¦ ctx2.request_repaint()) | P7 | done:18dd894 |
+| I-0694 | sw2:update-6 | refactor | low | n | S | `src/app/update.rs:1716` handle_drop | if/else is redundant: drop_dragged is just drop_dragged_as(TransferKind::Move) → Replace the branch with a single self.ws.drop_dragged_as(kind, move ¦¦ ctx2.request_repaint()) | P7 | done:18dd894 |
 | I-0695 | lint:too_many_lines | refactor | low | y | S | `src/app/update.rs:989` show_selection_hud | HUD headline building (counts, avg, largest/oldest, plurals) is pure logic inlined in a 100-line paint fn and untested. → Extract fn selection_headline(&SelectionSummary, elsewhere, other_folders) -> String; unit-test plurals, avg with folders, truncation. | P7 | done:dee8e37 |
 | I-0696 | sw:app-core-12 | refactor | low | y | S | `src/app/update.rs:1563` show_type_ahead_overlay | Type-ahead idle timeout 1.5s is duplicated: literal in overlay and `const IDLE` in keys.rs:184; they must stay in sync. → Hoist pub(crate) const TYPE_AHEAD_IDLE_SECS: f64 = 1.5 (ui_state.rs) and use it in both places. | P7 | done:9e22a1b |
 | I-0697 | sw:media-index-66 | test | low | y | M | `src/archive.rs:461` extract_tar_gz_members | tar.gz listing and extraction (option-like names, spaces, unknown index) have no tests → Add tests creating a .tgz with system tar (skip if absent) covering list, extract, and '-'-prefixed names | P7 | done:1622707 |
