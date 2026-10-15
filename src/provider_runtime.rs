@@ -94,21 +94,25 @@ pub fn reduce_context_menu_result(
             })
         }
         ContextMenuResult::Failed(ContextMenuFailure::Action { command, message }) => {
-            let action = match command {
-                ContextMenuCommand::OpenWith => "open item with the selected application",
-                ContextMenuCommand::QuickLook => "preview item",
-                ContextMenuCommand::GetInfo => "show item information",
-                ContextMenuCommand::Duplicate => "duplicate item",
-                ContextMenuCommand::Compress => "start compression",
-                ContextMenuCommand::ToggleTag => "update Finder tags",
-                ContextMenuCommand::Share => "share item",
-                ContextMenuCommand::MoveToTrash => "move item to Trash",
-            };
             Some(ContextMenuUiEffect::Notice {
                 level: ContextMenuNoticeLevel::Error,
-                message: format!("Could not {action}: {message}"),
+                message: format!("Could not {}: {message}", command_action(command)),
             })
         }
+    }
+}
+
+/// What a context-menu command does, worded to follow "Could not".
+const fn command_action(command: ContextMenuCommand) -> &'static str {
+    match command {
+        ContextMenuCommand::OpenWith => "open item with the selected application",
+        ContextMenuCommand::QuickLook => "preview item",
+        ContextMenuCommand::GetInfo => "show item information",
+        ContextMenuCommand::Duplicate => "duplicate item",
+        ContextMenuCommand::Compress => "start compression",
+        ContextMenuCommand::ToggleTag => "update Finder tags",
+        ContextMenuCommand::Share => "share item",
+        ContextMenuCommand::MoveToTrash => "move item to Trash",
     }
 }
 
@@ -121,8 +125,8 @@ pub fn reduce_deferred_context_menu_result(
         Some(ContextMenuUiEffect::Perform(action)) => Some(ContextMenuUiEffect::Notice {
             level: ContextMenuNoticeLevel::Error,
             message: format!(
-                "Could not {:?}: the context-menu adapter returned a nested deferred action",
-                action.command()
+                "Could not {}: the context-menu adapter returned a nested deferred action",
+                command_action(action.command())
             ),
         }),
         terminal => terminal,
@@ -835,6 +839,7 @@ mod tests {
                 level: ContextMenuNoticeLevel::Error,
                 message,
             }) if message.contains("nested deferred action")
+                && message.starts_with("Could not duplicate item:")
         ));
         assert_eq!(port.calls.get(), 1);
     }
