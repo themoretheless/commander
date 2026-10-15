@@ -401,6 +401,60 @@ fn skipped_steps_are_settled_but_rolled_back_steps_fail_closed() {
 }
 
 #[test]
+fn settled_steps_snapshot_answers_from_one_load_and_still_proves_effects() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("settled-journal.json"));
+    let target = temp.dir("settled-target");
+    let done = temp.file("done.txt", "done");
+    let todo = temp.file("todo.txt", "todo");
+    let entries = [&done, &todo]
+        .into_iter()
+        .map(|path| FileEntry::from_meta(path.clone(), &path.symlink_metadata().unwrap()).unwrap())
+        .collect();
+    let spec = transfer_spec("settled-snapshot", entries, &target);
+    begin(&spec).unwrap();
+    let done_destination = target.join("done.txt");
+    let done_key = step_key(&spec, 0, &done_destination);
+    let todo_key = step_key(&spec, 1, &target.join("todo.txt"));
+    mark_running(
+        &spec.operation_id,
+        &done_key,
+        &target.join(".done.txt.cmdr-tmp.0"),
+        &done_destination,
+        PathIdentity::missing(&done_destination),
+    )
+    .unwrap();
+    std::fs::write(&done_destination, "done").unwrap();
+    mark_completed(
+        &spec.operation_id,
+        &done_key,
+        &done_destination,
+        crate::transfer_tuning::FastPath::Buffered,
+    )
+    .unwrap();
+
+    let settled = SettledSteps::load(&spec.operation_id).unwrap();
+
+    assert!(settled.is_settled(&done_key).unwrap());
+    assert!(!settled.is_settled(&todo_key).unwrap());
+    assert!(
+        !settled
+            .is_settled(&IdempotencyKey("unknown".to_string()))
+            .unwrap()
+    );
+    // The effect proof is checked against the live destination, not the
+    // snapshot.
+    std::fs::write(&done_destination, "changed").unwrap();
+    assert!(
+        settled
+            .is_settled(&done_key)
+            .unwrap_err()
+            .contains("changed since operation")
+    );
+    assert!(SettledSteps::load(&OperationId("missing".to_string())).is_err());
+}
+
+#[test]
 fn unsupported_journal_schema_fails_closed() {
     let temp = TempDir::new();
     let path = temp.path().join("journal.json");

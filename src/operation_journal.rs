@@ -1787,12 +1787,29 @@ pub fn completed_effect_is_current(
     prove_completed_effect(step)
 }
 
-pub fn step_is_settled(operation_id: &OperationId, key: &IdempotencyKey) -> Result<bool, String> {
-    let operation = operation(operation_id)?;
-    let Some(step) = operation.steps.iter().find(|step| &step.key == key) else {
-        return Ok(false);
-    };
-    settled_step(step)
+/// The step states an operation held when a run started, loaded once so the
+/// run does not lock and parse the whole journal for every item.
+///
+/// Only a previous run can have settled a step: within a run each step is
+/// checked before it is worked on and never again after it completes. The
+/// completed-effect proof is still checked against the live filesystem.
+pub struct SettledSteps {
+    steps: std::collections::HashMap<IdempotencyKey, OperationStep>,
+}
+
+impl SettledSteps {
+    pub fn load(operation_id: &OperationId) -> Result<Self, String> {
+        let steps = operation(operation_id)?
+            .steps
+            .into_iter()
+            .map(|step| (step.key.clone(), step))
+            .collect();
+        Ok(Self { steps })
+    }
+
+    pub fn is_settled(&self, key: &IdempotencyKey) -> Result<bool, String> {
+        self.steps.get(key).map_or(Ok(false), settled_step)
+    }
 }
 
 pub fn step_checkpoint(

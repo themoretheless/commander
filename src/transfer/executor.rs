@@ -383,6 +383,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 }
                 terminal_guard.journal_started();
             }
+            let settled_steps = journal_enabled
+                .then(|| crate::operation_journal::SettledSteps::load(&spec.operation_id));
             match wait_for_mount(
                 &target_mount,
                 "Destination volume",
@@ -513,11 +515,12 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     }
                 }
 
-                if journal_enabled {
-                    match crate::operation_journal::step_is_settled(
-                        &spec.operation_id,
-                        &work_item.key,
-                    ) {
+                if let Some(settled_steps) = &settled_steps {
+                    match settled_steps
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|steps| steps.is_settled(&work_item.key))
+                    {
                         Ok(true) => {
                             complete_without_copy(
                                 &progress,
