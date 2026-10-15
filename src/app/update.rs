@@ -2370,21 +2370,29 @@ impl App {
         } else {
             TransferKind::Move
         };
-        // The overlay already said the items are in this folder; moving them
-        // onto themselves would only raise a conflict dialog.
-        let onto_own_folder = self.ws.drag_session().is_some_and(|session| {
-            session
-                .target
-                .is_some_and(|target| sources_already_in(target, session.entries))
-        });
-        if kind == TransferKind::Move && onto_own_folder {
-            self.ws.cancel_drag();
-        } else if kind == TransferKind::Move {
-            self.ws.drop_dragged(move || ctx2.request_repaint());
-        } else {
-            self.ws
-                .drop_dragged_as(kind, move || ctx2.request_repaint());
-        }
+        finish_drop(&mut self.ws, kind, move || ctx2.request_repaint());
+    }
+}
+
+/// Complete a released drag with `kind`. A Move onto the sources' own
+/// folder is cancelled: the overlay already said the items are there, and
+/// moving them onto themselves would only raise a conflict dialog.
+fn finish_drop(
+    ws: &mut crate::workspace::Workspace,
+    kind: TransferKind,
+    notify: impl Fn() + Send + 'static,
+) {
+    let onto_own_folder = ws.drag_session().is_some_and(|session| {
+        session
+            .target
+            .is_some_and(|target| sources_already_in(target, session.entries))
+    });
+    if kind == TransferKind::Move && onto_own_folder {
+        ws.cancel_drag();
+    } else if kind == TransferKind::Move {
+        ws.drop_dragged(notify);
+    } else {
+        ws.drop_dragged_as(kind, notify);
     }
 }
 
@@ -2408,7 +2416,7 @@ mod tests {
         command_shortcut, copied_paths_label, delete_outcome_toast, selection_hud_head,
         undo_recorded_toast,
     };
-    use super::{drag_path_rejection, sources_already_in};
+    use super::{drag_path_rejection, finish_drop, sources_already_in};
     use super::{
         dragged_split_ratio, key_bar_modifier_held, selection_hud_bottom, split_left_width,
     };
@@ -2985,6 +2993,32 @@ mod tests {
             selection_hud_head(0, 0, 5, 2),
             "5 selected in 2 other folders"
         );
+    }
+
+    #[test]
+    fn move_drop_onto_the_sources_own_folder_is_cancelled_without_a_dialog() {
+        let (l, r) = (
+            crate::testutil::TempDir::new(),
+            crate::testutil::TempDir::new(),
+        );
+        let file = l.file("a.txt", "alpha");
+        let mut ws =
+            crate::workspace::Workspace::new(l.path().to_path_buf(), r.path().to_path_buf());
+        ws.left.refresh();
+        ws.right.refresh();
+        // Dragging from the left pane onto the right pane, which shows the
+        // same folder the item already sits in.
+        ws.left.drag.set(vec![file.clone()]);
+        ws.right.drag.set_drop_target(l.path().to_path_buf());
+
+        finish_drop(&mut ws, crate::transfer::TransferKind::Move, || {});
+
+        assert!(ws.pending_op.is_none(), "no conflict or transfer is staged");
+        assert!(!ws.has_unfinished_transfer_work());
+        assert!(ws.drag_session().is_none(), "the drag is cancelled");
+        assert!(ws.left.drag.is_empty());
+        assert!(!ws.right.drag.has_drop_target());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha");
     }
 
     #[test]
