@@ -113,6 +113,11 @@ impl ModalOwnershipSnapshot {
     const fn trap_active_after(self, current_open: bool) -> bool {
         crate::accessibility::modal_trap_active(self.prior_open, current_open)
     }
+
+    /// Whether the last modal surface closed during this frame.
+    const fn closed_after(self, current_open: bool) -> bool {
+        self.prior_open && !current_open
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -817,6 +822,12 @@ impl eframe::App for App {
             self.has_modal_surface(),
         );
         let modal_open = input_policy.trapped();
+        // The closed modal took the focused widget with it; give focus back
+        // to the active pane's cursor row so keyboard and assistive-tech
+        // users land where they were.
+        if prior_modal_ownership.closed_after(self.has_modal_surface()) {
+            super::file_list::request_cursor_row_refocus(&ctx);
+        }
         #[cfg(feature = "visual-qa")]
         {
             let owner =
@@ -2656,6 +2667,14 @@ mod tests {
         let policy = frame_policy(true, true, false);
         assert!(!policy.allows_divider_reset(true, true));
         assert!(!policy.background_enabled());
+    }
+
+    #[test]
+    fn only_the_frame_a_modal_closes_on_is_a_close_edge() {
+        assert!(ModalOwnershipSnapshot::capture(true).closed_after(false));
+        assert!(!ModalOwnershipSnapshot::capture(true).closed_after(true));
+        assert!(!ModalOwnershipSnapshot::capture(false).closed_after(false));
+        assert!(!ModalOwnershipSnapshot::capture(false).closed_after(true));
     }
 
     #[test]

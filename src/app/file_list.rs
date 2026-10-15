@@ -363,6 +363,47 @@ const fn follow_cursor_focus(
     cursor_moved && is_active && enabled && !text_editing && focus_in_list
 }
 
+/// Temp-memory key of a pending "give the cursor row focus back" request,
+/// holding the last pass on which it may still be honored.
+const REFOCUS_CURSOR_ROW: &str = "file_list_refocus_cursor_row";
+/// Passes a refocus request stays pending: the closing modal's focused
+/// widget is only dropped by egui at the end of the pass after it vanished.
+const REFOCUS_PASSES: u64 = 3;
+
+/// Ask the active pane to put keyboard focus back on its cursor row, e.g.
+/// after a modal closed and took the focused widget with it.
+pub(super) fn request_cursor_row_refocus(ctx: &egui::Context) {
+    let deadline = ctx.cumulative_pass_nr() + REFOCUS_PASSES;
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(REFOCUS_CURSOR_ROW), deadline));
+    ctx.request_repaint();
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Refocus {
+    /// Focus the cursor row now.
+    Now,
+    /// Not yet possible (focus still held elsewhere, pane disabled); retry.
+    Wait,
+    /// Drop the request: none pending, or its window passed.
+    Drop,
+}
+
+/// What to do with a pending refocus request on pass `pass`, given whether
+/// the pane may take focus now (`eligible`: active, enabled, no text
+/// editing, and focus free or already on this list).
+const fn refocus_decision(deadline: Option<u64>, pass: u64, eligible: bool) -> Refocus {
+    match deadline {
+        Some(deadline) if pass <= deadline => {
+            if eligible {
+                Refocus::Now
+            } else {
+                Refocus::Wait
+            }
+        }
+        _ => Refocus::Drop,
+    }
+}
+
 /// Per-pane id of the list row that last held keyboard focus.
 fn list_focus_key(panel_side: &str) -> egui::Id {
     egui::Id::new(("file_list_focus", panel_side))
@@ -598,6 +639,35 @@ impl App {
                 .data(|data| data.get_temp::<egui::Id>(list_focus_key(panel_side)));
             focused.is_none() || focused == ours
         };
+        let refocus_cursor = is_active && {
+            let key = egui::Id::new(REFOCUS_CURSOR_ROW);
+            let deadline = ui.ctx().data(|data| data.get_temp::<u64>(key));
+            let eligible = follow_cursor_focus(
+                true,
+                is_active,
+                ui.is_enabled(),
+                crate::accessibility::text_input_state(ui.ctx())
+                    .mode()
+                    .is_some(),
+                focus_in_list,
+            );
+            match refocus_decision(deadline, ui.ctx().cumulative_pass_nr(), eligible) {
+                Refocus::Now => {
+                    ui.ctx().data_mut(|data| data.remove::<u64>(key));
+                    true
+                }
+                Refocus::Wait => {
+                    ui.ctx().request_repaint();
+                    false
+                }
+                Refocus::Drop => {
+                    if deadline.is_some() {
+                        ui.ctx().data_mut(|data| data.remove::<u64>(key));
+                    }
+                    false
+                }
+            }
+        };
         let follow_focus = |ui: &egui::Ui, cursor_moved: bool| {
             follow_cursor_focus(
                 cursor_moved,
@@ -710,6 +780,8 @@ impl App {
                         if follow_focus(ui, true) {
                             focus_cursor_row(ui, panel_side, &up_row);
                         }
+                    } else if is_cursor_on_up && refocus_cursor {
+                        focus_cursor_row(ui, panel_side, &up_row);
                     }
                     if up_row.double_clicked() {
                         panel.go_up();
@@ -995,7 +1067,7 @@ impl App {
                         ui.scroll_to_rect(row_rect, Some(Align::Center));
                         scrolled = true;
                     }
-                    if is_cursor && follow_focus(ui, scroll_pending) {
+                    if is_cursor && (refocus_cursor || follow_focus(ui, scroll_pending)) {
                         focus_cursor_row(ui, panel_side, &row_resp);
                     }
 
@@ -1617,15 +1689,24 @@ pub(super) fn append_highlighted(
 #[cfg(test)]
 mod tests {
     use super::{
-        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
-        append_highlighted, click_range, compare_marker, context_menu_unavailable_reason,
-        count_summary, cursor_chevron_fits, cursor_row_to_reveal, drop_target_writable,
-        empty_state, filter_footer, folder_changed, folder_extremes, follow_cursor_focus,
-        grid_row_index, highlight_name_job, map_ranges_to_display, name_char_budget,
-        name_column_width, parent_row_label, row_click_kind, row_content_height, row_spoken_label,
-        selection_footer, selection_size_label, selection_summary_with, visible_rows,
-        visible_selection_summary,
+        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, Refocus, RowClick,
+        accepts_row_drop, append_highlighted, click_range, compare_marker,
+        context_menu_unavailable_reason, count_summary, cursor_chevron_fits, cursor_row_to_reveal,
+        drop_target_writable, empty_state, filter_footer, folder_changed, folder_extremes,
+        follow_cursor_focus, grid_row_index, highlight_name_job, map_ranges_to_display,
+        name_char_budget, name_column_width, parent_row_label, refocus_decision, row_click_kind,
+        row_content_height, row_spoken_label, selection_footer, selection_size_label,
+        selection_summary_with, visible_rows, visible_selection_summary,
     };
+
+    #[test]
+    fn modal_close_refocus_waits_for_free_focus_then_expires() {
+        assert_eq!(refocus_decision(None, 5, true), Refocus::Drop);
+        assert_eq!(refocus_decision(Some(8), 5, false), Refocus::Wait);
+        assert_eq!(refocus_decision(Some(8), 8, true), Refocus::Now);
+        assert_eq!(refocus_decision(Some(8), 9, true), Refocus::Drop);
+        assert_eq!(refocus_decision(Some(8), 9, false), Refocus::Drop);
+    }
 
     #[test]
     fn rows_without_a_captured_identity_explain_the_missing_menu() {
@@ -2114,6 +2195,30 @@ mod tests {
                 render_list_frame(&ctx, &mut panel, Vec::new());
             }
         }
+    }
+
+    #[test]
+    fn a_refocus_request_puts_focus_back_on_the_cursor_row() {
+        let temp = crate::testutil::TempDir::new();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(temp.path().join(name), name).expect("write file");
+        }
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.set_cursor(2);
+        let ctx = egui::Context::default();
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        assert_eq!(ctx.memory(|memory| memory.focused()), None);
+
+        super::request_cursor_row_refocus(&ctx);
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        let focused = ctx.memory(|memory| memory.focused());
+        assert!(focused.is_some());
+        let ours = ctx.data(|data| data.get_temp::<egui::Id>(super::list_focus_key("left")));
+        assert_eq!(focused, ours, "focus is on this list's row");
+        assert_eq!(panel.cursor(), 2, "refocusing does not move the cursor");
     }
 
     #[test]
