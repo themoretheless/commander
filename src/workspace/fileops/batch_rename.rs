@@ -117,13 +117,7 @@ pub fn apply_batch_rename_in(
         Ok(done) => done,
         Err(error) => {
             latch_rename_execution_error(workspace, &error);
-            let panel = match context.panel {
-                ActivePanel::Left => &mut workspace.left,
-                ActivePanel::Right => &mut workspace.right,
-            };
-            if panel.current_path == context.dir {
-                panel.refresh();
-            }
+            refresh_panels_showing(workspace, &context.dir);
             return Err(error.to_string());
         }
     };
@@ -143,7 +137,17 @@ pub fn apply_batch_rename_in(
     };
     if panel.current_path == context.dir {
         panel.clear_selection();
-        panel.refresh();
     }
+    refresh_panels_showing(workspace, &context.dir);
     Ok(done)
+}
+
+/// Re-list every panel showing `dir`, not just the dialog's, so the other
+/// side never keeps the old names when its watcher is unavailable.
+fn refresh_panels_showing(workspace: &mut Workspace, dir: &Path) {
+    for panel in [&mut workspace.left, &mut workspace.right] {
+        if panel.current_path == dir {
+            panel.refresh();
+        }
+    }
 }

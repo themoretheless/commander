@@ -1632,6 +1632,31 @@ fn apply_batch_rename_renames_only_the_selection() {
 }
 
 #[test]
+fn apply_batch_rename_refreshes_the_other_panel_showing_the_folder() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "1");
+    let mut ws = workspace(&l, &r);
+    ws.right.navigate_to(l.path().to_path_buf());
+    ws.right.refresh();
+    ws.left.select_path(file);
+
+    let rule = crate::rename::RenameRule {
+        prefix: "x_".into(),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+
+    let names = ws
+        .right
+        .entries()
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"x_a.txt".to_string()), "{names:?}");
+    assert!(!names.contains(&"a.txt".to_string()), "{names:?}");
+}
+
+#[test]
 fn batch_rename_context_does_not_follow_a_later_panel_switch() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let left_file = l.file("left.txt", "left");
