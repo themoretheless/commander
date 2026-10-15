@@ -847,10 +847,17 @@ fn load_journal_at(path: &Path) -> Result<LoadedJournal, String> {
             gate,
         });
     };
-    if !(1..=JOURNAL_SCHEMA).contains(&journal.schema) {
+    if journal.schema > JOURNAL_SCHEMA {
         return Err(format!(
-            "Unsupported operation journal schema {}; expected {JOURNAL_SCHEMA}",
-            journal.schema
+            "Unsupported operation journal schema {} at {}: it was written by a newer Commander version; upgrade Commander to recover its operations",
+            journal.schema,
+            path.display()
+        ));
+    }
+    if journal.schema == 0 {
+        return Err(format!(
+            "Unsupported operation journal schema 0 at {}; expected {JOURNAL_SCHEMA}",
+            path.display()
         ));
     }
     Ok(LoadedJournal {
@@ -866,15 +873,29 @@ fn load_at(path: &Path) -> Result<Journal, String> {
     Ok(load_journal_at(path)?.journal)
 }
 
-fn map_journal_save_error(error: crate::persistence::JsonSaveError) -> String {
+fn map_journal_save_error(path: &Path, error: crate::persistence::JsonSaveError) -> String {
+    use crate::persistence::PreCommitError;
     match error {
-        crate::persistence::JsonSaveError::PreCommit(
-            crate::persistence::PreCommitError::Conflict,
-        ) => "Operation journal revision mismatch: another writer changed the store".to_string(),
-        crate::persistence::JsonSaveError::PreCommit(error) => format!(
-            "Operation journal was not committed at {:?}: {error:?}",
-            error.stage()
-        ),
+        crate::persistence::JsonSaveError::PreCommit(PreCommitError::Conflict) => {
+            "Operation journal revision mismatch: another writer changed the store".to_string()
+        }
+        crate::persistence::JsonSaveError::PreCommit(PreCommitError::Serialize(error)) => {
+            format!("Operation journal could not be serialized: {error}")
+        }
+        crate::persistence::JsonSaveError::PreCommit(PreCommitError::Io {
+            stage,
+            source,
+            cleanup,
+        }) => {
+            let mut message = format!(
+                "Operation journal {} was not committed: could not {stage}: {source}",
+                path.display()
+            );
+            if let Some(cleanup) = cleanup {
+                message.push_str(&format!("; cleanup also failed: {cleanup}"));
+            }
+            message
+        }
         crate::persistence::JsonSaveError::Blocked(status) => {
             format!("Operation journal save blocked ({status:?})")
         }
@@ -903,7 +924,7 @@ fn save_journal_at(
         crate::persistence::SaveIntent::Automatic,
     ) {
         Ok(outcome) => crate::persistence::require_durable(JOURNAL_NOUN, outcome),
-        Err(error) => Err(map_journal_save_error(error)),
+        Err(error) => Err(map_journal_save_error(path, error)),
     }
 }
 
@@ -2260,12 +2281,21 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
         match step.status {
             StepStatus::Completed => {
                 let effect = effect_path(step);
-                let current = PathIdentity::observe_deep(effect).ok();
+                let current = match PathIdentity::observe_deep(effect) {
+                    Ok(current) => current,
+                    Err(error) => {
+                        plan.remaining.push(RepairItem {
+                            path: effect.to_path_buf(),
+                            action: format!("Could not inspect completed effect: {error}"),
+                            automatic: false,
+                        });
+                        continue;
+                    }
+                };
                 let unchanged = step
                     .destination_after
                     .as_ref()
-                    .zip(current.as_ref())
-                    .is_some_and(|(expected, current)| expected.same_binding(current));
+                    .is_some_and(|expected| expected.same_binding(&current));
                 if !unchanged {
                     plan.remaining.push(RepairItem {
                         path: effect.to_path_buf(),
@@ -2370,10 +2400,20 @@ fn detach_expected_path(
 ) -> Result<PathBuf, String> {
     crate::fs_at::rename_noreplace(path, quarantine)
         .map_err(|error| format!("Could not quarantine {}: {error}", path.display()))?;
-    crate::fs_util::sync_parent_namespace(path)
-        .map_err(|error| format!("Could not sync quarantine rename: {error}"))?;
-    let moved = observe_with_expected_depth(quarantine, expected)
-        .map_err(|error| format!("Could not prove quarantined object: {error}"))?;
+    // From here on the object sits at `quarantine`; every error names it.
+    crate::fs_util::sync_parent_namespace(path).map_err(|error| {
+        format!(
+            "Could not sync quarantine rename of {} to {}: {error}",
+            path.display(),
+            quarantine.display()
+        )
+    })?;
+    let moved = observe_with_expected_depth(quarantine, expected).map_err(|error| {
+        format!(
+            "Could not prove quarantined object at {}: {error}",
+            quarantine.display()
+        )
+    })?;
     if expected.same_version(&moved) {
         return Ok(quarantine.to_path_buf());
     }
@@ -2705,8 +2745,13 @@ fn rollback_step(
                     "Rollback quarantine no longer contains the completed effect".to_string(),
                 );
             }
-            crate::fs_at::rename_noreplace(&receipt.quarantine, &step.source)
-                .map_err(|error| error.to_string())?;
+            crate::fs_at::rename_noreplace(&receipt.quarantine, &step.source).map_err(|error| {
+                format!(
+                    "Could not move {} back to {}: {error}",
+                    receipt.quarantine.display(),
+                    step.source.display()
+                )
+            })?;
             crate::fs_util::sync_parent_namespace(&step.source)
                 .map_err(|error| format!("Could not sync restored source: {error}"))?;
             crate::fs_util::sync_parent_namespace(&receipt.quarantine)
@@ -2912,10 +2957,10 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
                     });
                     continue;
                 }
-                Err(_) => {
+                Err(error) => {
                     plan.remaining.push(RepairItem {
                         path: effect.to_path_buf(),
-                        action: "Completed effect changed; inspect manually".to_string(),
+                        action: format!("Could not verify completed effect: {error}"),
                         automatic: false,
                     });
                     continue;

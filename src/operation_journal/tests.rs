@@ -2000,3 +2000,123 @@ fn begin_accepts_a_resume_manifest_that_omits_settled_steps() {
     assert_eq!(record.status, OperationStatus::Running);
     assert_eq!(record.steps[0].status, StepStatus::Completed);
 }
+
+#[test]
+fn a_journal_from_a_newer_version_names_the_upgrade_and_the_path() {
+    let temp = TempDir::new();
+    let path = temp.path().join("journal.json");
+    std::fs::write(&path, r#"{"schema":99,"operations":[]}"#).unwrap();
+
+    let error = load_at(&path).unwrap_err();
+
+    assert!(error.contains("Unsupported"), "{error}");
+    assert!(error.contains("newer Commander version"), "{error}");
+    assert!(error.contains(&path.display().to_string()), "{error}");
+}
+
+#[test]
+fn journal_save_errors_read_as_sentences_with_the_os_error_and_path() {
+    let path = Path::new("/config/operation-journal.json");
+    let error = map_journal_save_error(
+        path,
+        crate::persistence::JsonSaveError::PreCommit(crate::persistence::PreCommitError::Io {
+            stage: crate::persistence::SaveStage::SyncFile,
+            source: std::io::Error::new(std::io::ErrorKind::StorageFull, "No space left"),
+            cleanup: Some(std::io::Error::other("busy")),
+        }),
+    );
+
+    assert_eq!(
+        error,
+        format!(
+            "Operation journal {} was not committed: could not sync temporary file: No space left; cleanup also failed: busy",
+            path.display()
+        )
+    );
+}
+
+#[test]
+fn repair_plan_reports_why_a_completed_effect_could_not_be_inspected() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("plan-journal.json"));
+    let (mut record, _destination) = completed_created_copy(&temp, "plan-unreadable");
+    let blocker = temp.file("blocker", "a file, not a folder");
+    let landing = blocker.join("item.txt");
+    record.steps[0].landing = Some(landing.clone());
+    record.steps[0].landing_before = None;
+    record.steps[0].destination_after.as_mut().unwrap().path = landing.clone();
+    let id = record.id.clone();
+    save_test_journal(vec![record]);
+
+    let plan = repair_plan(&id).unwrap();
+
+    assert_eq!(plan.remaining.len(), 1);
+    assert_eq!(plan.remaining[0].path, landing);
+    assert!(
+        plan.remaining[0]
+            .action
+            .starts_with("Could not inspect completed effect: "),
+        "{:?}",
+        plan.remaining
+    );
+    assert!(!plan.remaining[0].automatic);
+}
+
+#[test]
+fn rollback_reports_why_a_completed_effect_could_not_be_verified() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("rollback-journal.json"));
+    let (record, destination) = completed_created_copy(&temp, "rollback-changed");
+    let id = record.id.clone();
+    save_test_journal(vec![record]);
+    std::fs::write(&destination, "changed after the operation").unwrap();
+
+    let plan = rollback(&id).unwrap();
+
+    assert_eq!(plan.remaining.len(), 1);
+    let action = &plan.remaining[0].action;
+    assert!(
+        action.starts_with("Could not verify completed effect: "),
+        "{action}"
+    );
+    assert!(action.contains("changed since operation"), "{action}");
+    assert_eq!(
+        std::fs::read_to_string(&destination).unwrap(),
+        "changed after the operation"
+    );
+}
+
+#[test]
+fn rollback_names_both_paths_when_a_move_cannot_go_back() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("move-back-journal.json"));
+    let source = temp.file("gone-folder/item.txt", "moved bytes");
+    let target = temp.dir("move-target");
+    let destination = target.join("item.txt");
+    let mut record = incomplete_record(&source, &destination, StepStatus::Completed);
+    record.kind = TransferKind::Move;
+    record.status = OperationStatus::NeedsReview;
+    std::fs::rename(&source, &destination).unwrap();
+    std::fs::remove_dir(source.parent().unwrap()).unwrap();
+    record.steps[0].landing = Some(destination.clone());
+    record.steps[0].landing_before = record.steps[0].destination_before.clone();
+    record.steps[0].destination_after = Some(PathIdentity::observe_deep(&destination).unwrap());
+    record.steps[0].fast_path = Some(crate::transfer_tuning::FastPath::Rename);
+    let id = record.id.clone();
+    save_test_journal(vec![record]);
+
+    let plan = rollback(&id).unwrap();
+
+    assert_eq!(plan.remaining.len(), 1);
+    let action = &plan.remaining[0].action;
+    assert!(action.starts_with("Could not move "), "{action}");
+    assert!(
+        action.contains(&format!("back to {}", source.display())),
+        "{action}"
+    );
+    let receipt = operation(&id).unwrap().steps[0].rollback.clone().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&receipt.quarantine).unwrap(),
+        "moved bytes"
+    );
+}
