@@ -535,6 +535,39 @@ pub fn file_row_semantics(
     }
 }
 
+/// Publishes a file row's semantics on its response: the spoken label and
+/// selection as widget info, and the AccessKit row node with its grid index.
+/// The context-menu action is offered only while the row is enabled, since
+/// a disabled row ignores the request.
+pub fn publish_row_semantics(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    semantics: &FileRowSemantics,
+    spoken_label: String,
+    row_index: usize,
+) {
+    let enabled = ui.is_enabled();
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            enabled,
+            semantics.selected,
+            &spoken_label,
+        )
+    });
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Row);
+        node.set_row_index(row_index);
+        node.set_selected(semantics.selected);
+        if enabled {
+            node.add_action(egui::accesskit::Action::ShowContextMenu);
+        }
+        if let Some(expanded) = semantics.expanded {
+            node.set_expanded(expanded);
+        }
+    });
+}
+
 pub const fn sanitize_text_scale(scale: f32) -> f32 {
     if scale.is_finite() {
         scale.clamp(0.8, 2.0)

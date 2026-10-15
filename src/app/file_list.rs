@@ -1060,29 +1060,17 @@ impl App {
                         is_cursor,
                         entry.is_dir,
                     );
-                    row_resp.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::SelectableLabel,
-                            ui.is_enabled(),
-                            semantics.selected,
-                            row_spoken_label(
-                                &semantics.label,
-                                item_count,
-                                compare_status.map(|status| compare_marker(status).1),
-                            ),
-                        )
-                    });
-                    ui.ctx().accesskit_node_builder(row_resp.id, |node| {
-                        node.set_role(egui::accesskit::Role::Row);
-                        node.set_row_index(grid_row_index(idx, can_go_up));
-                        node.set_selected(semantics.selected);
-                        if ui.is_enabled() {
-                            node.add_action(egui::accesskit::Action::ShowContextMenu);
-                        }
-                        if let Some(expanded) = semantics.expanded {
-                            node.set_expanded(expanded);
-                        }
-                    });
+                    crate::accessibility::publish_row_semantics(
+                        ui,
+                        &row_resp,
+                        &semantics,
+                        row_spoken_label(
+                            &semantics.label,
+                            item_count,
+                            compare_status.map(|status| compare_marker(status).1),
+                        ),
+                        grid_row_index(idx, can_go_up),
+                    );
                     let accesskit_context_menu_requested = ui.is_enabled()
                         && crate::accessibility::consume_show_context_menu(ui.ctx(), row_resp.id);
                     #[cfg(feature = "visual-qa")]
