@@ -215,6 +215,7 @@ pub fn dir_size_recursive(path: &Path) -> u64 {
 /// Recursively copy a directory tree into a new destination. Directory
 /// symlinks are recreated rather than traversed, and a failed copy removes
 /// only the destination root created by this call.
+#[cfg(test)]
 pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir(dst)?;
     fill_new_dir(src, dst)

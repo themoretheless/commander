@@ -1990,6 +1990,8 @@ mod tests {
             }
         }
     }
+
+    #[test]
     fn matches_stay_aligned_when_controls_are_shown_as_symbols() {
         let name = "a\tbcdefghij.txt";
         let display = crate::display_name::truncate_preserving_extension(name, 8);

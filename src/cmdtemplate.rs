@@ -245,6 +245,7 @@ impl Templates {
 
     /// The templates that apply to `entries` (extension filter accepts them),
     /// in stored order.
+    #[cfg(test)]
     pub fn matching(&self, entries: &[FileEntry]) -> Vec<&Template> {
         self.items.iter().filter(|t| t.matches(entries)).collect()
     }
