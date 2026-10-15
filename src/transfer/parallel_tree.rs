@@ -13,7 +13,9 @@ use std::thread;
 use rayon::prelude::*;
 
 use super::TransferState;
-use super::buffered::copy_file_buffered_with_limiter;
+use super::buffered::{
+    copy_file_buffered_with_limiter, restore_dir_permissions, special_file_error, with_path,
+};
 use crate::fs_util::copy_symlink;
 
 /// Bound the scan→worker queue so a deep tree cannot materialize every leaf
@@ -86,7 +88,8 @@ pub(super) fn copy_dir_buffered_parallel(
                     None,
                     None,
                     preserve_sparse,
-                )?;
+                )
+                .map_err(|e| with_path(e, &source))?;
                 copied.fetch_add(bytes, Ordering::Relaxed);
                 Ok(())
             })
@@ -106,9 +109,7 @@ pub(super) fn copy_dir_buffered_parallel(
     }
 
     let modes = std::mem::take(&mut *crate::lock_util::recover(&permissions));
-    for (path, mode) in modes.into_iter().rev() {
-        std::fs::set_permissions(path, mode)?;
-    }
+    restore_dir_permissions(modes);
     Ok(copied.load(Ordering::Relaxed))
 }
 
@@ -129,12 +130,12 @@ fn stream_buffered_tree(
                 "cancelled while scanning the directory copy",
             ));
         }
-        let metadata = std::fs::symlink_metadata(&source)?;
+        let metadata = std::fs::symlink_metadata(&source).map_err(|e| with_path(e, &source))?;
         if metadata.file_type().is_symlink() {
-            copy_symlink(&source, &destination)?;
+            copy_symlink(&source, &destination).map_err(|e| with_path(e, &source))?;
             continue;
         }
-        if !metadata.is_dir() {
+        if metadata.is_file() {
             // Bounded send: back-pressures the scan so queued path pairs stay
             // O(workers), not O(tree).
             if tx.send((source, destination)).is_err() {
@@ -143,9 +144,14 @@ fn stream_buffered_tree(
             }
             continue;
         }
-        std::fs::create_dir(&destination)?;
+        if !metadata.is_dir() {
+            return Err(special_file_error(&source));
+        }
+        std::fs::create_dir(&destination).map_err(|e| with_path(e, &destination))?;
         crate::lock_util::recover(permissions).push((destination.clone(), metadata.permissions()));
-        let mut children = std::fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
+        let mut children = std::fs::read_dir(&source)
+            .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
+            .map_err(|e| with_path(e, &source))?;
         children.sort_by_key(|entry| entry.file_name());
         for entry in children.into_iter().rev() {
             tasks.push((entry.path(), destination.join(entry.file_name())));
@@ -186,5 +192,70 @@ mod tests {
         assert_eq!(file_job_queue_bound(8), 64);
         // Never grows with tree size — only with worker count.
         assert!(file_job_queue_bound(32) < 1_000);
+    }
+
+    use crate::testutil::TempDir;
+    use crate::transfer::TransferProgress;
+
+    fn progress() -> TransferState {
+        Arc::new(Mutex::new(TransferProgress::new(0, 1)))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_refuses_a_fifo_after_queueing_earlier_files_without_hanging() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        // More files than the queue holds, scanned before the FIFO in "z".
+        for index in 0..(file_job_queue_bound(2) * 3) {
+            tmp.file(&format!("src/a/{index:03}.txt"), "x");
+        }
+        tmp.dir("src/z");
+        let fifo = std::ffi::CString::new(src.join("z/pipe").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+
+        let error =
+            copy_dir_buffered_parallel(&src, &tmp.path().join("dst"), &progress(), 2, false)
+                .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("z/pipe"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_tree_copy_restores_folder_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        let nested = tmp.dir("src/nested");
+        tmp.file("src/nested/f.txt", "abc");
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let dst = tmp.path().join("dst");
+
+        assert_eq!(
+            copy_dir_buffered_parallel(&src, &dst, &progress(), 2, false).unwrap(),
+            3
+        );
+        let mode = std::fs::metadata(dst.join("nested"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn scan_errors_name_the_path_they_failed_on() {
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        tmp.file("src/a.txt", "a");
+        // The destination root already exists, so the scan's create fails.
+        let dst = tmp.dir("taken");
+        let error = copy_dir_buffered_parallel(&src, &dst, &progress(), 2, false).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("taken"), "{error}");
     }
 }

@@ -251,10 +251,43 @@ fn persist_checkpoint(
     )?)
 }
 
+/// Name the tree entry an error came from, so a failure deep in a folder
+/// copy is not reported against the top folder. The kind (which drives
+/// failure classification) and the OS error text are kept; a cancel passes
+/// through untouched.
+pub(super) fn with_path(error: std::io::Error, path: &Path) -> std::io::Error {
+    if error.kind() == std::io::ErrorKind::Interrupted {
+        return error;
+    }
+    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
+/// Refusal for a tree entry that is neither file, folder nor symlink.
+/// Opening a FIFO blocks until a writer appears, beyond the reach of cancel,
+/// and devices and sockets have no bytes to copy.
+pub(super) fn special_file_error(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "{}: special file (FIFO, socket or device) cannot be copied",
+            path.display()
+        ),
+    )
+}
+
+/// Apply source folder modes, deepest first, once every child exists (a
+/// read-only folder would otherwise refuse its own contents). Best effort,
+/// like file modes: a target that rejects chmod (some FAT/SMB mounts) must
+/// not fail a copy whose data all landed.
+pub(super) fn restore_dir_permissions(modes: Vec<(PathBuf, std::fs::Permissions)>) {
+    for (path, mode) in modes.into_iter().rev() {
+        let _ = std::fs::set_permissions(path, mode);
+    }
+}
+
 /// Recursively copy a directory with progress (buffered strategy).
-/// Returns total bytes copied. Symlinks are recreated as links rather than
-/// followed, so a link pointing back into the tree cannot cause infinite
-/// recursion.
+/// Returns total bytes copied. Symlinks follow `symlink_policy`; followed
+/// links are checked for cycles against the folders currently being walked.
 pub(super) fn copy_dir_buffered_with_limiter(
     src: &Path,
     dst: &Path,
@@ -263,13 +296,19 @@ pub(super) fn copy_dir_buffered_with_limiter(
     preserve_sparse: bool,
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 ) -> std::io::Result<u64> {
+    use crate::filesystem_policy::SymlinkPolicy;
+
     enum Task {
         Visit(PathBuf, PathBuf),
         ExitDirectory(PathBuf),
     }
 
+    // Only a followed link can lead back into the walk, so other policies
+    // skip the per-folder canonicalize.
+    let follow = symlink_policy == SymlinkPolicy::Follow;
     let mut tasks = vec![Task::Visit(src.to_path_buf(), dst.to_path_buf())];
     let mut ancestors = std::collections::HashSet::new();
+    let mut modes = Vec::new();
     let mut copied = 0u64;
     while let Some(task) = tasks.pop() {
         crate::transfer::check_cancelled(state)?;
@@ -278,21 +317,25 @@ pub(super) fn copy_dir_buffered_with_limiter(
                 ancestors.remove(&canonical);
             }
             Task::Visit(source, destination) => {
-                let metadata = std::fs::symlink_metadata(&source)?;
+                let metadata =
+                    std::fs::symlink_metadata(&source).map_err(|e| with_path(e, &source))?;
                 if metadata.file_type().is_symlink() {
                     match symlink_policy {
-                        crate::filesystem_policy::SymlinkPolicy::Preserve => {
-                            crate::fs_util::copy_symlink(&source, &destination)?;
+                        SymlinkPolicy::Preserve => {
+                            crate::fs_util::copy_symlink(&source, &destination)
+                                .map_err(|e| with_path(e, &source))?;
                         }
-                        crate::filesystem_policy::SymlinkPolicy::Skip => {}
-                        crate::filesystem_policy::SymlinkPolicy::Follow => {
-                            tasks.push(Task::Visit(std::fs::canonicalize(&source)?, destination));
+                        SymlinkPolicy::Skip => {}
+                        SymlinkPolicy::Follow => {
+                            let target = std::fs::canonicalize(&source)
+                                .map_err(|e| with_path(e, &source))?;
+                            tasks.push(Task::Visit(target, destination));
                         }
                     }
                     continue;
                 }
-                if !metadata.is_dir() {
-                    copied += copy_file_buffered_with_limiter(
+                if metadata.is_file() {
+                    let bytes = copy_file_buffered_with_limiter(
                         &source,
                         &destination,
                         state,
@@ -300,20 +343,36 @@ pub(super) fn copy_dir_buffered_with_limiter(
                         None,
                         None,
                         preserve_sparse,
-                    )?;
+                    )
+                    .map_err(|e| with_path(e, &source))?;
+                    copied = copied.saturating_add(bytes);
                     continue;
                 }
-                let canonical = std::fs::canonicalize(&source)?;
-                if !ancestors.insert(canonical.clone()) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("symlink cycle detected at {}", source.display()),
-                    ));
+                if !metadata.is_dir() {
+                    return Err(special_file_error(&source));
                 }
-                std::fs::create_dir(&destination)?;
-                let mut children = std::fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
+                let canonical = if follow {
+                    let canonical =
+                        std::fs::canonicalize(&source).map_err(|e| with_path(e, &source))?;
+                    if !ancestors.insert(canonical.clone()) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("symlink cycle detected at {}", source.display()),
+                        ));
+                    }
+                    Some(canonical)
+                } else {
+                    None
+                };
+                std::fs::create_dir(&destination).map_err(|e| with_path(e, &destination))?;
+                modes.push((destination.clone(), metadata.permissions()));
+                let mut children = std::fs::read_dir(&source)
+                    .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
+                    .map_err(|e| with_path(e, &source))?;
                 children.sort_by_key(|entry| entry.file_name());
-                tasks.push(Task::ExitDirectory(canonical));
+                if let Some(canonical) = canonical {
+                    tasks.push(Task::ExitDirectory(canonical));
+                }
                 for entry in children.into_iter().rev() {
                     tasks.push(Task::Visit(
                         entry.path(),
@@ -323,6 +382,7 @@ pub(super) fn copy_dir_buffered_with_limiter(
             }
         }
     }
+    restore_dir_permissions(modes);
     Ok(copied)
 }
 
@@ -571,5 +631,98 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
         assert!(!dst.exists());
+    }
+
+    #[cfg(unix)]
+    fn mkfifo(path: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+    }
+
+    fn copy_tree(
+        src: &Path,
+        dst: &Path,
+        policy: crate::filesystem_policy::SymlinkPolicy,
+    ) -> std::io::Result<u64> {
+        copy_dir_buffered_with_limiter(src, dst, &state(), &mut unlimited(), false, policy)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sequential_tree_copy_restores_folder_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        let nested = tmp.dir("src/nested");
+        tmp.file("src/nested/f.txt", "abc");
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let dst = tmp.path().join("dst");
+
+        for policy in [
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+            crate::filesystem_policy::SymlinkPolicy::Follow,
+        ] {
+            let _ = std::fs::remove_dir_all(&dst);
+            assert_eq!(copy_tree(&src, &dst, policy).unwrap(), 3);
+            let mode = std::fs::metadata(dst.join("nested"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700, "{policy:?}");
+            assert_eq!(
+                std::fs::read_to_string(dst.join("nested/f.txt")).unwrap(),
+                "abc"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sequential_tree_copy_refuses_fifos_instead_of_blocking() {
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        tmp.file("src/a.txt", "a");
+        mkfifo(&src.join("pipe"));
+        let error = copy_tree(
+            &src,
+            &tmp.path().join("dst"),
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("pipe"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sequential_tree_copy_errors_name_the_failing_child() {
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        tmp.file("src/deep/inner/file.txt", "x");
+        // A dangling link deep in the tree fails when followed.
+        std::os::unix::fs::symlink(tmp.path().join("gone"), src.join("deep/inner/dangling"))
+            .unwrap();
+        let error = copy_tree(
+            &src,
+            &tmp.path().join("dst"),
+            crate::filesystem_policy::SymlinkPolicy::Follow,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("deep/inner/dangling"), "{error}");
+    }
+
+    #[test]
+    fn with_path_keeps_kind_and_passes_cancel_through() {
+        let error = with_path(
+            std::io::Error::from(std::io::ErrorKind::StorageFull),
+            Path::new("/a/b.txt"),
+        );
+        assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+        assert!(error.to_string().starts_with("/a/b.txt: "), "{error}");
+        let cancel = with_path(crate::transfer::cancelled_error(), Path::new("/a"));
+        assert_eq!(cancel.to_string(), "cancelled");
     }
 }
