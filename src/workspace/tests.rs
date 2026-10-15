@@ -4990,6 +4990,20 @@ fn feedback_text_uses_singular_and_plural_nouns() {
 }
 
 #[test]
+fn unsaved_trust_change_is_reported_as_an_error() {
+    let root = Path::new("/x/y");
+    let label = crate::trust::TrustLabel::Untrusted;
+    assert_eq!(
+        trust_change_notice(root, label, true),
+        (trust_notice(root, label), false)
+    );
+    let (message, error) = trust_change_notice(root, label, false);
+    assert!(error);
+    assert!(message.starts_with(&trust_notice(root, label)), "{message}");
+    assert!(message.contains("not saved"), "{message}");
+}
+
+#[test]
 fn listing_copy_label_counts_a_single_row() {
     let (l, r) = (TempDir::new(), TempDir::new());
     l.file("only.txt", "x");

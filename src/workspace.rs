@@ -494,6 +494,24 @@ fn trust_notice(root: &Path, label: crate::trust::TrustLabel) -> String {
     format!("Marked {} as {}: {effect}", root.display(), label.label())
 }
 
+/// The toast after a trust change and whether it is an error: a label that
+/// could not be saved still applies, but only until restart.
+fn trust_change_notice(
+    root: &Path,
+    label: crate::trust::TrustLabel,
+    saved: bool,
+) -> (String, bool) {
+    let notice = trust_notice(root, label);
+    if saved {
+        (notice, false)
+    } else {
+        (
+            format!("{notice} (not saved; applies until restart, see persistence health)"),
+            true,
+        )
+    }
+}
+
 /// Toast for applying a workspace profile, naming saved folders that no
 /// longer exist (those sides were left where they were).
 fn profile_applied_message(name: &str, missing: &[&PathBuf]) -> String {
@@ -1417,8 +1435,9 @@ impl Workspace {
 
     fn set_active_trust(&mut self, label: crate::trust::TrustLabel) {
         let root = self.active_panel_ref().current_path.clone();
-        crate::trust::set_label(&root, label);
-        self.notice(trust_notice(&root, label));
+        let saved = crate::trust::set_label(&root, label);
+        let (message, error) = trust_change_notice(&root, label, saved);
+        self.emit_ui_request(UiRequest::Notice { message, error });
     }
 
     /// Emit a non-error toast.
