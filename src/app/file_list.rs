@@ -256,6 +256,31 @@ fn grid_row_index(filtered_index: usize, has_parent_row: bool) -> usize {
     filtered_index + usize::from(has_parent_row)
 }
 
+/// Allocated height of a file row: the density's text and padding, never
+/// below the minimum control size (Compact would otherwise be 23 pt).
+fn row_content_height(metrics: crate::density::DensityMetrics) -> f32 {
+    (metrics.name_pt + metrics.row_pad_y * 2.0 + 7.0).max(crate::accessibility::MIN_CONTROL_POINTS)
+}
+
+/// Whether the cursor chevron fits at the row's leading edge. A selected
+/// row's check mark sits there, so the cursor shows by its outline alone.
+const fn cursor_chevron_fits(is_selected: bool) -> bool {
+    !is_selected
+}
+
+/// Room kept after the name for the compare symbol in narrow rows.
+const INLINE_COMPARE_WIDTH: f32 = 14.0;
+
+/// Name column width. Narrow rows have no metadata column, so the compare
+/// symbol (a non-color cue next to the stripe) follows the name instead.
+fn name_column_width(layout: crate::accessibility::FileRowLayout, inline_compare: bool) -> f32 {
+    if inline_compare && !layout.show_metadata {
+        (layout.name_width - INLINE_COMPARE_WIDTH).max(1.0)
+    } else {
+        layout.name_width
+    }
+}
+
 /// Spoken label of the ".." row. Like file rows it says "State: cursor"
 /// while the keyboard cursor sits on it.
 fn parent_row_label(is_cursor: bool) -> &'static str {
@@ -572,7 +597,7 @@ impl App {
                 // allocated row height; `row_h` adds the 1px item spacing so the
                 // virtualization stride matches (Comfortable == 28 + 1 == 29,
                 // the pre-density default).
-                let row_content = metrics.name_pt + metrics.row_pad_y * 2.0 + 7.0;
+                let row_content = row_content_height(metrics);
                 let row_h = row_content + 1.0;
                 // Dark theme? Derived from the panel background luminance, so the
                 // semantic kind stub can pick the right toned palette.
@@ -768,13 +793,6 @@ impl App {
                             t.bg_hover.linear_multiply(0.3),
                         );
                     }
-                    if is_cursor {
-                        paint_cursor_marker(ui.painter(), full_rect, t, true);
-                    }
-                    if row_resp.has_focus() {
-                        paint_focus_ring(ui.painter(), full_rect, t);
-                    }
-
                     // Occupancy bar: width proportional to this entry's share
                     // of the largest entry, ramping to a warning tint when it
                     // dominates the directory.
@@ -840,6 +858,20 @@ impl App {
                         );
                     }
 
+                    // Cursor and focus go over the bar and the stub/stripe,
+                    // which would otherwise cover their edges.
+                    if is_cursor {
+                        paint_cursor_marker(
+                            ui.painter(),
+                            full_rect,
+                            t,
+                            cursor_chevron_fits(is_selected),
+                        );
+                    }
+                    if row_resp.has_focus() {
+                        paint_focus_ring(ui.painter(), full_rect, t);
+                    }
+
                     // Content
                     let mut child_ui = ui.new_child(
                         egui::UiBuilder::new().max_rect(row_rect.shrink2(egui::vec2(6.0, 3.0))),
@@ -892,8 +924,9 @@ impl App {
                         };
                         let responsive =
                             crate::accessibility::file_row_layout(ui.available_width());
-                        let max_name_chars =
-                            name_char_budget(responsive.name_width, avg_glyph_width);
+                        let inline_compare = compare_status.filter(|_| !responsive.show_metadata);
+                        let name_width = name_column_width(responsive, inline_compare.is_some());
+                        let max_name_chars = name_char_budget(name_width, avg_glyph_width);
                         let display_name = crate::display_name::truncate_preserving_extension(
                             &entry.name,
                             max_name_chars,
@@ -928,16 +961,26 @@ impl App {
                         // read from the left edge of the column.
                         let name_response = ui
                             .allocate_ui_with_layout(
-                                egui::vec2(responsive.name_width, row_content),
+                                egui::vec2(name_width, row_content),
                                 Layout::left_to_right(Align::Center),
                                 |ui| {
-                                    ui.set_min_width(responsive.name_width);
+                                    ui.set_min_width(name_width);
                                     ui.add(name_label.truncate())
                                 },
                             )
                             .inner;
                         if shortened {
                             name_response.on_hover_text(&entry.name);
+                        }
+                        if let Some(status) = inline_compare {
+                            let (symbol, hint) = compare_marker(status);
+                            ui.label(
+                                egui::RichText::new(symbol)
+                                    .size(metrics.meta_pt)
+                                    .strong()
+                                    .color(t.text_secondary),
+                            )
+                            .on_hover_text(hint);
                         }
 
                         if responsive.show_metadata {
@@ -1268,8 +1311,8 @@ impl App {
 }
 
 /// Build a file name as a [`LayoutJob`], tinting the characters the fuzzy
-/// filter matched (`ranges`, char indices into `name`) in `accent` so the
-/// user sees why the row survived the filter.
+/// filter matched (`ranges`, char indices into `name`) in `accent`, and
+/// underlining them, so the user sees why the row survived the filter.
 fn highlight_name_job(
     name: &str,
     ranges: &[(usize, usize)],
@@ -1283,13 +1326,19 @@ fn highlight_name_job(
     let mut buf = [0u8; 4];
     for (idx, ch) in name.chars().enumerate() {
         let hit = ranges.iter().any(|&(s, e)| idx >= s && idx < e);
-        let color = if hit { accent } else { base };
+        // Matches are underlined too, so they do not rely on hue alone.
+        let (color, underline) = if hit {
+            (accent, egui::Stroke::new(1.0, accent))
+        } else {
+            (base, egui::Stroke::NONE)
+        };
         job.append(
             ch.encode_utf8(&mut buf),
             0.0,
             TextFormat {
                 font_id: font.clone(),
                 color,
+                underline,
                 ..Default::default()
             },
         );
@@ -1300,10 +1349,12 @@ fn highlight_name_job(
 #[cfg(test)]
 mod tests {
     use super::{
-        EmptyAction, PENDING_SIZE_SPOKEN, compare_marker, cursor_row_to_reveal,
-        drop_target_writable, empty_state, folder_changed, grid_row_index, map_ranges_to_display,
-        name_char_budget, parent_row_label, row_spoken_label, selection_size_label,
-        selection_summary_with, visible_rows, visible_selection_summary,
+        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, compare_marker,
+        cursor_chevron_fits, cursor_row_to_reveal, drop_target_writable, empty_state,
+        folder_changed, grid_row_index, highlight_name_job, map_ranges_to_display,
+        name_char_budget, name_column_width, parent_row_label, row_content_height,
+        row_spoken_label, selection_size_label, selection_summary_with, visible_rows,
+        visible_selection_summary,
     };
 
     #[test]
@@ -1521,5 +1572,48 @@ mod tests {
         assert_eq!(grid_row_index(0, true), 1);
         assert_eq!(grid_row_index(0, false), 0);
         assert_eq!(grid_row_index(41, true), 42);
+    }
+
+    #[test]
+    fn compact_rows_keep_the_minimum_control_height() {
+        use crate::density::{Density, metrics};
+        assert_eq!(
+            row_content_height(metrics(Density::Compact)),
+            crate::accessibility::MIN_CONTROL_POINTS
+        );
+        // Roomier tiers keep their own height (Comfortable is the old 28).
+        assert_eq!(row_content_height(metrics(Density::Comfortable)), 28.0);
+    }
+
+    #[test]
+    fn selected_cursor_row_drops_the_chevron_for_the_check_mark() {
+        assert!(cursor_chevron_fits(false));
+        assert!(!cursor_chevron_fits(true));
+    }
+
+    #[test]
+    fn narrow_rows_keep_room_for_the_compare_symbol() {
+        let narrow = crate::accessibility::file_row_layout(120.0);
+        assert!(!narrow.show_metadata);
+        assert_eq!(
+            name_column_width(narrow, true),
+            narrow.name_width - INLINE_COMPARE_WIDTH
+        );
+        assert_eq!(name_column_width(narrow, false), narrow.name_width);
+        let wide = crate::accessibility::file_row_layout(400.0);
+        assert_eq!(name_column_width(wide, true), wide.name_width);
+    }
+
+    #[test]
+    fn filter_matches_are_underlined_not_only_tinted() {
+        let base = egui::Color32::GRAY;
+        let accent = egui::Color32::RED;
+        let job = highlight_name_job("abc", &[(1, 2)], base, accent, 13.0);
+        let underlines: Vec<bool> = job
+            .sections
+            .iter()
+            .map(|section| section.format.underline != egui::Stroke::NONE)
+            .collect();
+        assert_eq!(underlines, vec![false, true, false]);
     }
 }
