@@ -494,6 +494,9 @@ pub enum SortOrder {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FolderOverview {
     pub total: Option<u64>,
+    /// Some subdirectory is not measured (yet, or skipped as too costly):
+    /// `total` is a lower bound, not the folder's size.
+    pub partial: bool,
     pub largest: Option<(String, u64)>,
     pub oldest: Option<(String, SystemTime)>,
 }
@@ -2350,6 +2353,7 @@ mod tests {
             panel.folder_overview(),
             FolderOverview {
                 total: Some(0),
+                partial: false,
                 largest: None,
                 oldest: None,
             }

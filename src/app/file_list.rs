@@ -458,8 +458,19 @@ fn focus_cursor_row(ui: &egui::Ui, panel_side: &str, response: &egui::Response) 
 /// Footer item count with the folder size. Under a filter the size is
 /// still the whole folder's, so it is labelled as such rather than read as
 /// the size of the matching rows.
-fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<u64>) -> String {
-    let size = size.map_or_else(|| "\u{2026}".to_string(), format_size);
+fn count_summary(
+    shown: usize,
+    total: usize,
+    filters_active: bool,
+    size: Option<u64>,
+    partial: bool,
+) -> String {
+    // A total that still misses unmeasured folders is a lower bound.
+    let size = match size {
+        None => "\u{2026}".to_string(),
+        Some(bytes) if partial => format!("\u{2265} {}\u{2026}", format_size(bytes)),
+        Some(bytes) => format_size(bytes),
+    };
     if filters_active {
         format!(
             "{shown} of {} (folder {size})",
@@ -1498,7 +1509,13 @@ impl App {
                                     .truncate()
                             };
                             ui.add(footer(
-                                count_summary(shown, total, filters_active, overview.total),
+                                count_summary(
+                                    shown,
+                                    total,
+                                    filters_active,
+                                    overview.total,
+                                    overview.partial,
+                                ),
                                 t.text_muted,
                             ));
                             if filters_active {
@@ -2124,18 +2141,29 @@ mod tests {
 
     #[test]
     fn footer_count_is_singular_for_one_item() {
-        assert_eq!(count_summary(1, 1, false, Some(3)), "1 item (3 B)");
-        assert_eq!(count_summary(2, 2, false, None), "2 items (\u{2026})");
+        assert_eq!(count_summary(1, 1, false, Some(3), false), "1 item (3 B)");
         assert_eq!(
-            count_summary(0, 1, true, Some(3)),
+            count_summary(2, 2, false, None, false),
+            "2 items (\u{2026})"
+        );
+        assert_eq!(
+            count_summary(0, 1, true, Some(3), false),
             "0 of 1 item (folder 3 B)"
+        );
+    }
+
+    #[test]
+    fn partial_folder_total_reads_as_a_lower_bound() {
+        assert_eq!(
+            count_summary(2, 2, false, Some(3), true),
+            "2 items (\u{2265} 3 B\u{2026})"
         );
     }
 
     #[test]
     fn filtered_footer_marks_the_size_as_the_folder_total() {
         assert_eq!(
-            count_summary(12, 400, true, Some(2048)),
+            count_summary(12, 400, true, Some(2048), false),
             format!(
                 "12 of 400 items (folder {})",
                 crate::panel::format_size(2048)
