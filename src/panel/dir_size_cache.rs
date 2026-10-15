@@ -1148,9 +1148,10 @@ pub fn flush_cache() {
         let _boundary = lock_recover(scan_commit_boundary());
         let mut cache = lock_recover(dir_size_cache());
         prune_dir_size_cache_to(&mut cache, DIR_SIZE_CACHE_LIMIT, DIR_SIZE_CACHE_RETAIN);
-        persisted_snapshot(&cache)
-        // Lock dropped here: serialization and IO happen outside it.
+        persisted_entries(&cache)
+        // Lock dropped here: sorting, serialization and IO happen outside it.
     };
+    let persisted = finish_persisted_snapshot(persisted);
     if let Err(error) = crate::persistence::save_json_atomic(&path, &persisted)
         && first_cache_warning(&CACHE_SAVE_WARNED)
     {
@@ -1167,7 +1168,15 @@ pub fn flush_cache() {
 pub(super) fn persisted_snapshot(
     cache: &HashMap<VolumePathKey, (SystemTime, u64)>,
 ) -> PersistedCache {
-    let mut entries: Vec<PersistedCacheEntry> = cache
+    finish_persisted_snapshot(persisted_entries(cache))
+}
+
+/// The cheap half of `persisted_snapshot`, run while the cache lock is held:
+/// convert the entries without ordering them.
+fn persisted_entries(
+    cache: &HashMap<VolumePathKey, (SystemTime, u64)>,
+) -> Vec<PersistedCacheEntry> {
+    cache
         .iter()
         .filter_map(|(key, (mtime, size))| {
             let since_epoch = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -1178,7 +1187,11 @@ pub(super) fn persisted_snapshot(
                 size: *size,
             })
         })
-        .collect();
+        .collect()
+}
+
+/// Sort the entries into key order (outside any lock) and wrap them.
+fn finish_persisted_snapshot(mut entries: Vec<PersistedCacheEntry>) -> PersistedCache {
     entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
     PersistedCache { schema: 1, entries }
 }
