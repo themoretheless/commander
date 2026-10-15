@@ -30,7 +30,9 @@ impl ProbeStatus {
             Self::Waiting => "Waiting to check folder".to_string(),
             Self::Busy => "Previous folder check still running\u{2026}".to_string(),
             Self::Checking => "Checking folder\u{2026}".to_string(),
-            Self::Valid => "\u{2713} folder".to_string(),
+            // A full sentence: this feeds a polite live region, where a bare
+            // "\u{2713} folder" was read out as "check mark folder".
+            Self::Valid => "Folder found. Press Enter to open it.".to_string(),
             Self::Error(error) => error.to_string(),
             Self::WorkerFailed(message) => message.clone(),
         }
@@ -437,6 +439,13 @@ mod tests {
 
     fn controller(input: &str) -> PathProbeController {
         PathProbeController::new(41, input.to_string(), PathBuf::from("/home/test"), 0.0)
+    }
+
+    #[test]
+    fn valid_status_reads_as_a_sentence_without_glyphs() {
+        let message = ProbeStatus::Valid.message();
+        assert_eq!(message, "Folder found. Press Enter to open it.");
+        assert!(message.is_ascii());
     }
 
     #[test]
