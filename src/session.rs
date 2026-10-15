@@ -152,9 +152,10 @@ const fn default_true() -> bool {
 }
 
 impl Session {
-    /// Panel paths that still exist as directories, falling back to `home`.
-    /// A path that does not answer within [`RESTORE_PROBE_TIMEOUT`] (a hung
-    /// mount) also falls back, so startup never blocks on it.
+    /// Panel paths that still exist as directories. A deleted folder restores
+    /// to its nearest surviving ancestor below the filesystem root, else to
+    /// `home`. A path that does not answer within [`RESTORE_PROBE_TIMEOUT`] (a
+    /// hung mount) also falls back to `home`, so startup never blocks on it.
     pub fn sanitized_paths(&self, home: &Path) -> (PathBuf, PathBuf) {
         self.sanitized_paths_with(home, RESTORE_PROBE_TIMEOUT, |p| p.is_dir())
     }
@@ -175,27 +176,37 @@ impl Session {
             let path = path.to_path_buf();
             let probe = probe.clone();
             std::thread::spawn(move || {
-                let _ = sender.send(probe(&path));
+                let _ = sender.send(nearest_surviving_dir(&path, probe));
             });
             receiver
         };
         let left = spawn(&self.left_path);
         let right = spawn(&self.right_path);
         let deadline = Instant::now() + timeout;
-        let pick = |receiver: std::sync::mpsc::Receiver<bool>, path: &Path| {
+        let pick = |receiver: std::sync::mpsc::Receiver<Option<PathBuf>>| {
             let budget = deadline.saturating_duration_since(Instant::now());
-            if receiver.recv_timeout(budget).unwrap_or(false) {
-                path.to_path_buf()
-            } else {
-                home.to_path_buf()
-            }
+            receiver
+                .recv_timeout(budget)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| home.to_path_buf())
         };
-        (pick(left, &self.left_path), pick(right, &self.right_path))
+        (pick(left), pick(right))
     }
 
     pub(crate) fn view_configs(&self) -> [crate::panel::ViewConfig; 2] {
         [self.left_view.view_config(), self.right_view.view_config()]
     }
+}
+
+/// `path` itself or its nearest ancestor that `is_dir` accepts. The bare
+/// filesystem root does not count: a panel restored there is rarely what the
+/// user wants, so the caller falls back to home instead.
+fn nearest_surviving_dir(path: &Path, is_dir: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    path.ancestors()
+        .filter(|ancestor| ancestor.parent().is_some())
+        .find(|ancestor| is_dir(ancestor))
+        .map(Path::to_path_buf)
 }
 
 fn persisted_view_config(
@@ -430,6 +441,16 @@ mod tests {
         let (l, r) = s.sanitized_paths(home.path());
         assert_eq!(l, real); // exists -> kept
         assert_eq!(r, home.path()); // missing -> home
+    }
+
+    #[test]
+    fn sanitized_paths_restore_the_nearest_surviving_ancestor() {
+        let home = TempDir::new();
+        let projects = home.dir("Projects");
+        let s = sample(projects.join("deleted/deeper"), projects.clone());
+        let (l, r) = s.sanitized_paths(home.path());
+        assert_eq!(l, projects);
+        assert_eq!(r, projects);
     }
 
     #[test]
