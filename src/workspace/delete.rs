@@ -413,6 +413,18 @@ fn process_ready_target(
             None,
         );
     }
+    // Preserving a large folder can take long; honor a cancel that arrived
+    // meanwhile before the item is mutated.
+    if runtime.cancel.load(Ordering::Acquire) {
+        return (
+            discard_rejected_version(
+                TrashItemOutcome::Cancelled,
+                record.as_ref(),
+                runtime.versions,
+            ),
+            None,
+        );
+    }
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.port.move_to_trash(target)
     }))
@@ -1298,5 +1310,71 @@ mod tests {
             assert_eq!(outcome.failed, usize::from(counted_as_failure));
             assert_eq!(outcome.cancelled, !counted_as_failure);
         }
+    }
+
+    /// Version store whose preserve raises the batch's cancel flag, as a
+    /// user cancelling during a long folder copy would.
+    struct CancellingVersionStore<'a> {
+        inner: RecordingVersionStore,
+        cancel: &'a AtomicBool,
+    }
+
+    impl DeleteVersionStore for CancellingVersionStore<'_> {
+        fn preserve(
+            &self,
+            target: &TrashTarget,
+            operation_id: &OperationId,
+            key: crate::operation::IdempotencyKey,
+            retention: crate::operation::VersionRetentionPolicy,
+        ) -> Result<Option<crate::version_store::VersionRecord>, NativeFailure> {
+            let record = self.inner.preserve(target, operation_id, key, retention);
+            self.cancel.store(true, Ordering::Release);
+            record
+        }
+
+        fn discard(
+            &self,
+            record: &crate::version_store::VersionRecord,
+        ) -> Result<(), NativeFailure> {
+            self.inner.discard(record)
+        }
+    }
+
+    #[test]
+    fn cancel_during_version_preserve_skips_the_trash_and_discards_the_copy() {
+        let temp = TempDir::new();
+        let first = temp.file("first.txt", "one");
+        let second = temp.file("second.txt", "two");
+        let cancel = AtomicBool::new(false);
+        let versions = CancellingVersionStore {
+            inner: RecordingVersionStore::new(temp.path().join("versions"), false),
+            cancel: &cancel,
+        };
+        let port = ScriptedTrash::new([TrashItemOutcome::Trashed]);
+
+        let outcome = run_versioned_batch(
+            vec![ready(first.clone()), ready(second.clone())],
+            &port,
+            &versions,
+            &cancel,
+        );
+
+        assert!(port.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            outcome
+                .items
+                .iter()
+                .map(|item| &item.outcome)
+                .collect::<Vec<_>>(),
+            vec![&TrashItemOutcome::Cancelled, &TrashItemOutcome::Cancelled]
+        );
+        assert_eq!(outcome.items[0].version, None);
+        let discarded = versions.inner.discarded.lock().unwrap();
+        assert_eq!(discarded.len(), 1);
+        assert!(!discarded[0].stored.exists());
+        assert!(outcome.cancelled);
+        assert_eq!(outcome.failed, 0);
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "one");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "two");
     }
 }
