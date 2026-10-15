@@ -316,21 +316,23 @@ impl DeltaBackend for ProductionDelta {
             crate::delta_copy::DeltaMode::Fixed => CheckpointLayout::DeltaFixed,
             crate::delta_copy::DeltaMode::ContentDefined => CheckpointLayout::DeltaCdc,
         };
-        if let Some(checkpoint) = request.resume {
-            if checkpoint.content_digest.is_none() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Delta checkpoint has no content proof",
-                ));
-            }
-            if !checkpoint.proof_matches(request.source, request.staging)? {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Delta checkpoint content proof does not match source and staging",
-                ));
-            }
-        }
-        let resume_offset = request.resume.map(|checkpoint| checkpoint.offset);
+        // The delta copy proves both prefixes against this digest before
+        // resuming, so the backend does not re-read them here as well.
+        let resume = request
+            .resume
+            .map(|checkpoint| {
+                let content_digest = checkpoint.content_digest.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Delta checkpoint has no content proof",
+                    )
+                })?;
+                Ok::<_, std::io::Error>(crate::delta_copy::DeltaResume {
+                    offset: checkpoint.offset,
+                    content_digest,
+                })
+            })
+            .transpose()?;
         let source = request.source;
         let staging = request.staging;
         let mut publish = |offset, content_digest| {
@@ -351,7 +353,7 @@ impl DeltaBackend for ProductionDelta {
                 state: request.progress.state(),
                 base_bytes: request.base_bytes,
                 allow_clone_seed: request.profile.capabilities.clone,
-                resume_offset,
+                resume,
                 reverify_staging: request.durability.verifies(),
             },
             &mut publish,

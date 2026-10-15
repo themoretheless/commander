@@ -49,7 +49,16 @@ struct CheckpointDigests {
 }
 
 impl CheckpointDigests {
-    fn new(source: &Path, destination: &Path, offset: u64) -> std::io::Result<Self> {
+    /// Start from `resume` (or the beginning of the file), proving that the
+    /// source and staging prefixes both still hash to the checkpoint's
+    /// recorded digest. This is the resume's at-use proof: the backend does
+    /// not hash the prefixes again before calling the delta copy.
+    fn new(
+        source: &Path,
+        destination: &Path,
+        resume: Option<DeltaResume>,
+    ) -> std::io::Result<Self> {
+        let offset = resume.map_or(0, |resume| resume.offset);
         let mut digests = Self {
             source: blake3::Hasher::new(),
             destination: blake3::Hasher::new(),
@@ -57,10 +66,17 @@ impl CheckpointDigests {
         };
         hash_range_into(source, 0, offset, &mut digests.source)?;
         hash_range_into(destination, 0, offset, &mut digests.destination)?;
-        if digests.source.finalize() != digests.destination.finalize() {
+        let source_digest = *digests.source.finalize().as_bytes();
+        if source_digest != *digests.destination.finalize().as_bytes() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "delta checkpoint prefix differs between source and staging",
+            ));
+        }
+        if resume.is_some_and(|resume| resume.content_digest != source_digest) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Delta checkpoint content proof does not match source and staging",
             ));
         }
         digests.verified_offset = offset;
@@ -132,6 +148,14 @@ impl CheckpointWriter<'_> {
     }
 }
 
+/// Where a resumed delta copy continues: the checkpoint offset and the
+/// BLAKE3 proof of the first `offset` bytes recorded with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeltaResume {
+    pub offset: u64,
+    pub content_digest: [u8; 32],
+}
+
 #[derive(Clone, Copy)]
 pub struct DeltaRequest<'a> {
     pub source: &'a Path,
@@ -141,7 +165,7 @@ pub struct DeltaRequest<'a> {
     pub state: &'a TransferState,
     pub base_bytes: u64,
     pub allow_clone_seed: bool,
-    pub resume_offset: Option<u64>,
+    pub resume: Option<DeltaResume>,
     /// Re-hash the whole staging file at the end. The incremental checkpoint
     /// digests already read every staging byte once, so this extra full read
     /// (over the slow link) is kept only for verifying durability profiles.
@@ -217,9 +241,10 @@ fn copy_file_inner(
         state,
         base_bytes,
         allow_clone_seed,
-        resume_offset,
+        resume,
         reverify_staging,
     } = *request;
+    let resume_offset = resume.map(|resume| resume.offset);
     let source_size = source.metadata()?.len();
     let start_offset = resume_offset.unwrap_or(0);
     if start_offset > source_size {
@@ -243,7 +268,7 @@ fn copy_file_inner(
             "delta staging size changed after checkpoint",
         ));
     }
-    let mut digests = CheckpointDigests::new(source, destination, start_offset)?;
+    let mut digests = CheckpointDigests::new(source, destination, resume)?;
     let mut checkpoints = CheckpointWriter {
         digests: &mut digests,
         publish: checkpoint,
@@ -721,7 +746,7 @@ mod tests {
                     state: &state(bytes.len() as u64),
                     base_bytes: 0,
                     allow_clone_seed: true,
-                    resume_offset: None,
+                    resume: None,
                     reverify_staging,
                 },
                 &mut corrupt,
@@ -750,7 +775,7 @@ mod tests {
                 state: &state(bytes.len() as u64),
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset: None,
+                resume: None,
                 reverify_staging: true,
             },
             &mut |_, _| Ok(()),
@@ -760,6 +785,46 @@ mod tests {
         assert_eq!(std::fs::read(destination).unwrap(), bytes);
         assert_eq!(stats.reused_bytes, (FIXED_BLOCK_SIZE * 2) as u64);
         assert_eq!(stats.source_bytes, FIXED_BLOCK_SIZE as u64);
+    }
+
+    #[test]
+    fn delta_resume_rejects_prefixes_that_no_longer_match_the_recorded_proof() {
+        let temp = TempDir::new();
+        let basis = temp.path().join("basis-proof.bin");
+        let source = temp.path().join("source-proof.bin");
+        let destination = temp.path().join("staging-proof.bin");
+        let bytes = vec![3_u8; FIXED_BLOCK_SIZE * 2];
+        std::fs::write(&basis, &bytes).unwrap();
+        std::fs::write(&source, &bytes).unwrap();
+        std::fs::write(&destination, &bytes).unwrap();
+        // Source and staging still agree with each other, but not with the
+        // digest the checkpoint recorded: both changed since the proof.
+        let recorded = *blake3::hash(&vec![9_u8; FIXED_BLOCK_SIZE]).as_bytes();
+
+        let error = copy_file(
+            DeltaRequest {
+                source: &source,
+                basis: &basis,
+                destination: &destination,
+                mode: DeltaMode::Fixed,
+                state: &state(bytes.len() as u64),
+                base_bytes: 0,
+                allow_clone_seed: true,
+                resume: Some(DeltaResume {
+                    offset: FIXED_BLOCK_SIZE as u64,
+                    content_digest: recorded,
+                }),
+                reverify_staging: true,
+            },
+            &mut |_, _| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "Delta checkpoint content proof does not match source and staging"
+        );
     }
 
     #[test]
@@ -789,7 +854,14 @@ mod tests {
                 state: &state(source_bytes.len() as u64),
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset: Some(FIXED_BLOCK_SIZE as u64),
+                resume: Some(DeltaResume {
+                    offset: FIXED_BLOCK_SIZE as u64,
+                    content_digest: crate::transfer::prefix_digest(
+                        &source,
+                        FIXED_BLOCK_SIZE as u64,
+                    )
+                    .unwrap(),
+                }),
                 reverify_staging: true,
             },
             &mut |offset, _| {
@@ -823,7 +895,7 @@ mod tests {
                 state: &state,
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset: None,
+                resume: None,
                 reverify_staging: true,
             },
             &mut |offset, _| {
@@ -868,7 +940,7 @@ mod tests {
                 state: &state(source_bytes.len() as u64),
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset: None,
+                resume: None,
                 reverify_staging: true,
             },
             &mut |_, _| Ok(()),
@@ -911,7 +983,10 @@ mod tests {
                 state: &state(source.metadata().unwrap().len()),
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset,
+                resume: resume_offset.map(|offset| DeltaResume {
+                    offset,
+                    content_digest: crate::transfer::prefix_digest(source, offset).unwrap(),
+                }),
                 reverify_staging: true,
             },
             &mut |offset, _| {
@@ -1037,7 +1112,7 @@ mod tests {
                 state: &state(6),
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset: None,
+                resume: None,
                 reverify_staging: true,
             },
             &mut |_, _| {
@@ -1071,7 +1146,7 @@ mod tests {
                 state: &state(6),
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset: None,
+                resume: None,
                 reverify_staging: true,
             },
             &mut |_, _| Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
@@ -1101,7 +1176,7 @@ mod tests {
                 state: &state(6),
                 base_bytes: 0,
                 allow_clone_seed: true,
-                resume_offset: None,
+                resume: None,
                 reverify_staging: true,
             },
             &mut |_, _| {

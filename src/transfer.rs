@@ -537,16 +537,6 @@ impl ResumeCheckpoint {
             self.partial.same_object(partial_now)
         }
     }
-
-    /// Whether the first `offset` bytes of `source` and `staging` both still
-    /// hash to the recorded proof. A checkpoint without a proof never matches.
-    pub fn proof_matches(&self, source: &Path, staging: &Path) -> std::io::Result<bool> {
-        let Some(expected) = self.content_digest else {
-            return Ok(false);
-        };
-        Ok(prefix_digest(source, self.offset)? == expected
-            && prefix_digest(staging, self.offset)? == expected)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
