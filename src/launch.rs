@@ -54,7 +54,7 @@ pub fn sanitize_launch_paths(paths: LaunchPaths) -> LaunchPaths {
         if resolved.is_none() {
             log::warn!(
                 target: "commander::launch",
-                "Ignoring launch path that does not exist: {}",
+                "Ignoring launch path that is missing or cannot be resolved: {}",
                 path.display()
             );
         }
