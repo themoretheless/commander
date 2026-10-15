@@ -688,6 +688,48 @@ struct RuntimeState {
     tick: u64,
 }
 
+impl RuntimeState {
+    /// Admit `spec` and park its job until a slot starts it. Returns the
+    /// queued jobs this admission superseded; the caller abandons them after
+    /// releasing the lock, since abandonment runs caller callbacks.
+    fn admit(
+        &mut self,
+        spec: TaskSpec,
+        work: WorkloadJob,
+        on_abandoned: Option<AbandonmentCallback>,
+    ) -> Result<(TaskSnapshot, Vec<PendingWork>), AdmissionError> {
+        self.tick = self.tick.saturating_add(1);
+        let snapshot = self.scheduler.submit_at(spec, self.tick)?;
+        let scheduler = &self.scheduler;
+        let superseded_ids = self
+            .pending
+            .keys()
+            .copied()
+            .filter(|id| {
+                !scheduler
+                    .tasks
+                    .get(id)
+                    .is_some_and(|record| record.state == TaskState::Queued)
+            })
+            .collect::<Vec<_>>();
+        let superseded = superseded_ids
+            .into_iter()
+            .filter_map(|id| self.pending.remove(&id))
+            .collect::<Vec<_>>();
+        self.pending
+            .insert(snapshot.id, PendingWork::new(work, on_abandoned));
+        Ok((snapshot, superseded))
+    }
+
+    /// Cancel `id` and take back its job if it never started, for the caller
+    /// to abandon outside the lock.
+    fn cancel(&mut self, id: TaskId) -> (bool, Option<PendingWork>) {
+        self.tick = self.tick.saturating_add(1);
+        let cancelled = self.scheduler.cancel_at(id, self.tick);
+        (cancelled, self.pending.remove(&id))
+    }
+}
+
 pub trait WorkloadBackend: Send + Sync + 'static {
     fn submit_boxed(
         self: Arc<Self>,
@@ -789,32 +831,8 @@ impl WorkloadRuntime {
         work: WorkloadJob,
         on_abandoned: Option<AbandonmentCallback>,
     ) -> Result<TaskSnapshot, AdmissionError> {
-        let (snapshot, superseded) = {
-            let mut state = crate::lock_util::recover(&self.state);
-            state.tick = state.tick.saturating_add(1);
-            let tick = state.tick;
-            let snapshot = state.scheduler.submit_at(spec, tick)?;
-            let superseded_ids = state
-                .pending
-                .keys()
-                .copied()
-                .filter(|id| {
-                    !state
-                        .scheduler
-                        .tasks
-                        .get(id)
-                        .is_some_and(|record| record.state == TaskState::Queued)
-                })
-                .collect::<Vec<_>>();
-            let superseded = superseded_ids
-                .into_iter()
-                .filter_map(|id| state.pending.remove(&id))
-                .collect::<Vec<_>>();
-            state
-                .pending
-                .insert(snapshot.id, PendingWork::new(work, on_abandoned));
-            (snapshot, superseded)
-        };
+        let (snapshot, superseded) =
+            crate::lock_util::recover(&self.state).admit(spec, work, on_abandoned)?;
         for pending in superseded {
             pending.abandon(AbandonReason::Superseded);
         }
@@ -921,14 +939,7 @@ impl WorkloadRuntime {
     }
 
     fn cancel(self: &Arc<Self>, id: TaskId) -> bool {
-        let (cancelled, abandoned) = {
-            let mut state = crate::lock_util::recover(&self.state);
-            state.tick = state.tick.saturating_add(1);
-            let tick = state.tick;
-            let cancelled = state.scheduler.cancel_at(id, tick);
-            let abandoned = state.pending.remove(&id);
-            (cancelled, abandoned)
-        };
+        let (cancelled, abandoned) = crate::lock_util::recover(&self.state).cancel(id);
         if let Some(pending) = abandoned {
             pending.abandon(AbandonReason::Cancelled);
         }
@@ -1054,32 +1065,8 @@ impl WorkloadBackend for DeterministicBackend {
         work: WorkloadJob,
         on_abandoned: Option<AbandonmentCallback>,
     ) -> Result<TaskSnapshot, AdmissionError> {
-        let (snapshot, superseded) = {
-            let mut state = crate::lock_util::recover(&self.state);
-            state.tick = state.tick.saturating_add(1);
-            let tick = state.tick;
-            let snapshot = state.scheduler.submit_at(spec, tick)?;
-            let superseded_ids = state
-                .pending
-                .keys()
-                .copied()
-                .filter(|id| {
-                    !state
-                        .scheduler
-                        .tasks
-                        .get(id)
-                        .is_some_and(|record| record.state == TaskState::Queued)
-                })
-                .collect::<Vec<_>>();
-            let superseded = superseded_ids
-                .into_iter()
-                .filter_map(|id| state.pending.remove(&id))
-                .collect::<Vec<_>>();
-            state
-                .pending
-                .insert(snapshot.id, PendingWork::new(work, on_abandoned));
-            (snapshot, superseded)
-        };
+        let (snapshot, superseded) =
+            crate::lock_util::recover(&self.state).admit(spec, work, on_abandoned)?;
         for pending in superseded {
             pending.abandon(AbandonReason::Superseded);
         }
@@ -1087,14 +1074,7 @@ impl WorkloadBackend for DeterministicBackend {
     }
 
     fn cancel_task(self: Arc<Self>, id: TaskId) -> bool {
-        let (cancelled, abandoned) = {
-            let mut state = crate::lock_util::recover(&self.state);
-            state.tick = state.tick.saturating_add(1);
-            let tick = state.tick;
-            let cancelled = state.scheduler.cancel_at(id, tick);
-            let abandoned = state.pending.remove(&id);
-            (cancelled, abandoned)
-        };
+        let (cancelled, abandoned) = crate::lock_util::recover(&self.state).cancel(id);
         if let Some(pending) = abandoned {
             pending.abandon(AbandonReason::Cancelled);
         }
