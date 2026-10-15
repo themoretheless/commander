@@ -996,6 +996,7 @@ fn every_fixed_ui_command_emits_the_expected_typed_request() {
         (Command::ToggleCompare, UiRequest::ToggleCompare),
         (Command::ToggleTheme, UiRequest::ToggleTheme),
         (Command::ToggleSizeBars, UiRequest::ToggleSizeBars),
+        (Command::ToggleFolderSidebar, UiRequest::ToggleFolderSidebar),
         (Command::OpenReceipts, UiRequest::OperationHistory),
         (Command::OpenRecoveryCenter, UiRequest::OpenRecoveryCenter),
     ];

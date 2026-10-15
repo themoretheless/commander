@@ -1353,6 +1353,7 @@ impl App {
             UiRequest::ToggleCompare => self.show_compare = !self.show_compare,
             UiRequest::ToggleTheme => self.switch_theme(ctx),
             UiRequest::ToggleSizeBars => self.show_size_bars = !self.show_size_bars,
+            UiRequest::ToggleFolderSidebar => self.toggle_folder_sidebar(),
             UiRequest::OperationHistory => self.open_operation_history(),
             UiRequest::OpenRecoveryCenter => self.open_recovery_center(),
             UiRequest::ReviewRecovery(operation_id) => {
@@ -2033,11 +2034,7 @@ impl App {
         self.update_pane_drop_target(ActivePanel::Right, &right_resp.response, &pane_drop);
 
         if tree_toggle {
-            self.show_tree = !self.show_tree;
-            if self.show_tree {
-                let path = self.ws.active_panel().current_path.clone();
-                self.tree_reveal_path(&path);
-            }
+            self.toggle_folder_sidebar();
         }
 
         // Stash the freshly-used compare maps (keyed by the generations they were

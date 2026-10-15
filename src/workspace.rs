@@ -1341,6 +1341,7 @@ impl Workspace {
             Command::ToggleCompare => self.emit_ui_request(UiRequest::ToggleCompare),
             Command::ToggleTheme => self.emit_ui_request(UiRequest::ToggleTheme),
             Command::ToggleSizeBars => self.emit_ui_request(UiRequest::ToggleSizeBars),
+            Command::ToggleFolderSidebar => self.emit_ui_request(UiRequest::ToggleFolderSidebar),
             Command::OpenReceipts => self.emit_ui_request(UiRequest::OperationHistory),
             Command::OpenRecoveryCenter => self.emit_ui_request(UiRequest::OpenRecoveryCenter),
             Command::ToggleHidden => {

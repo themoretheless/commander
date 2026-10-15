@@ -48,6 +48,7 @@ pub enum UiRequest {
     ToggleCompare,
     ToggleTheme,
     ToggleSizeBars,
+    ToggleFolderSidebar,
     OperationHistory,
     OpenRecoveryCenter,
     ReviewRecovery(crate::operation::OperationId),
@@ -85,6 +86,7 @@ impl UiRequest {
             | Self::ToggleCompare
             | Self::ToggleTheme
             | Self::ToggleSizeBars
+            | Self::ToggleFolderSidebar
             | Self::OperationHistory
             | Self::OpenRecoveryCenter
             | Self::Sync

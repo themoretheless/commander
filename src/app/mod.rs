@@ -1162,6 +1162,15 @@ impl App {
 
     /// Reveal `path` and expand it as well, for showing the tree on the
     /// current folder (a click must not do this; see `tree_expand_to_path`).
+    /// Show or hide the folder sidebar; it opens on the active folder.
+    pub(crate) fn toggle_folder_sidebar(&mut self) {
+        self.show_tree = !self.show_tree;
+        if self.show_tree {
+            let path = self.ws.active_panel_ref().current_path.clone();
+            self.tree_reveal_path(&path);
+        }
+    }
+
     pub(crate) fn tree_reveal_path(&mut self, path: &std::path::Path) {
         tree::expand_through(&mut self.tree_expanded, path);
     }

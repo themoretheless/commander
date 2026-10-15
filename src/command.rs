@@ -136,6 +136,8 @@ pub enum Command {
     ToggleTheme,
     /// Show or hide the size bars behind file sizes.
     ToggleSizeBars,
+    /// Show or hide the folder sidebar.
+    ToggleFolderSidebar,
     /// Open the searchable history of completed moves/deletes/batch-renames.
     OpenReceipts,
     /// Open interrupted-operation recovery, rollback, and staging cleanup.
@@ -661,6 +663,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Compare panels (toggle)", "", "compare panels differences diff highlight mirror", Command::ToggleCompare),
     entry("Switch light/dark theme", "", "view theme dark light mode appearance colors", Command::ToggleTheme),
     entry("Size bars (toggle)", "", "view size bars graph usage proportion", Command::ToggleSizeBars),
+    entry("Folder sidebar (toggle)", "", "view folder sidebar tree navigation outline", Command::ToggleFolderSidebar),
     entry("Cycle density", "Cmd+Shift+D", "view density rows compact comfortable spacious", Command::CycleDensity),
     entry("Toggle preview", "F3", "view preview quick look viewer inspect", Command::TogglePreview),
     entry("Equalize panels", "Cmd+E", "panels equalize same folder mirror", Command::EqualizePanels),
