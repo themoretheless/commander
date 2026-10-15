@@ -200,6 +200,7 @@ fn map_ranges_to_display(
     }
     let head = name
         .chars()
+        .map(crate::display_name::visible_char)
         .zip(display.chars())
         .take_while(|(a, b)| a == b)
         .count()
@@ -1315,5 +1316,17 @@ mod tests {
             vec![(0, 1)]
         );
         assert!(map_ranges_to_display(name, "", &[(0, 1)]).is_empty());
+    }
+
+    #[test]
+    fn matches_stay_aligned_when_controls_are_shown_as_symbols() {
+        let name = "a\tbcdefghij.txt";
+        let display = crate::display_name::truncate_preserving_extension(name, 8);
+        assert_eq!(display, "a\u{2409}b\u{2026}.txt");
+        // "b" (after the tab) keeps its own column instead of the ellipsis.
+        assert_eq!(
+            map_ranges_to_display(name, &display, &[(2, 3)]),
+            vec![(2, 3)]
+        );
     }
 }

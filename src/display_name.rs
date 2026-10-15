@@ -43,15 +43,17 @@ fn visible_controls(name: &str) -> Cow<'_, str> {
     if !name.chars().any(|c| c.is_ascii_control()) {
         return Cow::Borrowed(name);
     }
-    Cow::Owned(
-        name.chars()
-            .map(|c| match c {
-                '\x7f' => '\u{2421}',
-                c if c.is_ascii_control() => char::from_u32(0x2400 + c as u32).unwrap_or(c),
-                c => c,
-            })
-            .collect(),
-    )
+    Cow::Owned(name.chars().map(visible_char).collect())
+}
+
+/// The char a name's `c` is displayed as: its Control Picture for C0
+/// controls and DEL, otherwise `c` itself.
+pub fn visible_char(c: char) -> char {
+    match c {
+        '\x7f' => '\u{2421}',
+        c if c.is_ascii_control() => char::from_u32(0x2400 + c as u32).unwrap_or(c),
+        c => c,
+    }
 }
 
 /// Truncate to at most `max_chars` user-perceived characters (grapheme
