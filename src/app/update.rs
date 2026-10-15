@@ -201,6 +201,28 @@ fn split_left_width(ratio: f32, remaining: f32, pane_min: f32) -> f32 {
     (remaining * ratio.clamp(0.0, 1.0)).clamp(pane_min.min(half), (remaining - pane_min).max(half))
 }
 
+/// The split ratio to keep after this frame. Only a divider drag (pointer
+/// held, the left pane's width changed since last frame, no window or tree
+/// re-layout this frame) stores a new ratio, so a width clamped by a narrow
+/// window never overwrites the user's split.
+fn dragged_split_ratio(
+    stored: f32,
+    prev_width: Option<f32>,
+    width: f32,
+    remaining: f32,
+    relayout: bool,
+    pointer_down: bool,
+) -> f32 {
+    match prev_width {
+        Some(prev)
+            if !relayout && pointer_down && remaining > 0.0 && (width - prev).abs() > 0.5 =>
+        {
+            width / remaining
+        }
+        _ => stored,
+    }
+}
+
 /// The keyboard focus ring (a double outline, as on file rows) for a
 /// widget whose own frame is hidden, so tabbing to it stays visible.
 fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, t: &crate::theme::ThemeColors) {
@@ -1771,19 +1793,20 @@ impl App {
         let split_ratio: f32 = ctx.data_mut(|d| d.get_temp(split_ratio_id).unwrap_or(0.5));
         // Re-lay the panes when the window resizes or the tree toggles,
         // keeping the user's split ratio rather than snapping to 50/50.
-        {
+        let relayout = {
             let prev_half: f32 =
                 ctx.data_mut(|d| d.get_temp(egui::Id::new("prev_half")).unwrap_or(0.0));
-            if self.prev_window_width > 0.0
+            let relayout = self.prev_window_width > 0.0
                 && ((window_width - self.prev_window_width).abs() > 1.0
-                    || (half - prev_half).abs() > 1.0)
-            {
+                    || (half - prev_half).abs() > 1.0);
+            if relayout {
                 ctx.data_mut(|d| {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
                 });
             }
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("prev_half"), half));
-        }
+            relayout
+        };
         self.prev_window_width = window_width;
 
         let mut tree_toggle = false;
@@ -1848,9 +1871,22 @@ impl App {
                     d.remove::<egui::containers::panel::PanelState>(panel_id);
                     d.insert_temp(split_ratio_id, 0.5_f32);
                 });
-            } else if remaining > 0.0 {
-                let ratio = panel_rect.width() / remaining;
-                ctx.data_mut(|d| d.insert_temp(split_ratio_id, ratio));
+            } else {
+                let width_id = egui::Id::new("pane_split_prev_width");
+                let prev_width: Option<f32> = ctx.data_mut(|d| d.get_temp(width_id));
+                let pointer_down = ctx.input(|i| i.pointer.primary_down());
+                let ratio = dragged_split_ratio(
+                    split_ratio,
+                    prev_width,
+                    panel_rect.width(),
+                    remaining,
+                    relayout,
+                    pointer_down,
+                );
+                ctx.data_mut(|d| {
+                    d.insert_temp(split_ratio_id, ratio);
+                    d.insert_temp(width_id, panel_rect.width());
+                });
             }
         }
 
@@ -2373,8 +2409,10 @@ mod tests {
         undo_recorded_toast,
     };
     use super::{drag_path_rejection, sources_already_in};
+    use super::{
+        dragged_split_ratio, key_bar_modifier_held, selection_hud_bottom, split_left_width,
+    };
     use super::{drop_busy_reason, smart_folder_saved_toast};
-    use super::{key_bar_modifier_held, selection_hud_bottom, split_left_width};
     use super::{toast_live_region, toast_stack_offsets, toast_text};
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -3107,6 +3145,34 @@ mod tests {
     #[test]
     fn pane_split_keeps_its_ratio_across_resizes() {
         assert_eq!(split_left_width(0.3, 1000.0, 100.0), 300.0);
+        // Only a divider drag stores a new ratio.
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 400.0, 1000.0, false, true),
+            0.4
+        );
+        // A narrow window clamps the pane: the preference survives, so
+        // widening again restores the 30% split.
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 100.0, 200.0, true, false),
+            0.3
+        );
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 100.0, 200.0, true, true),
+            0.3
+        );
+        // Width settling without a held pointer, or no change, keeps it too.
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 320.0, 1000.0, false, false),
+            0.3
+        );
+        assert_eq!(
+            dragged_split_ratio(0.3, Some(300.0), 300.0, 1000.0, false, true),
+            0.3
+        );
+        assert_eq!(
+            dragged_split_ratio(0.3, None, 400.0, 1000.0, false, true),
+            0.3
+        );
         assert_eq!(split_left_width(0.3, 2000.0, 100.0), 600.0);
         assert_eq!(split_left_width(0.5, 1000.0, 100.0), 500.0);
         // Both panes keep their minimum width.
