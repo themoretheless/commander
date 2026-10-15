@@ -100,6 +100,7 @@ pub fn store_usage() -> crate::version_dedup::VersionStoreUsage {
     if loaded.blocked {
         return crate::version_dedup::VersionStoreUsage {
             bytes_quota: store_quota().max_bytes,
+            blocked: true,
             ..Default::default()
         };
     }
@@ -213,20 +214,25 @@ fn preserve_at_inner(
         .iter()
         .find(|record| record.key == key)
     {
-        if existing.operation_id == *operation_id
-            && existing.original == path
-            && validate_record(
-                root,
-                existing,
-                loaded.manifest.identities.get(&existing.key.0),
-            )
-            .is_ok()
-        {
-            return Ok(Some(existing.clone()));
+        if existing.operation_id != *operation_id || existing.original != path {
+            return Err(version_failure(
+                "Version key is already bound to a different authoritative record",
+            ));
         }
-        return Err(version_failure(
-            "Version key is already bound to a different authoritative record",
-        ));
+        // Same record: a replay. Report why its payload cannot be trusted
+        // instead of claiming a different record owns the key.
+        return validate_record(
+            root,
+            existing,
+            loaded.manifest.identities.get(&existing.key.0),
+        )
+        .map(|()| Some(existing.clone()))
+        .map_err(|message| {
+            version_failure(format!(
+                "Existing version of {} is not usable: {message}",
+                path.display()
+            ))
+        });
     }
     let stored = record_path(root, operation_id, &key, path);
     if !lexically_descends_from(root, &stored) {
@@ -242,14 +248,26 @@ fn preserve_at_inner(
     if let Some(parent) = stored.parent() {
         ensure_version_parent(root, parent).map_err(version_failure)?;
     }
+    // Every failure below abandons the new version: its payload is removed
+    // (when still ours), the `<op>/<key>` directories created for it are
+    // pruned once empty, and a failed removal is reported because it leaves
+    // the deterministic stored path occupied for a retry of this step.
+    let abandon = |cleanup: String| {
+        remove_empty_version_dirs(stored.parent(), root);
+        cleanup
+    };
     let copy_receipt = match copy_path_tracked(path, &stored) {
         Ok(receipt) => receipt,
         Err(failure) => {
-            if let Some(identity) = failure.destination_identity.as_ref() {
-                remove_path_if_object_matches(&stored, identity);
-            }
+            let cleanup = abandon(
+                failure
+                    .destination_identity
+                    .as_ref()
+                    .map(|identity| remove_path_if_object_matches(&stored, identity))
+                    .unwrap_or_default(),
+            );
             return Err(version_failure(format!(
-                "Could not preserve {} at {}: {}",
+                "Could not preserve {} at {}: {}{cleanup}",
                 path.display(),
                 stored.display(),
                 failure.error
@@ -257,41 +275,48 @@ fn preserve_at_inner(
         }
     };
     let Some(created_shallow) = copy_receipt.destination_identity else {
+        // The copy finished but its result could not be observed, so it
+        // cannot be proven ours and is left in place; only directories that
+        // are already empty are pruned.
+        let cleanup = abandon(format!(
+            "; the unbound copy was left at {}",
+            stored.display()
+        ));
         return Err(version_failure(format!(
-            "Could not bind the new version {}",
+            "Could not bind the new version {}{cleanup}",
             stored.display()
         )));
     };
     let created_identity = PathIdentity::observe_deep(&stored).map_err(|error| {
-        remove_path_if_object_matches(&stored, &created_shallow);
+        let cleanup = abandon(remove_path_if_object_matches(&stored, &created_shallow));
         version_failure(format!(
-            "Could not bind the new version {}: {error}",
+            "Could not bind the new version {}: {error}{cleanup}",
             stored.display()
         ))
     })?;
     let after = PathIdentity::observe(path).map_err(|error| {
-        remove_path_if_identity_matches(&stored, &created_identity);
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
         let mut failure = crate::ports::NativeFailure::from_io(&error);
         failure.message = format!(
-            "Could not recheck {} after versioning: {}",
+            "Could not recheck {} after versioning: {}{cleanup}",
             path.display(),
             failure.message
         );
         failure
     })?;
     if !before.same_version(&after) || !paths_equal(path, &stored) {
-        remove_path_if_identity_matches(&stored, &created_identity);
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
         return Err(crate::ports::NativeFailure {
             kind: crate::ports::NativeFailureKind::Stale,
             message: format!(
-                "Source changed or version verification failed for {}",
+                "Source changed or version verification failed for {}{cleanup}",
                 path.display()
             ),
         });
     }
     if let Err(message) = validate_stored_path(root, &stored) {
-        remove_path_if_identity_matches(&stored, &created_identity);
-        return Err(version_failure(message));
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+        return Err(version_failure(format!("{message}{cleanup}")));
     }
 
     let record = VersionRecord {
@@ -310,8 +335,8 @@ fn preserve_at_inner(
         &mut loaded.manifest.blobs,
         &mut loaded.manifest.payload_files,
     ) {
-        remove_path_if_identity_matches(&stored, &created_identity);
-        return Err(version_failure(message));
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+        return Err(version_failure(format!("{message}{cleanup}")));
     }
     let created_identity = match PathIdentity::observe_deep(&stored) {
         Ok(identity) => identity,
@@ -321,9 +346,9 @@ fn preserve_at_inner(
                 &mut loaded.manifest.payload_files,
                 &record.key.0,
             );
-            remove_path_if_identity_matches(&stored, &created_identity);
+            let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
             return Err(version_failure(format!(
-                "Could not rebind version after content dedup {}: {error}",
+                "Could not rebind version after content dedup {}: {error}{cleanup}",
                 stored.display()
             )));
         }
@@ -344,6 +369,7 @@ fn preserve_at_inner(
                 &loaded.manifest,
                 &mut loaded.gate,
                 retention,
+                store_quota(),
                 record.created_at_secs,
             );
         }
@@ -354,8 +380,10 @@ fn preserve_at_inner(
                 &mut loaded.manifest.payload_files,
                 &record.key.0,
             );
-            remove_path_if_identity_matches(&stored, &created_identity);
-            return Err(version_failure("Could not save version manifest"));
+            let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+            return Err(version_failure(format!(
+                "Could not save version manifest{cleanup}"
+            )));
         }
     }
     Ok(Some(record))
@@ -432,7 +460,9 @@ pub fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(), Stri
                     "Could not remove rejected version {}: {error}",
                     authoritative.stored.display()
                 )
-            })
+            })?;
+            remove_empty_version_dirs(authoritative.stored.parent(), root);
+            Ok(())
         }
         Some(crate::persistence::Committed::NotDurable) => Ok(()),
         None => Err("Could not remove rejected version from the manifest".to_string()),
@@ -488,6 +518,7 @@ fn prune_manifest(
     manifest: &VersionManifest,
     gate: &mut crate::persistence::StoreGate,
     policy: VersionRetentionPolicy,
+    quota: VersionStoreQuota,
     now_secs: u64,
 ) {
     let (retained, mut expired) = retained_records(&manifest.records, policy, now_secs);
@@ -527,7 +558,7 @@ fn prune_manifest(
         &ordered,
         &working.blobs,
         &working.payload_files,
-        store_quota(),
+        quota,
     ) {
         if let Some(record) = working.records.iter().find(|r| r.key.0 == key).cloned() {
             crate::version_dedup::release_payload_refs(
@@ -574,7 +605,11 @@ fn prune_manifest(
         if !expected.same_binding(&current) {
             continue;
         }
-        let _ = remove_path(&record.stored);
+        // The manifest no longer references this payload, so a failed removal
+        // leaves orphaned data that quota accounting cannot see: report it.
+        if let Err(error) = remove_path(&record.stored) {
+            crate::persistence::record_cleanup_failure(MANIFEST_LABEL, &error);
+        }
         remove_empty_version_dirs(record.stored.parent(), root);
     }
 }
@@ -627,14 +662,37 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
             authoritative.original.display()
         ));
     }
+    if let Some(parent) = authoritative
+        .original
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        match fs::metadata(parent) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "Restore folder {} no longer exists",
+                    parent.display()
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(format!(
+                    "Restore folder {} is no longer a folder",
+                    parent.display()
+                ));
+            }
+            _ => {}
+        }
+    }
     let restore_receipt = match copy_path_tracked(&authoritative.stored, &authoritative.original) {
         Ok(receipt) => receipt,
         Err(failure) => {
-            if let Some(identity) = failure.destination_identity.as_ref() {
-                remove_path_if_object_matches(&authoritative.original, identity);
-            }
+            let cleanup = failure
+                .destination_identity
+                .as_ref()
+                .map(|identity| remove_path_if_object_matches(&authoritative.original, identity))
+                .unwrap_or_default();
             return Err(format!(
-                "Could not restore {}: {}",
+                "Could not restore {}: {}{cleanup}",
                 record.original.display(),
                 failure.error
             ));
@@ -646,11 +704,13 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
         Err(_) => true,
     };
     if stored_changed || !paths_equal(&authoritative.stored, &authoritative.original) {
-        if let Some(identity) = restore_receipt.destination_identity.as_ref() {
-            remove_path_if_object_matches(&authoritative.original, identity);
-        }
+        let cleanup = restore_receipt
+            .destination_identity
+            .as_ref()
+            .map(|identity| remove_path_if_object_matches(&authoritative.original, identity))
+            .unwrap_or_default();
         return Err(format!(
-            "Restored version failed verification: {}",
+            "Restored version failed verification: {}{cleanup}",
             authoritative.original.display()
         ));
     }
@@ -922,21 +982,29 @@ fn validate_manifest(root: &Path, manifest: &mut VersionManifest) -> Result<bool
     Ok(recovered)
 }
 
-fn remove_path_if_identity_matches(path: &Path, expected: &PathIdentity) {
-    if let Ok(current) = PathIdentity::observe_deep(path)
-        && expected.same_binding(&current)
-    {
-        let _ = remove_path(path);
+/// Remove data this module just created at `path` if it is still bound to
+/// `expected`. Returns "" or a "; cleanup of <path> failed: <error>" suffix
+/// for the caller's error, since leftover data blocks a retry.
+fn remove_path_if_identity_matches(path: &Path, expected: &PathIdentity) -> String {
+    match PathIdentity::observe_deep(path) {
+        Ok(current) if expected.same_binding(&current) => cleanup_note(path, remove_path(path)),
+        _ => String::new(),
     }
 }
 
-fn remove_path_if_object_matches(path: &Path, expected: &PathIdentity) {
-    if let Ok(current) = PathIdentity::observe(path)
-        && current.path == expected.path
-        && expected.same_object(&current)
-    {
-        let _ = remove_path(path);
+fn remove_path_if_object_matches(path: &Path, expected: &PathIdentity) -> String {
+    match PathIdentity::observe(path) {
+        Ok(current) if current.path == expected.path && expected.same_object(&current) => {
+            cleanup_note(path, remove_path(path))
+        }
+        _ => String::new(),
     }
+}
+
+fn cleanup_note(path: &Path, result: std::io::Result<()>) -> String {
+    result.err().map_or_else(String::new, |error| {
+        format!("; cleanup of {} failed: {error}", path.display())
+    })
 }
 
 fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) -> LoadedManifest {
@@ -959,13 +1027,28 @@ fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) ->
             }
         }
     }
-    if blocked {
-        crate::persistence::record_unreadable(MANIFEST_LABEL);
+    if note_manifest_blocked(&manifest_path(root), blocked) {
+        crate::persistence::record_blocked(MANIFEST_LABEL);
     }
     LoadedManifest {
         manifest,
         gate,
         blocked,
+    }
+}
+
+/// Whether a blocked load of `manifest` should be published as a health
+/// issue: only on the transition into the blocked state, since every
+/// preserve, listing and usage refresh reloads the manifest and each issue
+/// raises an error toast.
+fn note_manifest_blocked(manifest: &Path, blocked: bool) -> bool {
+    static REPORTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+    let mut reported = crate::lock_util::recover(REPORTED.get_or_init(Mutex::default));
+    if blocked {
+        reported.insert(manifest.to_path_buf())
+    } else {
+        reported.remove(manifest);
+        false
     }
 }
 
@@ -1005,7 +1088,8 @@ fn copy_path_tracked(
 ) -> Result<CopyPathReceipt, CopyPathFailure> {
     enum Task {
         Copy(PathBuf, PathBuf),
-        SetPermissions(PathBuf, fs::Permissions),
+        /// Runs after the directory's children: creating them bumps its mtime.
+        FinishDirectory(PathBuf, fs::Metadata),
     }
 
     let root_destination = destination.to_path_buf();
@@ -1014,8 +1098,11 @@ fn copy_path_tracked(
     let result = (|| {
         while let Some(task) = tasks.pop() {
             match task {
-                Task::SetPermissions(path, permissions) => {
-                    fs::set_permissions(path, permissions)?;
+                Task::FinishDirectory(path, metadata) => {
+                    #[cfg(unix)]
+                    let _ = fs::File::open(&path)
+                        .and_then(|directory| directory.set_times(copied_times(&metadata)));
+                    fs::set_permissions(path, metadata.permissions())?;
                 }
                 Task::Copy(source, destination) => {
                     let metadata = fs::symlink_metadata(&source)?;
@@ -1032,10 +1119,7 @@ fn copy_path_tracked(
                         if destination == root_destination {
                             destination_identity = PathIdentity::observe(&destination).ok();
                         }
-                        tasks.push(Task::SetPermissions(
-                            destination.clone(),
-                            metadata.permissions(),
-                        ));
+                        tasks.push(Task::FinishDirectory(destination.clone(), metadata));
                         let mut children = fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
                         children.sort_by_key(|entry| entry.file_name());
                         for entry in children.into_iter().rev() {
@@ -1046,6 +1130,14 @@ fn copy_path_tracked(
                         }
                         continue;
                     }
+                    // Opening a FIFO or device would block or read a stream;
+                    // only regular files can be preserved as content.
+                    if !metadata.is_file() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("unsupported special file {}", source.display()),
+                        ));
+                    }
                     let mut options = fs::OpenOptions::new();
                     options.write(true).create_new(true);
                     let mut input = fs::File::open(&source)?;
@@ -1054,6 +1146,9 @@ fn copy_path_tracked(
                         destination_identity = PathIdentity::observe(&destination).ok();
                     }
                     std::io::copy(&mut input, &mut output)?;
+                    // Best effort: a filesystem without settable times still
+                    // preserves the content.
+                    let _ = output.set_times(copied_times(&metadata));
                     output.sync_all()?;
                     fs::set_permissions(destination, metadata.permissions())?;
                 }
@@ -1070,6 +1165,19 @@ fn copy_path_tracked(
             destination_identity: destination_identity.map(Box::new),
         }),
     }
+}
+
+/// The source's modified and accessed times, so a preserved or restored
+/// version keeps the original timestamps instead of the copy time.
+fn copied_times(metadata: &fs::Metadata) -> fs::FileTimes {
+    let mut times = fs::FileTimes::new();
+    if let Ok(modified) = metadata.modified() {
+        times = times.set_modified(modified);
+    }
+    if let Ok(accessed) = metadata.accessed() {
+        times = times.set_accessed(accessed);
+    }
+    times
 }
 
 #[cfg(test)]
@@ -1136,11 +1244,76 @@ fn directory_names(path: &Path) -> Option<Vec<std::ffi::OsString>> {
 fn remove_path(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            make_directories_removable(path);
             fs::remove_dir_all(path)
         }
         Ok(_) => fs::remove_file(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
+    }
+}
+
+/// Versions keep their directories' modes, so a preserved read-only folder
+/// (0o555) would refuse unlinking its entries. Give every real directory in
+/// the tree owner rwx first; symlinks are never followed.
+fn make_directories_removable(root: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            let Ok(metadata) = fs::symlink_metadata(&directory) else {
+                continue;
+            };
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.permissions().mode() & 0o700 != 0o700 {
+                grant_owner_access(&directory);
+            }
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    pending.push(entry.path());
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = root;
+}
+
+/// Gives the owner rwx on `directory` without following a symlink that
+/// replaced it after it was inspected: the mode is changed through a
+/// descriptor opened with `O_NOFOLLOW | O_DIRECTORY`. A directory the owner
+/// cannot even open for reading falls back to a by-path change after a fresh
+/// no-follow check, since no descriptor can be had for it.
+#[cfg(unix)]
+fn grant_owner_access(directory: &Path) {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(directory)
+    {
+        Ok(handle) => {
+            if let Ok(metadata) = handle.metadata() {
+                let mode = metadata.permissions().mode();
+                let _ = handle.set_permissions(fs::Permissions::from_mode(mode | 0o700));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let Ok(metadata) = fs::symlink_metadata(directory) else {
+                return;
+            };
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                let mode = metadata.permissions().mode();
+                let _ = fs::set_permissions(directory, fs::Permissions::from_mode(mode | 0o700));
+            }
+        }
+        Err(_) => {}
     }
 }
 
@@ -1161,6 +1334,32 @@ mod tests {
         assert_eq!(
             records_or_blocked(),
             Err("version manifest is corrupt".to_string())
+        );
+    }
+
+    #[test]
+    fn blocked_manifest_is_reported_once_and_shown_as_unreadable_usage() {
+        let temp = TempDir::new();
+        let versions = temp.dir("versions");
+        let _guard = use_test_versions_dir(versions.clone());
+        let path = manifest_path(&versions);
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let usage = store_usage();
+        assert!(usage.blocked);
+        assert!(usage.label().contains("unreadable"), "{}", usage.label());
+        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(
+            !note_manifest_blocked(&path, true),
+            "repeated blocked loads must not publish the issue again"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        let usage = store_usage();
+        assert!(!usage.blocked);
+        assert!(
+            note_manifest_blocked(&path, true),
+            "a readable load re-arms the report"
         );
     }
 
@@ -1202,6 +1401,108 @@ mod tests {
         assert!(paths_equal(&source, &destination));
     }
 
+    #[test]
+    fn preserved_and_restored_versions_keep_the_source_modified_time() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let folder = temp.dir("folder");
+        let file = temp.file("folder/file.txt", "dated");
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        let stamp = |path: &Path| {
+            fs::OpenOptions::new()
+                .read(true)
+                .open(path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        stamp(&file);
+        #[cfg(unix)]
+        stamp(&folder);
+        let operation = OperationId("keep-mtime".to_string());
+        let record = preserve_at(
+            &versions,
+            &folder,
+            &operation,
+            operation.step_key(0, &folder),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        let mtime = |path: &Path| fs::metadata(path).unwrap().modified().unwrap();
+        assert_eq!(mtime(&record.stored.join("file.txt")), modified);
+
+        fs::remove_dir_all(&folder).unwrap();
+        restore_at(&versions, &record).unwrap();
+
+        assert_eq!(mtime(&file), modified);
+        #[cfg(unix)]
+        {
+            assert_eq!(mtime(&record.stored), modified);
+            assert_eq!(mtime(&folder), modified);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_copy_refuses_a_fifo_instead_of_blocking_on_it() {
+        let temp = TempDir::new();
+        let source = temp.dir("source");
+        let status = std::process::Command::new("mkfifo")
+            .arg(source.join("pipe"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let destination = temp.path().join("destination");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(copy_path(&source, &destination));
+        });
+
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("copying a FIFO must not block");
+
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("special file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discard_removes_a_version_of_a_read_only_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Only a regression guard when run as a regular user: root bypasses
+        // directory permissions, so as root the removal succeeds with or
+        // without `make_directories_removable` and this test still passes.
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let folder = temp.dir("folder");
+        temp.file("folder/locked/file.txt", "kept read-only");
+        let locked = folder.join("locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let operation = OperationId("read-only-folder".to_string());
+        let record = preserve_at(
+            &versions,
+            &folder,
+            &operation,
+            operation.step_key(0, &folder),
+            VersionRetentionPolicy::Recent,
+        );
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let record = record.unwrap().unwrap();
+        let stored_locked = record.stored.join("locked");
+        assert_eq!(
+            fs::metadata(&stored_locked).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+
+        discard_record_at(&versions, &record).unwrap();
+
+        assert!(!record.stored.exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn failed_version_copy_removes_partial_data_without_manifest_publication() {
@@ -1227,6 +1528,10 @@ mod tests {
         drop(socket);
         assert!(result.is_err());
         assert!(!stored.exists());
+        assert!(
+            !versions.join(&operation.0).exists(),
+            "directories created for the abandoned version are pruned"
+        );
         assert!(load_manifest(&versions).records.is_empty());
     }
 
@@ -1266,6 +1571,63 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&original).unwrap(), "before");
         assert_eq!(load_manifest(&versions).records, vec![record]);
+    }
+
+    #[test]
+    fn discard_removes_the_record_its_references_and_its_payload() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("original.txt", "rejected");
+        let operation = OperationId("discard-success".to_string());
+        let record = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(record.stored.exists());
+
+        discard_record_at(&versions, &record).unwrap();
+
+        let manifest = load_manifest(&versions);
+        assert!(manifest.records.is_empty());
+        assert!(manifest.identities.is_empty());
+        assert!(manifest.blobs.is_empty());
+        assert!(manifest.payload_files.is_empty());
+        assert!(!record.stored.exists());
+        assert!(
+            !versions.join(&operation.0).exists(),
+            "empty <op>/<key> directories are pruned"
+        );
+        assert!(versions.exists());
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), "rejected");
+    }
+
+    #[test]
+    fn restore_into_a_deleted_folder_names_the_missing_folder() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let original = temp.file("gone/original.txt", "before");
+        let operation = OperationId("restore-gone-parent".to_string());
+        let record = preserve_at(
+            &versions,
+            &original,
+            &operation,
+            operation.step_key(0, &original),
+            VersionRetentionPolicy::Recent,
+        )
+        .unwrap()
+        .unwrap();
+        std::fs::remove_dir_all(temp.path().join("gone")).unwrap();
+
+        let error = restore_at(&versions, &record).unwrap_err();
+
+        assert!(error.contains("no longer exists"), "{error}");
+        assert!(error.contains("gone"), "{error}");
+        assert!(record.stored.exists());
     }
 
     #[test]
@@ -1412,9 +1774,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(failure.kind, crate::ports::NativeFailureKind::Stale);
-        // Binding rejection must not create the versions root. Check existence
-        // before load_manifest: a missing-store read acquires a process lock and
-        // create_dir_all's the parent as a side effect.
+        // Binding rejection must not create the versions root.
         assert!(!versions.exists());
         assert!(load_manifest(&versions).records.is_empty());
     }
@@ -1483,6 +1843,61 @@ mod tests {
 
         let manifest = load_manifest(&versions);
         assert_eq!(manifest.records.len(), 3);
+        assert!(!created[0].stored.exists());
+        assert!(created[1..].iter().all(|record| record.stored.exists()));
+    }
+
+    #[test]
+    fn quota_overflow_evicts_the_oldest_version_after_manifest_commit() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let mut created = Vec::new();
+        for index in 0..3 {
+            let original = temp.file(
+                &format!("file-{index}.txt"),
+                &format!("{index}").repeat(100),
+            );
+            let operation = OperationId(format!("quota-{index}"));
+            created.push(
+                preserve_at(
+                    &versions,
+                    &original,
+                    &operation,
+                    operation.step_key(0, &original),
+                    VersionRetentionPolicy::Forever,
+                )
+                .unwrap()
+                .unwrap(),
+            );
+        }
+        // prune_manifest evicts in (created_at_secs, key) order.
+        created.sort_by(|a, b| {
+            a.created_at_secs
+                .cmp(&b.created_at_secs)
+                .then_with(|| a.key.0.cmp(&b.key.0))
+        });
+        let mut loaded = load_manifest_with(manifest_persist(), &versions);
+        assert_eq!(loaded.manifest.records.len(), 3);
+
+        prune_manifest(
+            manifest_persist(),
+            &versions,
+            &loaded.manifest,
+            &mut loaded.gate,
+            VersionRetentionPolicy::Forever,
+            VersionStoreQuota { max_bytes: 200 },
+            created[2].created_at_secs,
+        );
+
+        let manifest = load_manifest(&versions);
+        let mut kept = manifest.records.clone();
+        kept.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+        let mut expected = created[1..].to_vec();
+        expected.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+        assert_eq!(kept, expected);
+        assert!(!manifest.identities.contains_key(&created[0].key.0));
+        assert!(!manifest.payload_files.contains_key(&created[0].key.0));
+        assert_eq!(manifest.blobs.len(), 2);
         assert!(!created[0].stored.exists());
         assert!(created[1..].iter().all(|record| record.stored.exists()));
     }

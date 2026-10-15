@@ -62,15 +62,24 @@ pub(super) fn copy_file_sparse(
         if read == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "sparse source ended early",
+                format!("sparse source ended early: {}", src.display()),
             ));
         }
+        // One seek + write per run of consecutive data blocks, not per block.
+        let mut run: Option<(usize, usize)> = None;
         for (index, block) in buffer[..read].chunks(HOLE_BLOCK).enumerate() {
+            let start = index * HOLE_BLOCK;
             if block.iter().all(|&byte| byte == 0) {
+                if let Some((from, to)) = run.take() {
+                    write_run(&mut writer, offset, from, &buffer[from..to])?;
+                }
                 continue;
             }
-            writer.seek(SeekFrom::Start(offset + (index * HOLE_BLOCK) as u64))?;
-            writer.write_all(block)?;
+            let end = start + block.len();
+            run = Some(run.map_or((start, end), |(from, _)| (from, end)));
+        }
+        if let Some((from, to)) = run {
+            write_run(&mut writer, offset, from, &buffer[from..to])?;
         }
         limiter.consume(read, || crate::lock_util::recover(state).cancelled)?;
         offset = offset.saturating_add(read as u64);
@@ -80,10 +89,24 @@ pub(super) fn copy_file_sparse(
         progress.maybe_sample();
     }
     writer.sync_data()?;
+    // Best effort, like the buffered copy: a refused chmod must not fail a
+    // copy whose bytes all landed.
     if let Ok(metadata) = src.metadata() {
-        std::fs::set_permissions(dst, metadata.permissions())?;
+        let _ = std::fs::set_permissions(dst, metadata.permissions());
     }
     Ok(file_size)
+}
+
+/// Write one run of data blocks at `chunk_offset + from` in the destination.
+#[cfg(unix)]
+fn write_run(
+    writer: &mut std::fs::File,
+    chunk_offset: u64,
+    from: usize,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    writer.seek(SeekFrom::Start(chunk_offset.saturating_add(from as u64)))?;
+    writer.write_all(bytes)
 }
 
 #[cfg(not(unix))]
@@ -97,4 +120,63 @@ pub(super) fn copy_file_sparse(
         std::io::ErrorKind::Unsupported,
         "sparse copy is unavailable",
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+    use crate::transfer::TransferProgress;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn sparse_copy_keeps_mixed_runs_byte_exact_and_holey() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = TempDir::new();
+        let src = tmp.path().join("mixed.bin");
+        let size = 4 * COPY_BUF_SIZE as u64;
+        let mut file = std::fs::File::create(&src).unwrap();
+        file.set_len(size).unwrap();
+        // Dense runs that start and end off block boundaries, one spanning a
+        // read-buffer boundary, plus a lone byte in the last block.
+        let dense: Vec<u8> = (0..(5 * HOLE_BLOCK + 123))
+            .map(|i| (i % 251 + 1) as u8)
+            .collect();
+        for at in [
+            77_u64,
+            COPY_BUF_SIZE as u64 - 1000,
+            3 * COPY_BUF_SIZE as u64 + 9,
+        ] {
+            file.seek(SeekFrom::Start(at)).unwrap();
+            file.write_all(&dense).unwrap();
+        }
+        file.seek(SeekFrom::Start(size - 1)).unwrap();
+        file.write_all(&[9]).unwrap();
+        file.sync_all().unwrap();
+        // Whether set_len plus scattered writes leaves holes is the
+        // filesystem's choice (APFS may allocate them); the byte-exact copy
+        // is checked either way, hole preservation only when there are holes.
+        let source_is_holey = is_sparse_file(&src);
+        let dst = tmp.path().join("copy.bin");
+        let state = Arc::new(Mutex::new(TransferProgress::new(size, 1)));
+        let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
+
+        assert_eq!(
+            copy_file_sparse(&src, &dst, &state, &mut limiter).unwrap(),
+            size
+        );
+
+        assert_eq!(std::fs::read(&dst).unwrap(), std::fs::read(&src).unwrap());
+        let (src_blocks, dst_blocks) = (
+            src.metadata().unwrap().blocks(),
+            dst.metadata().unwrap().blocks(),
+        );
+        if source_is_holey {
+            assert!(
+                dst_blocks <= src_blocks.saturating_add(16),
+                "{dst_blocks} > {src_blocks}"
+            );
+        }
+    }
 }

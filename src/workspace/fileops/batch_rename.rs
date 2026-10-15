@@ -8,12 +8,28 @@ use super::rename::{RenameExecutionError, latch_rename_execution_error};
 /// Every name currently in `dir` (best-effort), so a rename batch can be
 /// ordered against the live directory at apply/replay time.
 pub fn dir_names(dir: &Path) -> std::collections::HashSet<String> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .collect()
+    dir_names_with_lossy(dir).0
+}
+
+/// [`dir_names`], plus the (lossy) names that are not valid UTF-8: the
+/// String-based rename plan cannot address those on disk.
+fn dir_names_with_lossy(
+    dir: &Path,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    let mut names = std::collections::HashSet::new();
+    let mut lossy = std::collections::HashSet::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let raw = entry.file_name();
+        let name = raw.to_string_lossy().to_string();
+        if raw.to_str().is_none() {
+            lossy.insert(name.clone());
+        }
+        names.insert(name);
+    }
+    (names, lossy)
 }
 
 /// Apply a `(from, to)` rename map in `dir` by computing a mid-batch-safe
@@ -94,7 +110,14 @@ pub fn apply_batch_rename_in(
     if let Some(error) = crate::rename::regex_error(rule) {
         return Err(format!("Invalid regex: {error}"));
     }
-    let existing = dir_names(&context.dir);
+    let (existing, lossy) = dir_names_with_lossy(&context.dir);
+    // A non-UTF-8 name is only known here by its lossy U+FFFD form, which
+    // names no file (or, worse, a different one): refuse instead of guessing.
+    if let Some(name) = context.targets.iter().find(|name| lossy.contains(*name)) {
+        return Err(format!(
+            "\"{name}\" is not valid UTF-8 and cannot be batch renamed; rename it on its own first"
+        ));
+    }
     let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule);
     if plans
         .iter()
@@ -117,13 +140,7 @@ pub fn apply_batch_rename_in(
         Ok(done) => done,
         Err(error) => {
             latch_rename_execution_error(workspace, &error);
-            let panel = match context.panel {
-                ActivePanel::Left => &mut workspace.left,
-                ActivePanel::Right => &mut workspace.right,
-            };
-            if panel.current_path == context.dir {
-                panel.refresh();
-            }
+            refresh_panels_showing(workspace, &context.dir);
             return Err(error.to_string());
         }
     };
@@ -143,7 +160,17 @@ pub fn apply_batch_rename_in(
     };
     if panel.current_path == context.dir {
         panel.clear_selection();
-        panel.refresh();
     }
+    refresh_panels_showing(workspace, &context.dir);
     Ok(done)
+}
+
+/// Re-list every panel showing `dir`, not just the dialog's, so the other
+/// side never keeps the old names when its watcher is unavailable.
+fn refresh_panels_showing(workspace: &mut Workspace, dir: &Path) {
+    for panel in [&mut workspace.left, &mut workspace.right] {
+        if panel.current_path == dir {
+            panel.refresh();
+        }
+    }
 }

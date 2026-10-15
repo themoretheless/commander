@@ -71,6 +71,9 @@ pub fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecut
         },
         None => false,
     };
+    // A different name bound to the same file (a hard link) is an occupied
+    // name, not a case-only change of this one.
+    let same_file = same_file && same_name_ignoring_case(from, to);
     if dest_meta.is_some() && !same_file {
         return Err(RenameExecutionError::unchanged("Name already in use"));
     }
@@ -88,6 +91,12 @@ pub fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecut
     match crate::fs_at::rename_noreplace(&tmp, to) {
         Ok(()) => Ok(()),
         Err(rename_error) => match crate::fs_at::rename_noreplace(&tmp, from) {
+            // The target name is still taken by another entry (on a
+            // case-sensitive volume, a hard link differing only in case):
+            // report it like any other occupied name.
+            Ok(()) if rename_error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(RenameExecutionError::unchanged("Name already in use"))
+            }
             Ok(()) => Err(RenameExecutionError::unchanged(rename_error.to_string())),
             Err(rollback_error) => Err(RenameExecutionError::uncertain(
                 format!(
@@ -98,6 +107,21 @@ pub fn rename_path_no_clobber(from: &Path, to: &Path) -> Result<(), RenameExecut
             )),
         },
     }
+}
+
+/// Whether the two final names differ at most in case (or Unicode
+/// normalization), as a case-insensitive volume would resolve them.
+fn same_name_ignoring_case(from: &Path, to: &Path) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    let fold = |path: &Path| {
+        path.file_name().map(|name| {
+            name.to_string_lossy()
+                .nfc()
+                .collect::<String>()
+                .to_lowercase()
+        })
+    };
+    fold(from) == fold(to)
 }
 
 pub fn latch_rename_execution_error(workspace: &mut Workspace, error: &RenameExecutionError) {
@@ -122,18 +146,28 @@ pub fn commit_rename(workspace: &mut Workspace, old: &Path, new_name: &str) -> R
     if let Some(reason) = workspace.mutation_block_reason("rename") {
         return Err(reason);
     }
-    let new_name = new_name.trim();
     let old_name = old
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    if new_name == old_name {
+    // Compare the untrimmed text too: committing " notes.txt" unchanged must
+    // not strip the spaces the name really has.
+    if new_name == old_name || new_name.trim() == old_name {
         return Ok(()); // nothing to do
     }
-    let siblings = rename_siblings(old);
+    let new_name = new_name.trim();
     let case_insensitive = old
         .parent()
         .is_some_and(crate::pathname::volume_is_case_insensitive);
+    // Only a case-insensitive volume needs the sibling listing (to catch a
+    // case-folded collision); elsewhere rename_path_no_clobber probes the one
+    // target name on disk, which is the authoritative exact-collision check,
+    // so a big folder is not read on the UI thread for every rename.
+    let siblings = if case_insensitive {
+        rename_siblings(old)
+    } else {
+        Vec::new()
+    };
     crate::pathname::validate_new_name_on_volume(new_name, &siblings, case_insensitive)
         .map_err(|error| error.to_string())?;
     let dest = old

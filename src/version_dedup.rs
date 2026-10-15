@@ -77,6 +77,9 @@ pub struct VersionStoreUsage {
     pub bytes_quota: u64,
     pub unique_blobs: usize,
     pub records: usize,
+    /// The manifest could not be loaded, so the figures are unknown rather
+    /// than an empty store.
+    pub blocked: bool,
 }
 
 impl VersionStoreUsage {
@@ -84,6 +87,9 @@ impl VersionStoreUsage {
         self.bytes_used > self.bytes_quota
     }
     pub fn label(self) -> String {
+        if self.blocked {
+            return "manifest unreadable".to_string();
+        }
         format!(
             "{} / {} ({} unique)",
             format_store_bytes(self.bytes_used),
@@ -118,6 +124,7 @@ pub fn usage_of(
         bytes_quota: quota.max_bytes,
         unique_blobs: blobs.len(),
         records: record_count,
+        blocked: false,
     }
 }
 
@@ -364,6 +371,7 @@ mod tests {
             bytes_quota: 2 * 1024 * 1024 * 1024,
             unique_blobs: 3,
             records: 4,
+            blocked: false,
         };
         assert_eq!(usage.label(), "512.0 KB / 2.00 GB (3 unique)");
     }

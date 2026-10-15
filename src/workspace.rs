@@ -2427,7 +2427,13 @@ impl Workspace {
                 let _ = notify;
                 let mut trashed = Vec::new();
                 for item in &items {
-                    if let Err(error) = self.retrash_one(&item.path) {
+                    if let Err((error, maybe_trashed)) = self.retrash_one(&item.path) {
+                        // An indeterminate outcome may already have moved
+                        // the item: count it as changed so the stop is
+                        // reviewed instead of reported as a plain abort.
+                        if maybe_trashed {
+                            trashed.push(item.path.clone());
+                        }
                         return Err(self.stop_partial_trash_replay("Trash redo", &trashed, error));
                     }
                     trashed.push(item.path.clone());
@@ -2439,18 +2445,23 @@ impl Workspace {
         }
     }
 
-    /// Move one item back to the Trash for a Trash redo.
-    fn retrash_one(&self, path: &Path) -> Result<(), String> {
+    /// Move one item back to the Trash for a Trash redo. The error carries
+    /// whether the item may have been trashed anyway (an indeterminate
+    /// outcome), so the caller can treat it as a possible change.
+    fn retrash_one(&self, path: &Path) -> Result<(), (String, bool)> {
         let expected = crate::path_identity::PathIdentity::observe(path).map_err(|error| {
-            format!(
-                "Could not inspect {} for Trash redo: {error}",
-                path.display()
+            (
+                format!(
+                    "Could not inspect {} for Trash redo: {error}",
+                    path.display()
+                ),
+                false,
             )
         })?;
         if !expected.exists {
-            return Err(format!(
-                "Trash redo source no longer exists: {}",
-                path.display()
+            return Err((
+                format!("Trash redo source no longer exists: {}", path.display()),
+                false,
             ));
         }
         let target = crate::ports::TrashTarget {
@@ -2459,7 +2470,14 @@ impl Workspace {
         };
         match self.deletes.trash_one(&target) {
             crate::ports::TrashItemOutcome::Trashed => Ok(()),
-            other => Err(format!("Could not re-trash {}: {other:?}", path.display())),
+            other => {
+                let maybe_trashed =
+                    matches!(other, crate::ports::TrashItemOutcome::Indeterminate(_));
+                Err((
+                    format!("Could not re-trash {}: {other:?}", path.display()),
+                    maybe_trashed,
+                ))
+            }
         }
     }
 

@@ -182,7 +182,7 @@ impl BoundDirectory {
                 if dir_error.kind() == io::ErrorKind::NotFound {
                     return Ok(());
                 }
-                return Err(dir_error);
+                return Err(remove_retry_error(error, dir_error));
             }
             if error.kind() == io::ErrorKind::NotFound {
                 return Ok(());
@@ -200,6 +200,21 @@ impl BoundDirectory {
                 Err(error) => Err(error),
             }
         }
+    }
+}
+
+/// Pick the error to report when `unlinkat` and its `AT_REMOVEDIR` retry both
+/// fail. The EPERM retry exists for macOS, which reports EPERM when unlinking
+/// a directory; for a real non-directory the retry only adds ENOTDIR, which
+/// would hide the permission problem (sticky folder, immutable file).
+#[cfg(unix)]
+fn remove_retry_error(unlink_error: io::Error, rmdir_error: io::Error) -> io::Error {
+    if unlink_error.raw_os_error() == Some(libc::EPERM)
+        && rmdir_error.raw_os_error() == Some(libc::ENOTDIR)
+    {
+        unlink_error
+    } else {
+        rmdir_error
     }
 }
 
@@ -303,9 +318,15 @@ fn exclusive_renameat(dirfd: RawFd, source: &CString, destination: &CString) -> 
 
 #[cfg(unix)]
 fn is_exclusive_rename_unsupported(error: &io::Error) -> bool {
-    error
-        .raw_os_error()
-        .is_some_and(|code| code == libc::ENOTSUP || code == libc::EOPNOTSUPP)
+    error.raw_os_error().is_some_and(|code| {
+        code == libc::ENOTSUP
+            || code == libc::EOPNOTSUPP
+            // Linux reports a filesystem without RENAME_NOREPLACE (NFS, some
+            // FUSE) as EINVAL, and a kernel or sandbox without renameat2 as
+            // ENOSYS. A genuine EINVAL (a folder into itself) resurfaces from
+            // the fallback's plain rename.
+            || (cfg!(target_os = "linux") && (code == libc::EINVAL || code == libc::ENOSYS))
+    })
 }
 
 #[cfg(unix)]
@@ -453,6 +474,50 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&taken).unwrap(), "old");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn remove_keeps_the_permission_error_when_the_rmdir_retry_says_not_a_directory() {
+        let os = io::Error::from_raw_os_error;
+        let chosen = remove_retry_error(os(libc::EPERM), os(libc::ENOTDIR));
+        assert_eq!(chosen.raw_os_error(), Some(libc::EPERM));
+        // A directory that really failed to go keeps the rmdir reason.
+        let chosen = remove_retry_error(os(libc::EPERM), os(libc::ENOTEMPTY));
+        assert_eq!(chosen.raw_os_error(), Some(libc::ENOTEMPTY));
+        let chosen = remove_retry_error(os(libc::EISDIR), os(libc::EACCES));
+        assert_eq!(chosen.raw_os_error(), Some(libc::EACCES));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_rename_falls_back_only_for_unsupported_codes() {
+        let os = io::Error::from_raw_os_error;
+        assert!(is_exclusive_rename_unsupported(&os(libc::ENOTSUP)));
+        assert!(is_exclusive_rename_unsupported(&os(libc::EOPNOTSUPP)));
+        assert_eq!(
+            is_exclusive_rename_unsupported(&os(libc::EINVAL)),
+            cfg!(target_os = "linux")
+        );
+        assert_eq!(
+            is_exclusive_rename_unsupported(&os(libc::ENOSYS)),
+            cfg!(target_os = "linux")
+        );
+        assert!(!is_exclusive_rename_unsupported(&os(libc::EEXIST)));
+        assert!(!is_exclusive_rename_unsupported(&os(libc::EACCES)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn noreplace_fallback_still_rejects_moving_a_folder_into_itself() {
+        let tmp = TempDir::new();
+        let c = |path: &Path| CString::new(path.as_os_str().as_bytes()).unwrap();
+        let folder = tmp.dir("folder");
+        let inside = folder.join("inside");
+        let err =
+            renameat_noreplace_fallback(libc::AT_FDCWD, &c(&folder), &c(&inside)).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EINVAL));
+        assert!(folder.is_dir());
+    }
+
     #[test]
     fn bound_directory_rejects_escape_names() {
         let temp = TempDir::new();
@@ -483,6 +548,26 @@ mod tests {
         );
         nested.remove(OsStr::new("final")).unwrap();
         assert!(!temp.path().join("nested/final").exists());
+    }
+
+    #[test]
+    fn bound_directory_remove_handles_empty_dirs_full_dirs_and_missing_names() {
+        let temp = TempDir::new();
+        let bound = BoundDirectory::open(temp.path()).unwrap();
+
+        temp.dir("empty");
+        bound.remove(OsStr::new("empty")).unwrap();
+        assert!(!temp.path().join("empty").exists());
+
+        temp.file("full/inner.txt", "keep");
+        let error = bound.remove(OsStr::new("full")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::DirectoryNotEmpty);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("full/inner.txt")).unwrap(),
+            "keep"
+        );
+
+        bound.remove(OsStr::new("never-existed")).unwrap();
     }
 
     #[test]

@@ -504,7 +504,10 @@ impl App {
         }
         if let Some(id) = resume {
             let ctx = ui.ctx().clone();
-            self.ws.queue_resume(id, move || ctx.request_repaint());
+            let repaint = ctx.clone();
+            if let Err(reason) = self.ws.queue_resume(id, move || repaint.request_repaint()) {
+                self.toast(&ctx, crate::toasts::ToastKind::Error, reason, false);
+            }
         }
         if let Some(id) = promote {
             self.ws.queue_promote(id);
