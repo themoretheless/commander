@@ -187,8 +187,14 @@ impl PreviewError {
             Self::ProviderUnavailable => "No text preview provider is available for this file.",
             Self::ProviderPanicked => "The text preview provider stopped unexpectedly.",
             Self::SchedulerUnavailable => "The preview queue is busy. Retry in a moment.",
-            Self::WorkerBusy => "Waiting for the previous preview read to finish.",
-            Self::TimedOut => "The text preview provider exceeded its time budget.",
+            // Shown once a hung earlier read (dead mount) has kept the single
+            // preview worker for a full timeout.
+            Self::WorkerBusy => {
+                "An earlier preview read is not responding. Retry in a moment, or open the file directly."
+            }
+            Self::TimedOut => {
+                "The text preview took too long to load. Retry, or open the file directly."
+            }
         }
     }
 }
@@ -371,9 +377,17 @@ struct TextPreviewCompletion {
 
 enum TextPreviewPhase {
     Idle,
-    Debouncing { ready_at: Instant },
-    WaitingForWorker,
-    Running { deadline: Instant },
+    Debouncing {
+        ready_at: Instant,
+    },
+    /// The previous read still holds the worker; after `deadline` the
+    /// request fails as `WorkerBusy` instead of spinning forever.
+    WaitingForWorker {
+        deadline: Instant,
+    },
+    Running {
+        deadline: Instant,
+    },
     Ready(Arc<str>),
     Failed(PreviewError),
 }
@@ -759,7 +773,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         let ready_to_submit = matches!(
             self.phase,
             TextPreviewPhase::Debouncing { ready_at } if now >= ready_at
-        ) || matches!(self.phase, TextPreviewPhase::WaitingForWorker)
+        ) || matches!(self.phase, TextPreviewPhase::WaitingForWorker { .. })
             && self.task.is_none();
         if ready_to_submit {
             self.submit(ctx, now);
@@ -772,7 +786,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         match &self.phase {
             TextPreviewPhase::Idle
             | TextPreviewPhase::Debouncing { .. }
-            | TextPreviewPhase::WaitingForWorker
+            | TextPreviewPhase::WaitingForWorker { .. }
             | TextPreviewPhase::Running { .. } => TextPreviewPoll::Loading,
             TextPreviewPhase::Ready(content) => {
                 self.delivered = true;
@@ -787,8 +801,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
 
     fn submit(&mut self, ctx: &Context, now: Instant) {
         if self.task.is_some() {
-            self.phase = TextPreviewPhase::WaitingForWorker;
-            self.delivered = false;
+            self.wait_for_worker(now);
             return;
         }
         let Some(ownership) = self.active.clone() else {
@@ -840,9 +853,12 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
             repaint.request_repaint();
         });
 
-        self.phase = TextPreviewPhase::Running {
-            deadline: now + TEXT_PREVIEW_TIMEOUT,
-        };
+        let previous_wait = std::mem::replace(
+            &mut self.phase,
+            TextPreviewPhase::Running {
+                deadline: now + TEXT_PREVIEW_TIMEOUT,
+            },
+        );
         match self
             .executor
             .submit(TextPreviewSubmission { generation }, job)
@@ -851,14 +867,25 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
                 self.task = Some(RunningTextPreviewTask { generation, handle });
             }
             Err(PreviewError::WorkerBusy) => {
-                self.phase = TextPreviewPhase::WaitingForWorker;
-                self.delivered = false;
+                self.phase = previous_wait;
+                self.wait_for_worker(now);
             }
             Err(error) => {
                 self.phase = TextPreviewPhase::Failed(error);
                 self.delivered = false;
             }
         }
+    }
+
+    /// Enter (or stay in) `WaitingForWorker`, keeping the deadline of a wait
+    /// already under way so per-frame resubmission cannot extend it.
+    fn wait_for_worker(&mut self, now: Instant) {
+        if !matches!(self.phase, TextPreviewPhase::WaitingForWorker { .. }) {
+            self.phase = TextPreviewPhase::WaitingForWorker {
+                deadline: now + TEXT_PREVIEW_TIMEOUT,
+            };
+        }
+        self.delivered = false;
     }
 
     fn drain_completions(&mut self) {
@@ -923,6 +950,16 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
             self.phase = TextPreviewPhase::Failed(PreviewError::TimedOut);
             self.delivered = false;
         }
+        // Nothing of this request was submitted, so there is no task of ours
+        // to cancel; the hung read keeps the worker until it returns.
+        let worker_stuck = matches!(
+            self.phase,
+            TextPreviewPhase::WaitingForWorker { deadline } if now >= deadline
+        );
+        if worker_stuck {
+            self.phase = TextPreviewPhase::Failed(PreviewError::WorkerBusy);
+            self.delivered = false;
+        }
     }
 
     fn schedule_repaint(&self, ctx: &Context, now: Instant) {
@@ -930,8 +967,10 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
             TextPreviewPhase::Debouncing { ready_at } => {
                 ctx.request_repaint_after(ready_at.saturating_duration_since(now));
             }
-            TextPreviewPhase::WaitingForWorker => {
-                ctx.request_repaint_after(TEXT_PREVIEW_POLL_INTERVAL);
+            TextPreviewPhase::WaitingForWorker { deadline } => {
+                ctx.request_repaint_after(
+                    TEXT_PREVIEW_POLL_INTERVAL.min(deadline.saturating_duration_since(now)),
+                );
             }
             TextPreviewPhase::Running { deadline } => {
                 ctx.request_repaint_after(
@@ -954,7 +993,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         match self.phase {
             TextPreviewPhase::Idle => TextPreviewLoadState::Idle,
             TextPreviewPhase::Debouncing { .. } => TextPreviewLoadState::Debouncing,
-            TextPreviewPhase::WaitingForWorker => TextPreviewLoadState::Waiting,
+            TextPreviewPhase::WaitingForWorker { .. } => TextPreviewLoadState::Waiting,
             TextPreviewPhase::Running { .. } => TextPreviewLoadState::Loading,
             TextPreviewPhase::Ready(_) => TextPreviewLoadState::Ready,
             TextPreviewPhase::Failed(error) => TextPreviewLoadState::Failed(error),
@@ -1024,7 +1063,9 @@ impl PreviewFailure {
             Self::TooLarge => "This image exceeds the preview memory limit.",
             Self::Unreadable => "Commander cannot read this file.",
             Self::Unsupported => "This image format is not supported.",
-            Self::TimedOut => "The preview provider exceeded its time budget.",
+            Self::TimedOut => {
+                "The preview took too long to load. Retry, or open the file directly."
+            }
             Self::Busy => "All preview decoders are busy. Retry in a moment.",
             Self::Quarantined => {
                 "Previews of this format are paused after repeated decode failures. Retry to test the decoder again."
@@ -2949,7 +2990,7 @@ mod tests {
         assert_eq!(pipeline.request(&ctx, &request), TextPreviewPoll::Loading);
         assert!(matches!(
             pipeline.phase,
-            super::TextPreviewPhase::WaitingForWorker
+            super::TextPreviewPhase::WaitingForWorker { .. }
         ));
         assert_eq!(executor.pending_count(), 0, "retry is not admitted yet");
 
@@ -2960,6 +3001,63 @@ mod tests {
         match pipeline.request(&ctx, &request) {
             TextPreviewPoll::Ready(content) => assert_eq!(content.as_ref(), "fresh"),
             other => panic!("expected retried preview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hung_retiring_worker_fails_the_waiting_request_after_the_timeout() {
+        let executor = TestExecutor {
+            cancel_finishes: false,
+            ..TestExecutor::default()
+        };
+        let provider = Arc::new(ScriptedProvider::default());
+        let clock = TestClock::new();
+        let mut pipeline = TextPreviewPipeline::with_parts(
+            executor.clone(),
+            provider.clone(),
+            Arc::new(clock.clone()),
+        );
+        let ctx = egui::Context::default();
+        let hung = identity("hung.txt", 5);
+        submit_after_debounce(&mut pipeline, &executor, &clock, &ctx, &hung);
+        clock.advance(TEXT_PREVIEW_TIMEOUT);
+        assert_eq!(
+            pipeline.request(&ctx, &hung),
+            TextPreviewPoll::Failed(PreviewError::TimedOut)
+        );
+
+        // The next file waits behind the read that never returns.
+        let next = identity("next.txt", 5);
+        assert_eq!(pipeline.request(&ctx, &next), TextPreviewPoll::Loading);
+        clock.advance(TEXT_PREVIEW_DEBOUNCE);
+        assert_eq!(pipeline.request(&ctx, &next), TextPreviewPoll::Loading);
+        assert_eq!(
+            pipeline.load_state(&next.path),
+            super::TextPreviewLoadState::Waiting
+        );
+        clock.advance(TEXT_PREVIEW_TIMEOUT - Duration::from_millis(1));
+        assert_eq!(pipeline.request(&ctx, &next), TextPreviewPoll::Loading);
+
+        clock.advance(Duration::from_millis(1));
+        assert_eq!(
+            pipeline.request(&ctx, &next),
+            TextPreviewPoll::Failed(PreviewError::WorkerBusy)
+        );
+        assert_eq!(executor.pending_count(), 0);
+    }
+
+    #[test]
+    fn timeout_copy_avoids_internal_jargon() {
+        for message in [
+            PreviewError::TimedOut.message(),
+            PreviewFailure::TimedOut.message(),
+            PreviewError::WorkerBusy.message(),
+        ] {
+            assert!(
+                !message.contains("provider") && !message.contains("budget"),
+                "{message}"
+            );
+            assert!(message.contains("Retry"), "{message}");
         }
     }
 
