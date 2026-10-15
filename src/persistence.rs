@@ -298,14 +298,30 @@ fn with_store_locks<T, E>(
 
 impl Persist for FsPersist {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<ReadOutcome, ReadFailure> {
-        with_store_locks(
-            path,
-            |error| ReadFailure {
-                kind: ReadFailureKind::Io,
-                source: error,
-            },
-            || read_file_bounded(path, max_bytes),
-        )
+        // A read must not create the store's directory, and a store that
+        // does not exist is missing even where no lock file can be created
+        // (an absent or read-only config directory). Saves still take the
+        // lock and re-check the expected revision, so skipping it here
+        // cannot let a stale snapshot through.
+        let store_absent = || {
+            std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        };
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && std::fs::symlink_metadata(parent)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        {
+            return Ok(ReadOutcome::Missing);
+        }
+        let _process_lock = match acquire_process_store_lock(path) {
+            Ok(lock) => lock,
+            Err(_) if store_absent() => return Ok(ReadOutcome::Missing),
+            Err(error) => return Err(read_failure(ReadFailureKind::Io, error)),
+        };
+        let path_lock = path_lock(path);
+        let _guard = crate::lock_util::recover(&path_lock);
+        read_file_bounded(path, max_bytes)
     }
 
     fn commit(
@@ -2269,6 +2285,17 @@ mod tests {
         let error = FsPersist::default().read(&link, 4096).unwrap_err();
         assert_eq!(error.kind, ReadFailureKind::Symlink);
         assert!(load_json::<Item>(&link, "Test").is_none());
+    }
+
+    #[test]
+    fn reading_a_store_in_an_absent_directory_is_missing_and_creates_nothing() {
+        let temp = TempDir::new();
+        let parent = temp.path().join("absent").join("config");
+        let outcome = FsPersist::default()
+            .read(&parent.join("state.json"), 4096)
+            .unwrap();
+        assert!(matches!(outcome, ReadOutcome::Missing));
+        assert!(!temp.path().join("absent").exists());
     }
 
     #[test]

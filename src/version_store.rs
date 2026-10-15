@@ -1412,9 +1412,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(failure.kind, crate::ports::NativeFailureKind::Stale);
-        // Binding rejection must not create the versions root. Check existence
-        // before load_manifest: a missing-store read acquires a process lock and
-        // create_dir_all's the parent as a side effect.
+        // Binding rejection must not create the versions root.
         assert!(!versions.exists());
         assert!(load_manifest(&versions).records.is_empty());
     }
