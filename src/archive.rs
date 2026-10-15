@@ -1083,6 +1083,85 @@ mod tests {
         assert_eq!(summary.emitted, 0);
     }
 
+    #[test]
+    fn member_budget_cap_truncates_mid_archive() {
+        let temp = TempDir::new();
+        let path = temp.path().join("cap.zip");
+        write_zip(&path, &[("one.txt", b"1"), ("two.txt", b"2")]);
+        // One member left in the run's budget: the second is never visited.
+        let mut budget = SearchBudget {
+            members: MAX_MEMBERS_PER_RUN - 1,
+            ..Default::default()
+        };
+        let mut visited = Vec::new();
+
+        let summary = visit_members(
+            &path,
+            false,
+            &mut budget,
+            || false,
+            |member| {
+                visited.push(member.member.path);
+                true
+            },
+        )
+        .unwrap();
+
+        assert_eq!(visited, [PathBuf::from("one.txt")]);
+        assert_eq!(summary.emitted, 1);
+        assert!(budget.truncated);
+        assert_eq!(budget.members, MAX_MEMBERS_PER_RUN);
+    }
+
+    #[test]
+    fn exhausted_budget_skips_the_archive_without_opening_it() {
+        // Not even a zip: a spent budget must return before reading it.
+        let temp = TempDir::new();
+        let path = temp.path().join("garbage.zip");
+        fs::write(&path, b"not a zip").unwrap();
+        for mut budget in [
+            SearchBudget {
+                archives: MAX_ARCHIVES_PER_SEARCH,
+                ..Default::default()
+            },
+            SearchBudget {
+                members: MAX_MEMBERS_PER_RUN,
+                ..Default::default()
+            },
+        ] {
+            let before = budget.archives;
+
+            let summary = visit_members(
+                &path,
+                true,
+                &mut budget,
+                || false,
+                |_| panic!("budget-capped visit emitted a member"),
+            )
+            .unwrap();
+
+            assert_eq!(summary, VisitSummary::default());
+            assert!(budget.truncated);
+            assert_eq!(budget.archives, before, "a skipped archive was counted");
+        }
+    }
+
+    #[test]
+    fn zip_extract_skips_unsafe_members_and_keeps_going() {
+        let temp = TempDir::new();
+        let archive = temp.path().join("mixed.zip");
+        write_zip(&archive, &[("../escape.txt", b"bad"), ("ok.txt", b"ok")]);
+        let dest = temp.path().join("out");
+        let cancelled = AtomicBool::new(false);
+
+        let report = extract_members(&archive, &dest, &[0, 1], &cancelled).unwrap();
+
+        assert_eq!(report.extracted, 1);
+        assert_eq!(report.errors, ["Skipped unsafe member ../escape.txt"]);
+        assert_eq!(fs::read(dest.join("ok.txt")).unwrap(), b"ok");
+        assert!(!temp.path().join("escape.txt").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn zip_extract_does_not_write_through_dangling_symlink() {
@@ -1343,6 +1422,46 @@ mod tests {
         let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(fs::read(dest.join(" padded ")).unwrap(), b"pad");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_lists_and_extracts_option_like_member_names() {
+        // Names that look like tar flags must stay member names, both in the
+        // listing and in the extract name list.
+        let temp = TempDir::new();
+        let source = temp.path().join("src");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("-v"), b"dash").unwrap();
+        fs::write(source.join("--null"), b"double").unwrap();
+        let archive = temp.path().join("flags.tgz");
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&source)
+            .args(["--", "-v", "--null"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(archive.clone(), &cancelled).unwrap();
+        let mut names: Vec<_> = listing
+            .members
+            .iter()
+            .map(|member| member.path.clone())
+            .collect();
+        names.sort();
+        assert_eq!(names, [PathBuf::from("--null"), PathBuf::from("-v")]);
+        let indexes: Vec<usize> = listing.members.iter().map(|member| member.index).collect();
+        let dest = temp.path().join("out");
+
+        let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.extracted, 2);
+        assert_eq!(fs::read(dest.join("-v")).unwrap(), b"dash");
+        assert_eq!(fs::read(dest.join("--null")).unwrap(), b"double");
     }
 
     #[cfg(unix)]
