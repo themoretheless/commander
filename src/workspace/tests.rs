@@ -186,6 +186,57 @@ fn workspace_uses_the_injected_persistence_for_bookmark_load_and_save() {
     assert_eq!(written["payload"]["items"].as_array().unwrap().len(), 2);
 }
 
+#[test]
+fn favorite_edits_reorder_clear_slot_remove_and_persist() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(
+            br#"{"items":[{"name":"a","path":"/a","slot":1},{"name":"b","path":"/b"},{"name":"c","path":"/c"}]}"#
+                .to_vec(),
+        ),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().to_path_buf(),
+        right.path().to_path_buf(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    let names = |ws: &Workspace| -> Vec<String> {
+        ws.bookmarks.items.iter().map(|b| b.name.clone()).collect()
+    };
+    let commits = || persistence.commits.load(Ordering::Relaxed);
+
+    // No-op edits change and save nothing.
+    ws.edit_favorite(Path::new("/a"), FavoriteEdit::MoveUp);
+    ws.edit_favorite(Path::new("/c"), FavoriteEdit::MoveDown);
+    ws.edit_favorite(Path::new("/b"), FavoriteEdit::ClearSlot);
+    ws.edit_favorite(Path::new("/missing"), FavoriteEdit::Remove);
+    assert_eq!(commits(), 0);
+
+    ws.edit_favorite(Path::new("/c"), FavoriteEdit::MoveUp);
+    assert_eq!(names(&ws), ["a", "c", "b"]);
+    ws.edit_favorite(Path::new("/a"), FavoriteEdit::MoveDown);
+    assert_eq!(names(&ws), ["c", "a", "b"]);
+    ws.edit_favorite(Path::new("/a"), FavoriteEdit::ClearSlot);
+    assert_eq!(ws.bookmarks.by_slot(1), None);
+    ws.edit_favorite(Path::new("/b"), FavoriteEdit::Remove);
+    assert_eq!(names(&ws), ["c", "a"]);
+    assert_eq!(commits(), 4);
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&persistence.bytes.lock().unwrap()).unwrap();
+    let saved: Vec<&str> = written["payload"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(saved, ["c", "a"]);
+}
+
 fn test_transfer_spec(operation_id: &str, target: &Path) -> TransferSpec {
     TransferSpec {
         operation_id: crate::operation::OperationId(operation_id.to_string()),

@@ -443,6 +443,15 @@ fn smart_select_message(added: usize, noun: (&str, &str), none: &str) -> String 
 
 /// Toast for a sort with no header column (extension, kind): which column
 /// and direction is now active, since nothing on screen shows it.
+/// A change offered by the Favorites rail's context menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FavoriteEdit {
+    Remove,
+    ClearSlot,
+    MoveUp,
+    MoveDown,
+}
+
 fn sort_notice(column: &str, order: crate::panel::SortOrder) -> String {
     let direction = match order {
         crate::panel::SortOrder::Asc => "ascending",
@@ -2571,6 +2580,28 @@ impl Workspace {
         }
         self.enqueue_silent_move(entries, dest_dir, post_success, None, history, notify)?;
         Ok(true)
+    }
+
+    /// Apply a Favorites rail context-menu `edit` to the favorite at `path`
+    /// and persist it. Unknown paths and no-op moves change and save nothing.
+    pub fn edit_favorite(&mut self, path: &Path, edit: FavoriteEdit) {
+        let index = self.bookmarks.items.iter().position(|b| b.path == path);
+        let Some(index) = index else {
+            return;
+        };
+        let changed = match edit {
+            FavoriteEdit::Remove => self.bookmarks.remove(path),
+            FavoriteEdit::ClearSlot => {
+                self.bookmarks.items[index].slot.is_some() && self.bookmarks.clear_slot(path)
+            }
+            FavoriteEdit::MoveUp => index > 0 && self.bookmarks.reorder(index, index - 1),
+            FavoriteEdit::MoveDown => {
+                index + 1 < self.bookmarks.items.len() && self.bookmarks.reorder(index, index + 1)
+            }
+        };
+        if changed {
+            self.save_bookmarks();
+        }
     }
 
     /// Add `dir` to the bookmarks if it is not already present, naming it after

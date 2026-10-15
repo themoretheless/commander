@@ -218,7 +218,10 @@ impl App {
             &self.ws.left.current_path,
             &self.ws.right.current_path,
         );
-        let mut nav = Self::render_favorites(ui, t, &rows);
+        let (mut nav, edit) = Self::render_favorites(ui, t, &rows);
+        if let Some((path, edit)) = edit {
+            self.ws.edit_favorite(&path, edit);
+        }
 
         let root = PathBuf::from("/");
         let mut walk = TreeWalk {
@@ -236,16 +239,21 @@ impl App {
     }
 
     /// Draw the Favorites rail from a pure [`rail_model`](crate::bookmarks::rail_model)
-    /// row list. Returns the path of a clicked favorite, if any.
+    /// row list. Returns the path of a clicked favorite and the edit chosen
+    /// from a row's context menu, if any.
     fn render_favorites(
         ui: &mut egui::Ui,
         t: &ThemeColors,
         rows: &[crate::bookmarks::RailRow],
-    ) -> Option<PathBuf> {
+    ) -> (
+        Option<PathBuf>,
+        Option<(PathBuf, crate::workspace::FavoriteEdit)>,
+    ) {
         if rows.is_empty() {
-            return None;
+            return (None, None);
         }
         let mut nav = None;
+        let mut edit = None;
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new("FAVORITES")
@@ -253,7 +261,8 @@ impl App {
                 .color(t.text_muted),
         );
         let full_w = ui.available_width();
-        for row in rows {
+        let last = rows.len() - 1;
+        for (index, row) in rows.iter().enumerate() {
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(full_w, 22.0), Sense::click());
             if row.is_current {
                 ui.painter().rect_filled(
@@ -292,10 +301,29 @@ impl App {
             if resp.clicked() {
                 nav = Some(row.path.clone());
             }
-            resp.on_hover_text(favorite_tooltip(&row.path, row.slot));
+            resp.on_hover_text(favorite_tooltip(&row.path, row.slot))
+                .context_menu(|ui| {
+                    use crate::workspace::FavoriteEdit;
+                    let items = [
+                        ("Move up", FavoriteEdit::MoveUp, index > 0),
+                        ("Move down", FavoriteEdit::MoveDown, index < last),
+                        (
+                            "Clear quick-jump slot",
+                            FavoriteEdit::ClearSlot,
+                            row.slot.is_some(),
+                        ),
+                        ("Remove from Favorites", FavoriteEdit::Remove, true),
+                    ];
+                    for (label, choice, enabled) in items {
+                        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                            edit = Some((row.path.clone(), choice));
+                            ui.close();
+                        }
+                    }
+                });
         }
         ui.add_space(6.0);
-        nav
+        (nav, edit)
     }
 
     fn render_tree_node_recursive(

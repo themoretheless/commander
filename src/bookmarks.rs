@@ -57,9 +57,8 @@ impl Bookmarks {
     }
 
     /// Rename the bookmark for `path`. Returns whether one was found.
-    // Bookmark-management ops (rename/reorder/clear_slot/by_path) are tested
-    // and ready; the favorites context menu that drives them is the next
-    // bookmark iteration, so they are not called from non-test code yet.
+    // Tested and ready; the Favorites context menu does not offer renaming
+    // yet, so it is not called from non-test code.
     #[allow(dead_code)]
     pub fn rename(&mut self, path: &Path, new_name: impl Into<String>) -> bool {
         match self.items.iter_mut().find(|b| b.path == path) {
@@ -74,7 +73,6 @@ impl Bookmarks {
     /// Move the bookmark at index `from` to index `to`, preserving the relative
     /// order of the rest (a remove-then-insert). `to` is clamped into range.
     /// Returns whether `from` was a valid index.
-    #[allow(dead_code)]
     pub fn reorder(&mut self, from: usize, to: usize) -> bool {
         if from >= self.items.len() {
             return false;
@@ -112,7 +110,6 @@ impl Bookmarks {
 
     /// Clear any quick-jump slot bound to `path`. Returns whether the bookmark
     /// was found.
-    #[allow(dead_code)]
     pub fn clear_slot(&mut self, path: &Path) -> bool {
         match self.items.iter_mut().find(|b| b.path == path) {
             Some(b) => {
