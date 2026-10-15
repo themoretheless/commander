@@ -876,25 +876,31 @@ fn load_at(path: &Path) -> Result<Journal, String> {
 fn map_journal_save_error(path: &Path, error: crate::persistence::JsonSaveError) -> String {
     use crate::persistence::PreCommitError;
     match error {
-        crate::persistence::JsonSaveError::PreCommit(PreCommitError::Conflict) => {
-            "Operation journal revision mismatch: another writer changed the store".to_string()
-        }
-        crate::persistence::JsonSaveError::PreCommit(PreCommitError::Serialize(error)) => {
-            format!("Operation journal could not be serialized: {error}")
-        }
-        crate::persistence::JsonSaveError::PreCommit(PreCommitError::Io {
-            stage,
-            source,
-            cleanup,
-        }) => {
-            let mut message = format!(
-                "Operation journal {} was not committed: could not {stage}: {source}",
-                path.display()
-            );
-            if let Some(cleanup) = cleanup {
-                message.push_str(&format!("; cleanup also failed: {cleanup}"));
+        crate::persistence::JsonSaveError::PreCommit(error) => {
+            let stage = error.stage();
+            match error {
+                PreCommitError::Conflict => {
+                    "Operation journal revision mismatch: another writer changed the store"
+                        .to_string()
+                }
+                PreCommitError::Serialize(error) => {
+                    format!("Operation journal could not be serialized: {error}")
+                }
+                PreCommitError::Io {
+                    source, cleanup, ..
+                } => {
+                    let mut message =
+                        format!("Operation journal {} was not committed", path.display());
+                    if let Some(stage) = stage {
+                        message.push_str(&format!(": could not {stage}"));
+                    }
+                    message.push_str(&format!(": {source}"));
+                    if let Some(cleanup) = cleanup {
+                        message.push_str(&format!("; cleanup also failed: {cleanup}"));
+                    }
+                    message
+                }
             }
-            message
         }
         crate::persistence::JsonSaveError::Blocked(status) => {
             format!("Operation journal save blocked ({status:?})")
