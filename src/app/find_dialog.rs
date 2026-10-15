@@ -1022,15 +1022,7 @@ impl App {
                 .modals
                 .find
                 .as_ref()
-                .map(|state| {
-                    state
-                        .index_exclusions
-                        .lines()
-                        .map(str::trim)
-                        .filter(|line| !line.is_empty())
-                        .map(PathBuf::from)
-                        .collect::<Vec<_>>()
-                })
+                .map(FindState::exclusion_paths)
                 .unwrap_or_default();
             match self.content_index.set_exclusions(&index_root, values) {
                 Ok(()) => {
@@ -1079,12 +1071,7 @@ impl App {
             let exclusions =
                 format_index_exclusions(&entry.root, &self.content_index.exclusions(&entry.root));
             if let Some(state) = self.ui.modals.find.as_mut() {
-                state.expression = entry.expression;
-                state.mode = entry.mode;
-                state.root = entry.root;
-                state.index_exclusions = exclusions;
-                state.index_rerun_after_build = false;
-                state.history_open = false;
+                state.replay(entry, exclusions);
             }
             edited = true;
         }
@@ -1093,20 +1080,14 @@ impl App {
         if let Some(path) = root_change.filter(|path| *path != index_root) {
             let exclusions = format_index_exclusions(&path, &self.content_index.exclusions(&path));
             if let Some(state) = self.ui.modals.find.as_mut() {
-                state.root = path;
-                state.index_exclusions = exclusions;
-                state.index_rerun_after_build = false;
+                state.change_root(path, exclusions);
             }
             edited = true;
         }
         if let Some(index) = remove_predicate
             && let Some(state) = self.ui.modals.find.as_mut()
-            && let Ok(mut query) = state.build_query()
-            && index < query.predicates.len()
         {
-            query.predicates.remove(index);
-            state.expression = query.to_expression();
-            edited = true;
+            edited |= state.remove_predicate(index);
         }
         if let Some(value) = explanation_change
             && let Some(state) = self.ui.modals.find.as_mut()
@@ -1168,14 +1149,117 @@ impl App {
     }
 }
 
+/// Field transitions the find dialog applies after its UI pass. They are
+/// plain state edits, kept out of the frame code so they can be tested.
+impl FindState {
+    /// The exclusion editor's lines as paths, blank lines dropped.
+    fn exclusion_paths(&self) -> Vec<PathBuf> {
+        self.index_exclusions
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    /// Load a history entry's query and root, with `exclusions` formatted
+    /// for that root, and close the history list.
+    fn replay(&mut self, entry: crate::search::QueryHistoryEntry, exclusions: String) {
+        self.expression = entry.expression;
+        self.mode = entry.mode;
+        self.root = entry.root;
+        self.index_exclusions = exclusions;
+        self.index_rerun_after_build = false;
+        self.history_open = false;
+    }
+
+    /// Search under `root` instead, with `exclusions` formatted for it.
+    fn change_root(&mut self, root: PathBuf, exclusions: String) {
+        self.root = root;
+        self.index_exclusions = exclusions;
+        self.index_rerun_after_build = false;
+    }
+
+    /// Drop the query's `index`th predicate chip; false when the query does
+    /// not parse or has no such predicate.
+    fn remove_predicate(&mut self, index: usize) -> bool {
+        let Ok(mut query) = self.build_query() else {
+            return false;
+        };
+        if index >= query.predicates.len() {
+            return false;
+        }
+        query.predicates.remove(index);
+        self.expression = query.to_expression();
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::FindState;
     use super::{
         add_smart_folder, history_row_label, index_build_refusal, index_skipped_summary,
         pivot_order, result_row_height, search_root_error,
     };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn exclusion_editor_lines_become_trimmed_paths() {
+        let state = FindState {
+            index_exclusions: "  /a/node_modules \n\n/b\n   ".to_string(),
+            ..FindState::default()
+        };
+        assert_eq!(
+            state.exclusion_paths(),
+            [PathBuf::from("/a/node_modules"), PathBuf::from("/b")]
+        );
+    }
+
+    #[test]
+    fn replay_and_root_change_reset_the_index_rerun() {
+        let mut state = FindState {
+            history_open: true,
+            index_rerun_after_build: true,
+            ..FindState::default()
+        };
+        state.replay(
+            crate::search::QueryHistoryEntry {
+                expression: "report".to_string(),
+                mode: crate::query::MatchMode::default(),
+                root: PathBuf::from("/docs"),
+                result_count: 3,
+                scanned: 10,
+                duration_ms: 5,
+                last_run: 1,
+            },
+            "/docs/tmp".to_string(),
+        );
+        assert_eq!(state.expression, "report");
+        assert_eq!(state.root, PathBuf::from("/docs"));
+        assert_eq!(state.index_exclusions, "/docs/tmp");
+        assert!(!state.history_open && !state.index_rerun_after_build);
+
+        state.index_rerun_after_build = true;
+        state.change_root(PathBuf::from("/other"), String::new());
+        assert_eq!(state.root, PathBuf::from("/other"));
+        assert!(!state.index_rerun_after_build);
+    }
+
+    #[test]
+    fn removing_a_predicate_rewrites_the_expression() {
+        let mut state = FindState::default();
+        assert!(!state.remove_predicate(0), "an empty query has no chips");
+        state.expression = "name:report path:docs".to_string();
+        assert!(!state.remove_predicate(2));
+        assert!(state.remove_predicate(0));
+        let query = state.build_query().unwrap();
+        assert_eq!(
+            query.predicates,
+            [crate::query::Predicate::PathContains("docs".to_string())]
+        );
+    }
 
     fn hit(name: &str, modified: Option<SystemTime>) -> crate::search::SearchHit {
         let path = PathBuf::from(format!("/x/{name}"));
