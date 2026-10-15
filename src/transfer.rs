@@ -752,9 +752,19 @@ fn valid_runtime_checkpoint(
     if !journal_enabled {
         return None;
     }
-    let checkpoint = crate::operation_journal::step_checkpoint(operation_id, key)
-        .ok()
-        .flatten()?;
+    let checkpoint = match crate::operation_journal::step_checkpoint(operation_id, key) {
+        Ok(checkpoint) => checkpoint?,
+        Err(error) => {
+            // Resume is an optimisation: an unreadable journal only costs a
+            // full recopy, but say why the checkpoint was not used.
+            log::warn!(
+                target: "commander::transfer",
+                "ignoring resume checkpoint for {}: {error}",
+                staging.display()
+            );
+            return None;
+        }
+    };
     if checkpoint.staging != staging || checkpoint.content_digest.is_none() {
         return None;
     }
@@ -2786,6 +2796,189 @@ mod tests {
         assert_eq!(progress.progress_fraction(), Some(0.5));
         progress.files_done = 2;
         assert_eq!(progress.progress_fraction(), Some(1.0));
+    }
+
+    /// A journaled Running step with a verified 5-byte prefix checkpoint.
+    struct CheckpointFixture {
+        _journal: crate::operation_journal::TestJournalPathGuard,
+        temp: TempDir,
+        operation_id: OperationId,
+        key: IdempotencyKey,
+        source: PathBuf,
+        staging: PathBuf,
+    }
+
+    impl CheckpointFixture {
+        fn new() -> Self {
+            let temp = TempDir::new();
+            let journal =
+                crate::operation_journal::use_test_journal(temp.path().join("journal.json"));
+            let target = temp.dir("target");
+            // Canonical, so a Follow resume resolves to the recorded path even
+            // when the temp root sits behind a symlink (macOS /tmp).
+            let source = std::fs::canonicalize(temp.file("source.bin", "0123456789")).unwrap();
+            let staging = temp.file("target/.source.bin.cmdr-tmp.0", "01234");
+            let spec = TransferSpec::new(TransferKind::Copy, vec![entry_for(&source)], target);
+            crate::operation_journal::begin(&spec).unwrap();
+            let operation_id = spec.operation_id.clone();
+            let key = crate::operation_journal::operation(&operation_id)
+                .unwrap()
+                .steps[0]
+                .key
+                .clone();
+            let landing = spec.target.join("source.bin");
+            crate::operation_journal::mark_running(
+                &operation_id,
+                &key,
+                &staging,
+                &landing,
+                PathIdentity::missing(&landing),
+            )
+            .unwrap();
+            let checkpoint = ResumeCheckpoint::observe(
+                &source,
+                &staging,
+                5,
+                CheckpointLayout::Prefix,
+                prefix_digest(&staging, 5).unwrap(),
+            )
+            .unwrap();
+            crate::operation_journal::mark_checkpoint(&operation_id, &key, checkpoint).unwrap();
+            Self {
+                _journal: journal,
+                temp,
+                operation_id,
+                key,
+                source,
+                staging,
+            }
+        }
+
+        fn check(
+            &self,
+            source: &Path,
+            staging: &Path,
+            policy: crate::filesystem_policy::SymlinkPolicy,
+        ) -> Option<ResumeCheckpoint> {
+            valid_runtime_checkpoint(&self.operation_id, &self.key, source, staging, policy, true)
+        }
+
+        fn check_default(&self) -> Option<ResumeCheckpoint> {
+            self.check(
+                &self.source,
+                &self.staging,
+                crate::filesystem_policy::SymlinkPolicy::Preserve,
+            )
+        }
+    }
+
+    #[test]
+    fn runtime_checkpoint_accepts_an_untouched_verified_prefix() {
+        let fixture = CheckpointFixture::new();
+        let checkpoint = fixture.check_default().expect("valid checkpoint rejected");
+        assert_eq!(checkpoint.offset, 5);
+        assert_eq!(checkpoint.staging, fixture.staging);
+        assert!(
+            valid_runtime_checkpoint(
+                &fixture.operation_id,
+                &fixture.key,
+                &fixture.source,
+                &fixture.staging,
+                crate::filesystem_policy::SymlinkPolicy::Preserve,
+                false,
+            )
+            .is_none(),
+            "a transfer without a journal must never resume"
+        );
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_unknown_steps_and_other_staging_paths() {
+        let fixture = CheckpointFixture::new();
+        let other = fixture.temp.file("target/.other.cmdr-tmp.0", "01234");
+        assert!(
+            fixture
+                .check(
+                    &fixture.source,
+                    &other,
+                    crate::filesystem_policy::SymlinkPolicy::Preserve
+                )
+                .is_none()
+        );
+        assert!(
+            valid_runtime_checkpoint(
+                &OperationId::new(),
+                &fixture.key,
+                &fixture.source,
+                &fixture.staging,
+                crate::filesystem_policy::SymlinkPolicy::Preserve,
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_a_changed_source() {
+        let fixture = CheckpointFixture::new();
+        std::fs::write(&fixture.source, "0123456789abcdef").unwrap();
+        assert!(fixture.check_default().is_none());
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_a_replaced_or_non_file_partial() {
+        {
+            let fixture = CheckpointFixture::new();
+            // Same bytes, new object: created before the swap so the inode
+            // cannot be recycled.
+            let replacement = fixture.temp.file("target/replacement", "01234");
+            std::fs::rename(&replacement, &fixture.staging).unwrap();
+            assert!(fixture.check_default().is_none());
+        }
+
+        // Each fixture holds the test-journal lock, so the first must drop.
+        let fixture = CheckpointFixture::new();
+        std::fs::remove_file(&fixture.staging).unwrap();
+        std::fs::create_dir(&fixture.staging).unwrap();
+        assert!(fixture.check_default().is_none());
+    }
+
+    #[test]
+    fn runtime_checkpoint_rejects_partial_bytes_that_no_longer_match() {
+        let fixture = CheckpointFixture::new();
+        let mut partial = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fixture.staging)
+            .unwrap();
+        partial.write_all(b"x").unwrap();
+        drop(partial);
+        assert!(fixture.check_default().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_checkpoint_follows_a_symlinked_source_only_under_follow() {
+        let fixture = CheckpointFixture::new();
+        let link = fixture.temp.path().join("link.bin");
+        std::os::unix::fs::symlink(&fixture.source, &link).unwrap();
+        assert!(
+            fixture
+                .check(
+                    &link,
+                    &fixture.staging,
+                    crate::filesystem_policy::SymlinkPolicy::Follow
+                )
+                .is_some()
+        );
+        assert!(
+            fixture
+                .check(
+                    &link,
+                    &fixture.staging,
+                    crate::filesystem_policy::SymlinkPolicy::Preserve
+                )
+                .is_none()
+        );
     }
 
     #[test]
