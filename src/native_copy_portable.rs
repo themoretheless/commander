@@ -200,4 +200,47 @@ mod tests {
         assert_eq!(copied, 3);
         assert_eq!(fs::read_to_string(dst.join("nested/f.txt")).unwrap(), "abc");
     }
+
+    #[test]
+    fn tree_copy_records_a_child_failure_and_still_copies_its_siblings() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), "aa").unwrap();
+        fs::write(src.join("b.txt"), "new").unwrap();
+        fs::write(src.join("c.txt"), "ccc").unwrap();
+        // A destination child that already exists makes the exclusive create
+        // fail for that one file only.
+        let dst = tmp.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+        fs::write(dst.join("b.txt"), "old").unwrap();
+        let state = progress();
+
+        let mut copied = 0;
+        copy_tree(&src, &dst, &state, 0, &mut copied).unwrap();
+
+        assert_eq!(copied, 5);
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "aa");
+        assert_eq!(fs::read_to_string(dst.join("b.txt")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(dst.join("c.txt")).unwrap(), "ccc");
+        let errors = crate::lock_util::recover(&state).errors.clone();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("b.txt"), "{errors:?}");
+    }
+
+    #[test]
+    fn dir_copy_ignores_errors_recorded_before_it_started() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), "aa").unwrap();
+        let dst = tmp.path().join("dst");
+        let state = progress();
+        // Only failures recorded by this copy fail the folder.
+        crate::lock_util::recover(&state)
+            .errors
+            .push("earlier transfer error".into());
+        copy_dir_native(&src, &dst, &state, 0).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "aa");
+    }
 }
