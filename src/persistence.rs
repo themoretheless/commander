@@ -331,6 +331,7 @@ impl Persist for FsPersist {
         expected: ExpectedRevision,
     ) -> Result<AtomicWriteOutcome, PreCommitError> {
         with_store_locks(path, process_lock_io, || {
+            sweep_stale_temps(path);
             verify_expected_revision(path, &expected)?;
             write_bytes_atomic_with(path, bytes, &StdFsOps)
         })
@@ -350,10 +351,57 @@ impl FsPersist {
         F: FnOnce(&mut dyn Write) -> Result<(), PreCommitError>,
     {
         with_store_locks(path, process_lock_io, || {
+            sweep_stale_temps(path);
             verify_expected_revision(path, &expected)?;
             write_stream_atomic_with(path, write, &StdFsOps)
         })
     }
+}
+
+/// Remove temp files a crashed or killed writer left beside `path`, once per
+/// store per process. Must run under the store's flock: every writer of this
+/// store holds it while its temp exists, so a temp named for another PID is
+/// orphaned. A temp is never authoritative (the rename is the commit), so
+/// removal cannot lose data. Without flock (non-Unix) another process may be
+/// mid-write, so nothing is swept there.
+fn sweep_stale_temps(path: &Path) {
+    #[cfg(unix)]
+    {
+        static SWEPT: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+        if !crate::lock_util::recover(SWEPT.get_or_init(Mutex::default))
+            .insert(normalized_lock_path(path))
+        {
+            return;
+        }
+        let Ok((parent, prefix)) = store_location(path) else {
+            return;
+        };
+        let (Some(prefix), Ok(entries)) = (prefix.to_str(), std::fs::read_dir(parent)) else {
+            return;
+        };
+        let own_pid = std::process::id().to_string();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some((pid, sequence)) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(prefix))
+                .and_then(|rest| rest.strip_suffix(".tmp"))
+                .and_then(|rest| rest.split_once('-'))
+            else {
+                continue;
+            };
+            let numeric = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+            if numeric(pid)
+                && numeric(sequence)
+                && pid != own_pid
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 pub fn fs_persist() -> Arc<dyn Persist> {
@@ -2270,6 +2318,39 @@ mod tests {
 
         assert!(load_json::<Item>(&path, "Test").is_none());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "not json");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_commit_removes_temps_orphaned_by_another_process() {
+        let temp = TempDir::new();
+        let path = temp.path().join("state.json");
+        let orphan = temp.file(
+            ".state.json.commander-json-4194305-00000000000000000007.tmp",
+            "partial",
+        );
+        let own = temp.file(
+            &format!(
+                ".state.json.commander-json-{}-99999999999999999999.tmp",
+                std::process::id()
+            ),
+            "ours",
+        );
+        let unrelated = temp.file(".state.json.commander-json-notes.tmp", "keep");
+        let other_store = temp.file(
+            ".other.json.commander-json-4194305-00000000000000000007.tmp",
+            "keep",
+        );
+
+        FsPersist::default()
+            .commit(&path, b"{}", ExpectedRevision::Any)
+            .unwrap();
+
+        assert!(!orphan.exists());
+        assert!(own.exists());
+        assert!(unrelated.exists());
+        assert!(other_store.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
     }
 
     #[cfg(unix)]
