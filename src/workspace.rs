@@ -1293,17 +1293,22 @@ impl Workspace {
                 let on = panel.view_config().natural_name_sort();
                 self.notice(toggle_notice("Natural name sort", on));
             }
-            Command::SortByExtension => {
+            Command::SortByName
+            | Command::SortBySize
+            | Command::SortByModified
+            | Command::SortByExtension
+            | Command::SortByKind => {
+                let (column, label) = match cmd {
+                    Command::SortByName => (crate::panel::SortColumn::Name, "name"),
+                    Command::SortBySize => (crate::panel::SortColumn::Size, "size"),
+                    Command::SortByModified => (crate::panel::SortColumn::Modified, "modified"),
+                    Command::SortByExtension => (crate::panel::SortColumn::Extension, "extension"),
+                    _ => (crate::panel::SortColumn::Kind, "kind"),
+                };
                 let panel = self.active_panel();
-                panel.set_sort(crate::panel::SortColumn::Extension);
+                panel.set_sort(column);
                 let order = panel.view_config().sort_order();
-                self.notice(sort_notice("extension", order));
-            }
-            Command::SortByKind => {
-                let panel = self.active_panel();
-                panel.set_sort(crate::panel::SortColumn::Kind);
-                let order = panel.view_config().sort_order();
-                self.notice(sort_notice("kind", order));
+                self.notice(sort_notice(label, order));
             }
             Command::SelectJunk => {
                 let added = self.active_panel().select_junk();

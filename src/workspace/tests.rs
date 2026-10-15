@@ -5017,6 +5017,48 @@ fn sort_and_view_toggles_say_what_changed() {
 }
 
 #[test]
+fn sort_by_name_size_modified_commands_set_the_column() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::SortBySize);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Size
+    );
+    ws.execute(Command::SortByModified);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Modified
+    );
+    ws.execute(Command::SortByModified);
+    ws.execute(Command::SortByName);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Name
+    );
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "Sorted by size, ascending",
+            "Sorted by modified, ascending",
+            "Sorted by modified, descending",
+            "Sorted by name, ascending",
+        ]
+    );
+}
+
+#[test]
 fn bookmark_and_quick_jump_commands_confirm_what_they_did() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let docs = l.dir("docs");

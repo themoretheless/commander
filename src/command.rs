@@ -131,6 +131,12 @@ pub enum Command {
     ToggleFoldersFirst,
     /// Toggle natural (`file2` < `file10`) vs plain A-Z name ordering.
     ToggleNaturalSort,
+    /// Sort the active panel by name (again: flip the order).
+    SortByName,
+    /// Sort the active panel by size (again: flip the order).
+    SortBySize,
+    /// Sort the active panel by modification time (again: flip the order).
+    SortByModified,
     /// Sort the active panel by file extension.
     SortByExtension,
     /// Sort the active panel by coarse kind (folder/image/doc/...).
@@ -625,6 +631,9 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Toggle hidden files", "Cmd+H", "view hidden show hidden dotfiles invisible", Command::ToggleHidden),
     entry("Sort: folders first (toggle)", "", "sort folders first dirs top order grouping directories", Command::ToggleFoldersFirst),
     entry("Sort: natural order (toggle)", "", "sort natural numeric ascii alphabetical order names file10", Command::ToggleNaturalSort),
+    entry("Sort by name", "", "sort name alphabetical filename order a-z", Command::SortByName),
+    entry("Sort by size", "", "sort size bytes largest smallest big", Command::SortBySize),
+    entry("Sort by modified", "", "sort modified date time newest oldest recent mtime", Command::SortByModified),
     entry("Sort by extension", "", "sort extension type suffix group ext", Command::SortByExtension),
     entry("Sort by kind", "", "sort kind category group images docs code archives", Command::SortByKind),
     entry("Reverse sort order", "", "sort reverse flip order ascending descending invert", Command::ReverseSort),
