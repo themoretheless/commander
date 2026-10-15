@@ -225,6 +225,33 @@ mod tests {
     }
 
     #[test]
+    fn request_for_the_open_modal_is_dropped_not_deferred() {
+        let mut sink = FakeSink {
+            open_modal: Some(UiModal::Find),
+            ..FakeSink::default()
+        };
+        let deferred = dispatch_snapshot(
+            vec![
+                UiRequest::Find,
+                UiRequest::SelectMask,
+                UiRequest::ToggleQueuePanel,
+            ],
+            &mut sink,
+        );
+        assert_eq!(deferred, vec![UiRequest::SelectMask]);
+        assert_eq!(sink.applied, vec![UiRequest::ToggleQueuePanel]);
+        // A non-coalescing request for the open modal still waits its turn.
+        let mut sink = FakeSink {
+            open_modal: Some(UiModal::History),
+            ..FakeSink::default()
+        };
+        assert_eq!(
+            dispatch_snapshot(vec![UiRequest::Undo], &mut sink),
+            vec![UiRequest::Undo]
+        );
+    }
+
+    #[test]
     fn fifo_payload_order_and_exactly_once_drain() {
         let first = PathBuf::from("/tmp/first.zip");
         let second = PathBuf::from("/tmp/second.txt");
