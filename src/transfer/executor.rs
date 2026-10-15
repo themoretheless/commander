@@ -99,6 +99,19 @@ impl<N: Fn()> Drop for PanicTerminalGuard<'_, N> {
     }
 }
 
+/// End a run that failed before its first entry: publish the terminal state
+/// (finalization not reached) and disarm the panic guard. The caller records
+/// the failure first.
+fn abort_before_start<N: Fn()>(
+    progress: &TransferState,
+    terminal_guard: &mut PanicTerminalGuard<'_, N>,
+    notify: &N,
+) {
+    finish_progress(progress, FinalizationOutcome::NotReached);
+    terminal_guard.disarm();
+    notify();
+}
+
 fn finalize_and_publish(
     terminal: &TerminalContext,
     progress: &TransferState,
@@ -260,9 +273,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                         "Confirmed resource preflight snapshot is incomplete",
                     ),
                 );
-                finish_progress(&progress, FinalizationOutcome::NotReached);
-                terminal_guard.disarm();
-                notify();
+                abort_before_start(&progress, &mut terminal_guard, &notify);
                 return;
             }
             let needs_worker_preflight = spec.preflight_bytes.is_none();
@@ -286,9 +297,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                         "Operation",
                         ClassifiedFailure::message(FailureClass::Blocked, None, failure.message),
                     );
-                    finish_progress(&progress, FinalizationOutcome::NotReached);
-                    terminal_guard.disarm();
-                    notify();
+                    abort_before_start(&progress, &mut terminal_guard, &notify);
                     return;
                 }
             };
@@ -310,9 +319,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                             "Transfer source preflight was unavailable",
                         ),
                     );
-                    finish_progress(&progress, FinalizationOutcome::NotReached);
-                    terminal_guard.disarm();
-                    notify();
+                    abort_before_start(&progress, &mut terminal_guard, &notify);
                     return;
                 };
                 match expectations_from_source_identities(
@@ -331,9 +338,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 failure.message,
                             ),
                         );
-                        finish_progress(&progress, FinalizationOutcome::NotReached);
-                        terminal_guard.disarm();
-                        notify();
+                        abort_before_start(&progress, &mut terminal_guard, &notify);
                         return;
                     }
                 }
@@ -352,9 +357,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                         failure.message,
                     ),
                 );
-                finish_progress(&progress, FinalizationOutcome::NotReached);
-                terminal_guard.disarm();
-                notify();
+                abort_before_start(&progress, &mut terminal_guard, &notify);
                 return;
             }
             let target_profile = crate::volume_profile::profile(&spec.target);
@@ -375,9 +378,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
             if journal_enabled {
                 if let Err(error) = crate::operation_journal::begin(&spec) {
                     record_journal_error(&progress, "Operation", Some(spec.target.clone()), error);
-                    finish_progress(&progress, FinalizationOutcome::NotReached);
-                    terminal_guard.disarm();
-                    notify();
+                    abort_before_start(&progress, &mut terminal_guard, &notify);
                     return;
                 }
                 terminal_guard.journal_started();
