@@ -243,14 +243,26 @@ fn preserve_at_inner(
     if let Some(parent) = stored.parent() {
         ensure_version_parent(root, parent).map_err(version_failure)?;
     }
+    // Every failure below abandons the new version: its payload is removed
+    // (when still ours), the `<op>/<key>` directories created for it are
+    // pruned once empty, and a failed removal is reported because it leaves
+    // the deterministic stored path occupied for a retry of this step.
+    let abandon = |cleanup: String| {
+        remove_empty_version_dirs(stored.parent(), root);
+        cleanup
+    };
     let copy_receipt = match copy_path_tracked(path, &stored) {
         Ok(receipt) => receipt,
         Err(failure) => {
-            if let Some(identity) = failure.destination_identity.as_ref() {
-                remove_path_if_object_matches(&stored, identity);
-            }
+            let cleanup = abandon(
+                failure
+                    .destination_identity
+                    .as_ref()
+                    .map(|identity| remove_path_if_object_matches(&stored, identity))
+                    .unwrap_or_default(),
+            );
             return Err(version_failure(format!(
-                "Could not preserve {} at {}: {}",
+                "Could not preserve {} at {}: {}{cleanup}",
                 path.display(),
                 stored.display(),
                 failure.error
@@ -264,35 +276,35 @@ fn preserve_at_inner(
         )));
     };
     let created_identity = PathIdentity::observe_deep(&stored).map_err(|error| {
-        remove_path_if_object_matches(&stored, &created_shallow);
+        let cleanup = abandon(remove_path_if_object_matches(&stored, &created_shallow));
         version_failure(format!(
-            "Could not bind the new version {}: {error}",
+            "Could not bind the new version {}: {error}{cleanup}",
             stored.display()
         ))
     })?;
     let after = PathIdentity::observe(path).map_err(|error| {
-        remove_path_if_identity_matches(&stored, &created_identity);
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
         let mut failure = crate::ports::NativeFailure::from_io(&error);
         failure.message = format!(
-            "Could not recheck {} after versioning: {}",
+            "Could not recheck {} after versioning: {}{cleanup}",
             path.display(),
             failure.message
         );
         failure
     })?;
     if !before.same_version(&after) || !paths_equal(path, &stored) {
-        remove_path_if_identity_matches(&stored, &created_identity);
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
         return Err(crate::ports::NativeFailure {
             kind: crate::ports::NativeFailureKind::Stale,
             message: format!(
-                "Source changed or version verification failed for {}",
+                "Source changed or version verification failed for {}{cleanup}",
                 path.display()
             ),
         });
     }
     if let Err(message) = validate_stored_path(root, &stored) {
-        remove_path_if_identity_matches(&stored, &created_identity);
-        return Err(version_failure(message));
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+        return Err(version_failure(format!("{message}{cleanup}")));
     }
 
     let record = VersionRecord {
@@ -311,8 +323,8 @@ fn preserve_at_inner(
         &mut loaded.manifest.blobs,
         &mut loaded.manifest.payload_files,
     ) {
-        remove_path_if_identity_matches(&stored, &created_identity);
-        return Err(version_failure(message));
+        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+        return Err(version_failure(format!("{message}{cleanup}")));
     }
     let created_identity = match PathIdentity::observe_deep(&stored) {
         Ok(identity) => identity,
@@ -322,9 +334,9 @@ fn preserve_at_inner(
                 &mut loaded.manifest.payload_files,
                 &record.key.0,
             );
-            remove_path_if_identity_matches(&stored, &created_identity);
+            let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
             return Err(version_failure(format!(
-                "Could not rebind version after content dedup {}: {error}",
+                "Could not rebind version after content dedup {}: {error}{cleanup}",
                 stored.display()
             )));
         }
@@ -355,8 +367,10 @@ fn preserve_at_inner(
                 &mut loaded.manifest.payload_files,
                 &record.key.0,
             );
-            remove_path_if_identity_matches(&stored, &created_identity);
-            return Err(version_failure("Could not save version manifest"));
+            let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+            return Err(version_failure(format!(
+                "Could not save version manifest{cleanup}"
+            )));
         }
     }
     Ok(Some(record))
@@ -433,7 +447,9 @@ pub fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(), Stri
                     "Could not remove rejected version {}: {error}",
                     authoritative.stored.display()
                 )
-            })
+            })?;
+            remove_empty_version_dirs(authoritative.stored.parent(), root);
+            Ok(())
         }
         Some(crate::persistence::Committed::NotDurable) => Ok(()),
         None => Err("Could not remove rejected version from the manifest".to_string()),
@@ -631,11 +647,13 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
     let restore_receipt = match copy_path_tracked(&authoritative.stored, &authoritative.original) {
         Ok(receipt) => receipt,
         Err(failure) => {
-            if let Some(identity) = failure.destination_identity.as_ref() {
-                remove_path_if_object_matches(&authoritative.original, identity);
-            }
+            let cleanup = failure
+                .destination_identity
+                .as_ref()
+                .map(|identity| remove_path_if_object_matches(&authoritative.original, identity))
+                .unwrap_or_default();
             return Err(format!(
-                "Could not restore {}: {}",
+                "Could not restore {}: {}{cleanup}",
                 record.original.display(),
                 failure.error
             ));
@@ -647,11 +665,13 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
         Err(_) => true,
     };
     if stored_changed || !paths_equal(&authoritative.stored, &authoritative.original) {
-        if let Some(identity) = restore_receipt.destination_identity.as_ref() {
-            remove_path_if_object_matches(&authoritative.original, identity);
-        }
+        let cleanup = restore_receipt
+            .destination_identity
+            .as_ref()
+            .map(|identity| remove_path_if_object_matches(&authoritative.original, identity))
+            .unwrap_or_default();
         return Err(format!(
-            "Restored version failed verification: {}",
+            "Restored version failed verification: {}{cleanup}",
             authoritative.original.display()
         ));
     }
@@ -923,21 +943,29 @@ fn validate_manifest(root: &Path, manifest: &mut VersionManifest) -> Result<bool
     Ok(recovered)
 }
 
-fn remove_path_if_identity_matches(path: &Path, expected: &PathIdentity) {
-    if let Ok(current) = PathIdentity::observe_deep(path)
-        && expected.same_binding(&current)
-    {
-        let _ = remove_path(path);
+/// Remove data this module just created at `path` if it is still bound to
+/// `expected`. Returns "" or a "; cleanup of <path> failed: <error>" suffix
+/// for the caller's error, since leftover data blocks a retry.
+fn remove_path_if_identity_matches(path: &Path, expected: &PathIdentity) -> String {
+    match PathIdentity::observe_deep(path) {
+        Ok(current) if expected.same_binding(&current) => cleanup_note(path, remove_path(path)),
+        _ => String::new(),
     }
 }
 
-fn remove_path_if_object_matches(path: &Path, expected: &PathIdentity) {
-    if let Ok(current) = PathIdentity::observe(path)
-        && current.path == expected.path
-        && expected.same_object(&current)
-    {
-        let _ = remove_path(path);
+fn remove_path_if_object_matches(path: &Path, expected: &PathIdentity) -> String {
+    match PathIdentity::observe(path) {
+        Ok(current) if current.path == expected.path && expected.same_object(&current) => {
+            cleanup_note(path, remove_path(path))
+        }
+        _ => String::new(),
     }
+}
+
+fn cleanup_note(path: &Path, result: std::io::Result<()>) -> String {
+    result.err().map_or_else(String::new, |error| {
+        format!("; cleanup of {} failed: {error}", path.display())
+    })
 }
 
 fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) -> LoadedManifest {
@@ -1269,6 +1297,10 @@ mod tests {
         drop(socket);
         assert!(result.is_err());
         assert!(!stored.exists());
+        assert!(
+            !versions.join(&operation.0).exists(),
+            "directories created for the abandoned version are pruned"
+        );
         assert!(load_manifest(&versions).records.is_empty());
     }
 
@@ -1335,6 +1367,11 @@ mod tests {
         assert!(manifest.blobs.is_empty());
         assert!(manifest.payload_files.is_empty());
         assert!(!record.stored.exists());
+        assert!(
+            !versions.join(&operation.0).exists(),
+            "empty <op>/<key> directories are pruned"
+        );
+        assert!(versions.exists());
         assert_eq!(std::fs::read_to_string(&original).unwrap(), "rejected");
     }
 
