@@ -33,20 +33,24 @@ pub const fn style_label(style: PathStyle) -> &'static str {
     }
 }
 
-/// Format `paths` for the clipboard under `style`, one per line.
+/// Format `paths` for the clipboard under `style`, one per line. Parent
+/// paths are deduplicated (first occurrence wins), so several files from one
+/// folder yield that folder once.
 pub fn format(paths: &[PathBuf], style: PathStyle, other_root: Option<&Path>) -> String {
-    paths
-        .iter()
-        .map(|p| {
-            let line = format_one(p, style, other_root);
-            match style {
-                // Quoted and percent-encoded forms already carry controls safely.
-                PathStyle::ShellEscaped | PathStyle::FileUrl => line,
-                _ => one_line(line),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut lines: Vec<String> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let line = format_one(p, style, other_root);
+        let line = match style {
+            // Quoted and percent-encoded forms already carry controls safely.
+            PathStyle::ShellEscaped | PathStyle::FileUrl => line,
+            _ => one_line(line),
+        };
+        if style == PathStyle::ParentPath && lines.contains(&line) {
+            continue;
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 /// Keep a path with a newline (legal in Unix names) on one line, escaping it
@@ -77,7 +81,14 @@ fn format_one(p: &Path, style: PathStyle, other_root: Option<&Path>) -> String {
         PathStyle::RelativeToOther => match other_root {
             Some(root) => p
                 .strip_prefix(root)
-                .map(|r| r.to_string_lossy().to_string())
+                // The other pane's own folder is "." rather than an empty line.
+                .map(|r| {
+                    if r.as_os_str().is_empty() {
+                        ".".to_string()
+                    } else {
+                        r.to_string_lossy().to_string()
+                    }
+                })
                 .unwrap_or_else(|_| full()),
             None => full(),
         },
@@ -190,6 +201,23 @@ mod tests {
             ),
             "/elsewhere/f.txt"
         );
+    }
+
+    #[test]
+    fn relative_to_other_of_the_other_root_itself_is_dot() {
+        let root = p("/a/b");
+        assert_eq!(
+            format(&[p("/a/b")], PathStyle::RelativeToOther, Some(&root)),
+            "."
+        );
+    }
+
+    #[test]
+    fn parent_path_lists_each_folder_once() {
+        let paths = [p("/a/x.txt"), p("/b/z.txt"), p("/a/y.txt")];
+        assert_eq!(format(&paths, PathStyle::ParentPath, None), "/a\n/b");
+        // Other styles keep one line per path.
+        assert_eq!(format(&paths, PathStyle::NameOnly, None).lines().count(), 3);
     }
 
     #[test]
