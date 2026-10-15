@@ -1579,4 +1579,253 @@ mod tests {
         assert_eq!(abandoned.load(Ordering::SeqCst), 1);
         assert_eq!(runtime.stats().queued, 1);
     }
+
+    fn interactive(kind: TaskKind, root: &str, generation: u64) -> TaskSpec {
+        TaskSpec::new(kind, root, generation).priority(Priority::Interactive)
+    }
+
+    #[test]
+    fn over_budget_estimate_is_backpressured() {
+        let mut scheduler = Scheduler::new(SchedulerLimits {
+            max_inflight_bytes: 100,
+            ..SchedulerLimits::default()
+        });
+        assert_eq!(
+            scheduler.submit_at(
+                spec(TaskKind::Search, 1, Priority::Interactive).estimated_bytes(101),
+                1
+            ),
+            Err(AdmissionError::ByteBudgetExceeded)
+        );
+        assert_eq!(scheduler.stats().backpressured, 1);
+        assert_eq!(scheduler.stats().queued, 0);
+        assert!(
+            scheduler
+                .submit_at(
+                    spec(TaskKind::Search, 1, Priority::Interactive).estimated_bytes(100),
+                    2
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn newer_generation_abandons_queued_work_as_superseded_once() {
+        let runtime = DeterministicWorkload::new(SchedulerLimits::default());
+        let handle = runtime.handle();
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let reasons_for_job = Arc::clone(&reasons);
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_for_job = Arc::clone(&ran);
+        let search = |generation| {
+            spec(TaskKind::Search, generation, Priority::Interactive).replace_older_generation()
+        };
+
+        handle
+            .submit_with_abandonment(
+                search(1),
+                |_| panic!("superseded queued work must not execute"),
+                move |reason| crate::lock_util::recover(&reasons_for_job).push(reason),
+            )
+            .unwrap();
+        handle
+            .submit(search(2), move |_| {
+                ran_for_job.store(true, Ordering::Release)
+            })
+            .unwrap();
+
+        assert_eq!(
+            *crate::lock_util::recover(&reasons),
+            vec![AbandonReason::Superseded]
+        );
+        assert_eq!(runtime.stats().queued, 1);
+        assert!(runtime.run_next());
+        assert!(ran.load(Ordering::Acquire));
+        assert!(!runtime.run_next());
+        assert_eq!(crate::lock_util::recover(&reasons).len(), 1);
+    }
+
+    #[test]
+    fn complete_at_ignores_queued_unknown_and_repeated_completions() {
+        let mut scheduler = Scheduler::new(SchedulerLimits {
+            max_running: 1,
+            ..SchedulerLimits::default()
+        });
+        let first = scheduler
+            .submit_at(spec(TaskKind::Search, 1, Priority::Interactive), 1)
+            .unwrap();
+        let queued = scheduler
+            .submit_at(spec(TaskKind::Listing, 1, Priority::Interactive), 2)
+            .unwrap();
+        assert_eq!(scheduler.start_next_at(3).unwrap().snapshot, first);
+        assert_eq!(
+            scheduler.complete_at(queued.id, 4, true),
+            CompletionDisposition::Unknown
+        );
+        assert_eq!(
+            scheduler.complete_at(TaskId(999), 4, true),
+            CompletionDisposition::Unknown
+        );
+        assert_eq!(
+            scheduler.complete_at(first.id, 5, true),
+            CompletionDisposition::Accepted
+        );
+        assert_eq!(
+            scheduler.complete_at(first.id, 6, true),
+            CompletionDisposition::Unknown
+        );
+        // The single slot was freed exactly once and the queued task is
+        // still startable.
+        assert_eq!(scheduler.start_next_at(7).unwrap().snapshot, queued);
+        assert!(scheduler.start_next_at(8).is_none());
+    }
+
+    #[test]
+    fn full_kind_lets_another_kind_start() {
+        let mut limits = SchedulerLimits {
+            max_running: 4,
+            per_kind_running: [4; TaskKind::COUNT],
+            ..SchedulerLimits::default()
+        };
+        limits.per_kind_running[TaskKind::Listing.index()] = 1;
+        let mut scheduler = Scheduler::new(limits);
+        let listing = scheduler
+            .submit_at(interactive(TaskKind::Listing, "/a", 1), 1)
+            .unwrap();
+        let second_listing = scheduler
+            .submit_at(interactive(TaskKind::Listing, "/b", 1), 2)
+            .unwrap();
+        let search = scheduler
+            .submit_at(interactive(TaskKind::Search, "/a", 1), 3)
+            .unwrap();
+        assert_eq!(scheduler.start_next_at(4).unwrap().snapshot, listing);
+        assert_eq!(scheduler.start_next_at(5).unwrap().snapshot, search);
+        assert!(scheduler.start_next_at(6).is_none());
+        scheduler.complete_at(listing.id, 7, true);
+        assert_eq!(scheduler.start_next_at(8).unwrap().snapshot, second_listing);
+    }
+
+    #[test]
+    fn equal_priorities_start_in_submission_order() {
+        let mut scheduler = Scheduler::new(SchedulerLimits {
+            max_running: 3,
+            per_kind_running: [3; TaskKind::COUNT],
+            ..SchedulerLimits::default()
+        });
+        let ids = (1..=3)
+            .map(|tick| {
+                scheduler
+                    .submit_at(interactive(TaskKind::Search, "/a", tick), tick)
+                    .unwrap()
+                    .id
+            })
+            .collect::<Vec<_>>();
+        let started = (4..=6)
+            .map(|tick| scheduler.start_next_at(tick).unwrap().snapshot.id)
+            .collect::<Vec<_>>();
+        assert_eq!(started, ids);
+    }
+
+    #[test]
+    fn supersession_is_scoped_to_kind_root_and_replace_flag() {
+        let mut scheduler = Scheduler::new(SchedulerLimits::default());
+        let mut submit = |spec: TaskSpec, tick| scheduler.submit_at(spec, tick).unwrap();
+        let same = submit(
+            interactive(TaskKind::Search, "/a", 1).replace_older_generation(),
+            1,
+        );
+        let other_kind = submit(
+            interactive(TaskKind::Preview, "/a", 1).replace_older_generation(),
+            2,
+        );
+        let other_root = submit(
+            interactive(TaskKind::Search, "/b", 1).replace_older_generation(),
+            3,
+        );
+        let not_replacing = submit(interactive(TaskKind::Search, "/a", 1), 4);
+        submit(
+            interactive(TaskKind::Search, "/a", 2).replace_older_generation(),
+            5,
+        );
+
+        let cancelled =
+            |scheduler: &Scheduler, id: TaskId| scheduler.tasks[&id].state == TaskState::Cancelled;
+        assert!(cancelled(&scheduler, same.id));
+        assert!(!cancelled(&scheduler, other_kind.id));
+        assert!(!cancelled(&scheduler, other_root.id));
+        assert!(!cancelled(&scheduler, not_replacing.id));
+        assert_eq!(scheduler.stats().cancelled, 1);
+        assert_eq!(scheduler.stats().queued, 4);
+    }
+
+    #[test]
+    fn equal_generation_resubmission_is_admitted_without_cancelling() {
+        let mut scheduler = Scheduler::new(SchedulerLimits::default());
+        let search = || spec(TaskKind::Search, 5, Priority::Interactive).replace_older_generation();
+        let first = scheduler.submit_at(search(), 1).unwrap();
+        let started = scheduler.start_next_at(2).unwrap();
+        let second = scheduler.submit_at(search(), 3).unwrap();
+        assert_ne!(first.id, second.id);
+        assert!(!started.token.is_cancelled());
+        assert_eq!(
+            scheduler.complete_at(first.id, 4, true),
+            CompletionDisposition::Accepted
+        );
+    }
+
+    #[test]
+    fn disconnected_root_rejects_descendants_but_not_siblings() {
+        let mut scheduler = Scheduler::new(SchedulerLimits::default());
+        scheduler.disconnect_at(Path::new("/project"), 1);
+        assert_eq!(
+            scheduler.submit_at(interactive(TaskKind::Listing, "/project/sub", 1), 2),
+            Err(AdmissionError::RootDisconnected(PathBuf::from(
+                "/project/sub"
+            )))
+        );
+        assert!(
+            scheduler
+                .submit_at(interactive(TaskKind::Listing, "/project2", 1), 3)
+                .is_ok()
+        );
+        assert_eq!(scheduler.stats().backpressured, 1);
+    }
+
+    #[test]
+    fn panicking_job_fails_and_frees_its_slot_for_queued_work() {
+        let runtime = WorkloadRuntime::new(SchedulerLimits {
+            max_running: 1,
+            ..SchedulerLimits::default()
+        });
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        runtime
+            .submit(
+                spec(TaskKind::Search, 1, Priority::Interactive),
+                move |_| {
+                    let _ = release_rx.recv();
+                    panic!("job panics");
+                },
+            )
+            .unwrap();
+        runtime
+            .submit(
+                spec(TaskKind::Listing, 1, Priority::Interactive),
+                move |_| {
+                    let _ = done_tx.send(());
+                },
+            )
+            .unwrap();
+        assert_eq!(runtime.stats().queued, 1);
+        drop(release_tx);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("queued job runs after the panic frees the slot");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runtime.stats().running > 0 {
+            assert!(std::time::Instant::now() < deadline, "slot never freed");
+            std::thread::yield_now();
+        }
+        assert_eq!(runtime.stats().queued, 0);
+    }
 }
