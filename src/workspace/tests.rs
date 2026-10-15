@@ -388,6 +388,12 @@ fn apply_sync(ws: &mut Workspace, actions: &[crate::sync::SyncAction]) {
     ws.apply_sync_between(actions, &left_dir, &right_dir, || {});
 }
 
+/// A followed-metadata listing row for `path`, as a transfer source.
+fn entry_for(path: &Path) -> FileEntry {
+    let meta = std::fs::metadata(path).unwrap();
+    FileEntry::from_meta(path.to_path_buf(), &meta).unwrap()
+}
+
 fn wait_transfer(ws: &mut Workspace) {
     if ws.active_transfer().is_none() && matches!(ws.pending_op, Some(PendingOp::Transfer(_))) {
         ws.finish_space_probe();
@@ -1804,22 +1810,18 @@ fn second_transfer_queues_and_runs_after_the_first() {
     let a = l.file("a.txt", "AAA");
     let b = l.file("b.txt", "BBBB");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
 
     // Fire two copies into the right dir. The first starts; the second is
     // queued behind it instead of being dropped (active_transfer stays set
     // until poll_transfer closes it).
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -1840,19 +1842,15 @@ fn queue_snapshot_reports_running_and_pending_jobs() {
     let a = l.file("a.txt", "AAA");
     let b = l.file("b.txt", "BBBB");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
 
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -1874,24 +1872,20 @@ fn queue_pause_resume_and_reorder_only_touch_pending_jobs() {
     let b = l.file("b.txt", "B");
     let c = l.file("c.txt", "C");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     ); // running
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     ); // pending
     ws.start_copy(
-        vec![entry(&c)],
+        vec![entry_for(&c)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2010,12 +2004,8 @@ fn queue_cancel_on_the_running_job_reports_a_truthful_outcome() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let a = l.file("a.txt", "A");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2057,18 +2047,14 @@ fn queue_cancel_on_a_pending_job_drops_it_without_touching_the_running_one() {
     let a = l.file("a.txt", "A");
     let b = l.file("b.txt", "B");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2098,20 +2084,16 @@ fn dismissing_an_errored_transfer_retires_the_job_and_drains_the_queue() {
     r.file("x.txt", "old"); // conflict: first copy errors under Ask
     l.file("y.txt", "Y");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let meta = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &meta).unwrap()
-    };
     // First copy refuses x.txt (dest exists, policy Ask) -> finishes with an
     // error and is NOT cancelled. Second copy is queued behind it.
     ws.start_copy(
-        vec![entry(&l.path().join("x.txt"))],
+        vec![entry_for(&l.path().join("x.txt"))],
         r.path().to_path_buf(),
         OverwritePolicy::Ask,
         || {},
     );
     ws.start_copy(
-        vec![entry(&l.path().join("y.txt"))],
+        vec![entry_for(&l.path().join("y.txt"))],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
@@ -2374,18 +2356,14 @@ fn cancelling_a_pipeline_drops_its_paused_tail() {
     let a = l.file("a.txt", "AAA");
     let b = l.file("b.txt", "BBBB");
     let mut ws = workspace(&l, &r);
-    let entry = |p: &std::path::Path| {
-        let m = std::fs::metadata(p).unwrap();
-        FileEntry::from_meta(p.to_path_buf(), &m).unwrap()
-    };
     ws.start_copy(
-        vec![entry(&a)],
+        vec![entry_for(&a)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
     );
     ws.start_copy(
-        vec![entry(&b)],
+        vec![entry_for(&b)],
         r.path().to_path_buf(),
         OverwritePolicy::KeepBoth,
         || {},
