@@ -145,16 +145,23 @@ pub fn collect(paths: &[PathBuf]) -> SupportBundle {
 /// A path-free reason for an operation-journal load failure: the bundle is
 /// redacted, and the raw error text can embed absolute paths.
 fn journal_unavailable_reason(error: &str) -> &'static str {
+    // Match the fixed message prefixes only: the rest of an error can embed
+    // the user's paths, and words in a path must not change the category.
     let error = error.to_ascii_lowercase();
-    if error.contains("lock") {
-        "its store lock could not be acquired"
-    } else if error.contains("directory") {
-        "its directory could not be created"
-    } else if error.contains("unreadable") {
-        "the file is unreadable"
-    } else if error.contains("newer") || error.contains("schema") {
+    let starts = |prefix: &str| error.starts_with(prefix);
+    if starts("unsupported operation journal schema")
+        || (starts("operation journal uses a newer") && error.contains("envelope"))
+    {
         "it was written by an unsupported version"
-    } else if error.contains("corrupt") {
+    } else if starts("could not open operation journal lock")
+        || starts("could not acquire operation journal lock")
+    {
+        "its store lock could not be acquired"
+    } else if starts("could not create operation journal directory") {
+        "its directory could not be created"
+    } else if starts("could not open operation journal: unreadable") {
+        "the file is unreadable"
+    } else if starts("operation journal is corrupt") {
         "the file is corrupt"
     } else {
         "its records failed validation"
@@ -407,6 +414,36 @@ mod tests {
         assert_eq!(
             journal_unavailable_reason("Unsupported operation journal schema 9; expected 3"),
             "it was written by an unsupported version"
+        );
+        assert_eq!(
+            journal_unavailable_reason(
+                "Unsupported operation journal schema 9 at /home/lockdirectory/.config/commander/journal.json: it was written by a newer Commander version; upgrade Commander to recover its operations"
+            ),
+            "it was written by an unsupported version"
+        );
+        assert_eq!(
+            journal_unavailable_reason(
+                "Could not acquire operation journal lock /home/newer-schema/journal.lock: Resource temporarily unavailable (os error 11)"
+            ),
+            "its store lock could not be acquired"
+        );
+        assert_eq!(
+            journal_unavailable_reason("Could not create operation journal directory: denied"),
+            "its directory could not be created"
+        );
+        assert_eq!(
+            journal_unavailable_reason("Could not open operation journal: unreadable"),
+            "the file is unreadable"
+        );
+        assert_eq!(
+            journal_unavailable_reason(
+                "Operation journal uses a newer persist envelope than this build supports"
+            ),
+            "it was written by an unsupported version"
+        );
+        assert_eq!(
+            journal_unavailable_reason("Step /home/lock/corrupt/file.txt is invalid"),
+            "its records failed validation"
         );
         let reason = journal_unavailable_reason("step /home/user/private/file.txt is invalid");
         assert!(!reason.contains("/home"), "{reason}");
