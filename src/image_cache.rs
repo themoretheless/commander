@@ -1587,7 +1587,8 @@ fn classify_failure(error: &str) -> PreviewFailure {
     }
 }
 
-const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv"];
+/// Lowercase video extensions, shared with `panel::FileEntry::is_video`.
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv"];
 
 /// Case-insensitive extension check without allocating during scans.
 fn has_extension_in(path: &Path, extensions: &[&str]) -> bool {

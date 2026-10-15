@@ -255,10 +255,9 @@ impl FileEntry {
     }
 
     pub fn is_video(&self) -> bool {
-        matches!(
-            self.extension.as_str(),
-            "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "wmv" | "flv"
-        )
+        // `extension` is already lowercased; the list is shared with the
+        // image cache so preview and listing agree on what a video is.
+        crate::image_cache::VIDEO_EXTENSIONS.contains(&self.extension.as_str())
     }
 
     pub fn size_display(&self) -> &str {
