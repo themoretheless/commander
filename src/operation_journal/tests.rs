@@ -2454,3 +2454,173 @@ fn resume_without_file_ids_accepts_an_appended_prefix_tail_but_proves_its_bytes(
     let error = build_resume_spec_from(record).err().unwrap();
     assert!(error.contains("bytes changed"), "{error}");
 }
+
+/// Begin a one-step overwrite of `target/source.txt` and back up the
+/// original, stopping just before the staged copy is renamed into place.
+fn overwrite_backed_up(
+    temp: &TempDir,
+    label: &str,
+) -> (OperationId, IdempotencyKey, PathBuf, PathBuf, PathBuf) {
+    let target = temp.dir(&format!("{label}-target"));
+    let source = temp.file(&format!("{label}-source.txt"), "new bytes");
+    let destination = temp.file(&format!("{label}-target/{label}-source.txt"), "old bytes");
+    let staging = temp.file(
+        &format!("{label}-target/.{label}-source.txt.cmdr-tmp.0"),
+        "new bytes",
+    );
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec(label, vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    let destination_before = PathIdentity::observe_deep(&destination).unwrap();
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        destination_before.clone(),
+    )
+    .unwrap();
+    let backup = target.join(format!(".{label}-source.txt.cmdr-tmp.1"));
+    prepare_replacement(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        &backup,
+        &destination_before,
+    )
+    .unwrap();
+    crate::fs_at::rename_noreplace(&destination, &backup).unwrap();
+    mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
+    (spec.operation_id, key, destination, staging, backup)
+}
+
+#[test]
+fn replacement_placement_requires_the_staged_object_and_the_unchanged_backup() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("placed-proof-journal.json"));
+    let (operation_id, key, destination, staging, backup) =
+        overwrite_backed_up(&temp, "placed-proof");
+
+    std::fs::write(&destination, "foreign").unwrap();
+    let error = mark_replacement_placed(&operation_id, &key).unwrap_err();
+    assert!(error.contains("not the proven staged object"), "{error}");
+    std::fs::remove_file(&destination).unwrap();
+
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
+    std::fs::write(&backup, "tampered original").unwrap();
+    let error = mark_replacement_placed(&operation_id, &key).unwrap_err();
+    assert!(error.contains("changed in its backup"), "{error}");
+    let step = &operation(&operation_id).unwrap().steps[0];
+    assert_eq!(
+        step.replacement.as_ref().unwrap().phase,
+        ReplacementPhase::OriginalBackedUp
+    );
+}
+
+#[test]
+fn replacement_placement_is_idempotent_and_rejects_a_stale_phase() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("placed-phase-journal.json"));
+    let (operation_id, key, destination, staging, _backup) =
+        overwrite_backed_up(&temp, "placed-phase");
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
+
+    mark_replacement_placed(&operation_id, &key).unwrap();
+    // A duplicate callback succeeds without re-proving the filesystem.
+    std::fs::write(&destination, "changed later").unwrap();
+    mark_replacement_placed(&operation_id, &key).unwrap();
+
+    let mut journal = load().unwrap();
+    journal.operations[0].steps[0]
+        .replacement
+        .as_mut()
+        .unwrap()
+        .phase = ReplacementPhase::Prepared;
+    save_at(&journal_path(), &journal).unwrap();
+    let error = mark_replacement_placed(&operation_id, &key).unwrap_err();
+    assert!(error.contains("stale phase"), "{error}");
+}
+
+#[test]
+fn non_overwrite_placement_requires_the_staged_object_and_is_idempotent() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("place-proof-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "new bytes");
+    let destination = target.join("source.txt");
+    let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("place-proof", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    let error = mark_placement_placed(&spec.operation_id, &key).unwrap_err();
+    assert!(error.contains("was not prepared"), "{error}");
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+
+    std::fs::write(&destination, "foreign").unwrap();
+    let error = mark_placement_placed(&spec.operation_id, &key).unwrap_err();
+    assert!(error.contains("not the proven staged object"), "{error}");
+    std::fs::remove_file(&destination).unwrap();
+
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
+    mark_placement_placed(&spec.operation_id, &key).unwrap();
+    std::fs::write(&destination, "changed later").unwrap();
+    mark_placement_placed(&spec.operation_id, &key).unwrap();
+    assert_eq!(
+        operation(&spec.operation_id).unwrap().steps[0]
+            .placement
+            .as_ref()
+            .unwrap()
+            .phase,
+        PlacementPhase::Placed
+    );
+}
+
+#[test]
+fn finishing_as_completed_reproves_every_completed_effect() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("finish-proof-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "source");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("finish-proof", vec![entry], &target);
+    begin(&spec).unwrap();
+    let destination = target.join("source.txt");
+    let key = step_key(&spec, 0, &destination);
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &target.join(".source.txt.cmdr-tmp.0"),
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    std::fs::write(&destination, "source").unwrap();
+    mark_completed(
+        &spec.operation_id,
+        &key,
+        &destination,
+        crate::transfer_tuning::FastPath::Buffered,
+    )
+    .unwrap();
+    std::fs::write(&destination, "changed before finish").unwrap();
+
+    let error = finish(&spec.operation_id, OperationStatus::Completed).unwrap_err();
+
+    assert!(error.contains("changed since operation"), "{error}");
+    assert_eq!(
+        operation(&spec.operation_id).unwrap().status,
+        OperationStatus::Running
+    );
+    finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+}
