@@ -4728,3 +4728,211 @@ fn sync_reports_sources_that_vanished_after_the_plan() {
         "{requests:?}"
     );
 }
+
+/// The 1-based row (after "..") of the entry named `name` in `panel`.
+fn row_of(panel: &PanelState, name: &str) -> usize {
+    panel
+        .filtered_entries()
+        .iter()
+        .position(|entry| entry.name == name)
+        .expect("listed entry")
+        + 1
+}
+
+#[test]
+fn shift_up_stops_on_the_first_entry_without_reaching_the_parent_row() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(2); // b.txt
+
+    ws.execute(Command::ExtendSelectUp); // select b, move to a, select a
+    ws.execute(Command::ExtendSelectUp); // a again: the cursor stays on row 1
+
+    assert_eq!(ws.left.cursor(), 1);
+    assert_eq!(
+        ws.left.selected_paths().clone(),
+        [a, b].into_iter().collect()
+    );
+}
+
+#[test]
+fn toggle_select_advances_and_stays_on_the_last_row() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+
+    ws.execute(Command::ToggleSelect);
+    assert_eq!(ws.left.cursor(), 2, "Insert moves to the next row");
+    ws.execute(Command::ToggleSelect);
+    assert_eq!(ws.left.cursor(), 2, "the last row keeps the cursor");
+    assert!(ws.left.is_selected(&a) && ws.left.is_selected(&b));
+
+    ws.execute(Command::ToggleSelect);
+    assert!(!ws.left.is_selected(&b), "a second toggle unselects");
+    assert!(ws.left.is_selected(&a));
+}
+
+#[test]
+fn repeat_last_skips_cursor_commands_and_is_a_no_op_without_history() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "x");
+    let b = l.file("b.txt", "x");
+    let c = l.file("c.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(1);
+
+    ws.execute(Command::RepeatLast);
+    assert!(ws.left.selection_is_empty());
+    assert!(ws.drain_ui_requests().is_empty());
+    assert_eq!(ws.left.cursor(), 1);
+
+    ws.execute(Command::InvertSelection); // a, b, c
+    ws.execute(Command::CursorDown); // onto b
+    ws.execute(Command::ToggleSelect); // b off, cursor onto c
+    ws.execute(Command::RepeatLast); // inverts again, not another toggle
+
+    assert_eq!(ws.left.selected_paths().clone(), [b].into_iter().collect());
+    assert!(!ws.left.is_selected(&a) && !ws.left.is_selected(&c));
+    assert_eq!(ws.left.cursor(), 3);
+}
+
+#[test]
+fn nav_lock_mirrors_enter_and_go_up_only_while_on() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let left_sub = l.dir("sub");
+    let right_sub = r.dir("sub");
+    let mut ws = workspace(&l, &r);
+
+    ws.execute(Command::ToggleNavLock);
+    assert!(ws.nav_lock);
+    ws.left.set_cursor(row_of(&ws.left, "sub"));
+    ws.execute(Command::Activate);
+    assert_eq!(ws.left.current_path, left_sub);
+    assert_eq!(ws.right.current_path, right_sub, "Enter is mirrored");
+
+    ws.execute(Command::GoUp);
+    assert_eq!(ws.left.current_path, l.path());
+    assert_eq!(ws.right.current_path, r.path(), "Go Up is mirrored");
+
+    ws.execute(Command::ToggleNavLock);
+    assert!(!ws.nav_lock);
+    ws.left.set_cursor(row_of(&ws.left, "sub"));
+    ws.execute(Command::Activate);
+    assert_eq!(ws.left.current_path, left_sub);
+    assert_eq!(ws.right.current_path, r.path(), "unlocked panes move alone");
+
+    let notices = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        notices,
+        vec![
+            "Navigation lock on: the other pane follows Enter and Go Up".to_string(),
+            "Navigation lock off".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn activating_the_parent_row_goes_up_onto_the_folder_left() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let sub = l.dir("sub");
+    l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(sub.clone());
+    ws.left.set_cursor(0);
+
+    ws.execute(Command::Activate);
+
+    assert_eq!(ws.left.current_path, l.path());
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(sub)
+    );
+    assert!(
+        ws.drain_ui_requests().is_empty(),
+        "the '..' row opens nothing"
+    );
+}
+
+#[test]
+fn reveal_lands_on_the_file_when_the_listing_is_synchronous() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("deep");
+    for n in 0..5 {
+        l.file(&format!("deep/f{n}.txt"), "x");
+    }
+    let target = l.path().join("deep/f3.txt");
+    let mut ws = workspace(&l, &r);
+
+    ws.reveal(&target);
+
+    assert_eq!(ws.left.current_path, l.path().join("deep"));
+    assert_eq!(
+        ws.left.cursor_entry().map(|entry| entry.path.clone()),
+        Some(target)
+    );
+}
+
+#[test]
+fn toggle_info_shows_the_cursor_entry_and_closes_on_the_second_toggle() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("notes.txt", "12345");
+    let mut ws = workspace(&l, &r);
+
+    ws.left.set_cursor(0);
+    ws.execute(Command::ToggleInfo);
+    assert!(ws.right.preview.is_none(), "the '..' row has no info card");
+
+    ws.left.set_cursor(row_of(&ws.left, "notes.txt"));
+    ws.execute(Command::ToggleInfo);
+    let Some(PreviewContent::Info(card)) = &ws.right.preview else {
+        panic!("expected an info card, got {:?}", ws.right.preview);
+    };
+    assert_eq!(card.name, "notes.txt");
+    assert_eq!(card.path, file.display().to_string());
+    assert_eq!(card.size, "5 B");
+    assert_eq!(card.children, None);
+    assert_eq!(card.pending, None);
+
+    ws.execute(Command::ToggleInfo);
+    assert!(ws.right.preview.is_none(), "a second toggle closes it");
+}
+
+#[test]
+fn toggle_info_on_a_folder_uses_its_measured_size() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let folder = l.dir("box");
+    l.file("box/a.bin", "1234567");
+    let mut ws = workspace(&l, &r);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.size_snapshot().size_of(&folder).is_none()
+        || ws.left.size_snapshot().count_of(&folder).is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "folder never measured"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    ws.left.set_cursor(row_of(&ws.left, "box"));
+
+    ws.execute(Command::ToggleInfo);
+
+    let Some(PreviewContent::Info(card)) = &ws.right.preview else {
+        panic!("expected an info card, got {:?}", ws.right.preview);
+    };
+    assert_eq!(card.kind, "Folder");
+    assert_eq!(card.size, "7 B");
+    assert_eq!(card.children, Some(1));
+    assert_eq!(card.pending, None, "nothing left to fill in");
+}
