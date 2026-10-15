@@ -461,10 +461,18 @@ fn discard_rejected_version(
     let Some(record) = record else {
         return outcome;
     };
-    match versions.discard(record) {
-        Ok(()) => outcome,
-        Err(failure) => TrashItemOutcome::Failed(failure),
+    // A version that outlives its rejected delete only costs space; the
+    // item's own outcome (Missing, StaleBinding, Cancelled, ...) is what the
+    // user must see, so a discard failure is logged instead of replacing it.
+    if let Err(failure) = versions.discard(record) {
+        log::warn!(
+            target: "commander::delete",
+            "Could not discard the unused version of {}: {}",
+            record.original.display(),
+            failure.message
+        );
     }
+    outcome
 }
 
 fn append_remaining(
@@ -1265,5 +1273,30 @@ mod tests {
         let record = outcome.items[0].version.as_ref().expect("kept version");
         assert!(record.stored.exists());
         assert!(versions.discarded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_version_discard_keeps_the_item_outcome() {
+        for rejected in [
+            TrashItemOutcome::Failed(denied("denied")),
+            TrashItemOutcome::StaleBinding,
+            TrashItemOutcome::Missing,
+            TrashItemOutcome::Cancelled,
+        ] {
+            let temp = TempDir::new();
+            let path = temp.file("kept.txt", "value");
+            let versions = RecordingVersionStore::new(temp.path().join("versions"), true);
+            let port = ScriptedTrash::new([rejected.clone()]);
+
+            let outcome =
+                run_versioned_batch(vec![ready(path)], &port, &versions, &AtomicBool::new(false));
+
+            assert_eq!(outcome.items[0].outcome, rejected);
+            assert_eq!(outcome.items[0].version, None);
+            assert_eq!(versions.discarded.lock().unwrap().len(), 1, "{rejected:?}");
+            let counted_as_failure = rejected != TrashItemOutcome::Cancelled;
+            assert_eq!(outcome.failed, usize::from(counted_as_failure));
+            assert_eq!(outcome.cancelled, !counted_as_failure);
+        }
     }
 }
