@@ -891,6 +891,14 @@ pub fn save_enveloped<T: Serialize>(
     let bytes = serde_json::to_vec_pretty(&envelope)
         .map_err(PreCommitError::Serialize)
         .map_err(JsonSaveError::PreCommit)?;
+    // A store the loader would reject as too large must never be committed:
+    // it would replace readable data with a file that fails closed forever.
+    if bytes.len() > spec.max_bytes {
+        return Err(JsonSaveError::PreCommit(too_large_error(
+            u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            spec.max_bytes,
+        )));
+    }
     preserve_recovered_source(persist, path, spec.max_bytes, gate)?;
     let outcome = persist
         .commit(path, &bytes, gate.expected.clone())
@@ -901,8 +909,21 @@ pub fn save_enveloped<T: Serialize>(
     Ok(outcome)
 }
 
+fn too_large_error(size: u64, max_bytes: usize) -> PreCommitError {
+    PreCommitError::Io {
+        stage: SaveStage::Write,
+        source: io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            format!("serialized store reached {size} bytes; the load limit is {max_bytes}"),
+        ),
+        cleanup: None,
+    }
+}
+
 /// Save an enveloped document through a streaming writer so large payloads
 /// (content index) never require a full in-memory `to_vec` of the envelope.
+/// The output is compact JSON (the store is machine-only) and is aborted
+/// before the rename once it exceeds `spec.max_bytes`.
 pub fn save_enveloped_streaming<T: Serialize>(
     persist: &FsPersist,
     path: &Path,
@@ -924,10 +945,13 @@ pub fn save_enveloped_streaming<T: Serialize>(
     let expected = gate.expected.clone();
     let outcome = persist
         .commit_with_writer(path, expected, |writer| {
+            // serde_json emits many tiny writes; batch them before the file.
+            let mut buffered = io::BufWriter::with_capacity(256 * 1024, writer);
             let mut hashing = HashingWriter {
-                inner: writer,
+                inner: &mut buffered,
                 hasher: &mut hasher,
                 written: &mut written,
+                limit: u64::try_from(spec.max_bytes).unwrap_or(u64::MAX),
             };
             let envelope = Envelope {
                 format: spec.format,
@@ -936,8 +960,17 @@ pub fn save_enveloped_streaming<T: Serialize>(
                 generation,
                 payload: value,
             };
-            serde_json::to_writer_pretty(&mut hashing, &envelope)
-                .map_err(PreCommitError::Serialize)?;
+            serde_json::to_writer(&mut hashing, &envelope).map_err(|error| {
+                if error.is_io() {
+                    PreCommitError::Io {
+                        stage: SaveStage::Write,
+                        source: error.into(),
+                        cleanup: None,
+                    }
+                } else {
+                    PreCommitError::Serialize(error)
+                }
+            })?;
             hashing.flush().map_err(|source| PreCommitError::Io {
                 stage: SaveStage::Write,
                 source,
@@ -956,10 +989,19 @@ struct HashingWriter<'a> {
     inner: &'a mut dyn Write,
     hasher: &'a mut blake3::Hasher,
     written: &'a mut u64,
+    limit: u64,
 }
 
 impl Write for HashingWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let size = (*self.written).saturating_add(buf.len() as u64);
+        if size > self.limit {
+            let limit = usize::try_from(self.limit).unwrap_or(usize::MAX);
+            let PreCommitError::Io { source, .. } = too_large_error(size, limit) else {
+                unreachable!("too_large_error is an I/O error");
+            };
+            return Err(source);
+        }
         let n = self.inner.write(buf)?;
         self.hasher.update(&buf[..n]);
         *self.written = (*self.written).saturating_add(n as u64);
@@ -1807,6 +1849,75 @@ mod tests {
             assert!(error.contains("(file strict.json)"), "{error}");
             assert!(error.contains(detail), "{error}");
         }
+    }
+
+    #[test]
+    fn oversized_envelope_is_refused_before_the_port_is_called() {
+        let persist = MemoryPersist::new(None);
+        let mut gate = StoreGate::missing();
+        let result = save_enveloped(
+            &persist,
+            Path::new("memory.json"),
+            TEST_STORE,
+            &Item {
+                name: "x".repeat(TEST_STORE.max_bytes),
+                count: 1,
+            },
+            &mut gate,
+            SaveIntent::Explicit,
+        );
+        let Err(JsonSaveError::PreCommit(PreCommitError::Io { stage, source, .. })) = result else {
+            panic!("an oversized store must not be committed: {result:?}");
+        };
+        assert_eq!(stage, SaveStage::Write);
+        assert_eq!(source.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(persist.commits.load(Ordering::Relaxed), 0);
+        assert_eq!(gate.status(), LoadStatus::Missing);
+    }
+
+    #[test]
+    fn streaming_save_round_trips_compact_and_refuses_an_oversized_store() {
+        let temp = TempDir::new();
+        let path = temp.path().join("index.json");
+        let persist = FsPersist::default();
+        let small = Item {
+            name: "small".to_string(),
+            count: 1,
+        };
+        let mut gate = StoreGate::missing();
+        save_enveloped_streaming(
+            &persist,
+            &path,
+            TEST_STORE,
+            &small,
+            &mut gate,
+            SaveIntent::Explicit,
+        )
+        .unwrap();
+        let committed = std::fs::read(&path).unwrap();
+        assert!(!committed.contains(&b'\n'), "machine store is compact");
+        let loaded = load_enveloped::<Item>(&persist, &path, TEST_STORE);
+        assert_eq!(loaded.value, Some(small));
+        assert_eq!(loaded.gate.expected, gate.expected);
+
+        let result = save_enveloped_streaming(
+            &persist,
+            &path,
+            TEST_STORE,
+            &Item {
+                name: "x".repeat(TEST_STORE.max_bytes),
+                count: 2,
+            },
+            &mut gate,
+            SaveIntent::Explicit,
+        );
+        let Err(JsonSaveError::PreCommit(PreCommitError::Io { stage, source, .. })) = result else {
+            panic!("an oversized stream must abort before the rename: {result:?}");
+        };
+        assert_eq!(stage, SaveStage::Write);
+        assert_eq!(source.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(non_lock_entry_count(temp.path()), 1, "temp file removed");
     }
 
     #[test]
