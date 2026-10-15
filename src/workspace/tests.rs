@@ -5711,7 +5711,7 @@ fn symlinks_take_a_numbered_name_beside_an_existing_one() {
     ws.execute(Command::CreateSymlink);
 
     assert_eq!(
-        std::fs::read_link(r.path().join("a.txt link 2")).unwrap(),
+        std::fs::read_link(r.path().join("a link 2.txt")).unwrap(),
         file
     );
     assert_eq!(
@@ -5731,7 +5731,7 @@ fn hard_links_take_a_numbered_name_beside_an_existing_one() {
 
     ws.execute(Command::CreateHardlink);
 
-    let link = r.path().join("a.txt link 2");
+    let link = r.path().join("a link 2.txt");
     assert_eq!(std::fs::read_to_string(&link).unwrap(), "linked");
     std::fs::write(&file, "changed").unwrap();
     assert_eq!(

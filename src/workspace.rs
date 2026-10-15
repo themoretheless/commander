@@ -3191,6 +3191,7 @@ impl Workspace {
     /// conflicts are confirmed, cross-volume moves work, self/descendant drops
     /// are rejected and errors surface. A clean, conflict-free drop runs
     /// immediately; a conflicting one opens the confirmation dialog.
+    #[cfg(test)]
     pub fn drop_dragged(&mut self, notify: impl Fn() + Send + 'static) {
         fileops::drop_dragged(self, notify)
     }

@@ -3,11 +3,12 @@
 //! Keeps the older `seal_support_bytes` / `write_sealed_bundle` names while
 //! routing through XChaCha20-Poly1305 envelopes.
 
-use crate::encrypted_bundle::{
-    DEFAULT_TTL_SECS, EncryptRequest, EncryptedBundleManifest, hex_decode,
-};
+use crate::encrypted_bundle::{DEFAULT_TTL_SECS, EncryptedBundleManifest};
+#[cfg(test)]
+use crate::encrypted_bundle::{EncryptRequest, hex_decode};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 pub use crate::encrypted_bundle::{decrypt, encrypt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +17,7 @@ pub struct SealedBundle {
     pub ciphertext: Vec<u8>,
 }
 
+#[cfg(test)]
 pub fn seal_support_bytes(
     recipient_id: &str,
     plaintext: &[u8],
@@ -34,6 +36,7 @@ pub fn seal_support_bytes(
     )
 }
 
+#[cfg(test)]
 pub fn seal_support_bytes_with_secret(
     recipient_id: &str,
     recipient_secret: &str,
@@ -57,6 +60,7 @@ pub fn seal_support_bytes_with_secret(
     })
 }
 
+#[cfg(test)]
 pub fn open_support_bytes(
     sealed: &SealedBundle,
     recipient_id: &str,

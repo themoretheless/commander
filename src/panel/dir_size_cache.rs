@@ -1165,6 +1165,7 @@ pub fn flush_cache() {
 
 /// The on-disk form of `cache`, entries in key order. An mtime before the
 /// Unix epoch cannot be stored and its entry is left out.
+#[cfg(test)]
 pub(super) fn persisted_snapshot(
     cache: &HashMap<VolumePathKey, (SystemTime, u64)>,
 ) -> PersistedCache {

@@ -16,9 +16,10 @@ pub use batch_rename::apply_rename_order_using;
 pub use batch_rename::{
     apply_batch_rename_in, apply_rename_order, batch_rename_context, dir_names,
 };
+#[cfg(test)]
+pub use drop::drop_dragged;
 pub use drop::{
-    DragSession, cancel_drag, drag_session, drop_dragged, drop_dragged_as,
-    transfer_selection_into_cursor_folder,
+    DragSession, cancel_drag, drag_session, drop_dragged_as, transfer_selection_into_cursor_folder,
 };
 pub use link::{LinkReport, create_hardlinks, create_symlinks};
 pub use mkdir::create_dir;
