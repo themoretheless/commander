@@ -17,6 +17,19 @@ pub enum StoredRelationPolicy {
     KeepLarger,
 }
 
+impl StoredRelationPolicy {
+    /// The policy as the confirmation dialog's button names it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ReplaceAll => "Overwrite All",
+            Self::SkipAll => "Skip Existing",
+            Self::KeepBoth => "Keep Both",
+            Self::KeepNewer => "Keep Newer",
+            Self::KeepLarger => "Keep Larger",
+        }
+    }
+}
+
 impl From<StoredRelationPolicy> for RelationPolicy {
     fn from(value: StoredRelationPolicy) -> Self {
         match value {
@@ -83,7 +96,7 @@ impl ConflictRuleBook {
         } else {
             format!("{}, +{more} more", shown.join(", "))
         };
-        format!("{policy:?} would apply to {list}")
+        format!("{} would apply to {list}", policy.label())
     }
 
     pub fn kind_for_name(name: &str) -> String {
@@ -166,6 +179,13 @@ pub fn upsert(rule: ConflictRule) {
     let _ = save(&book);
 }
 
+/// The saved policy for this root pair and file kind, if any.
+pub fn saved_policy(left: &Path, right: &Path, file_kind: &str) -> Option<RelationPolicy> {
+    load()
+        .find(left, right, file_kind)
+        .map(|rule| rule.policy.into())
+}
+
 pub fn preview_for(
     left: &Path,
     right: &Path,
@@ -173,9 +193,12 @@ pub fn preview_for(
     names: &[String],
     limit: usize,
 ) -> Option<String> {
-    load()
-        .find(left, right, file_kind)
-        .map(|rule| ConflictRuleBook::sample_preview(rule.policy, names, limit))
+    load().find(left, right, file_kind).map(|rule| {
+        format!(
+            "Saved rule: {}",
+            ConflictRuleBook::sample_preview(rule.policy, names, limit)
+        )
+    })
 }
 
 #[cfg(test)]
@@ -191,6 +214,8 @@ mod tests {
         );
         assert!(preview.contains("a.txt"));
         assert!(preview.contains("+1 more"));
+        assert!(preview.starts_with("Keep Newer would apply to "));
+        assert!(!preview.contains("KeepNewer"));
         assert_eq!(ConflictRuleBook::kind_for_name("photo.PNG"), "png");
 
         let mut book = ConflictRuleBook::default();
@@ -215,7 +240,11 @@ mod tests {
                 3
             )
             .unwrap()
-            .contains("KeepBoth")
+            .starts_with("Saved rule: Keep Both would apply to x.txt")
+        );
+        assert_eq!(
+            saved_policy(Path::new("/a"), Path::new("/b"), "txt"),
+            Some(RelationPolicy::KeepBoth)
         );
     }
 

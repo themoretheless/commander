@@ -131,7 +131,11 @@ pub fn commit_rename(workspace: &mut Workspace, old: &Path, new_name: &str) -> R
         return Ok(()); // nothing to do
     }
     let siblings = rename_siblings(old);
-    crate::pathname::validate_new_name(new_name, &siblings).map_err(|error| error.to_string())?;
+    let case_insensitive = old
+        .parent()
+        .is_some_and(crate::pathname::volume_is_case_insensitive);
+    crate::pathname::validate_new_name_on_volume(new_name, &siblings, case_insensitive)
+        .map_err(|error| error.to_string())?;
     let dest = old
         .parent()
         .map(|p| p.join(new_name))

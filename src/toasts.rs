@@ -32,7 +32,7 @@ impl Toast {
             kind,
             undoable,
             born: now,
-            ttl: DEFAULT_TTL,
+            ttl: ttl_for(kind),
         }
     }
 
@@ -43,6 +43,17 @@ impl Toast {
 
 /// Default visible lifetime, in seconds.
 pub const DEFAULT_TTL: f64 = 6.0;
+/// Errors stay twice as long: many (run command, archive, find) have no
+/// other surface, so the toast is the only place to read them.
+pub const ERROR_TTL: f64 = 12.0;
+
+/// Visible lifetime for a toast of `kind`.
+pub const fn ttl_for(kind: ToastKind) -> f64 {
+    match kind {
+        ToastKind::Error => ERROR_TTL,
+        ToastKind::Success | ToastKind::Info => DEFAULT_TTL,
+    }
+}
 /// Most toasts shown at once; older ones drop off.
 pub const MAX_TOASTS: usize = 3;
 
@@ -61,17 +72,20 @@ impl Default for ToastQueue {
 }
 
 impl ToastQueue {
-    /// Push a toast. If the newest existing toast carries the same message,
-    /// reset its timer (coalesce) rather than stacking a duplicate. Otherwise
-    /// append, capping the queue at [`MAX_TOASTS`] by dropping the oldest.
+    /// Push a toast. If any visible toast carries the same message, it is
+    /// refreshed (timer, kind, Undo) and moved to the newest position under
+    /// its existing id rather than stacking a duplicate. Otherwise append,
+    /// capping the queue at [`MAX_TOASTS`] by dropping the oldest toast that
+    /// is not an error (errors go last, oldest first). The toast just pushed
+    /// is never the one evicted: the user's latest feedback always shows.
     pub fn push(&mut self, mut toast: Toast) {
-        if let Some(last) = self.toasts.last_mut()
-            && last.message == toast.message
-        {
-            last.born = toast.born;
-            last.ttl = toast.ttl;
-            last.kind = toast.kind;
-            last.undoable = toast.undoable;
+        if let Some(index) = self.toasts.iter().position(|t| t.message == toast.message) {
+            let mut existing = self.toasts.remove(index);
+            existing.born = toast.born;
+            existing.ttl = toast.ttl;
+            existing.kind = toast.kind;
+            existing.undoable = toast.undoable;
+            self.toasts.push(existing);
             return;
         }
         toast.id = self.next_id;
@@ -81,7 +95,12 @@ impl ToastQueue {
             .expect("toast ID space exhausted");
         self.toasts.push(toast);
         while self.toasts.len() > MAX_TOASTS {
-            self.toasts.remove(0);
+            let older = self.toasts.len() - 1;
+            let evict = self.toasts[..older]
+                .iter()
+                .position(|t| t.kind != ToastKind::Error)
+                .unwrap_or(0);
+            self.toasts.remove(evict);
         }
     }
 
@@ -143,6 +162,59 @@ mod tests {
         // A different message stacks.
         q.push(toast("Renamed 2 items", 5.0));
         assert_eq!(q.active().len(), 2);
+    }
+
+    #[test]
+    fn repeated_message_refreshes_its_earlier_toast() {
+        let mut q = ToastQueue::default();
+        q.push(toast("A", 0.0));
+        let id = q.active()[0].id();
+        q.push(toast("B", 1.0));
+        q.push(toast("A", 2.0));
+        let msgs: Vec<&str> = q.active().iter().map(|t| t.message.as_str()).collect();
+        assert_eq!(msgs, vec!["B", "A"]);
+        assert_eq!(q.active()[1].id(), id);
+        assert_eq!(q.active()[1].born, 2.0);
+    }
+
+    #[test]
+    fn errors_outlive_successes() {
+        let error = Toast::new("Failed", ToastKind::Error, false, 0.0);
+        assert_eq!(error.ttl, ERROR_TTL);
+        const { assert!(ERROR_TTL > DEFAULT_TTL) };
+        assert_eq!(toast("Done", 0.0).ttl, DEFAULT_TTL);
+        assert_eq!(
+            Toast::new("Hint", ToastKind::Info, false, 0.0).ttl,
+            DEFAULT_TTL
+        );
+    }
+
+    #[test]
+    fn cap_evicts_the_oldest_non_error_first() {
+        let mut q = ToastQueue::default();
+        q.push(Toast::new("err", ToastKind::Error, false, 0.0));
+        for (i, m) in ["b", "c", "d"].iter().enumerate() {
+            q.push(toast(m, 1.0 + i as f64));
+        }
+        let msgs: Vec<&str> = q.active().iter().map(|t| t.message.as_str()).collect();
+        assert_eq!(msgs, vec!["err", "c", "d"]);
+        // With only errors left, the oldest still goes.
+        let mut q = ToastQueue::default();
+        for m in ["e1", "e2", "e3", "e4"] {
+            q.push(Toast::new(m, ToastKind::Error, false, 0.0));
+        }
+        assert_eq!(q.active()[0].message, "e2");
+    }
+
+    #[test]
+    fn a_new_success_is_shown_even_when_errors_fill_the_stack() {
+        let mut q = ToastQueue::default();
+        for m in ["e1", "e2", "e3"] {
+            q.push(Toast::new(m, ToastKind::Error, false, 0.0));
+        }
+        q.push(Toast::new("Moved 2 items", ToastKind::Success, true, 1.0));
+        let msgs: Vec<&str> = q.active().iter().map(|t| t.message.as_str()).collect();
+        assert_eq!(msgs, vec!["e2", "e3", "Moved 2 items"]);
     }
 
     #[test]

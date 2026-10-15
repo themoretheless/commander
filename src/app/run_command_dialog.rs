@@ -138,6 +138,30 @@ fn trust_block_message(label: crate::trust::TrustLabel) -> String {
     )
 }
 
+/// A change to the saved-template list from a row's context menu. Indices
+/// are positions in the full store, not in the filtered list shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TemplateEdit {
+    Delete(usize),
+    Move { from: usize, to: usize },
+}
+
+/// Apply `edit` to `templates`; whether anything changed.
+fn apply_template_edit(templates: &mut crate::cmdtemplate::Templates, edit: TemplateEdit) -> bool {
+    match edit {
+        TemplateEdit::Delete(index) => templates.remove(index),
+        TemplateEdit::Move { from, to } => from != to && templates.reorder(from, to),
+    }
+}
+
+/// Store indices of the shown rows before and after row `pos`, the targets
+/// of Move up / Move down (hidden, non-matching templates are skipped).
+fn template_neighbours(shown: &[usize], pos: usize) -> (Option<usize>, Option<usize>) {
+    let up = pos.checked_sub(1).and_then(|i| shown.get(i)).copied();
+    let down = shown.get(pos + 1).copied();
+    (up, down)
+}
+
 /// Text for a saved-template row: the raw line, prefixed by the template's
 /// name only when the name says something the line does not (auto-named
 /// templates are called after their first word).
@@ -235,13 +259,18 @@ impl App {
             .clone();
         let sctx = opening.selection_context();
         let sel_count = opening.selection.len();
-        // Templates whose extension filter accepts the selection.
-        let matching: Vec<(String, String)> = self
+        // Templates whose extension filter accepts the selection, with their
+        // position in the store for the row menu.
+        let matching: Vec<(usize, String, String)> = self
             .command_templates_mut()
-            .matching(&opening.selection)
+            .items
             .iter()
-            .map(|t| (t.name.clone(), t.raw.clone()))
+            .enumerate()
+            .filter(|(_, t)| t.matches(&opening.selection))
+            .map(|(index, t)| (index, t.name.clone(), t.raw.clone()))
             .collect();
+        let shown: Vec<usize> = matching.iter().map(|(index, _, _)| *index).collect();
+        let mut template_edit: Option<TemplateEdit> = None;
 
         let mut run: Option<String> = None; // expanded command line to execute
         let mut cancel = false;
@@ -300,13 +329,31 @@ impl App {
                         .id_salt((TEMPLATES_SCROLL_ID, state.scroll_nonce))
                         .max_height(160.0)
                         .show(ui, |ui| {
-                            for (name, raw) in &matching {
-                                let row = ui.add(
-                                    super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new(template_row_label(name, raw)) .size(12.0)),
-                                );
+                            for (pos, (index, name, raw)) in matching.iter().enumerate() {
+                                let row = ui
+                                    .add(
+                                        super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new(template_row_label(name, raw)) .size(12.0)),
+                                    )
+                                    .on_hover_text("Click to use; right-click to move or delete");
                                 if row.clicked() {
                                     fill = Some(raw.clone());
                                 }
+                                let (up, down) = template_neighbours(&shown, pos);
+                                row.context_menu(|ui| {
+                                    if ui.add_enabled(up.is_some(), egui::Button::new("Move up")).clicked() {
+                                        template_edit = up.map(|to| TemplateEdit::Move { from: *index, to });
+                                        ui.close();
+                                    }
+                                    if ui.add_enabled(down.is_some(), egui::Button::new("Move down")).clicked() {
+                                        template_edit = down.map(|to| TemplateEdit::Move { from: *index, to });
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui.button("Delete template").clicked() {
+                                        template_edit = Some(TemplateEdit::Delete(*index));
+                                        ui.close();
+                                    }
+                                });
                             }
                         });
                 }
@@ -469,6 +516,19 @@ impl App {
             && let Some(s) = &mut self.ui.modals.run_command
         {
             s.line = raw;
+            return;
+        }
+        if let Some(edit) = template_edit {
+            if apply_template_edit(self.command_templates_mut(), edit)
+                && !crate::cmdtemplate::save(self.command_templates_mut())
+            {
+                self.toast(
+                    ctx,
+                    crate::toasts::ToastKind::Error,
+                    "Could not save templates to disk".to_string(),
+                    false,
+                );
+            }
             return;
         }
         if let Some(line) = save_template {
@@ -678,6 +738,36 @@ mod tests {
         let message = trust_block_message(crate::trust::TrustLabel::Untrusted);
         assert!(message.contains("Untrusted"));
         assert!(message.contains("Trust: mark Trusted"));
+    }
+
+    #[test]
+    fn template_menu_moves_between_shown_rows_and_deletes() {
+        let template = |raw: &str| crate::cmdtemplate::Template {
+            name: raw.to_string(),
+            raw: raw.to_string(),
+            exts: Vec::new(),
+        };
+        let mut store = crate::cmdtemplate::Templates {
+            items: vec![template("a"), template("hidden"), template("c")],
+        };
+        // Rows 0 and 2 are shown; "hidden" does not match the selection.
+        let shown = [0, 2];
+        assert_eq!(template_neighbours(&shown, 0), (None, Some(2)));
+        assert_eq!(template_neighbours(&shown, 1), (Some(0), None));
+        assert!(apply_template_edit(
+            &mut store,
+            TemplateEdit::Move { from: 2, to: 0 }
+        ));
+        let raws: Vec<&str> = store.items.iter().map(|t| t.raw.as_str()).collect();
+        assert_eq!(raws, ["c", "a", "hidden"]);
+        assert!(apply_template_edit(&mut store, TemplateEdit::Delete(1)));
+        let raws: Vec<&str> = store.items.iter().map(|t| t.raw.as_str()).collect();
+        assert_eq!(raws, ["c", "hidden"]);
+        assert!(!apply_template_edit(&mut store, TemplateEdit::Delete(5)));
+        assert!(!apply_template_edit(
+            &mut store,
+            TemplateEdit::Move { from: 0, to: 0 }
+        ));
     }
 
     #[test]

@@ -272,6 +272,15 @@ fn dropped_items_note(dropped: usize) -> Option<String> {
     }
 }
 
+/// Whether a conflict-policy button gets the accent fill: the saved rule's
+/// policy when there is one, else Keep Both.
+fn highlighted_policy(
+    policy: crate::conflict::RelationPolicy,
+    saved: Option<crate::conflict::RelationPolicy>,
+) -> bool {
+    policy == saved.unwrap_or(crate::conflict::RelationPolicy::KeepBoth)
+}
+
 /// Dry run is offered for Delete/Move, but never while conflict-policy
 /// buttons are shown: those buttons start the real transfer.
 fn dry_run_supported(is_delete: bool, title: &str, has_conflicts: bool) -> bool {
@@ -753,51 +762,52 @@ impl App {
                     let mut chosen: Option<RelationPolicy> = None;
                     let policy_enabled =
                         conflict_policy_enabled(preflight_blocked, mutations_blocked);
+                    // A saved rule for this folder pair and file kind takes
+                    // the highlighted (accent) button from Keep Both.
+                    let saved_policy = rich_conflicts.first().and_then(|c| {
+                        crate::conflict_rules::saved_policy(
+                            &self.ws.left.current_path,
+                            &self.ws.right.current_path,
+                            &crate::conflict_rules::ConflictRuleBook::kind_for_name(&c.name),
+                        )
+                    });
                     ui.horizontal_wrapped(|ui| {
                         let mut btn = |ui: &mut egui::Ui, label: &str, fill, fg, policy| {
-                            if ui
-                                .add_enabled(
-                                    policy_enabled,
-                                    egui::Button::new(
-                                        egui::RichText::new(label).size(12.0).color(fg),
-                                    )
+                            let mut button =
+                                egui::Button::new(egui::RichText::new(label).size(12.0).color(fg))
                                     .fill(fill)
-                                    .corner_radius(CornerRadius::ZERO),
-                                )
-                                .clicked()
-                            {
+                                    .corner_radius(CornerRadius::ZERO);
+                            // The saved rule's button is outlined too, so the
+                            // marker shows even on Overwrite All's warning fill.
+                            if saved_policy == Some(policy) {
+                                button = button.stroke(egui::Stroke::new(1.5, t.text_primary));
+                            }
+                            let response = ui.add_enabled(policy_enabled, button);
+                            let response = if saved_policy == Some(policy) {
+                                response.on_hover_text("Saved rule for these folders and file type")
+                            } else {
+                                response
+                            };
+                            if response.clicked() {
                                 chosen = Some(policy);
                             }
                             ui.add_space(4.0);
                         };
-                        btn(
-                            ui,
-                            "Keep Both",
-                            t.accent,
-                            Color32::WHITE,
-                            RelationPolicy::KeepBoth,
-                        );
-                        btn(
-                            ui,
-                            "Keep Newer",
-                            t.bg_card,
-                            t.text_primary,
-                            RelationPolicy::KeepNewer,
-                        );
-                        btn(
-                            ui,
-                            "Keep Larger",
-                            t.bg_card,
-                            t.text_primary,
-                            RelationPolicy::KeepLarger,
-                        );
-                        btn(
-                            ui,
-                            "Skip Existing",
-                            t.bg_card,
-                            t.text_primary,
-                            RelationPolicy::SkipAll,
-                        );
+                        // Overwrite All keeps its warning fill either way; a
+                        // saved Overwrite All rule is marked by the outline.
+                        for (label, policy) in [
+                            ("Keep Both", RelationPolicy::KeepBoth),
+                            ("Keep Newer", RelationPolicy::KeepNewer),
+                            ("Keep Larger", RelationPolicy::KeepLarger),
+                            ("Skip Existing", RelationPolicy::SkipAll),
+                        ] {
+                            let (fill, fg) = if highlighted_policy(policy, saved_policy) {
+                                (t.accent, Color32::WHITE)
+                            } else {
+                                (t.bg_card, t.text_primary)
+                            };
+                            btn(ui, label, fill, fg, policy);
+                        }
                         btn(
                             ui,
                             "Overwrite All",
@@ -835,7 +845,13 @@ impl App {
                             _ => 0,
                         };
                         let before = pending_len(&self.ws);
+                        let folders_note = crate::conflict::folders_not_merged_note(
+                            crate::conflict::folders_not_merged(&rich_conflicts, policy),
+                        );
                         if self.ws.resolve_pending_conflicts(policy) {
+                            if let Some(note) = folders_note {
+                                self.toast(ctx, crate::toasts::ToastKind::Info, note, false);
+                            }
                             let dropped = before.saturating_sub(pending_len(&self.ws));
                             if dropped > 0 {
                                 ctx.data_mut(|d| {
@@ -1662,9 +1678,10 @@ mod tests {
         conflict_row_text, delete_not_started_message, dialog_enter_suppressed, dialog_heading,
         dropped_items_note, dry_run_supported, durability_controls, elided_name, flat_list_header,
         flat_row_accessible_label, flat_total, flow_rows, flow_transferred, focus_within_layer,
-        honours_click, is_conflict_row, normalization_note, not_enough_space_message,
-        nothing_left_message, primary_blocker, should_focus_primary, source_header,
-        unavailable_size_message, unavailable_space_message, unstarted_delete_explanation,
+        highlighted_policy, honours_click, is_conflict_row, normalization_note,
+        not_enough_space_message, nothing_left_message, primary_blocker, should_focus_primary,
+        source_header, unavailable_size_message, unavailable_space_message,
+        unstarted_delete_explanation,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -1865,6 +1882,16 @@ mod tests {
         assert!(!dialog_enter_suppressed(&ctx, layer));
         egui::Popup::open_id(&ctx, egui::Id::new("collision_policy_popup"));
         assert!(dialog_enter_suppressed(&ctx, layer));
+    }
+
+    #[test]
+    fn saved_conflict_rule_takes_the_highlight_from_keep_both() {
+        use crate::conflict::RelationPolicy;
+        assert!(highlighted_policy(RelationPolicy::KeepBoth, None));
+        assert!(!highlighted_policy(RelationPolicy::KeepNewer, None));
+        let saved = Some(RelationPolicy::KeepNewer);
+        assert!(highlighted_policy(RelationPolicy::KeepNewer, saved));
+        assert!(!highlighted_policy(RelationPolicy::KeepBoth, saved));
     }
 
     #[test]

@@ -220,7 +220,6 @@ impl Templates {
     }
 
     /// Remove the template at `index`, if valid. Returns whether one was removed.
-    #[allow(dead_code)] // wired once the bar grows an edit/manage affordance
     pub fn remove(&mut self, index: usize) -> bool {
         if index < self.items.len() {
             self.items.remove(index);
@@ -232,7 +231,6 @@ impl Templates {
 
     /// Move the template at `from` to `to` (clamped), preserving the order of
     /// the rest. Returns whether `from` was valid.
-    #[allow(dead_code)] // wired once the bar grows reordering
     pub fn reorder(&mut self, from: usize, to: usize) -> bool {
         if from >= self.items.len() {
             return false;

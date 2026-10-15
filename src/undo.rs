@@ -69,7 +69,8 @@ impl Action {
         match self {
             Self::Move { .. } => "Moved",
             Self::BatchRename { .. } | Self::Rename { .. } => "Renamed",
-            Self::Gather { .. } | Self::Ungather { .. } => "Gathered",
+            Self::Gather { .. } => "Gathered",
+            Self::Ungather { .. } => "Ungathered",
             Self::Trash { .. } => "Deleted",
             Self::RestoreTrash { .. } => "Restored",
         }
@@ -239,10 +240,19 @@ pub fn preview(action: &Action) -> ReplayPreview {
                     Ok(true) => return Some("Gather folder already exists".to_string()),
                     Err(reason) => return Some(reason.clone()),
                 }
-                if matches!(action, Action::Move { .. } | Action::Ungather { .. })
-                    && (to.parent() != move_parent.as_deref() || from.file_name() != to.file_name())
-                {
-                    return Some("Move replay no longer has one faithful destination".to_string());
+                if matches!(action, Action::Move { .. } | Action::Ungather { .. }) {
+                    if to.parent() != move_parent.as_deref() {
+                        return Some(
+                            "Items came from different folders; undo cannot restore them in one step"
+                                .to_string(),
+                        );
+                    }
+                    if from.file_name() != to.file_name() {
+                        return Some(
+                            "Item was renamed when it moved; undo cannot restore its name"
+                                .to_string(),
+                        );
+                    }
                 }
                 if to
                     .parent()
@@ -282,9 +292,7 @@ pub fn preview(action: &Action) -> ReplayPreview {
             .filter(|entry| !moved.contains(&entry.path()))
             .count();
         if foreign > 0 {
-            warnings.push(format!(
-                "Folder contains {foreign} unrelated entries and will be kept"
-            ));
+            warnings.push(unrelated_entries_warning(foreign));
         }
     }
 
@@ -293,6 +301,13 @@ pub fn preview(action: &Action) -> ReplayPreview {
         paths,
         warnings,
     }
+}
+
+/// Warning for an ungather folder that holds `foreign` entries the gather
+/// did not put there.
+fn unrelated_entries_warning(foreign: usize) -> String {
+    let noun = if foreign == 1 { "entry" } else { "entries" };
+    format!("Folder contains {foreign} unrelated {noun} and will be kept")
 }
 
 fn preview_trash(items: &[TrashedItem], restoring: bool) -> ReplayPreview {
@@ -619,9 +634,11 @@ mod tests {
                 pairs: vec![(PathBuf::from("/d/Photos/a.jpg"), PathBuf::from("/d/a.jpg"),)],
             }
         );
+        assert_eq!(action.verb(), "Gathered");
         assert_eq!(invert(&inverse), Some(action));
         assert_eq!(inverse.item_count(), 1);
-        assert_eq!(inverse.verb(), "Gathered");
+        assert_eq!(inverse.verb(), "Ungathered");
+        assert_eq!(inverse.description(), "Ungathered (1 item)");
         assert_eq!(inverse.jump_to(), Some(PathBuf::from("/d")));
     }
 
@@ -775,6 +792,28 @@ mod tests {
     }
 
     #[test]
+    fn cross_folder_move_replay_explains_the_blocker() {
+        let temp = TempDir::new();
+        temp.dir("one");
+        temp.dir("two");
+        let action = Action::Move {
+            pairs: vec![
+                (temp.file("a.txt", "a"), temp.path().join("one/a.txt")),
+                (temp.file("b.txt", "b"), temp.path().join("two/b.txt")),
+            ],
+        };
+        let preview = preview(&action);
+        assert!(!preview.can_execute());
+        assert_eq!(
+            preview.paths[1].eligibility,
+            ReplayEligibility::Blocked(
+                "Items came from different folders; undo cannot restore them in one step"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
     fn ungather_preview_reports_the_folder_cleanup_gap() {
         let temp = TempDir::new();
         let folder = temp.dir("Gathered");
@@ -789,5 +828,13 @@ mod tests {
         assert!(preview.can_execute());
         assert_eq!(preview.warnings.len(), 1);
         assert!(preview.warnings[0].contains("unrelated"));
+        assert_eq!(
+            preview.warnings[0],
+            "Folder contains 1 unrelated entry and will be kept"
+        );
+        assert_eq!(
+            unrelated_entries_warning(2),
+            "Folder contains 2 unrelated entries and will be kept"
+        );
     }
 }
