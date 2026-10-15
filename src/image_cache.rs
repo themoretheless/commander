@@ -465,6 +465,16 @@ fn read_preview_bytes(
     Ok(bytes)
 }
 
+/// Fingerprint an open handle (fstat), so a rename or rewrite after the
+/// path check is still caught.
+fn handle_fingerprint(
+    file: &std::fs::File,
+    path: &Path,
+) -> Result<TextPreviewFingerprint, PreviewError> {
+    let metadata = file.metadata().map_err(|_| PreviewError::Unreadable)?;
+    TextPreviewFingerprint::from_metadata(path, &metadata)
+}
+
 impl TextPreviewProvider for FsTextPreviewProvider {
     fn supports(&self, identity: &crate::panel::PreviewIdentity) -> bool {
         let extension = identity
@@ -508,12 +518,7 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         }
 
         let mut file = std::fs::File::open(&identity.path).map_err(|_| PreviewError::Unreadable)?;
-        let opened = file
-            .metadata()
-            .map_err(|_| PreviewError::Unreadable)
-            .and_then(|metadata| {
-                TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
-            })?;
+        let opened = handle_fingerprint(&file, &identity.path)?;
         if &opened != expected {
             return Err(PreviewError::Changed);
         }
@@ -528,12 +533,7 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         if cancelled() {
             return Err(PreviewError::Cancelled);
         }
-        let after_handle = file
-            .metadata()
-            .map_err(|_| PreviewError::Unreadable)
-            .and_then(|metadata| {
-                TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
-            })?;
+        let after_handle = handle_fingerprint(&file, &identity.path)?;
         let after_path = self.fingerprint(identity)?;
         if &after_handle != expected || &after_path != expected {
             return Err(PreviewError::Changed);
@@ -545,12 +545,7 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         {
             let mut verification_file =
                 std::fs::File::open(&identity.path).map_err(|_| PreviewError::Unreadable)?;
-            let verification_opened = verification_file
-                .metadata()
-                .map_err(|_| PreviewError::Unreadable)
-                .and_then(|metadata| {
-                    TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
-                })?;
+            let verification_opened = handle_fingerprint(&verification_file, &identity.path)?;
             if &verification_opened != expected {
                 return Err(PreviewError::Changed);
             }
@@ -723,6 +718,18 @@ impl TextPreviewPipeline<IsolatedTextPreviewExecutor> {
     }
 }
 
+/// The phase a fresh or retried request starts in: files over the preview
+/// cap fail at once, everything else waits out the debounce first.
+fn initial_text_phase(size: u64, now: Instant) -> TextPreviewPhase {
+    if size > MAX_TEXT_PREVIEW_BYTES {
+        TextPreviewPhase::Failed(PreviewError::TooLarge)
+    } else {
+        TextPreviewPhase::Debouncing {
+            ready_at: now + TEXT_PREVIEW_DEBOUNCE,
+        }
+    }
+}
+
 impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
     fn with_parts(
         executor: E,
@@ -763,13 +770,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         self.advance_generation();
         self.active = Some(ownership.clone());
         self.delivered = false;
-        self.phase = if ownership.identity.size > MAX_TEXT_PREVIEW_BYTES {
-            TextPreviewPhase::Failed(PreviewError::TooLarge)
-        } else {
-            TextPreviewPhase::Debouncing {
-                ready_at: now + TEXT_PREVIEW_DEBOUNCE,
-            }
-        };
+        self.phase = initial_text_phase(ownership.identity.size, now);
     }
 
     fn request(
@@ -1027,17 +1028,11 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         {
             self.cancel_task();
             self.advance_generation();
-            self.phase = if self
+            let size = self
                 .active
                 .as_ref()
-                .is_some_and(|active| active.identity.size > MAX_TEXT_PREVIEW_BYTES)
-            {
-                TextPreviewPhase::Failed(PreviewError::TooLarge)
-            } else {
-                TextPreviewPhase::Debouncing {
-                    ready_at: self.clock.now() + TEXT_PREVIEW_DEBOUNCE,
-                }
-            };
+                .map_or(0, |active| active.identity.size);
+            self.phase = initial_text_phase(size, self.clock.now());
             self.delivered = false;
         }
     }
@@ -1283,8 +1278,7 @@ impl ImageCache {
                 self.generation.fetch_add(1, Ordering::AcqRel);
             }
             drop(pending);
-            self.entries.clear();
-            self.total_bytes = 0;
+            self.clear_entries();
             self.current_dir = None;
             crate::lock_util::recover(&self.failed).clear();
             return;
@@ -1296,49 +1290,51 @@ impl ImageCache {
         // and two folders can hold same-named-but-different images).
         if self.current_dir.as_deref() != Some(dir) {
             self.current_dir = Some(dir.to_path_buf());
-            self.entries.clear();
-            self.total_bytes = 0;
+            self.clear_entries();
             self.generation.fetch_add(1, Ordering::AcqRel);
             crate::lock_util::recover(&self.pending).clear();
             crate::lock_util::recover(&self.failed).clear();
         }
 
         // Publish finished decodes before calculating free worker slots.
-        {
+        let completed: Vec<(PathBuf, DecodedPreview)> = {
             let mut pending = crate::lock_util::recover(&self.pending);
-            let completed: Vec<_> = pending
+            let paths: Vec<_> = pending
                 .iter()
                 .filter(|(_, slot)| slot.decoded.is_some())
                 .map(|(path, _)| path.clone())
                 .collect();
-            for path in completed {
-                if let Some(PendingLoad {
-                    decoded: Some(decoded),
-                    ..
-                }) = pending.remove(&path)
-                {
-                    let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let texture = ctx.load_texture(&name, decoded.image, TextureOptions::LINEAR);
-                    self.total_bytes = self.total_bytes.saturating_add(decoded.byte_size);
-                    // A sharper re-decode replaces the smaller texture that
-                    // stayed on screen while it loaded.
-                    if let Some(replaced) = self.entries.insert(
-                        path,
-                        CacheEntry {
-                            texture,
-                            byte_size: decoded.byte_size,
-                            last_used: self.frame,
-                            decoded_for: decoded.decoded_for,
-                        },
-                    ) {
-                        self.total_bytes = self.total_bytes.saturating_sub(replaced.byte_size);
-                    }
-                }
-            }
+            paths
+                .into_iter()
+                .filter_map(|path| match pending.remove(&path) {
+                    Some(PendingLoad {
+                        decoded: Some(decoded),
+                        ..
+                    }) => Some((path, decoded)),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (path, decoded) in completed {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let texture = ctx.load_texture(&name, decoded.image, TextureOptions::LINEAR);
+            // A sharper re-decode replaces the smaller texture that stayed
+            // on screen while it loaded.
+            self.remove_entry(&path);
+            self.total_bytes = self.total_bytes.saturating_add(decoded.byte_size);
+            self.entries.insert(
+                path,
+                CacheEntry {
+                    texture,
+                    byte_size: decoded.byte_size,
+                    last_used: self.frame,
+                    decoded_for: decoded.decoded_for,
+                },
+            );
         }
 
         let target = self.preview_target;
@@ -1448,34 +1444,29 @@ impl ImageCache {
     }
 
     fn evict(&mut self, keep: &std::collections::HashSet<&PathBuf>) {
-        if self.total_bytes <= MAX_CACHE_BYTES {
-            return; // Under budget — keep everything
+        let victims = eviction_order(
+            self.entries
+                .iter()
+                .map(|(path, entry)| (path, entry.byte_size, entry.last_used)),
+            keep,
+            self.total_bytes,
+            MAX_CACHE_BYTES,
+        );
+        for path in victims {
+            self.remove_entry(&path);
         }
+    }
 
-        // Over budget — first remove entries from other directories (not in keep set)
-        let to_remove: Vec<PathBuf> = self
-            .entries
-            .keys()
-            .filter(|k| !keep.contains(k))
-            .cloned()
-            .collect();
-        for path in to_remove {
-            if let Some(entry) = self.entries.remove(&path) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-            }
-        }
+    /// Drop one texture and release its bytes from the running total.
+    fn remove_entry(&mut self, path: &Path) -> Option<CacheEntry> {
+        let entry = self.entries.remove(path)?;
+        self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
+        Some(entry)
+    }
 
-        // Still over budget — evict oldest from current set
-        // O(n log n) sort-based eviction instead of O(n²) repeated min scans
-        while self.total_bytes > MAX_CACHE_BYTES && !self.entries.is_empty() {
-            let mut sorted: Vec<_> = self.entries.iter().collect();
-            sorted.sort_by_key(|(_, e)| e.last_used);
-
-            let oldest_key = sorted[0].0.clone();
-            if let Some(entry) = self.entries.remove(&oldest_key) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-            }
-        }
+    fn clear_entries(&mut self) {
+        self.entries.clear();
+        self.total_bytes = 0;
     }
 
     pub fn load_state(&self, path: &Path) -> PreviewLoadState {
@@ -1503,9 +1494,7 @@ impl ImageCache {
         crate::decoder_breaker::arm_probe_retry(path);
         crate::lock_util::recover(&self.failed).remove(path);
         crate::lock_util::recover(&self.pending).remove(path);
-        if let Some(entry) = self.entries.remove(path) {
-            self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-        }
+        self.remove_entry(path);
     }
 
     pub fn stats(&self) -> ImageCacheStats {
@@ -1517,6 +1506,40 @@ impl ImageCache {
             providers: preview_provider_stats(),
         }
     }
+}
+
+/// Which cached textures to drop, in order, to get `total_bytes` within
+/// `budget`. Under budget nothing goes. Over it, every entry outside `keep`
+/// (another folder's or no longer visible) goes first, then the least
+/// recently used of the kept ones until the total fits.
+fn eviction_order<'a>(
+    entries: impl Iterator<Item = (&'a PathBuf, usize, u64)>,
+    keep: &std::collections::HashSet<&PathBuf>,
+    mut total_bytes: usize,
+    budget: usize,
+) -> Vec<PathBuf> {
+    if total_bytes <= budget {
+        return Vec::new();
+    }
+    let mut victims = Vec::new();
+    let mut kept = Vec::new();
+    for (path, byte_size, last_used) in entries {
+        if keep.contains(path) {
+            kept.push((path, byte_size, last_used));
+        } else {
+            total_bytes = total_bytes.saturating_sub(byte_size);
+            victims.push(path.clone());
+        }
+    }
+    kept.sort_by_key(|(_, _, last_used)| *last_used);
+    for (path, byte_size, _) in kept {
+        if total_bytes <= budget {
+            break;
+        }
+        total_bytes = total_bytes.saturating_sub(byte_size);
+        victims.push(path.clone());
+    }
+    victims
 }
 
 fn classify_failure(error: &str) -> PreviewFailure {
@@ -3588,5 +3611,85 @@ mod tests {
             super::free_preload_slots(1, 3),
             super::MAX_PRELOAD_WORKERS - 3
         );
+    }
+
+    #[test]
+    fn eviction_drops_other_folders_first_then_least_recently_used() {
+        let [a, b, c, other, stale] =
+            ["a.png", "b.png", "c.png", "other.png", "stale.png"].map(PathBuf::from);
+        let entries = [
+            (&a, 10, 3),
+            (&b, 10, 1),
+            (&c, 10, 2),
+            (&other, 5, 9),
+            (&stale, 5, 0),
+        ];
+        let keep: std::collections::HashSet<&PathBuf> = [&a, &b, &c].into_iter().collect();
+
+        // Within budget nothing is evicted, not even entries outside the keep set.
+        assert!(super::eviction_order(entries.into_iter(), &keep, 40, 40).is_empty());
+
+        // Every non-kept entry goes even when dropping one would be enough.
+        let mut victims = super::eviction_order(entries.into_iter(), &keep, 40, 39);
+        victims.sort();
+        assert_eq!(victims, vec![other.clone(), stale.clone()]);
+
+        // Still over budget: kept entries go oldest first, and only as many
+        // as needed.
+        let victims = super::eviction_order(entries.into_iter(), &keep, 40, 15);
+        assert_eq!(victims.len(), 4);
+        assert_eq!(victims[2..], [b.clone(), c.clone()]);
+
+        // A budget nothing fits under drains the whole cache.
+        assert_eq!(
+            super::eviction_order(entries.into_iter(), &keep, 40, 0).len(),
+            5
+        );
+    }
+
+    #[test]
+    fn removing_an_entry_keeps_the_byte_total_in_sync() {
+        let ctx = egui::Context::default();
+        let mut cache = ImageCache::new();
+        for (name, bytes) in [("a.png", 4), ("b.png", 16)] {
+            cache.entries.insert(
+                PathBuf::from(name),
+                super::CacheEntry {
+                    texture: ctx.load_texture(
+                        name,
+                        egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                        egui::TextureOptions::LINEAR,
+                    ),
+                    byte_size: bytes,
+                    last_used: 0,
+                    decoded_for: PreviewTarget::DEFAULT,
+                },
+            );
+        }
+        cache.total_bytes = 20;
+
+        cache.retry(&PathBuf::from("b.png"));
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.stats().bytes, 4);
+        // A path that is not cached leaves the total alone.
+        cache.retry(&PathBuf::from("missing.png"));
+        assert_eq!(cache.stats().bytes, 4);
+    }
+
+    #[test]
+    fn oversized_text_fails_at_once_and_the_rest_debounces() {
+        let now = Instant::now();
+        assert!(matches!(
+            super::initial_text_phase(MAX_TEXT_PREVIEW_BYTES + 1, now),
+            super::TextPreviewPhase::Failed(PreviewError::TooLarge)
+        ));
+        // The cap itself is still previewable.
+        for size in [0, MAX_TEXT_PREVIEW_BYTES] {
+            assert!(matches!(
+                super::initial_text_phase(size, now),
+                super::TextPreviewPhase::Debouncing { ready_at }
+                    if ready_at == now + TEXT_PREVIEW_DEBOUNCE
+            ));
+        }
     }
 }
