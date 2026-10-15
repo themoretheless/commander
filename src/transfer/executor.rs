@@ -940,7 +940,10 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                             }
                             break; // fall through to the finished-setter below
                         }
-                        if is_disconnect_error(e) && work_item.mount_retries < MAX_MOUNT_RETRIES {
+                        if is_disconnect_error(e)
+                            && work_item.mount_retries < MAX_MOUNT_RETRIES
+                            && !vanished_on_mounted_volumes(e, &source_mount, &target_mount)
+                        {
                             let (reconnect_guard, reconnect_label) = if mount_wait_override
                                 .is_none()
                                 && source_mount.check_bounded()
@@ -1516,6 +1519,23 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
             }
         }
     }
+}
+
+/// `NotFound` and `UnexpectedEof` are what a dropped network mount looks like,
+/// but also what a child deleted or truncated mid-copy looks like. While both
+/// volumes are still mounted, the reconnect wait returns at once and the entry
+/// would only be recopied, so the failure is reported instead.
+fn vanished_on_mounted_volumes(
+    error: &std::io::Error,
+    source_mount: &crate::mount_guard::MountGuard,
+    target_mount: &crate::mount_guard::MountGuard,
+) -> bool {
+    use crate::mount_guard::MountAvailability::Available;
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::UnexpectedEof
+    ) && source_mount.check_bounded() == Available
+        && target_mount.check_bounded() == Available
 }
 
 /// Run a transfer-owned follow-up only after every entry completed without an
@@ -2274,6 +2294,38 @@ mod tests {
         assert_eq!(state.files_done, 1);
         assert_eq!(state.copied_bytes, state.total_bytes);
         assert!(hidden_entries(target.path()).is_empty());
+    }
+
+    #[test]
+    fn local_not_found_mid_copy_fails_once_instead_of_waiting_for_a_mount() {
+        use std::sync::atomic::AtomicUsize;
+
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("vanishing.txt", "deleted mid-copy");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let stage_calls = Arc::clone(&calls);
+
+        let state = run_with_backends(
+            spec(TransferKind::Copy, vec![entry_for(&file)], target.path()),
+            scripted(move |_| {
+                stage_calls.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "fixture child vanished",
+                ))
+            }),
+        );
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no reconnect retries");
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("copy failed") && error.contains("vanished")),
+            "{:?}",
+            state.errors
+        );
+        assert!(!target.path().join("vanishing.txt").exists());
     }
 
     #[test]
