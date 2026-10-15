@@ -1352,8 +1352,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 error,
                             );
                         }
-                    } else if placed
-                        && let Err(error) = crate::operation_journal::mark_completed(
+                    } else if placed {
+                        match crate::operation_journal::mark_completed(
                             &spec.operation_id,
                             &work_item.key,
                             &landing,
@@ -1361,9 +1361,24 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 .as_ref()
                                 .expect("placed transfer has an outcome")
                                 .fast_path,
-                        )
-                    {
-                        record_journal_error(&progress, &entry.name, Some(landing.clone()), error);
+                        ) {
+                            Ok(None) => {}
+                            Ok(Some(warning)) => record_failure(
+                                &progress,
+                                &entry.name,
+                                ClassifiedFailure::message(
+                                    FailureClass::IntegrityUncertain,
+                                    Some(landing.clone()),
+                                    warning,
+                                ),
+                            ),
+                            Err(error) => record_journal_error(
+                                &progress,
+                                &entry.name,
+                                Some(landing.clone()),
+                                error,
+                            ),
+                        }
                     }
                 }
 

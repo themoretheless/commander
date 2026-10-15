@@ -961,6 +961,64 @@ fn restart_completes_overwrite_after_placement_before_mark_completed() {
 }
 
 #[test]
+fn completion_reports_backup_cleanup_failure_as_a_warning_not_a_journal_error() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("cleanup-journal.json"));
+    let target = temp.dir("cleanup-target");
+    let source = temp.file("source.txt", "new bytes");
+    let destination = temp.file("cleanup-target/source.txt", "old bytes");
+    let staging = temp.file("cleanup-target/.source.txt.cmdr-tmp.0", "new bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("cleanup-warning", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    let destination_before = PathIdentity::observe_deep(&destination).unwrap();
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        destination_before.clone(),
+    )
+    .unwrap();
+    let backup = target.join(".source.txt.cmdr-tmp.backup");
+    prepare_replacement(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        &backup,
+        &destination_before,
+    )
+    .unwrap();
+    crate::fs_at::rename_noreplace(&destination, &backup).unwrap();
+    crate::fs_util::sync_parent_namespace(&destination).unwrap();
+    mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
+    crate::fs_at::rename_noreplace(&staging, &destination).unwrap();
+    crate::fs_util::sync_parent_namespace(&destination).unwrap();
+    mark_replacement_placed(&spec.operation_id, &key).unwrap();
+    // Something else replaces the backup before cleanup runs.
+    std::fs::remove_file(&backup).unwrap();
+    std::fs::write(&backup, "foreign").unwrap();
+
+    let warning = mark_completed(
+        &spec.operation_id,
+        &key,
+        &destination,
+        crate::transfer_tuning::FastPath::Buffered,
+    )
+    .expect("the completed copy is not a journal failure")
+    .expect("the kept backup is reported");
+
+    assert!(warning.contains("foreign data was preserved"), "{warning}");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), "foreign");
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new bytes");
+    let record = operation(&spec.operation_id).unwrap();
+    assert_eq!(record.steps[0].status, StepStatus::Completed);
+    assert!(record.steps[0].replacement.is_some());
+}
+
+#[test]
 fn restart_completes_overwrite_when_placement_landed_before_placed_phase() {
     let temp = TempDir::new();
     let _journal = use_test_journal(temp.path().join("landed-journal.json"));

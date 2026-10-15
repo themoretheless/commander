@@ -1495,12 +1495,18 @@ pub fn mark_placement_placed(
     })
 }
 
+/// Durably record a step's completed effect.
+///
+/// `Err` means the completion was not recorded. Once the step is durably
+/// `Completed`, a failure to release the overwrite backup does not undo
+/// that: it comes back as `Ok(Some(warning))` so the caller can report the
+/// kept backup instead of a failed journal update.
 pub fn mark_completed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
     destination: &Path,
     fast_path: crate::transfer_tuning::FastPath,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let destination_after = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not capture completed effect: {error}"))?;
     let replacement = mutate(|journal| {
@@ -1551,12 +1557,18 @@ pub fn mark_completed(
         Ok(step.replacement.clone())
     })?;
 
-    if let Some(replacement) = replacement {
-        let backup = PathIdentity::observe_deep(&replacement.path)
-            .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))?;
-        release_overwrite_backup(operation_id, key, &replacement, &backup)?;
-    }
-    Ok(())
+    let Some(replacement) = replacement else {
+        return Ok(None);
+    };
+    let cleanup = PathIdentity::observe_deep(&replacement.path)
+        .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))
+        .and_then(|backup| release_overwrite_backup(operation_id, key, &replacement, &backup));
+    Ok(cleanup.err().map(|error| {
+        format!(
+            "copy completed, but the overwritten original at {} was not cleaned up: {error}",
+            replacement.path.display()
+        )
+    }))
 }
 
 /// A repeated completion of an already completed step must match the
