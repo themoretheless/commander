@@ -2627,6 +2627,43 @@ mod tests {
         assert_eq!(crate::lock_util::recover(&progress).pause_reason, None);
     }
 
+    fn assert_aborted_before_start(state: &TransferProgress) {
+        assert!(state.finished);
+        assert_eq!(state.finalization, Some(FinalizationOutcome::NotReached));
+        assert_eq!(state.files_done, 0);
+        assert!(!state.errors.is_empty());
+        assert!(state.scheduler_task.is_none());
+    }
+
+    #[test]
+    fn incomplete_confirmed_preflight_ends_the_run_before_any_entry() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("a.txt", "a");
+        let mut request = spec(TransferKind::Copy, vec![entry_for(&file)], target.path());
+        request.expectations.clear();
+        request.preflight_bytes = Some(1);
+
+        let state = run(request);
+
+        assert_aborted_before_start(&state);
+        assert!(!target.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn unscannable_source_ends_the_run_before_any_entry() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("a.txt", "a");
+        let entry = entry_for(&file);
+        std::fs::remove_file(&file).unwrap();
+        let mut request = spec(TransferKind::Copy, vec![entry], target.path());
+        request.expectations.clear();
+
+        let state = run(request);
+
+        assert_aborted_before_start(&state);
+        assert!(hidden_entries(target.path()).is_empty());
+    }
+
     #[test]
     fn hidden_sibling_names_stay_within_the_leaf_limit() {
         assert_eq!(
