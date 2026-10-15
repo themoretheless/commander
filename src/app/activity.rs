@@ -516,32 +516,36 @@ impl App {
                         .size(12.0)
                         .color(t.text_primary),
                 );
-            } else if current_file.is_empty() {
-                // Scan and plan run before the first file starts.
-                ui.label(
-                    egui::RichText::new("Preparing...")
-                        .size(12.0)
-                        .color(t.text_primary),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new(format!("File: {}", current_file))
-                        .size(12.0)
-                        .color(t.text_primary),
-                );
-                ui.add_space(4.0);
-                Self::draw_progress_bar(
-                    ui,
-                    "Current file",
-                    Some(file_frac),
-                    &format!(
-                        "{} / {}",
-                        format_size(current_file_copied),
-                        format_size(current_file_size),
-                    ),
-                    t.accent,
-                    &t,
-                );
+            } else if let Some(line) = file_line(&current_file, finished) {
+                match line {
+                    FileLine::Preparing => {
+                        ui.label(
+                            egui::RichText::new("Preparing...")
+                                .size(12.0)
+                                .color(t.text_primary),
+                        );
+                    }
+                    FileLine::File => {
+                        ui.label(
+                            egui::RichText::new(format!("File: {}", current_file))
+                                .size(12.0)
+                                .color(t.text_primary),
+                        );
+                        ui.add_space(4.0);
+                        Self::draw_progress_bar(
+                            ui,
+                            "Current file",
+                            Some(file_frac),
+                            &format!(
+                                "{} / {}",
+                                format_size(current_file_copied),
+                                format_size(current_file_size),
+                            ),
+                            t.accent,
+                            &t,
+                        );
+                    }
+                }
             }
             if delta_reused_bytes > 0 {
                 ui.label(
@@ -996,6 +1000,26 @@ fn delta_text(reused: u64, source: u64) -> String {
     )
 }
 
+/// What the details view shows about the file in flight.
+#[derive(Debug, PartialEq, Eq)]
+enum FileLine {
+    /// Scan and plan run before the first file starts.
+    Preparing,
+    /// The current file's name and per-file bar.
+    File,
+}
+
+/// The file block for `current_file`: "Preparing..." only while the
+/// transfer still runs; nothing once a transfer that never reached a file
+/// has finished (failed scan, nothing to copy, early cancel).
+fn file_line(current_file: &str, finished: bool) -> Option<FileLine> {
+    match (current_file.is_empty(), finished) {
+        (true, false) => Some(FileLine::Preparing),
+        (true, true) => None,
+        (false, _) => Some(FileLine::File),
+    }
+}
+
 /// The details view's rate; none once the transfer has finished.
 fn speed_text(speed: f64, finished: bool) -> Option<String> {
     (!finished).then(|| format!("{}/s", format_size(speed as u64)))
@@ -1118,10 +1142,10 @@ fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackgroundTransfer, TransferLine, background_transfer_text, caption_on_fill, delta_text,
-        graph_speeds, labeled_error_rows, operations_panel_hint, phase_progress_text,
-        requeued_text, review_text, right_aligned_in_reading_order, speed_text, strip_bar,
-        transfer_status_text,
+        BackgroundTransfer, FileLine, TransferLine, background_transfer_text, caption_on_fill,
+        delta_text, file_line, graph_speeds, labeled_error_rows, operations_panel_hint,
+        phase_progress_text, requeued_text, review_text, right_aligned_in_reading_order,
+        speed_text, strip_bar, transfer_status_text,
     };
     use crate::operation::{ClassifiedFailure, FailureClass};
 
@@ -1249,6 +1273,14 @@ mod tests {
             operations_panel_hint(),
             format!("Operations panel ({expected})")
         );
+    }
+
+    #[test]
+    fn file_line_says_preparing_only_while_running() {
+        assert_eq!(file_line("", false), Some(FileLine::Preparing));
+        assert_eq!(file_line("", true), None);
+        assert_eq!(file_line("a.txt", false), Some(FileLine::File));
+        assert_eq!(file_line("a.txt", true), Some(FileLine::File));
     }
 
     #[test]
