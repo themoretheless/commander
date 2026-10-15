@@ -79,19 +79,33 @@ fn stem(name: &str) -> &str {
     }
 }
 
-/// Byte length of the shared leading run of `a` and `b`, on a char boundary.
+/// Byte length (in `a`) of the shared leading run of `a` and `b`, ignoring
+/// case so `IMG_001` and `img_002` share `IMG_`; on a char boundary of `a`.
 fn common_prefix_len(a: &str, b: &str) -> usize {
     a.char_indices()
         .zip(b.chars())
-        .take_while(|((_, ca), cb)| ca == cb)
+        .take_while(|((_, ca), cb)| ca.to_lowercase().eq(cb.to_lowercase()))
         .map(|((i, ca), _)| i + ca.len_utf8())
         .last()
         .unwrap_or(0)
 }
 
-/// A shared filename prefix across `entries`, trimmed of trailing separators,
-/// digits and spaces, if it is at least two characters. A single entry yields
-/// its own (trimmed) stem.
+/// Whether a prefix ending in `last` stops in the middle of a word when the
+/// name continues with `next`: letter after letter, unless the next letter
+/// starts a camelCase word (`photoAlbum`).
+fn continues_word(last: char, next: Option<char>) -> bool {
+    next.is_some_and(|next| {
+        last.is_alphabetic()
+            && next.is_alphabetic()
+            && !(last.is_lowercase() && next.is_uppercase())
+    })
+}
+
+/// A shared filename prefix across `entries` (case-insensitive, keeping the
+/// first entry's casing), trimmed of leading dots (so the folder is never
+/// hidden) and trailing separators, digits and spaces, if it is at least two
+/// characters and does not stop mid-word (`cat` + `car` share no word). A
+/// single entry yields its own (trimmed) stem.
 fn common_stem_prefix(entries: &[FileEntry]) -> Option<String> {
     let stems: Vec<&str> = entries.iter().map(|e| stem(&e.name)).collect();
     let first = *stems.first()?;
@@ -100,8 +114,15 @@ fn common_stem_prefix(entries: &[FileEntry]) -> Option<String> {
         len = len.min(common_prefix_len(first, s));
     }
     let prefix = first[..len]
+        .trim_start_matches('.')
         .trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, '_' | '-' | ' ' | '.'));
-    (prefix.chars().count() >= 2).then(|| prefix.to_string())
+    let last = prefix.chars().last()?;
+    let end = first[..len].len() - first[..len].trim_start_matches('.').len() + prefix.len();
+    let taken = first[..end].chars().count();
+    let mid_word = stems
+        .iter()
+        .all(|s| continues_word(last, s.chars().nth(taken)));
+    (prefix.chars().count() >= 2 && !mid_word).then(|| prefix.to_string())
 }
 
 /// A folder-friendly label for a dominant kind, or `None` for kinds that make
@@ -286,6 +307,38 @@ mod tests {
             entry("report-feb.pdf", false, 1),
         ];
         assert_eq!(suggest_folder_name(&e), "report");
+    }
+
+    #[test]
+    fn suggest_folder_name_ignores_case_and_keeps_the_first_casing() {
+        let e = vec![
+            entry("IMG_001.jpg", false, 1),
+            entry("img_002.jpg", false, 1),
+        ];
+        assert_eq!(suggest_folder_name(&e), "IMG");
+    }
+
+    #[test]
+    fn suggest_folder_name_rejects_word_fragments() {
+        let e = vec![entry("cat.jpg", false, 1), entry("car.jpg", false, 1)];
+        assert_eq!(suggest_folder_name(&e), "Images");
+        // A whole stem, or a camelCase word, is still a fine prefix.
+        let e = vec![
+            entry("notes.txt", false, 1),
+            entry("notesDraft.txt", false, 1),
+        ];
+        assert_eq!(suggest_folder_name(&e), "notes");
+        let e = vec![
+            entry("tripAlpha.txt", false, 1),
+            entry("tripBeta.txt", false, 1),
+        ];
+        assert_eq!(suggest_folder_name(&e), "trip");
+    }
+
+    #[test]
+    fn suggest_folder_name_is_never_hidden() {
+        let e = vec![entry(".env.local", false, 1), entry(".env.prod", false, 1)];
+        assert_eq!(suggest_folder_name(&e), "env");
     }
 
     #[test]
