@@ -1197,8 +1197,13 @@ pub struct ImageCacheStats {
     pub providers: PreviewProviderStats,
 }
 
+/// A listing's (size, mtime) for a file, used to spot in-place edits.
+pub type FileStamp = (u64, Option<std::time::SystemTime>);
+
 pub struct ImageCache {
     entries: HashMap<PathBuf, CacheEntry>,
+    /// The listing stamp each preloaded path was last seen with.
+    stamps: HashMap<PathBuf, FileStamp>,
     total_bytes: usize,
     frame: u64,
     /// Images currently being loaded in background
@@ -1214,6 +1219,7 @@ impl ImageCache {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            stamps: HashMap::new(),
             total_bytes: 0,
             frame: 0,
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -1266,6 +1272,26 @@ impl ImageCache {
             Some(&entry.texture)
         } else {
             None
+        }
+    }
+
+    /// Forget anything cached for a path whose listing (size, mtime) changed
+    /// since it was last seen, so a file edited in place is decoded again
+    /// instead of showing its old texture (or old failure) until the folder
+    /// changes. An in-flight decode of the old content is dropped too.
+    /// Stamps come from the listing, so no file is stat-ed on the UI thread.
+    /// Stamps are dropped with the textures when `preload` flushes a folder.
+    pub fn invalidate_changed(&mut self, stamped: &[(PathBuf, FileStamp)]) {
+        for (path, stamp) in stamped {
+            let previous = self.stamps.insert(path.clone(), *stamp);
+            if previous.is_some_and(|previous| previous != *stamp) {
+                self.remove_entry(path);
+                crate::lock_util::recover(&self.failed).remove(path);
+                crate::lock_util::recover(&self.pending).remove(path);
+                // A new generation, so the old decode cannot fill the slot
+                // the next `preload` opens for the same path.
+                self.generation.fetch_add(1, Ordering::AcqRel);
+            }
         }
     }
 
@@ -1466,6 +1492,7 @@ impl ImageCache {
 
     fn clear_entries(&mut self) {
         self.entries.clear();
+        self.stamps.clear();
         self.total_bytes = 0;
     }
 
@@ -1587,7 +1614,8 @@ fn classify_failure(error: &str) -> PreviewFailure {
     }
 }
 
-const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv"];
+/// Lowercase video extensions, shared with `panel::FileEntry::is_video`.
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "flv"];
 
 /// Case-insensitive extension check without allocating during scans.
 fn has_extension_in(path: &Path, extensions: &[&str]) -> bool {
@@ -2882,6 +2910,64 @@ mod tests {
 
         assert_eq!(cache.entries[&path].decoded_for, sharp);
         assert_eq!(cache.total_bytes, 16, "replaced texture bytes not released");
+    }
+
+    #[test]
+    fn an_in_place_edit_drops_the_stale_texture_failure_and_decode() {
+        let ctx = egui::Context::default();
+        let mut cache = ImageCache::new();
+        let edited = PathBuf::from("/dir/edited.png");
+        let same = PathBuf::from("/dir/same.png");
+        for (name, path) in [("edited", &edited), ("same", &same)] {
+            cache.entries.insert(
+                path.clone(),
+                super::CacheEntry {
+                    texture: ctx.load_texture(
+                        name,
+                        egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                        egui::TextureOptions::LINEAR,
+                    ),
+                    byte_size: 4,
+                    last_used: 0,
+                    decoded_for: PreviewTarget::DEFAULT,
+                },
+            );
+        }
+        cache.total_bytes = 8;
+        let then = std::time::SystemTime::UNIX_EPOCH;
+        let later = then + std::time::Duration::from_secs(60);
+        cache.invalidate_changed(&[
+            (edited.clone(), (10, Some(then))),
+            (same.clone(), (5, None)),
+        ]);
+        assert_eq!(cache.stats().entries, 2, "first sighting keeps the cache");
+
+        crate::lock_util::recover(&cache.failed).insert(
+            edited.clone(),
+            super::FailedLoad::new(PreviewFailure::Decode, Instant::now()),
+        );
+        crate::lock_util::recover(&cache.pending).insert(
+            edited.clone(),
+            super::PendingLoad {
+                generation: 0,
+                decoded: None,
+            },
+        );
+        cache.invalidate_changed(&[
+            (edited.clone(), (10, Some(later))),
+            (same.clone(), (5, None)),
+        ]);
+
+        assert!(cache.get(&edited).is_none(), "stale texture still served");
+        assert!(cache.get(&same).is_some());
+        assert_eq!(cache.total_bytes, 4);
+        assert_eq!(cache.stats().failed, 0);
+        assert_eq!(cache.stats().pending, 0);
+        assert_eq!(
+            cache.generation.load(Ordering::Acquire),
+            1,
+            "the old decode's generation must not own the next slot"
+        );
     }
 
     #[test]

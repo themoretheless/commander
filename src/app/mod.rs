@@ -70,15 +70,24 @@ pub struct App {
     pub(crate) session_gate: crate::persistence::StoreGate,
     pub ui_scale: f32,
     pub theme_mode: ThemeMode,
+    /// Track the OS appearance each frame instead of a fixed `theme_mode`.
+    pub(crate) follow_system_theme: bool,
     pub colors: ThemeColors,
     pub(crate) accessibility_preferences: crate::accessibility::Preferences,
+    /// Re-reads [`Self::accessibility_preferences`] on window focus gain.
+    pub(crate) accessibility_watch: crate::accessibility::PreferenceWatch,
     pub(crate) prev_window_width: f32,
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     pub(crate) tree_children_cache: tree::ChildCache,
+    /// The selection HUD's text for the selection it last summarized.
+    pub(crate) selection_hud_cache: Option<update::SelectionHudCache>,
     pub(crate) drag_announcement: update::DragAnnouncementMemo,
     pub(crate) tree_width: f32,
+    /// The window's inner size in points as last seen while not maximized
+    /// or fullscreen, saved with the session.
+    pub(crate) window_size: Option<[f32; 2]>,
     /// Paint relative size occupancy bars behind file rows.
     pub(crate) show_size_bars: bool,
     /// Compare mode: tint each row by how it differs from the other panel.
@@ -133,10 +142,15 @@ pub struct App {
     pub(crate) confirm_cache: confirm_dialog::ConfirmCache,
     /// Startup instrumentation remains live through the first directory read.
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
+    /// Entries the panels focus once their first listing is scheduled (a
+    /// file launch argument), taken on the first frame.
+    pub(crate) launch_focus: (Option<String>, Option<String>),
     pub(crate) show_developer_panel: bool,
     pub(crate) developer_notice: Option<DeveloperNotice>,
     pub(crate) developer_store_usage: developer_panel::StoreUsageCache,
     pub(crate) persistence_issue_seen: u64,
+    /// Last background-helper failure generation already shown as a toast.
+    pub(crate) helper_failure_seen: u64,
 }
 
 #[cfg(feature = "visual-qa")]
@@ -323,18 +337,31 @@ pub struct RunCommandOpeningContext {
     pub selection: Vec<crate::panel::FileEntry>,
     pub left_dir: PathBuf,
     pub right_dir: PathBuf,
+    /// The cursor pointed at a row that no longer exists when the dialog
+    /// opened, so `selection` is empty rather than the item the user meant.
+    pub stale_cursor: bool,
 }
 
 impl RunCommandOpeningContext {
     fn capture(workspace: &Workspace) -> Self {
         let active_panel = workspace.active;
         let active = workspace.active_panel_ref();
+        let picked = active.selected_or_cursor();
         Self {
             active_panel,
-            selection: active.selected_or_cursor().unwrap_or_default(),
+            stale_cursor: picked.is_err(),
+            selection: picked.unwrap_or_default(),
             left_dir: workspace.left.current_path.clone(),
             right_dir: workspace.right.current_path.clone(),
         }
+    }
+
+    /// Warning shown in the dialog when the selection was lost.
+    fn stale_cursor_warning(&self) -> Option<&'static str> {
+        self.stale_cursor.then_some(
+            "The cursor item is no longer in the list, so no item is selected. \
+             Close this dialog, pick the item again and reopen it.",
+        )
     }
 
     fn dir(&self) -> &std::path::Path {
@@ -409,12 +436,18 @@ pub struct FindState {
     pub elapsed: std::time::Duration,
     pub truncated: bool,
     pub content_skipped: usize,
+    /// The first archive open error of the last search, shown with the
+    /// skipped count.
+    pub archive_error: Option<String>,
     pub error: Option<String>,
     pub stable_order: Vec<crate::search::FileIdentity>,
     pub last_query: Option<(String, crate::query::MatchMode, PathBuf)>,
     pub time_pivot: crate::search::TimePivot,
     pub history_open: bool,
-    pub explanation_open: Option<crate::search::FileIdentity>,
+    /// The hit whose "why matched" line is open. Keyed by identity and
+    /// location: hard links share an identity, so identity alone would open
+    /// the first link's explanation for every link.
+    pub explanation_open: Option<find_dialog::ExplainKey>,
     pub pending_rerun: bool,
     pub last_edit_at: f64,
     pub search_source: String,
@@ -433,7 +466,7 @@ pub struct CollectionsDialogState {
     pub rows: Vec<crate::collections::VirtualEntry>,
     pub run: Option<crate::collections::ViewRun>,
     pub scanned: usize,
-    pub unavailable_roots: Vec<PathBuf>,
+    pub unavailable_roots: Vec<crate::collections::UnavailableRoot>,
     pub truncated: bool,
     pub error: Option<String>,
 }
@@ -470,6 +503,7 @@ impl Default for FindState {
             elapsed: std::time::Duration::ZERO,
             truncated: false,
             content_skipped: 0,
+            archive_error: None,
             error: None,
             stable_order: Vec::new(),
             last_query: None,
@@ -526,9 +560,12 @@ pub struct DiffState {
 /// this holds the groups, the per-group keep choice, and the policy.
 pub struct DupState {
     pub groups: Vec<crate::dedup::DupGroup>,
-    /// Index (into each group's `files`) of the file to keep.
-    pub keep: Vec<usize>,
+    /// Index (into each group's `files`) of the file to keep; `None` keeps
+    /// every copy of that group ("Keep all").
+    pub keep: Vec<Option<usize>>,
     pub policy: crate::dedup::KeepPolicy,
+    /// The background hash scan while it runs; `groups` fill in when done.
+    pub scan: Option<crate::dedup_scan::DupScan>,
 }
 
 /// UI state for the directory-synchronise sheet. The diff lives in
@@ -723,18 +760,22 @@ struct AppParts {
     project_collections: crate::collections::ProjectCollections,
 }
 
-/// The panels' start folders. Launch paths win over the restored ones, and a
-/// single launch path opens in both panels so the right one does not show an
-/// unrelated restored folder beside it.
+/// The panels' start folders and the entry each one focuses. Launch paths win
+/// over the restored ones, and a single launch path opens in both panels so
+/// the right one does not show an unrelated restored folder beside it. A file
+/// launch argument puts the cursor on that file wherever its folder opens.
 fn resolve_start_paths(
     restored: (PathBuf, PathBuf),
     launch: crate::launch::LaunchPaths,
-) -> (PathBuf, PathBuf) {
+) -> ((PathBuf, PathBuf), (Option<String>, Option<String>)) {
     match (launch.left, launch.right) {
-        (Some(left), Some(right)) => (left, right),
-        (Some(left), None) => (left.clone(), left),
-        (None, Some(right)) => (restored.0, right),
-        (None, None) => restored,
+        (Some(left), Some(right)) => ((left, right), (launch.left_focus, launch.right_focus)),
+        (Some(left), None) => (
+            (left.clone(), left),
+            (launch.left_focus.clone(), launch.left_focus),
+        ),
+        (None, Some(right)) => ((restored.0, right), (None, launch.right_focus)),
+        (None, None) => (restored, (None, None)),
     }
 }
 
@@ -796,7 +837,7 @@ impl App {
         apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
         startup.checkpoint(crate::measurement::StartupPhase::Appearance);
 
-        let (left, right) = resolve_start_paths(
+        let ((left, right), (left_focus, right_focus)) = resolve_start_paths(
             session
                 .as_ref()
                 .map(|s| s.sanitized_paths(&home))
@@ -815,10 +856,15 @@ impl App {
             free_space,
             persistence.clone(),
         );
-
         let ui_scale =
             crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
         cc.egui_ctx.set_zoom_factor(ui_scale);
+        let restored_window_size =
+            crate::session::restorable_window_size(session.as_ref().and_then(|s| s.window_size));
+        if let Some([width, height]) = restored_window_size {
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(width, height)));
+        }
 
         if let Some(s) = &session {
             ws.active = if s.active_left {
@@ -844,10 +890,20 @@ impl App {
         crate::version_store::set_store_quota(crate::operation::VersionStoreQuota::default());
         let mut app = Self {
             show_tree: session.as_ref().is_some_and(|s| s.show_tree),
+            tree_expanded: session.as_ref().map_or_else(Default::default, |s| {
+                s.tree_expanded
+                    .iter()
+                    .take(crate::session::TREE_EXPANDED_CAP)
+                    .cloned()
+                    .collect()
+            }),
             tree_width: session.as_ref().map_or(200.0, |s| s.tree_width),
+            window_size: restored_window_size,
             show_size_bars: session.as_ref().is_some_and(|s| s.show_size_bars),
             show_compare: session.as_ref().is_some_and(|s| s.show_compare),
             show_key_bar: session.as_ref().is_some_and(|s| s.show_key_bar),
+            // A first launch has no saved choice, so it follows the system.
+            follow_system_theme: session.as_ref().is_none_or(|s| s.theme_follow_system),
             recent_order: session
                 .as_ref()
                 .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
@@ -861,6 +917,7 @@ impl App {
                 .unwrap_or_default(),
             palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
             startup_trace: Some(startup),
+            launch_focus: (left_focus, right_focus),
             ..Self::assemble(AppParts {
                 ws,
                 context_menu,
@@ -914,6 +971,7 @@ impl App {
             show_tree: seed.show_tree,
             show_size_bars: true,
             persistence_issue_seen: crate::persistence::issue_generation(),
+            helper_failure_seen: crate::native_effect::helper_failure_generation(),
             ..Self::assemble(AppParts {
                 ws,
                 context_menu,
@@ -971,16 +1029,20 @@ impl App {
             theme_mode,
             colors: ThemeColors::for_preferences(theme_mode, accessibility_preferences),
             accessibility_preferences,
+            accessibility_watch: crate::accessibility::PreferenceWatch::default(),
             prev_window_width: 0.0,
             image_cache,
             show_tree: false,
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            selection_hud_cache: None,
             drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
+            window_size: None,
             show_size_bars: false,
             show_compare: false,
             show_key_bar: false,
+            follow_system_theme: false,
             fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
@@ -1003,10 +1065,12 @@ impl App {
             compare_cache: None,
             confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: None,
+            launch_focus: (None, None),
             show_developer_panel: false,
             developer_notice: None,
             developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: 0,
+            helper_failure_seen: crate::native_effect::helper_failure_generation(),
         }
     }
 
@@ -1095,9 +1159,11 @@ impl App {
             right_path: self.ws.right.current_path.clone(),
             active_left: self.ws.active == ActivePanel::Left,
             theme_dark: self.theme_mode == ThemeMode::Dark,
+            theme_follow_system: self.follow_system_theme,
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
+            window_size: self.window_size,
             show_size_bars: self.show_size_bars,
             show_compare: self.show_compare,
             show_key_bar: self.show_key_bar,
@@ -1114,6 +1180,7 @@ impl App {
             sync_guard_policy: self.ws.sync_guard_policy.clone(),
             name_policy: self.ws.name_policy,
             symlink_policy: self.ws.symlink_policy,
+            tree_expanded: crate::session::persisted_tree_expanded(&self.tree_expanded),
         }
     }
 
@@ -1132,6 +1199,15 @@ impl App {
 
     /// Reveal `path` and expand it as well, for showing the tree on the
     /// current folder (a click must not do this; see `tree_expand_to_path`).
+    /// Show or hide the folder sidebar; it opens on the active folder.
+    pub(crate) fn toggle_folder_sidebar(&mut self) {
+        self.show_tree = !self.show_tree;
+        if self.show_tree {
+            let path = self.ws.active_panel_ref().current_path.clone();
+            self.tree_reveal_path(&path);
+        }
+    }
+
     pub(crate) fn tree_reveal_path(&mut self, path: &std::path::Path) {
         tree::expand_through(&mut self.tree_expanded, path);
     }
@@ -1162,23 +1238,47 @@ mod tests {
         let launch = |left: Option<&str>, right: Option<&str>| LaunchPaths {
             left: left.map(PathBuf::from),
             right: right.map(PathBuf::from),
+            ..LaunchPaths::default()
         };
-        assert_eq!(
-            resolve_start_paths(restored(), launch(None, None)),
-            restored()
-        );
+        let paths = |launch| resolve_start_paths(restored(), launch).0;
+        assert_eq!(paths(launch(None, None)), restored());
         // One argument opens in both panels instead of beside a stale folder.
         assert_eq!(
-            resolve_start_paths(restored(), launch(Some("/a"), None)),
+            paths(launch(Some("/a"), None)),
             (PathBuf::from("/a"), PathBuf::from("/a"))
         );
         assert_eq!(
-            resolve_start_paths(restored(), launch(Some("/a"), Some("/b"))),
+            paths(launch(Some("/a"), Some("/b"))),
             (PathBuf::from("/a"), PathBuf::from("/b"))
         );
         assert_eq!(
-            resolve_start_paths(restored(), launch(None, Some("/b"))),
+            paths(launch(None, Some("/b"))),
             (PathBuf::from("/saved/l"), PathBuf::from("/b"))
+        );
+    }
+
+    #[test]
+    fn a_file_launch_argument_focuses_it_where_its_folder_opens() {
+        let restored = (PathBuf::from("/saved/l"), PathBuf::from("/saved/r"));
+        let single = LaunchPaths {
+            left: Some(PathBuf::from("/notes")),
+            left_focus: Some("todo.txt".to_string()),
+            ..LaunchPaths::default()
+        };
+        let focus = |name: &str| Some(name.to_string());
+        assert_eq!(
+            resolve_start_paths(restored.clone(), single).1,
+            (focus("todo.txt"), focus("todo.txt"))
+        );
+        let pair = LaunchPaths {
+            left: Some(PathBuf::from("/a")),
+            right: Some(PathBuf::from("/b")),
+            left_focus: None,
+            right_focus: focus("b.txt"),
+        };
+        assert_eq!(
+            resolve_start_paths(restored, pair).1,
+            (None, focus("b.txt"))
         );
     }
 

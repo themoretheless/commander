@@ -52,7 +52,7 @@ pub struct ValidatedBatchRename {
 impl ValidatedBatchRename {
     fn build(context: &BatchRenameContext, rule: RenameRule) -> Self {
         let regex_err = crate::rename::regex_error(&rule);
-        let plans = plan_batch_rename(&context.targets, &context.existing, &rule);
+        let plans = plan_batch_rename(&context.targets, &context.existing, &rule, &context.dirs);
         let changes: Vec<(String, String)> = plans
             .iter()
             .filter(|plan| plan.to != plan.from)
@@ -447,6 +447,7 @@ mod tests {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             targets: vec!["a.txt".to_string()],
+            dirs: std::collections::HashSet::new(),
             existing: std::collections::HashSet::from(["a.txt".to_string()]),
         };
         let bad = RenameRule {
@@ -470,6 +471,7 @@ mod tests {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             targets: targets.iter().map(ToString::to_string).collect(),
+            dirs: std::collections::HashSet::new(),
             existing: targets
                 .iter()
                 .chain(siblings)
@@ -572,6 +574,7 @@ mod tests {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             targets: vec!["a.txt".to_string(), "b.txt".to_string()],
+            dirs: std::collections::HashSet::new(),
             existing: std::collections::HashSet::from(["a.txt".to_string(), "b.txt".to_string()]),
         };
         let rule = RenameRule {
@@ -604,6 +607,7 @@ mod tests {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             targets: vec!["report.txt".to_string()],
+            dirs: std::collections::HashSet::new(),
             existing: std::collections::HashSet::from(["report.txt".to_string()]),
         };
         let previously_valid = RenameRule {

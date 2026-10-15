@@ -270,6 +270,7 @@ impl SizeIndex {
             } else {
                 Some(total)
             },
+            partial: computed_directories < directory_count,
             largest: largest.map(|(index, size)| (entries[index].name.clone(), size)),
             oldest: oldest.map(|(index, modified)| (entries[index].name.clone(), modified)),
         };
@@ -705,6 +706,7 @@ mod tests {
     fn entry(path: &Path, is_dir: bool, size: u64) -> FileEntry {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         FileEntry {
+            permissions: None,
             name_lower: name.to_lowercase(),
             name,
             path: path.to_path_buf(),
@@ -1025,6 +1027,27 @@ mod tests {
         let overview = index.folder_overview(1, &entries);
         assert_eq!(overview.largest, Some(("first".to_string(), 50)));
         assert_eq!(overview.total, Some(105));
+        assert!(!overview.partial);
+    }
+
+    #[test]
+    fn folder_overview_flags_a_total_missing_unmeasured_folders() {
+        let index = SizeIndex::new(PathBuf::from("/root"));
+        let measured = PathBuf::from("/root/measured");
+        let entries = vec![
+            entry(Path::new("/root/file"), false, 10),
+            entry(&measured, true, 0),
+            entry(Path::new("/root/skipped"), true, 0),
+        ];
+        index.insert_for_test(measured, 100, 1);
+        let overview = index.folder_overview(1, &entries);
+        assert_eq!(overview.total, Some(110));
+        assert!(overview.partial, "one folder is still unmeasured");
+
+        index.insert_for_test(PathBuf::from("/root/skipped"), 5, 1);
+        let overview = index.folder_overview(1, &entries);
+        assert_eq!(overview.total, Some(115));
+        assert!(!overview.partial);
     }
 
     #[test]

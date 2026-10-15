@@ -6,7 +6,7 @@ use crate::panel::FileEntry;
 use crate::ports::SearchProvider;
 use crate::query::{MatchMode, Predicate, Query, QueryError};
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io::Read;
@@ -132,6 +132,9 @@ pub struct SearchSummary {
     /// Entries that could not be searched: binary or unreadable files,
     /// folders the walk could not read, and archives that would not open.
     pub content_skipped: usize,
+    /// Why the first archive that would not open was skipped (corrupt,
+    /// encrypted, unreadable), so the count above has a reason to show.
+    pub archive_error: Option<String>,
     pub elapsed: Duration,
     pub truncated: bool,
     pub cancelled: bool,
@@ -184,6 +187,8 @@ pub struct ProviderRequest {
     unsearched: Cell<usize>,
     /// The per-search archive budget stopped archive scanning early.
     archives_capped: Cell<bool>,
+    /// The first archive open error of this search.
+    archive_error: RefCell<Option<String>>,
 }
 
 impl ProviderRequest {
@@ -194,6 +199,12 @@ impl ProviderRequest {
 
     fn note_unsearched(&self) {
         self.unsearched.set(self.unsearched.get().saturating_add(1));
+    }
+
+    fn note_archive_error(&self, error: &str) {
+        self.archive_error
+            .borrow_mut()
+            .get_or_insert_with(|| error.to_string());
     }
 
     fn note_archive_budget(&self, budget: &crate::archive::SearchBudget) {
@@ -322,10 +333,10 @@ impl ArchiveProvider {
             Ok(metadata) => metadata,
             Err(_) => return emit(None),
         };
-        let modified = metadata.modified().ok();
+        let archive_modified = metadata.modified().ok();
         let accessed = metadata.accessed().ok();
-        // Every member shows the archive's own mtime; format it once.
-        let modified_str = modified_label(modified);
+        // A member without its own time shows the archive's; format it once.
+        let archive_modified_str = modified_label(archive_modified);
         let mut keep_going = true;
         let result = crate::archive::visit_members(
             archive_path,
@@ -340,12 +351,16 @@ impl ArchiveProvider {
                 }
                 let virtual_path =
                     crate::archive::virtual_member_path(archive_path, &member.member.path);
+                let (modified, modified_str) = match member.member.modified {
+                    Some(own) => (Some(own), modified_label(Some(own))),
+                    None => (archive_modified, archive_modified_str.clone()),
+                };
                 let Some(entry) = synthetic_entry(
                     virtual_path,
                     member.member.is_dir,
                     member.member.size,
                     modified,
-                    modified_str.clone(),
+                    modified_str,
                 ) else {
                     keep_going = emit(None);
                     return keep_going;
@@ -376,6 +391,7 @@ impl ArchiveProvider {
             Err(error) => {
                 // A corrupt or encrypted archive: its members are not searched.
                 request.note_unsearched();
+                request.note_archive_error(&error);
                 log::info!(target: "commander::search", "archive not searched: {error}");
                 if keep_going {
                     keep_going = emit(None);
@@ -548,6 +564,7 @@ impl SearchEngine {
                         requires_content: compiled.requires_content,
                         unsearched: Cell::new(0),
                         archives_capped: Cell::new(false),
+                        archive_error: RefCell::new(None),
                     },
                     compiled,
                     cap.max(1),
@@ -697,6 +714,17 @@ impl TextMatcher {
     }
 }
 
+/// Whether `entry` passes `query`'s metadata stage (everything but content),
+/// matching `path:` against the full path.
+#[cfg(test)]
+pub fn query_matches_metadata(query: &Query, entry: &FileEntry, now: SystemTime) -> bool {
+    CompiledQuery::new(query.clone()).is_ok_and(|compiled| {
+        compiled
+            .evaluate_metadata(entry, Path::new(""), now)
+            .is_some()
+    })
+}
+
 impl CompiledQuery {
     fn new(query: Query) -> Result<Self, QueryError> {
         query.validate()?;
@@ -761,7 +789,7 @@ impl CompiledQuery {
                 }
                 CompiledPredicate::Content(_) => {}
                 CompiledPredicate::Metadata(predicate) => {
-                    if !predicate.matches_metadata(entry, now, MatchMode::Exact) {
+                    if !predicate.matches_metadata(entry, now) {
                         return None;
                     }
                     explanation.components.push(MatchComponent {
@@ -999,6 +1027,7 @@ fn run_worker(
         scanned,
         matched,
         content_skipped,
+        archive_error: request.archive_error.take(),
         elapsed: started.elapsed(),
         truncated,
         cancelled,
@@ -1220,6 +1249,7 @@ pub fn synthetic_entry(
         .map(|extension| extension.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     Some(FileEntry {
+        permissions: None,
         name_lower: name.to_lowercase(),
         name,
         path,
@@ -1310,6 +1340,7 @@ mod tests {
 
     fn file_entry(path: PathBuf, size: u64) -> FileEntry {
         FileEntry {
+            permissions: None,
             name: path.file_name().unwrap().to_string_lossy().to_string(),
             name_lower: path.file_name().unwrap().to_string_lossy().to_lowercase(),
             extension: path
@@ -1462,6 +1493,8 @@ mod tests {
         tmp.file("broken.zip", "not a zip archive");
         let summary = name_search(tmp.path(), "nothing-matches-this");
         assert_eq!(summary.content_skipped, 1);
+        let error = summary.archive_error.expect("the open error is reported");
+        assert!(error.contains("broken.zip"), "{error}");
     }
 
     #[test]
@@ -1518,6 +1551,7 @@ mod tests {
                 requires_content: false,
                 unsearched: Cell::new(0),
                 archives_capped: Cell::new(false),
+                archive_error: RefCell::new(None),
             },
             CompiledQuery::new(Query::default()).unwrap(),
             100,
@@ -1585,6 +1619,35 @@ mod tests {
             SearchLocation::ArchiveMember { member, .. }
                 if member == Path::new("docs/inside.txt")
         ));
+    }
+
+    #[test]
+    fn archive_members_report_their_own_modified_time() {
+        let tmp = TempDir::new();
+        let archive = tmp.path().join("dated.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let stamp = zip::DateTime::from_date_and_time(2001, 2, 3, 4, 5, 6).unwrap();
+        let options = zip::write::SimpleFileOptions::default().last_modified_time(stamp);
+        writer.start_file("old.txt", options).unwrap();
+        writer.write_all(b"old").unwrap();
+        writer.finish().unwrap();
+        let engine = SearchEngine::default();
+        // The archive itself was written just now; only the member is old.
+        let run = engine
+            .start(
+                tmp.path().to_path_buf(),
+                Query::parse("path:old.txt date:>365d", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+        let (hits, _) = collect_run(&run);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let year = chrono::DateTime::<chrono::Local>::from(hits[0].entry.modified.unwrap())
+            .format("%Y")
+            .to_string();
+        assert_eq!(year, "2001");
     }
 
     #[test]

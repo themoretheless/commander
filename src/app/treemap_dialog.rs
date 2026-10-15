@@ -566,6 +566,7 @@ mod tests {
             .map(|ext| ext.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         FileEntry {
+            permissions: None,
             name_lower: name.to_lowercase(),
             name: name.to_string(),
             path,

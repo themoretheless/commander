@@ -319,13 +319,26 @@ impl App {
         }
 
         ui.separator();
-        let theme_label = match self.theme_mode {
-            ThemeMode::Light => "Use dark theme",
-            ThemeMode::Dark => "Use light theme",
-        };
-        if ui.button(theme_label).clicked() {
-            self.switch_theme(ctx);
-        }
+        ui.horizontal(|ui| {
+            ui.label("Theme");
+            let follow = self.follow_system_theme;
+            let light = !follow && self.theme_mode == ThemeMode::Light;
+            let dark = !follow && self.theme_mode == ThemeMode::Dark;
+            if ui.selectable_label(light, "Light").clicked() {
+                self.set_theme(ctx, ThemeMode::Light);
+            }
+            if ui.selectable_label(dark, "Dark").clicked() {
+                self.set_theme(ctx, ThemeMode::Dark);
+            }
+            if ui
+                .selectable_label(follow, "System")
+                .on_hover_text("Follow the system light/dark appearance")
+                .clicked()
+            {
+                self.follow_system_theme = true;
+                self.follow_system_appearance(ctx);
+            }
+        });
         let text_size = ui.label("Text size");
         let mut scale = self.ui_scale;
         if ui
@@ -348,13 +361,56 @@ impl App {
         ui.checkbox(&mut self.show_developer_panel, "Diagnostics");
     }
 
-    fn switch_theme(&mut self, ctx: &egui::Context) {
-        self.theme_mode = match self.theme_mode {
+    /// Flip between light and dark; an explicit choice stops following the
+    /// system appearance.
+    pub(super) fn switch_theme(&mut self, ctx: &egui::Context) {
+        let mode = match self.theme_mode {
             ThemeMode::Light => ThemeMode::Dark,
             ThemeMode::Dark => ThemeMode::Light,
         };
-        self.colors = ThemeColors::for_preferences(self.theme_mode, self.accessibility_preferences);
-        apply_theme(ctx, self.theme_mode, self.accessibility_preferences);
+        self.set_theme(ctx, mode);
+    }
+
+    /// Use `mode` from now on, no longer following the system appearance.
+    fn set_theme(&mut self, ctx: &egui::Context, mode: ThemeMode) {
+        self.follow_system_theme = false;
+        self.apply_theme_mode(ctx, mode);
+    }
+
+    /// While following the system, switch palettes when the OS appearance
+    /// changes. Called every frame; cheap when nothing changed.
+    pub(super) fn follow_system_appearance(&mut self, ctx: &egui::Context) {
+        if !self.follow_system_theme {
+            return;
+        }
+        let mode = crate::theme::follow_system(ctx.system_theme(), self.theme_mode);
+        if mode != self.theme_mode {
+            self.apply_theme_mode(ctx, mode);
+        }
+    }
+
+    fn apply_theme_mode(&mut self, ctx: &egui::Context, mode: ThemeMode) {
+        self.theme_mode = mode;
+        self.colors = ThemeColors::for_preferences(mode, self.accessibility_preferences);
+        apply_theme(ctx, mode, self.accessibility_preferences);
+    }
+
+    /// Re-reads Reduce Motion / Increase Contrast when the window regains
+    /// focus and re-applies the theme if they changed, so a System Settings
+    /// toggle takes effect without a restart.
+    pub(super) fn refresh_accessibility_preferences(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|input| input.focused);
+        if let Some(fresh) = self
+            .accessibility_watch
+            .poll(focused, self.accessibility_preferences)
+        {
+            self.accessibility_preferences = fresh;
+            self.colors = ThemeColors::for_preferences(self.theme_mode, fresh);
+            apply_theme(ctx, self.theme_mode, fresh);
+        }
+        if self.accessibility_watch.refreshing() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
     }
 
     fn set_ui_scale(&mut self, ctx: &egui::Context, scale: f32) {

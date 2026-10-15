@@ -70,8 +70,15 @@ pub enum DirStatus {
     Listed,
     /// Read succeeded but the directory is empty.
     Empty,
+    /// Read succeeded with hidden files off, and every entry was hidden:
+    /// the folder holds this many hidden items and nothing else.
+    HiddenOnly(usize),
     /// Permission denied.
     Denied,
+    /// The directory could not be read for another reason (an I/O error,
+    /// too many open files, a stalled mount, or the listing worker could not
+    /// run it). Retrying may succeed.
+    Unavailable,
     /// The directory no longer exists.
     Gone,
     /// The directory opened, but at least one child could not be observed.
@@ -90,6 +97,9 @@ pub enum ViewApplyOutcome {
 
 pub enum DirectoryRead {
     Complete(Vec<FileEntry>),
+    /// A complete read with hidden files off that found only hidden
+    /// entries (this many); no rows are shown.
+    OnlyHidden(usize),
     Incomplete(DirStatus),
 }
 
@@ -103,12 +113,14 @@ const fn watcher_provenance(recovered_gap: bool) -> crate::change_provenance::Ch
 }
 
 /// Why a directory could not be opened, for UI messaging. A path that names
-/// a file is no folder to show, like a gone one; anything else is treated
-/// as unreadable.
+/// a file is no folder to show, like a gone one; only a permission error is
+/// "denied", and any other failure (EIO, EMFILE, a mount timeout) is shown
+/// as unavailable rather than blamed on permissions.
 fn status_for_read_error(error: &std::io::Error) -> DirStatus {
     match error.kind() {
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => DirStatus::Gone,
-        _ => DirStatus::Denied,
+        std::io::ErrorKind::PermissionDenied => DirStatus::Denied,
+        _ => DirStatus::Unavailable,
     }
 }
 
@@ -135,6 +147,10 @@ pub struct FileEntry {
     pub modified_str: String,
     /// Pre-formatted size string for files ("…" for dirs).
     pub size_str: String,
+    /// Permissions observed with the listing (a link's target's), so Get
+    /// Info never stats on the UI thread. `None` when not observed: a
+    /// dangling link, or a row that was never stat-ed.
+    pub permissions: Option<fs::Permissions>,
 }
 
 impl FileEntry {
@@ -171,6 +187,7 @@ impl FileEntry {
             modified,
             modified_str,
             size_str,
+            permissions: Some(meta.permissions()),
         })
     }
 
@@ -184,9 +201,14 @@ impl FileEntry {
             .is_symlink()
             .then(|| fs::metadata(&path).ok())
             .flatten();
+        let dangling = lexical.file_type().is_symlink() && followed.is_none();
         let identity = crate::path_identity::PathIdentity::from_metadata(path.clone(), &lexical);
         let mut entry = Self::from_meta(path, followed.as_ref().unwrap_or(&lexical))?;
         entry.identity = ListingIdentity::Captured(identity);
+        if dangling {
+            // The link's own mode says nothing about a target that is gone.
+            entry.permissions = None;
+        }
         Some(entry)
     }
 
@@ -233,10 +255,9 @@ impl FileEntry {
     }
 
     pub fn is_video(&self) -> bool {
-        matches!(
-            self.extension.as_str(),
-            "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v" | "wmv" | "flv"
-        )
+        // `extension` is already lowercased; the list is shared with the
+        // image cache so preview and listing agree on what a video is.
+        crate::image_cache::VIDEO_EXTENSIONS.contains(&self.extension.as_str())
     }
 
     pub fn size_display(&self) -> &str {
@@ -445,6 +466,22 @@ fn drop_nested_picks(entries: Vec<FileEntry>) -> Vec<FileEntry> {
 /// talk to the UI toolkit directly.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
+/// See [`PanelState::selection_view_key`].
+#[derive(Clone, Debug)]
+pub struct SelectionViewKey {
+    listing: u64,
+    selection: u64,
+    filtered: Arc<[usize]>,
+}
+
+impl PartialEq for SelectionViewKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.listing == other.listing
+            && self.selection == other.selection
+            && Arc::ptr_eq(&self.filtered, &other.filtered)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SortColumn {
     Name,
@@ -466,6 +503,9 @@ pub enum SortOrder {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FolderOverview {
     pub total: Option<u64>,
+    /// Some subdirectory is not measured (yet, or skipped as too costly):
+    /// `total` is a lower bound, not the folder's size.
+    pub partial: bool,
     pub largest: Option<(String, u64)>,
     pub oldest: Option<(String, SystemTime)>,
 }
@@ -588,6 +628,18 @@ impl PanelState {
     #[cfg(test)]
     pub const fn selected_paths(&self) -> &HashSet<PathBuf> {
         self.selection.selected()
+    }
+
+    /// What the selection HUD summarizes: equal keys mean the visible
+    /// selection, the counts elsewhere and the entries they describe are
+    /// unchanged. Holding the filtered view's `Arc` keeps its address from
+    /// being reused, so pointer equality is a sound identity check.
+    pub fn selection_view_key(&self) -> SelectionViewKey {
+        SelectionViewKey {
+            listing: self.entries_gen(),
+            selection: self.selection.revision(),
+            filtered: self.filtered_snapshot(),
+        }
     }
 
     pub fn selection_is_empty(&self) -> bool {
@@ -754,8 +806,9 @@ impl PanelState {
             .with_show_hidden(!self.view.show_hidden());
         let path = self.current_path.clone();
         let ticket = self.watcher.snapshot_ticket_for(&path);
-        let entries = match Self::read_dir(&path, candidate.show_hidden()) {
-            DirectoryRead::Complete(entries) => entries,
+        let (entries, hidden) = match Self::read_dir(&path, candidate.show_hidden()) {
+            DirectoryRead::Complete(entries) => (entries, 0),
+            DirectoryRead::OnlyHidden(hidden) => (Vec::new(), hidden),
             DirectoryRead::Incomplete(status) => {
                 self.watcher.defer_snapshot(ticket.as_ref());
                 return ViewApplyOutcome::ReadRejected(status);
@@ -763,7 +816,7 @@ impl PanelState {
         };
 
         self.view.commit_config(candidate);
-        self.publish_complete_listing(entries, candidate);
+        self.publish_complete_listing(entries, hidden, candidate);
         self.sizes.bind(&path);
         self.watcher.ensure_binding(&path);
         self.commit_snapshot(ticket, true);
@@ -939,7 +992,11 @@ impl PanelState {
         }
         match read {
             DirectoryRead::Complete(entries) => {
-                self.publish_complete_listing(entries, self.view.config());
+                self.publish_complete_listing(entries, 0, self.view.config());
+                true
+            }
+            DirectoryRead::OnlyHidden(hidden) => {
+                self.publish_complete_listing(Vec::new(), hidden, self.view.config());
                 true
             }
             DirectoryRead::Incomplete(status) => {
@@ -955,7 +1012,14 @@ impl PanelState {
         }
     }
 
-    fn publish_complete_listing(&mut self, mut entries: Vec<FileEntry>, config: ViewConfig) {
+    /// Publish a complete read. `hidden` counts entries skipped as hidden;
+    /// it only matters when no row is left to show.
+    fn publish_complete_listing(
+        &mut self,
+        mut entries: Vec<FileEntry>,
+        hidden: usize,
+        config: ViewConfig,
+    ) {
         let binding = self.current_path.clone();
         let binding_changed = self.listing.binding() != binding;
         let cursor_path = (!binding_changed).then(|| self.focused_path()).flatten();
@@ -967,10 +1031,10 @@ impl PanelState {
             self.drag.clear();
         }
 
-        let status = if entries.is_empty() {
-            DirStatus::Empty
-        } else {
-            DirStatus::Listed
+        let status = match (entries.is_empty(), hidden) {
+            (false, _) => DirStatus::Listed,
+            (true, 0) => DirStatus::Empty,
+            (true, hidden) => DirStatus::HiddenOnly(hidden),
         };
         sort_entries(&mut entries, config);
         self.selection.publish_complete(&binding);
@@ -1076,6 +1140,7 @@ impl PanelState {
     ) -> DirectoryRead {
         let vanished = |error: &std::io::Error| error.kind() == std::io::ErrorKind::NotFound;
         let mut result = Vec::new();
+        let mut hidden = 0_usize;
         let mut complete = true;
         for entry in entries {
             let entry = match entry {
@@ -1087,6 +1152,7 @@ impl PanelState {
             };
             let path = entry.path();
             if !show_hidden && path.file_name().is_some_and(is_hidden_name) {
+                hidden += 1;
                 continue;
             }
             let file_type = match entry.file_type() {
@@ -1118,6 +1184,8 @@ impl PanelState {
                         // content: a broken link has no size to show.
                         file_entry.size = 0;
                         file_entry.size_str = "–".to_string();
+                        // Nor a target mode: there is no target.
+                        file_entry.permissions = None;
                     }
                     file_entry.identity = match lexical {
                         Ok(metadata) => ListingIdentity::Captured(
@@ -1130,10 +1198,12 @@ impl PanelState {
                 None => complete = false,
             }
         }
-        if complete {
-            DirectoryRead::Complete(result)
-        } else {
+        if !complete {
             DirectoryRead::Incomplete(DirStatus::Partial)
+        } else if result.is_empty() && hidden > 0 {
+            DirectoryRead::OnlyHidden(hidden)
+        } else {
+            DirectoryRead::Complete(result)
         }
     }
 
@@ -1665,6 +1735,7 @@ mod tests {
     /// In-memory entry for pure sort/filter/selection tests.
     fn entry(name: &str, is_dir: bool, size: u64) -> FileEntry {
         FileEntry {
+            permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from(format!("/test/{name}")),
@@ -2171,6 +2242,27 @@ mod tests {
     }
 
     #[test]
+    fn selection_view_key_changes_only_with_what_the_hud_shows() {
+        let mut p = panel_with(vec![entry("a", false, 1), entry("b", false, 1)]);
+        let path = p.entries()[0].path.clone();
+        let key = p.selection_view_key();
+        assert_eq!(p.selection_view_key(), key, "idle frames reuse the key");
+
+        p.toggle_select(path.clone());
+        let selected = p.selection_view_key();
+        assert_ne!(selected, key);
+        p.set_search_query("b");
+        let filtered = p.selection_view_key();
+        assert_ne!(filtered, selected);
+        p.set_search_query("");
+        p.clear_selection();
+        assert_ne!(p.selection_view_key(), filtered);
+        let cleared = p.selection_view_key();
+        p.replace_entries_for_test(vec![entry("c", false, 1)]);
+        assert_ne!(p.selection_view_key(), cleared);
+    }
+
+    #[test]
     fn toggle_select_adds_then_removes() {
         let mut p = panel_with(vec![entry("a", false, 1)]);
         let path = p.entries()[0].path.clone();
@@ -2273,6 +2365,7 @@ mod tests {
             panel.folder_overview(),
             FolderOverview {
                 total: Some(0),
+                partial: false,
                 largest: None,
                 oldest: None,
             }
@@ -2953,11 +3046,37 @@ mod tests {
             status_for_read_error(&Error::from(ErrorKind::PermissionDenied)),
             DirStatus::Denied
         );
-        // Anything else (an I/O error on a dying disk) is unreadable too.
+        // Anything else (an I/O error on a dying disk, too many open files)
+        // is not a permission problem.
         assert_eq!(
             status_for_read_error(&Error::other("io")),
-            DirStatus::Denied
+            DirStatus::Unavailable
         );
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::TimedOut)),
+            DirStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn folder_of_only_dotfiles_reports_its_hidden_count() {
+        let tmp = TempDir::new();
+        let dir = tmp.dir("dots");
+        tmp.file("dots/.a", "a");
+        tmp.file("dots/.b", "b");
+        let mut panel = PanelState::new(dir);
+        panel.refresh();
+        assert!(!panel.show_hidden());
+        assert_eq!(panel.dir_status(), DirStatus::HiddenOnly(2));
+        assert_eq!(panel.toggle_hidden(), ViewApplyOutcome::Applied);
+        assert_eq!(panel.dir_status(), DirStatus::Listed);
+        assert_eq!(panel.toggle_hidden(), ViewApplyOutcome::Applied);
+        assert_eq!(panel.dir_status(), DirStatus::HiddenOnly(2));
+
+        // A truly empty folder stays "Empty".
+        let mut empty = PanelState::new(tmp.dir("empty"));
+        empty.refresh();
+        assert_eq!(empty.dir_status(), DirStatus::Empty);
     }
 
     #[cfg(unix)]
@@ -3112,15 +3231,25 @@ mod tests {
         let tmp = TempDir::new();
         let f = tmp.file("gone.txt", "hello");
         let meta = std::fs::metadata(&f).unwrap();
-        let fe = FileEntry::from_meta(f.clone(), &meta).unwrap();
-        std::fs::remove_file(&f).unwrap();
+        let mut fe = FileEntry::from_meta(f, &meta).unwrap();
+        fe.permissions = None;
         let card = make_info(&fe, None, None);
         // Not a fake mode string indistinguishable from a real `000` file.
-        assert!(
-            card.permissions.starts_with("unavailable ("),
-            "{}",
-            card.permissions
-        );
+        assert_eq!(card.permissions, "unavailable");
+    }
+
+    #[test]
+    fn make_info_reads_permissions_from_the_listing_not_the_disk() {
+        let tmp = TempDir::new();
+        let f = tmp.file("listed.txt", "hello");
+        let meta = std::fs::metadata(&f).unwrap();
+        let fe = FileEntry::from_meta(f.clone(), &meta).unwrap();
+        let listed = make_info(&fe, None, None).permissions;
+        // Gone (or on a hung mount) by the time Get Info opens: the card
+        // still shows what the listing saw, without touching the disk.
+        std::fs::remove_file(&f).unwrap();
+        assert_eq!(make_info(&fe, None, None).permissions, listed);
+        assert_ne!(listed, "unavailable");
     }
 
     #[test]
@@ -4656,6 +4785,24 @@ mod tests {
         assert!(p.poll_listing());
         assert_eq!(p.cursor_entry().unwrap().name, "mmm");
         assert!(p.scroll_to_cursor());
+    }
+
+    #[test]
+    fn first_async_listing_lands_on_a_launch_file() {
+        // App startup: the panel is built unlisted, then the first frame
+        // wires the workload, refreshes and focuses the launch file.
+        let tmp = TempDir::new();
+        tmp.file("aaa.txt", "a");
+        tmp.file("notes.txt", "n");
+        tmp.file("zzz.txt", "z");
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        let workload = deterministic_listings(&mut p);
+        p.refresh();
+        p.focus_child("notes.txt".to_string());
+
+        assert!(workload.run_next());
+        assert!(p.poll_listing());
+        assert_eq!(p.cursor_entry().unwrap().name, "notes.txt");
     }
 
     #[test]

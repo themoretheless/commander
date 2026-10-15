@@ -298,6 +298,7 @@ pub enum ContextMenuResult {
     RevealRequested,
     CopyPathRequested,
     MoveToTrashRequested,
+    RenameRequested,
     DeferredActionRequested(ContextMenuAction),
     Unsupported { reason: String },
     Failed(ContextMenuFailure),

@@ -261,9 +261,13 @@ impl App {
                             ui.label(egui::RichText::new(status).size(10.0).color(t.text_muted));
                             for root in &state.unavailable_roots {
                                 ui.label(
-                                    egui::RichText::new(format!("Unavailable: {}", root.display()))
-                                        .size(10.0)
-                                        .color(t.accent_warning),
+                                    egui::RichText::new(format!(
+                                        "Unavailable ({}): {}",
+                                        root.reason(),
+                                        root.path.display()
+                                    ))
+                                    .size(10.0)
+                                    .color(t.accent_warning),
                                 );
                             }
                             if state.truncated {

@@ -492,14 +492,50 @@ impl ResumeCheckpoint {
         }
     }
 
-    /// Whether the first `offset` bytes of `source` and `staging` both still
-    /// hash to the recorded proof. A checkpoint without a proof never matches.
-    pub fn proof_matches(&self, source: &Path, staging: &Path) -> std::io::Result<bool> {
-        let Some(expected) = self.content_digest else {
-            return Ok(false);
-        };
-        Ok(prefix_digest(source, self.offset)? == expected
-            && prefix_digest(staging, self.offset)? == expected)
+    /// Re-prove this checkpoint against `source` and `staging` as they are
+    /// now: the source keeps its binding, the staging file is still the same
+    /// object and can hold the offset, and both prefixes hash to the recorded
+    /// proof. Shared by runtime resume and journal recovery; the error says
+    /// why the checkpoint cannot be used.
+    pub fn verify(&self, source: &Path, staging: &Path) -> Result<(), String> {
+        let expected = self
+            .content_digest
+            .ok_or_else(|| "checkpoint has no content proof".to_string())?;
+        let source_now = PathIdentity::observe_deep(source)
+            .map_err(|error| format!("could not inspect checkpoint source: {error}"))?;
+        if !self.source.same_binding(&source_now) {
+            return Err("source changed after checkpoint".to_string());
+        }
+        let partial_now = PathIdentity::observe_deep(staging)
+            .map_err(|error| format!("could not inspect checkpoint staging: {error}"))?;
+        if !self.same_partial(&partial_now)
+            || partial_now.kind != Some(crate::path_identity::PathKind::File)
+            || !self.size_fits(&partial_now)
+        {
+            return Err("staging changed after checkpoint".to_string());
+        }
+        let partial_digest = prefix_digest(staging, self.offset)
+            .map_err(|error| format!("could not hash checkpoint staging: {error}"))?;
+        let source_digest = prefix_digest(source, self.offset)
+            .map_err(|error| format!("could not hash checkpoint source: {error}"))?;
+        if partial_digest != expected || source_digest != expected {
+            return Err("checkpoint bytes changed after proof".to_string());
+        }
+        Ok(())
+    }
+
+    /// Whether `partial_now` is still the staging object this checkpoint
+    /// recorded. Without file ids (Windows) a prefix staging cannot be
+    /// followed by identity, and the tail written after the last checkpoint
+    /// changes its size and mtime; the prefix digests prove the resumed bytes.
+    fn same_partial(&self, partial_now: &PathIdentity) -> bool {
+        let ids_known = self.partial.volume.zip(self.partial.file_id).is_some()
+            && partial_now.volume.zip(partial_now.file_id).is_some();
+        if !ids_known && self.layout == CheckpointLayout::Prefix {
+            self.partial.exists && partial_now.exists && self.partial.kind == partial_now.kind
+        } else {
+            self.partial.same_object(partial_now)
+        }
     }
 }
 
@@ -795,7 +831,7 @@ fn valid_runtime_checkpoint(
             return None;
         }
     };
-    if checkpoint.staging != staging || checkpoint.content_digest.is_none() {
+    if checkpoint.staging != staging {
         return None;
     }
     let checkpoint_source = if symlink_policy == crate::filesystem_policy::SymlinkPolicy::Follow
@@ -807,19 +843,12 @@ fn valid_runtime_checkpoint(
     } else {
         source.to_path_buf()
     };
-    let source_now = PathIdentity::observe_deep(&checkpoint_source).ok()?;
-    if !checkpoint.source.same_binding(&source_now) {
-        return None;
-    }
-    let partial_now = PathIdentity::observe_deep(staging).ok()?;
-    if !checkpoint.partial.same_object(&partial_now)
-        || partial_now.kind != Some(crate::path_identity::PathKind::File)
-    {
-        return None;
-    }
-    if !checkpoint.size_fits(&partial_now)
-        || !checkpoint.proof_matches(&checkpoint_source, staging).ok()?
-    {
+    if let Err(reason) = checkpoint.verify(&checkpoint_source, staging) {
+        log::debug!(
+            target: "commander::transfer",
+            "not resuming {}: {reason}",
+            staging.display()
+        );
         return None;
     }
     Some(checkpoint)
@@ -946,16 +975,38 @@ fn entry_size(entry: &FileEntry) -> u64 {
     }
 }
 
+#[cfg(test)]
 fn transfer_paths_equal(
     source: &Path,
     destination: &Path,
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 ) -> bool {
+    transfer_paths_mismatch(source, destination, symlink_policy).is_none()
+}
+
+/// Compare a finished copy with its source. `None` means they match;
+/// otherwise the first difference found, naming the entry (relative to the
+/// copied item) and why it differs.
+fn transfer_paths_mismatch(
+    source: &Path,
+    destination: &Path,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+) -> Option<String> {
     enum Task {
         Compare(PathBuf, PathBuf),
         ExitDirectory(PathBuf),
     }
 
+    // The copy may still sit at a hidden staging name, so a difference at
+    // the root is reported by reason alone; the caller names the item.
+    let root = destination;
+    let mismatch = |at: &Path, reason: &str| -> Option<String> {
+        match at.strip_prefix(root) {
+            Ok(relative) if relative.as_os_str().is_empty() => Some(reason.to_string()),
+            Ok(relative) => Some(format!("{}: {reason}", relative.display())),
+            Err(_) => Some(format!("{}: {reason}", at.display())),
+        }
+    };
     let mut tasks = vec![Task::Compare(
         source.to_path_buf(),
         destination.to_path_buf(),
@@ -968,28 +1019,35 @@ fn transfer_paths_equal(
             }
             Task::Compare(source, destination) => {
                 let Ok(source_metadata) = std::fs::symlink_metadata(&source) else {
-                    return false;
+                    return mismatch(&destination, "source can no longer be read");
                 };
                 let Ok(destination_metadata) = std::fs::symlink_metadata(&destination) else {
-                    return false;
+                    return mismatch(&destination, "copy is missing");
                 };
                 if source_metadata.file_type().is_symlink() {
                     match symlink_policy {
                         crate::filesystem_policy::SymlinkPolicy::Preserve => {
-                            if !destination_metadata.file_type().is_symlink()
-                                || std::fs::read_link(&source).ok()
-                                    != std::fs::read_link(&destination).ok()
+                            if !destination_metadata.file_type().is_symlink() {
+                                return mismatch(&destination, "copy is not a symbolic link");
+                            }
+                            if std::fs::read_link(&source).ok()
+                                != std::fs::read_link(&destination).ok()
                             {
-                                return false;
+                                return mismatch(&destination, "symbolic link target differs");
                             }
                         }
-                        crate::filesystem_policy::SymlinkPolicy::Skip => return false,
+                        crate::filesystem_policy::SymlinkPolicy::Skip => {
+                            return mismatch(&destination, "skipped symbolic link was copied");
+                        }
                         crate::filesystem_policy::SymlinkPolicy::Follow => {
                             if destination_metadata.file_type().is_symlink() {
-                                return false;
+                                return mismatch(
+                                    &destination,
+                                    "copy is a symbolic link, not its target",
+                                );
                             }
                             let Ok(followed) = std::fs::canonicalize(&source) else {
-                                return false;
+                                return mismatch(&destination, "source link cannot be followed");
                             };
                             tasks.push(Task::Compare(followed, destination));
                         }
@@ -1000,23 +1058,23 @@ fn transfer_paths_equal(
                     if !destination_metadata.is_dir()
                         || destination_metadata.file_type().is_symlink()
                     {
-                        return false;
+                        return mismatch(&destination, "copy is not a folder");
                     }
                     let Ok(canonical) = std::fs::canonicalize(&source) else {
-                        return false;
+                        return mismatch(&destination, "source folder cannot be resolved");
                     };
                     if !ancestors.insert(canonical.clone()) {
-                        return false;
+                        return mismatch(&destination, "source folder loops back on itself");
                     }
                     let Some(source_names) = transfer_child_names(&source, Some(symlink_policy))
                     else {
-                        return false;
+                        return mismatch(&destination, "source folder cannot be listed");
                     };
                     let Some(destination_names) = transfer_child_names(&destination, None) else {
-                        return false;
+                        return mismatch(&destination, "copied folder cannot be listed");
                     };
                     let Some(pairs) = pair_child_names(source_names, destination_names) else {
-                        return false;
+                        return mismatch(&destination, "folder contents differ");
                     };
                     tasks.push(Task::ExitDirectory(canonical));
                     for (source_name, destination_name) in pairs.into_iter().rev() {
@@ -1027,16 +1085,16 @@ fn transfer_paths_equal(
                     }
                     continue;
                 }
-                if destination_metadata.is_dir()
-                    || destination_metadata.file_type().is_symlink()
-                    || !crate::fs_util::files_equal(&source, &destination)
-                {
-                    return false;
+                if destination_metadata.is_dir() || destination_metadata.file_type().is_symlink() {
+                    return mismatch(&destination, "copy is not a regular file");
+                }
+                if !crate::fs_util::files_equal(&source, &destination) {
+                    return mismatch(&destination, "contents differ");
                 }
             }
         }
     }
-    true
+    None
 }
 
 fn transfer_child_names(
@@ -2013,6 +2071,7 @@ mod tests {
                 symlink_policy: crate::filesystem_policy::SymlinkPolicy::Preserve,
                 delta_capable: false,
                 sparse_capable: false,
+                clone_same_volume: false,
                 resumable_capable: profile.capabilities.resumable,
                 slow_link: profile.backend.is_slow_link(),
                 bandwidth_limited: false,
@@ -2032,6 +2091,68 @@ mod tests {
         profile.capabilities.resumable = true;
         profile.backend = crate::volume_profile::BackendKind::LocalFast;
         assert_eq!(plan(&profile, threshold), backend::BackendPlan::NativeClone);
+    }
+
+    fn prefix_checkpoint_fixture(temp: &TempDir) -> (PathBuf, PathBuf, ResumeCheckpoint) {
+        let source = temp.path().join("checkpoint-source.bin");
+        let staging = temp.path().join(".checkpoint-source.bin.cmdr-tmp.0");
+        std::fs::write(&source, b"0123456789abcdef").unwrap();
+        std::fs::write(&staging, b"01234567").unwrap();
+        let checkpoint = ResumeCheckpoint::observe(
+            &source,
+            &staging,
+            8,
+            CheckpointLayout::Prefix,
+            prefix_digest(&staging, 8).unwrap(),
+        )
+        .unwrap();
+        (source, staging, checkpoint)
+    }
+
+    #[test]
+    fn checkpoint_verify_accepts_a_prefix_staging_with_an_unproved_tail() {
+        let temp = TempDir::new();
+        let (source, staging, mut checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&staging, b"01234567crash").unwrap();
+
+        assert_eq!(checkpoint.verify(&source, &staging), Ok(()));
+        // Without file ids (Windows) the grown staging is still accepted: the
+        // prefix digests prove the resumed bytes.
+        checkpoint.partial.volume = None;
+        checkpoint.partial.file_id = None;
+        assert_eq!(checkpoint.verify(&source, &staging), Ok(()));
+    }
+
+    #[test]
+    fn checkpoint_verify_says_why_a_checkpoint_is_unusable() {
+        let temp = TempDir::new();
+        let (source, staging, checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&staging, b"0123XXXX").unwrap();
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("checkpoint bytes changed after proof".to_string())
+        );
+
+        let (source, staging, checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&source, b"0123456789abcdef-grown").unwrap();
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("source changed after checkpoint".to_string())
+        );
+
+        let (source, staging, checkpoint) = prefix_checkpoint_fixture(&temp);
+        std::fs::write(&staging, b"0123").unwrap();
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("staging changed after checkpoint".to_string())
+        );
+
+        let (source, staging, mut checkpoint) = prefix_checkpoint_fixture(&temp);
+        checkpoint.content_digest = None;
+        assert_eq!(
+            checkpoint.verify(&source, &staging),
+            Err("checkpoint has no content proof".to_string())
+        );
     }
 
     #[test]
@@ -3627,6 +3748,35 @@ mod tests {
             &destination,
             crate::filesystem_policy::SymlinkPolicy::Preserve,
         ));
+    }
+
+    #[test]
+    fn verification_failure_names_the_differing_entry_and_reason() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.file("tree/sub/a.txt", "abcd");
+        dst.file("tree/sub/a.txt", "abce");
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        let (source, destination) = (src.path().join("tree"), dst.path().join("tree"));
+        let mismatch = transfer_paths_mismatch(&source, &destination, policy).unwrap();
+        assert_eq!(
+            mismatch,
+            format!(
+                "{}: contents differ",
+                Path::new("sub").join("a.txt").display()
+            )
+        );
+
+        dst.file("tree/sub/stray.txt", "");
+        assert_eq!(
+            transfer_paths_mismatch(&source, &destination, policy).unwrap(),
+            "sub: folder contents differ"
+        );
+
+        let file = src.file("one.txt", "x");
+        assert_eq!(
+            transfer_paths_mismatch(&file, &dst.path().join("missing.txt"), policy).unwrap(),
+            "copy is missing"
+        );
     }
 
     fn names(names: &[&str]) -> Vec<std::ffi::OsString> {

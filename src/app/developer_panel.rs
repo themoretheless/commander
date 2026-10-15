@@ -559,7 +559,7 @@ impl App {
                             );
                         }
                         if ui.button("Save workspace profile").clicked() {
-                            let profile = crate::workspace_profile::capture(
+                            let (message, error) = crate::workspace_profile::capture_and_save(
                                 crate::workspace_profile::CaptureParams {
                                     name: "current".to_string(),
                                     left_root: &self.ws.left.current_path,
@@ -572,10 +572,14 @@ impl App {
                                     trusted_command_templates: Vec::new(),
                                 },
                             );
-                            self.developer_notice = Some(DeveloperNotice::success(
-                                format!("Workspace profile saved: {}", profile.name),
-                                crate::fs_util::config_dir().join("workspace_profiles.json"),
-                            ));
+                            self.developer_notice = Some(if error {
+                                DeveloperNotice::error(message)
+                            } else {
+                                DeveloperNotice::success(
+                                    message,
+                                    crate::fs_util::config_dir().join("workspace_profiles.json"),
+                                )
+                            });
                         }
                     });
                     if let Some(notice) = &self.developer_notice {

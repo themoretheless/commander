@@ -36,6 +36,44 @@ impl SmartFolders {
     pub fn remove(&mut self, name: &str) {
         self.items.retain(|d| d.name != name);
     }
+
+    /// Rename `old` to `new` (trimmed) in place, keeping its position.
+    /// Refuses an empty name or one another saved search already uses, so a
+    /// rename can never silently replace a different search.
+    pub fn rename(&mut self, old: &str, new: &str) -> Result<(), RenameError> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err(RenameError::Empty);
+        }
+        if new != old && self.items.iter().any(|d| d.name == new) {
+            return Err(RenameError::Taken);
+        }
+        let slot = self
+            .items
+            .iter_mut()
+            .find(|d| d.name == old)
+            .ok_or(RenameError::Missing)?;
+        new.clone_into(&mut slot.name);
+        Ok(())
+    }
+}
+
+/// Why [`SmartFolders::rename`] refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RenameError {
+    Empty,
+    Taken,
+    Missing,
+}
+
+impl RenameError {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Empty => "Enter a name for the saved search.",
+            Self::Taken => "Another saved search already has that name.",
+            Self::Missing => "That saved search no longer exists.",
+        }
+    }
 }
 
 fn store_path() -> PathBuf {
@@ -93,6 +131,23 @@ mod tests {
         assert_eq!(logs.root, PathBuf::from("/c"));
         // Order is preserved (Logs stays first).
         assert_eq!(s.items[0].name, "Logs");
+    }
+
+    #[test]
+    fn rename_keeps_position_and_refuses_collisions() {
+        let mut s = SmartFolders::default();
+        for name in ["a", "b", "c"] {
+            s.add(def(name, "/r"));
+        }
+        assert_eq!(s.rename("a", "  z "), Ok(()));
+        let names: Vec<&str> = s.items.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["z", "b", "c"]);
+        assert_eq!(s.rename("z", "b"), Err(RenameError::Taken));
+        assert_eq!(s.rename("z", "   "), Err(RenameError::Empty));
+        assert_eq!(s.rename("gone", "y"), Err(RenameError::Missing));
+        assert_eq!(s.rename("z", "z"), Ok(()));
+        let names: Vec<&str> = s.items.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["z", "b", "c"]);
     }
 
     #[test]

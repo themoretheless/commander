@@ -635,8 +635,8 @@ pub fn space_verdict(
 
 /// Compress a file or directory into "<name>.zip" next to it.
 /// Runs `ditto` in the background; returns once the process is spawned, and
-/// a reaper thread collects it and logs a failed exit (disk full, permission
-/// denied) with `ditto`'s stderr.
+/// a reaper thread collects it and reports a failed exit (disk full,
+/// permission denied) with `ditto`'s stderr in the log and as an error toast.
 /// An existing archive is never replaced: like Finder, the name counts up
 /// ("name 2.zip", "name 3.zip", ...) because `ditto` would overwrite it.
 pub fn compress_to_zip(path: &Path) -> std::io::Result<()> {

@@ -4,7 +4,8 @@ use crate::panel::{FacetSet, KindFacet, SortOrder};
 #[derive(Default)]
 pub struct PanelRenderOutcome {
     pub tree_toggle: bool,
-    pub context_menu_request: Option<ui_state::ContextMenuCandidate>,
+    /// A row asked for its context menu: the request, or why it has none.
+    pub context_menu_request: Option<Result<ui_state::ContextMenuCandidate, String>>,
 }
 
 fn file_name_of(path: &std::path::Path) -> String {
@@ -33,6 +34,55 @@ fn text_preview_path_changed(
         }
         changed
     })
+}
+
+/// What a laid-out text preview depends on. The content is identified by its
+/// `Arc`: the key holds a clone, so the allocation cannot be reused for other
+/// text while the key lives, and a reloaded file always gets a new `Arc`.
+#[derive(Clone)]
+struct TextPreviewLayoutKey {
+    content: std::sync::Arc<str>,
+    wrap_width: f32,
+    pixels_per_point: f32,
+    color: Color32,
+}
+
+impl TextPreviewLayoutKey {
+    fn same_layout(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.content, &other.content)
+            && self.wrap_width.to_bits() == other.wrap_width.to_bits()
+            && self.pixels_per_point.to_bits() == other.pixels_per_point.to_bits()
+            && self.color == other.color
+    }
+}
+
+/// The text preview body laid out once per (content, width, scale, color).
+/// A plain wrapped label hashes the whole text (up to 1 MB) every frame to
+/// find its cached layout; this keeps the galley per pane instead.
+fn text_preview_galley(
+    ui: &egui::Ui,
+    scroll_id: egui::Id,
+    key: TextPreviewLayoutKey,
+) -> std::sync::Arc<egui::Galley> {
+    let memory_id = scroll_id.with("galley");
+    let cached = ui.ctx().data(|data| {
+        data.get_temp::<(TextPreviewLayoutKey, std::sync::Arc<egui::Galley>)>(memory_id)
+    });
+    if let Some((cached_key, galley)) = cached
+        && cached_key.same_layout(&key)
+    {
+        return galley;
+    }
+    let job = egui::text::LayoutJob::simple(
+        key.content.to_string(),
+        egui::FontId::monospace(12.0),
+        key.color,
+        key.wrap_width,
+    );
+    let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(memory_id, (key, galley.clone())));
+    galley
 }
 
 /// The close button shared by the image, text and Get Info previews.
@@ -83,7 +133,7 @@ fn image_preview_disabled_reason(state: crate::feature_flags::FeatureSnapshot) -
 fn render_text_preview(
     ui: &mut egui::Ui,
     path: &std::path::Path,
-    content: Option<&str>,
+    content: Option<&std::sync::Arc<str>>,
     image_cache: &mut crate::image_cache::ImageCache,
     t: &ThemeColors,
     panel_side: &str,
@@ -130,15 +180,17 @@ fn render_text_preview(
                 }
                 scroll.auto_shrink([false; 2]).show(ui, |ui| {
                     ui.style_mut().interaction.selectable_labels = true;
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(content)
-                                .size(12.0)
-                                .font(egui::FontId::monospace(12.0))
-                                .color(t.text_secondary),
-                        )
-                        .wrap(),
+                    let galley = text_preview_galley(
+                        ui,
+                        scroll_id,
+                        TextPreviewLayoutKey {
+                            content: content.clone(),
+                            wrap_width: ui.available_width(),
+                            pixels_per_point: ui.ctx().pixels_per_point(),
+                            color: t.text_secondary,
+                        },
                     );
+                    ui.add(egui::Label::new(galley));
                 });
                 return;
             }
@@ -367,6 +419,36 @@ fn path_bar_button(
     (rect, response)
 }
 
+/// What the nav-lock badge announces, so a pane that moves on its own has a
+/// visible reason for as long as the lock lasts (the toast fades in seconds).
+const NAV_LOCK_BADGE_LABEL: &str =
+    "Navigation lock on: Enter and Go Up in either pane move both panes";
+
+/// A small, non-interactive "Nav lock" chip drawn in each path bar while the
+/// navigation lock is on.
+fn nav_lock_badge(ui: &mut egui::Ui, t: &ThemeColors) {
+    let response = Frame::NONE
+        .fill(Color32::TRANSPARENT)
+        .corner_radius(CornerRadius::ZERO)
+        .stroke(Stroke::new(1.0_f32, t.accent))
+        .inner_margin(Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new("Nav lock").size(11.0).color(t.accent));
+        })
+        .response
+        .interact(Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Label,
+            ui.is_enabled(),
+            NAV_LOCK_BADGE_LABEL,
+        )
+    });
+    response.on_hover_text(format!(
+        "{NAV_LOCK_BADGE_LABEL}.\nTurn it off with \"Toggle navigation lock\" in the command palette."
+    ));
+}
+
 /// Name a pane's region for assistive tech, so moving focus into a pane
 /// announces which one it is and whether it is active.
 fn mark_pane_region(ui: &egui::Ui, panel_side: &str, is_active: bool) {
@@ -389,6 +471,11 @@ fn pane_accessible_label(panel_side: &str, is_active: bool) -> String {
     }
 }
 
+/// Stable id of a pane's filter box, so a command can focus it.
+pub fn pane_filter_id(panel_side: &str) -> egui::Id {
+    egui::Id::new(("pane_filter", panel_side))
+}
+
 /// The pane's filter box. Both panes share the hint text, so the field is
 /// named after its pane for screen readers.
 fn pane_filter_field(
@@ -400,6 +487,7 @@ fn pane_filter_field(
     let response = ui.add_sized(
         Vec2::new(width, 26.0),
         egui::TextEdit::singleline(query)
+            .id(pane_filter_id(panel_side))
             .hint_text("\u{1f50d} Filter\u{2026}")
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 4.0)),
@@ -594,6 +682,7 @@ impl App {
         dragged: &[std::path::PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
+        nav_locked: bool,
     ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
@@ -715,6 +804,11 @@ impl App {
                             }
                             if tree_resp.clicked() {
                                 tree_toggle = true;
+                            }
+
+                            if nav_locked {
+                                ui.add_space(6.0);
+                                nav_lock_badge(ui, t);
                             }
 
                             ui.add_space(6.0);
@@ -1067,7 +1161,7 @@ impl App {
                         PreviewContent::Text { identity, content } => render_text_preview(
                             ui,
                             &identity.path,
-                            Some(content.as_ref()),
+                            Some(content),
                             image_cache,
                             t,
                             panel_side,
@@ -1180,6 +1274,42 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_preview_layout_is_reused_until_content_or_width_changes() {
+        let ctx = egui::Context::default();
+        let content: std::sync::Arc<str> = std::sync::Arc::from("line one\nline two");
+        let key = |content: &std::sync::Arc<str>, wrap_width: f32| TextPreviewLayoutKey {
+            content: content.clone(),
+            wrap_width,
+            pixels_per_point: 1.0,
+            color: Color32::WHITE,
+        };
+        let scroll_id = text_preview_scroll_id("left");
+        let mut galleys = Vec::new();
+        for (text, width) in [
+            (&content, 300.0),
+            (&content, 300.0),
+            (&content, 200.0),
+            (&std::sync::Arc::from("line one\nline two"), 200.0),
+        ] {
+            let _ =
+                crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                    galleys.push(text_preview_galley(ui, scroll_id, key(text, width)));
+                }));
+        }
+        assert!(std::sync::Arc::ptr_eq(&galleys[0], &galleys[1]));
+        assert!(
+            !std::sync::Arc::ptr_eq(&galleys[1], &galleys[2]),
+            "width changed"
+        );
+        // Equal text in a new allocation is a reloaded file: lay it out again
+        // (epaint's own cache may still hand back an equal galley).
+        let reloaded: std::sync::Arc<str> = std::sync::Arc::from("line one\nline two");
+        assert!(!key(&content, 200.0).same_layout(&key(&reloaded, 200.0)));
+        assert!(key(&content, 200.0).same_layout(&key(&content, 200.0)));
+        assert_eq!(galleys[3].text(), "line one\nline two");
+    }
 
     fn accesskit_nodes(
         add: impl FnMut(&mut egui::Ui),
@@ -1357,6 +1487,30 @@ mod tests {
             stack.extend(node.children().iter().rev());
         }
         labels
+    }
+
+    #[test]
+    fn nav_lock_badge_announces_what_the_lock_does() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.horizontal(|ui| nav_lock_badge(ui, &crate::theme::ThemeColors::dark()));
+            }));
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("headless AccessKit output");
+        // egui announces a Label role's text as its value.
+        let values: Vec<String> = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.value().map(str::to_string))
+            .collect();
+        assert!(
+            values.iter().any(|value| value == NAV_LOCK_BADGE_LABEL),
+            "no nav-lock badge in {values:?}"
+        );
     }
 
     #[test]

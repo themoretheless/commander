@@ -15,6 +15,16 @@ enum NativeEffectStatus {
     Failure,
 }
 
+/// Type-ahead capsule text. A miss is spelled out as well as tinted, so it
+/// does not rely on color alone.
+fn type_ahead_label(buffer: &str, miss: bool) -> String {
+    if miss {
+        format!("\u{00bb} {buffer}  \u{2014} no match")
+    } else {
+        format!("\u{00bb} {buffer}")
+    }
+}
+
 fn perform_clipboard_write(
     port: &dyn crate::ports::ClipboardPort,
     text: &str,
@@ -62,12 +72,13 @@ fn perform_open(
 const fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'static str {
     match status {
         crate::panel::DirStatus::Denied => "folder access was denied",
+        crate::panel::DirStatus::Unavailable => "the folder could not be read",
         crate::panel::DirStatus::Gone => "the folder is no longer available",
         crate::panel::DirStatus::Partial => "the folder could not be read completely",
         crate::panel::DirStatus::Loading => "the folder is still loading",
-        crate::panel::DirStatus::Listed | crate::panel::DirStatus::Empty => {
-            "the folder could not be refreshed"
-        }
+        crate::panel::DirStatus::Listed
+        | crate::panel::DirStatus::Empty
+        | crate::panel::DirStatus::HiddenOnly(_) => "the folder could not be refreshed",
     }
 }
 
@@ -102,6 +113,11 @@ impl ModalOwnershipSnapshot {
 
     const fn trap_active_after(self, current_open: bool) -> bool {
         crate::accessibility::modal_trap_active(self.prior_open, current_open)
+    }
+
+    /// Whether the last modal surface closed during this frame.
+    const fn closed_after(self, current_open: bool) -> bool {
+        self.prior_open && !current_open
     }
 }
 
@@ -423,17 +439,21 @@ fn undo_recorded_toast(action: &crate::undo::Action) -> String {
     }
 }
 
-/// The receipt for `action`, the undo entry an operation just recorded: it
-/// replays that same action, so its Undo stays in sync with Cmd+Z. An action
-/// with no folder to jump back to gets none.
-fn undo_receipt(action: crate::undo::Action, now: f64) -> Option<crate::receipts::Receipt> {
+/// The receipt for `action`, the undo entry `entry` an operation just
+/// recorded: its Undo is live only while that entry is the one Cmd+Z would
+/// reverse. An action with no folder to jump back to gets none.
+fn undo_receipt(
+    action: &crate::undo::Action,
+    entry: crate::undo::HistoryEntryId,
+    now: f64,
+) -> Option<crate::receipts::Receipt> {
     let jump_to = action.jump_to()?;
     Some(crate::receipts::Receipt {
         verb: action.verb(),
         item_count: action.item_count(),
         timestamp: now,
         jump_to,
-        undo_action: Some(action),
+        undo_entry: Some(entry),
     })
 }
 
@@ -521,6 +541,37 @@ fn selection_hud_head(
 /// The selection HUD's first line: counts, total and average size, and for
 /// two or more items the largest and oldest names, cut to keep their
 /// extension.
+/// The selection HUD's text, keyed by what it was built from.
+pub struct SelectionHudCache {
+    side: ActivePanel,
+    key: crate::panel::SelectionViewKey,
+    /// `(headline, kind breakdown)`, or `None` when nothing is selected.
+    text: Option<(String, String)>,
+}
+
+/// The selection HUD's headline and kind breakdown for `panel`, or `None`
+/// when nothing is selected here or in other folders.
+fn selection_hud_text(panel: &crate::panel::PanelState) -> Option<(String, String)> {
+    let selected = panel.selected_entries();
+    let elsewhere = panel.selected_elsewhere_count();
+    let other_folders = panel
+        .selection_folder_count()
+        .saturating_sub(usize::from(!selected.is_empty()));
+    if selected.is_empty() && elsewhere == 0 {
+        return None;
+    }
+    let s = crate::selection_summary::summarize(&selected);
+    let head = selection_headline(&s, elsewhere, other_folders);
+    let breakdown: String = s
+        .kinds
+        .iter()
+        .take(4)
+        .map(|(k, n)| format!("{n} {}", k.label()))
+        .collect::<Vec<_>>()
+        .join("  \u{00b7}  ");
+    Some((head, breakdown))
+}
+
 fn selection_headline(
     s: &crate::selection_summary::SelectionSummary,
     elsewhere: usize,
@@ -636,6 +687,13 @@ fn toast_stack_offsets(heights: &[Option<f32>]) -> (Vec<f32>, f32) {
         y += height.unwrap_or(TOAST_ROW_HEIGHT - TOAST_GAP) + TOAST_GAP;
     }
     (offsets, y)
+}
+
+/// Whether the pointer rests on one of the shown toasts. While it does the
+/// stack holds its lifetime, so an error being read or an Undo being reached
+/// for does not vanish under the pointer.
+fn pointer_over_toast(rects: &[egui::Rect], pointer: Option<egui::Pos2>) -> bool {
+    pointer.is_some_and(|pos| rects.iter().any(|rect| rect.contains(pos)))
 }
 
 /// The visible toast text. Errors carry a warning icon so their kind is not
@@ -776,6 +834,12 @@ impl eframe::App for App {
             self.has_modal_surface(),
         );
         let modal_open = input_policy.trapped();
+        // The closed modal took the focused widget with it; give focus back
+        // to the active pane's cursor row so keyboard and assistive-tech
+        // users land where they were.
+        if prior_modal_ownership.closed_after(self.has_modal_surface()) {
+            super::file_list::request_cursor_row_refocus(&ctx);
+        }
         #[cfg(feature = "visual-qa")]
         {
             let owner =
@@ -845,7 +909,8 @@ impl App {
     /// return that action.
     pub(crate) fn push_receipt_for_top_undo(&mut self, now: f64) -> Option<crate::undo::Action> {
         let action = self.ws.top_undo_action().cloned()?;
-        if let Some(receipt) = undo_receipt(action.clone(), now) {
+        let entry = self.ws.top_undo_entry()?;
+        if let Some(receipt) = undo_receipt(&action, entry, now) {
             self.receipts.push(receipt);
         }
         Some(action)
@@ -977,6 +1042,7 @@ impl App {
                             Effect::Open(crate::ports::OpenRequest::Reveal(path.clone())),
                         );
                         item(ui, "Copy path", Effect::CopyPath(path.clone()));
+                        item(ui, "Rename\u{2026}", Effect::Rename(path.clone()));
                         ui.separator();
                         item(ui, "Move to Trash", Effect::MoveToTrash(path.clone()));
                         ui.separator();
@@ -1061,6 +1127,20 @@ impl App {
     /// input handling and background-task polling.
     fn begin_frame(&mut self, ctx: &egui::Context) {
         self.sync_ui_scale_with_zoom(ctx);
+        // Remember the restored-state size only: a maximized or fullscreen
+        // window would otherwise reopen screen-sized but not maximized.
+        if let Some(size) = ctx.input(|input| {
+            let viewport = input.viewport();
+            let zoomed = viewport.maximized == Some(true) || viewport.fullscreen == Some(true);
+            (!zoomed)
+                .then_some(viewport.inner_rect)
+                .flatten()
+                .map(|rect| [rect.width(), rect.height()])
+        }) {
+            self.window_size = Some(size);
+        }
+        self.refresh_accessibility_preferences(ctx);
+        self.follow_system_appearance(ctx);
         ctx.data_mut(|data| {
             data.remove::<egui::Rect>(egui::Id::new("current_focus_indicator"));
             data.remove::<egui::Rect>(egui::Id::new("active_error_surface"));
@@ -1070,6 +1150,15 @@ impl App {
             let persistence = crate::persistence::health_snapshot();
             self.persistence_issue_seen = persistence.issue_generation;
             if let Some(message) = persistence.last_issue {
+                self.toast(ctx, crate::toasts::ToastKind::Error, message, false);
+            }
+        }
+        // A helper launched earlier (Compress, Reveal, ...) failed after
+        // its launch was reported as accepted.
+        let helper_generation = crate::native_effect::helper_failure_generation();
+        if helper_generation > self.helper_failure_seen {
+            self.helper_failure_seen = helper_generation;
+            if let Some(message) = crate::native_effect::last_helper_failure() {
                 self.toast(ctx, crate::toasts::ToastKind::Error, message, false);
             }
         }
@@ -1117,6 +1206,9 @@ impl App {
                 .set_notify(std::sync::Arc::new(move || c.request_repaint()));
             self.ws.left.set_workload(self.workload.clone());
             self.ws.left.refresh();
+            if let Some(name) = self.launch_focus.0.take() {
+                self.ws.left.focus_child(name);
+            }
         }
         if !self.ws.right.has_notify() {
             let c = ctx.clone();
@@ -1125,6 +1217,9 @@ impl App {
                 .set_notify(std::sync::Arc::new(move || c.request_repaint()));
             self.ws.right.set_workload(self.workload.clone());
             self.ws.right.refresh();
+            if let Some(name) = self.launch_focus.1.take() {
+                self.ws.right.focus_child(name);
+            }
         }
         drop(listing_latency);
         if first_listing && let Some(mut trace) = self.startup_trace.take() {
@@ -1221,13 +1316,13 @@ impl App {
         );
         // Only this delete's own history record may back the Undo: when it
         // recorded none, the top entry is an older Trash.
-        let undo_action = self
+        let undo_entry = self
             .ws
             .top_undo_action()
             .filter(|action| trash_undo_matches(&outcome.items, action))
             .filter(|_| outcome.trashed > 0 && !outcome.indeterminate)
-            .cloned();
-        self.toast(ctx, kind, message, undo_action.is_some());
+            .and_then(|_| self.ws.top_undo_entry());
+        self.toast(ctx, kind, message, undo_entry.is_some());
 
         if outcome.trashed > 0 {
             let jump_to = outcome
@@ -1241,7 +1336,7 @@ impl App {
                 item_count: outcome.trashed,
                 timestamp: now,
                 jump_to,
-                undo_action,
+                undo_entry,
             });
         }
 
@@ -1281,14 +1376,25 @@ impl App {
             UiRequest::Palette => self.open_palette(ctx),
             UiRequest::BatchRename => self.open_batch_rename(ctx),
             UiRequest::Sync => self.open_sync(),
-            UiRequest::FindDuplicates => self.open_duplicates(),
+            UiRequest::FindDuplicates => self.open_duplicates(ctx),
             UiRequest::DiffFiles => self.open_diff(ctx),
             UiRequest::DiskTreemap => self.open_treemap(ctx),
             UiRequest::Find => self.open_find(ctx),
+            UiRequest::FocusFilter => {
+                let side = match self.ws.active {
+                    ActivePanel::Left => "left",
+                    ActivePanel::Right => "right",
+                };
+                ctx.memory_mut(|memory| memory.request_focus(super::render::pane_filter_id(side)));
+            }
             UiRequest::Archive(path) => self.open_archive(path, ctx),
             UiRequest::SavedSearch => self.open_saved_search(),
             UiRequest::ProjectCollections => self.open_collections(ctx),
             UiRequest::ToggleQueuePanel => self.toggle_queue_panel(),
+            UiRequest::ToggleCompare => self.show_compare = !self.show_compare,
+            UiRequest::ToggleTheme => self.switch_theme(ctx),
+            UiRequest::ToggleSizeBars => self.show_size_bars = !self.show_size_bars,
+            UiRequest::ToggleFolderSidebar => self.toggle_folder_sidebar(),
             UiRequest::OperationHistory => self.open_operation_history(),
             UiRequest::OpenRecoveryCenter => self.open_recovery_center(),
             UiRequest::ReviewRecovery(operation_id) => {
@@ -1399,7 +1505,7 @@ impl App {
         }
     }
 
-    fn write_clipboard(&mut self, text: &str, label: &str, ctx: &egui::Context) {
+    pub(super) fn write_clipboard(&mut self, text: &str, label: &str, ctx: &egui::Context) {
         let feedback = perform_clipboard_write(self.clipboard.as_ref(), text, label);
         let kind = match feedback.status {
             NativeEffectStatus::Success => crate::toasts::ToastKind::Success,
@@ -1601,26 +1707,26 @@ impl App {
     /// when something is selected; complements the per-panel status bar.
     fn show_selection_hud(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let active = self.ws.active_panel_ref();
-        let selected = active.selected_entries();
-        let elsewhere = active.selected_elsewhere_count();
-        let other_folders = active
-            .selection_folder_count()
-            .saturating_sub(usize::from(!selected.is_empty()));
-        if selected.is_empty() && elsewhere == 0 {
-            return;
+        let side = self.ws.active;
+        let key = self.ws.active_panel_ref().selection_view_key();
+        // Summarizing clones every selected entry, so it is redone only when
+        // the selection, the filter or the listing changed.
+        let cached = self
+            .selection_hud_cache
+            .as_ref()
+            .is_some_and(|cache| cache.side == side && cache.key == key);
+        if !cached {
+            let text = selection_hud_text(self.ws.active_panel_ref());
+            self.selection_hud_cache = Some(SelectionHudCache { side, key, text });
         }
-        let s = crate::selection_summary::summarize(&selected);
+        let Some((head, breakdown)) = self
+            .selection_hud_cache
+            .as_ref()
+            .and_then(|cache| cache.text.clone())
+        else {
+            return;
+        };
         let t = self.colors;
-
-        let head = selection_headline(&s, elsewhere, other_folders);
-        let breakdown: String = s
-            .kinds
-            .iter()
-            .take(4)
-            .map(|(k, n)| format!("{n} {}", k.label()))
-            .collect::<Vec<_>>()
-            .join("  \u{00b7}  ");
 
         let area = ui.available_rect_before_wrap();
         let screen = ctx.input(|i| i.viewport_rect());
@@ -1702,6 +1808,9 @@ impl App {
             }
             crate::provider_runtime::ContextMenuUiEffect::MoveToTrash(path) => {
                 self.ws.request_context_delete(panel, &path);
+            }
+            crate::provider_runtime::ContextMenuUiEffect::Rename(path) => {
+                self.open_rename(path, ctx);
             }
             crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
                 self.toast(
@@ -1950,11 +2059,17 @@ impl App {
         tree_toggle |= right_outcome.tree_toggle;
 
         let pending_external_opens = external_open.into_inner();
-        if let Some(candidate) = left_outcome.context_menu_request {
-            self.queue_context_menu_candidate(ActivePanel::Left, candidate, &ctx);
-        }
-        if let Some(candidate) = right_outcome.context_menu_request {
-            self.queue_context_menu_candidate(ActivePanel::Right, candidate, &ctx);
+        for (panel, request) in [
+            (ActivePanel::Left, left_outcome.context_menu_request),
+            (ActivePanel::Right, right_outcome.context_menu_request),
+        ] {
+            match request {
+                Some(Ok(candidate)) => self.queue_context_menu_candidate(panel, candidate, &ctx),
+                Some(Err(reason)) => {
+                    self.toast(&ctx, crate::toasts::ToastKind::Info, reason, false);
+                }
+                None => {}
+            }
         }
         for request in pending_external_opens {
             self.open_external(request, &ctx);
@@ -1963,11 +2078,7 @@ impl App {
         self.update_pane_drop_target(ActivePanel::Right, &right_resp.response, &pane_drop);
 
         if tree_toggle {
-            self.show_tree = !self.show_tree;
-            if self.show_tree {
-                let path = self.ws.active_panel().current_path.clone();
-                self.tree_reveal_path(&path);
-            }
+            self.toggle_folder_sidebar();
         }
 
         // Stash the freshly-used compare maps (keyed by the generations they were
@@ -2026,6 +2137,7 @@ impl App {
             dragged,
             metrics,
             self.accessibility_preferences.reduced_motion,
+            self.ws.nav_lock,
         )
     }
 
@@ -2224,7 +2336,8 @@ impl App {
             return;
         }
         let t = self.colors;
-        let label = format!("\u{00bb} {buffer}");
+        let miss = self.ui.type_ahead_miss;
+        let label = type_ahead_label(buffer, miss);
         egui::Area::new(egui::Id::new("type_ahead_overlay"))
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -50.0])
             .order(egui::Order::Tooltip)
@@ -2237,7 +2350,7 @@ impl App {
                             egui::RichText::new(label)
                                 .size(13.0)
                                 .strong()
-                                .color(t.accent),
+                                .color(if miss { t.accent_red } else { t.accent }),
                         );
                     });
             });
@@ -2300,6 +2413,7 @@ impl App {
         let undo_toast = newest_undoable_toast(active);
         // Newest on top, in the nearest corner that preserves focus and errors.
         let undo_label = format!("Undo {}", command_shortcut("Z"));
+        let mut shown = Vec::with_capacity(active.len());
         for (toast, offset) in active.iter().rev().zip(offsets) {
             let y = stack.y + offset;
             let accent = match toast.kind {
@@ -2312,7 +2426,7 @@ impl App {
             } else {
                 crate::toasts::remaining_fraction(toast, now)
             };
-            egui::Area::new(egui::Id::new(("toast", toast.id())))
+            let area = egui::Area::new(egui::Id::new(("toast", toast.id())))
                 .fixed_pos(egui::pos2(stack.x, y))
                 .order(egui::Order::Tooltip)
                 .enabled(input_enabled)
@@ -2381,6 +2495,10 @@ impl App {
                             );
                         });
                 });
+            shown.push(area.response.rect);
+        }
+        if pointer_over_toast(&shown, ctx.pointer_hover_pos()) {
+            self.toasts.hold(now);
         }
         if input_enabled && undo {
             self.ws.execute(crate::command::Command::Undo);
@@ -2436,7 +2554,7 @@ mod tests {
     };
     use super::{
         FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
-        hidden_files_rejection_message, perform_clipboard_write, perform_open,
+        hidden_files_rejection_message, perform_clipboard_write, perform_open, type_ahead_label,
     };
     use super::{
         MenuFocusStep, fallback_menu_focus_step, fallback_menu_pos, fallback_menu_restores_focus,
@@ -2453,7 +2571,7 @@ mod tests {
         dragged_split_ratio, key_bar_modifier_held, selection_hud_bottom, split_left_width,
     };
     use super::{drop_busy_reason, smart_folder_saved_toast};
-    use super::{toast_live_region, toast_stack_offsets, toast_text};
+    use super::{pointer_over_toast, toast_live_region, toast_stack_offsets, toast_text};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -2504,6 +2622,12 @@ mod tests {
             ModalOwnershipSnapshot::capture(prior_modal_open),
             current_modal_open,
         )
+    }
+
+    #[test]
+    fn type_ahead_capsule_spells_out_a_miss() {
+        assert_eq!(type_ahead_label("rea", false), "\u{00bb} rea");
+        assert!(type_ahead_label("zzz", true).ends_with("no match"));
     }
 
     #[test]
@@ -2592,6 +2716,14 @@ mod tests {
         let policy = frame_policy(true, true, false);
         assert!(!policy.allows_divider_reset(true, true));
         assert!(!policy.background_enabled());
+    }
+
+    #[test]
+    fn only_the_frame_a_modal_closes_on_is_a_close_edge() {
+        assert!(ModalOwnershipSnapshot::capture(true).closed_after(false));
+        assert!(!ModalOwnershipSnapshot::capture(true).closed_after(true));
+        assert!(!ModalOwnershipSnapshot::capture(false).closed_after(false));
+        assert!(!ModalOwnershipSnapshot::capture(false).closed_after(true));
     }
 
     #[test]
@@ -2757,6 +2889,10 @@ mod tests {
         assert_eq!(
             hidden_files_rejection_message(crate::panel::DirStatus::Partial),
             "the folder could not be read completely"
+        );
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Unavailable),
+            "the folder could not be read"
         );
     }
 
@@ -3073,14 +3209,17 @@ mod tests {
                 ("b.jpg".into(), "x-b.jpg".into()),
             ],
         };
-        let receipt = undo_receipt(rename.clone(), 12.5).expect("receipt");
+        let mut center = crate::undo::UndoCenter::default();
+        center.record(rename.clone()).unwrap();
+        let entry = center.top_undo_entry().expect("recorded entry");
+        let receipt = undo_receipt(&rename, entry, 12.5).expect("receipt");
         assert_eq!(receipt.verb, rename.verb());
         assert_eq!(receipt.item_count, 2);
         assert_eq!(receipt.timestamp, 12.5);
         assert_eq!(receipt.jump_to, PathBuf::from("/photos"));
-        assert_eq!(receipt.undo_action, Some(rename));
+        assert_eq!(receipt.undo_entry, Some(entry));
         // A move with no pairs has nowhere to jump back to.
-        assert!(undo_receipt(Action::Move { pairs: Vec::new() }, 1.0).is_none());
+        assert!(undo_receipt(&Action::Move { pairs: Vec::new() }, entry, 1.0).is_none());
     }
 
     #[test]
@@ -3195,6 +3334,18 @@ mod tests {
         assert_eq!(offsets, vec![0.0, 44.0, 120.0]);
         assert_eq!(total, 156.0);
         assert_eq!(toast_stack_offsets(&[]), (Vec::new(), 0.0));
+    }
+
+    #[test]
+    fn hovering_a_toast_holds_the_stack() {
+        let rects = [
+            egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 40.0)),
+            egui::Rect::from_min_size(egui::pos2(10.0, 60.0), egui::vec2(100.0, 40.0)),
+        ];
+        assert!(pointer_over_toast(&rects, Some(egui::pos2(50.0, 70.0))));
+        assert!(!pointer_over_toast(&rects, Some(egui::pos2(50.0, 55.0))));
+        assert!(!pointer_over_toast(&rects, None));
+        assert!(!pointer_over_toast(&[], Some(egui::pos2(50.0, 70.0))));
     }
 
     #[test]

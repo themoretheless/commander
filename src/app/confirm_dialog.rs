@@ -1343,11 +1343,7 @@ impl App {
             if collision == crate::filesystem_policy::CollisionPolicy::Ask {
                 transfer.start_when_ready = false;
             }
-            transfer.policy = match collision {
-                crate::filesystem_policy::CollisionPolicy::Ask => OverwritePolicy::Ask,
-                crate::filesystem_policy::CollisionPolicy::KeepBoth => OverwritePolicy::KeepBoth,
-                crate::filesystem_policy::CollisionPolicy::Skip => OverwritePolicy::SkipAll,
-            };
+            transfer.policy = OverwritePolicy::from(collision);
         }
         if symlinks != previous_symlinks {
             let repaint = ui.ctx().clone();

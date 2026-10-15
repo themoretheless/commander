@@ -108,7 +108,11 @@ impl ListingState {
     pub(super) fn mark_incomplete(&mut self, binding: PathBuf, status: DirStatus) -> bool {
         debug_assert!(matches!(
             status,
-            DirStatus::Denied | DirStatus::Gone | DirStatus::Partial | DirStatus::Loading
+            DirStatus::Denied
+                | DirStatus::Unavailable
+                | DirStatus::Gone
+                | DirStatus::Partial
+                | DirStatus::Loading
         ));
         if self.binding != binding {
             self.binding = binding;
@@ -227,6 +231,7 @@ mod tests {
 
     fn entry(name: &str, modified: SystemTime) -> FileEntry {
         FileEntry {
+            permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             path: PathBuf::from("/test").join(name),

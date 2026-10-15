@@ -51,6 +51,18 @@ impl CollisionPolicy {
     }
 }
 
+/// The transfer overwrite policy a collision choice stages. There is no
+/// collision choice for Overwrite All; that only comes from a conflict answer.
+impl From<CollisionPolicy> for crate::transfer::OverwritePolicy {
+    fn from(collision: CollisionPolicy) -> Self {
+        match collision {
+            CollisionPolicy::Ask => Self::Ask,
+            CollisionPolicy::KeepBoth => Self::KeepBoth,
+            CollisionPolicy::Skip => Self::SkipAll,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamePolicy {
     pub normalization: NormalizationForm,
@@ -512,6 +524,23 @@ impl FixtureKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collision_policy_maps_to_matching_overwrite_policy() {
+        use crate::transfer::OverwritePolicy;
+        assert_eq!(
+            OverwritePolicy::from(CollisionPolicy::Ask),
+            OverwritePolicy::Ask
+        );
+        assert_eq!(
+            OverwritePolicy::from(CollisionPolicy::KeepBoth),
+            OverwritePolicy::KeepBoth
+        );
+        assert_eq!(
+            OverwritePolicy::from(CollisionPolicy::Skip),
+            OverwritePolicy::SkipAll
+        );
+    }
 
     #[test]
     fn normalization_preview_exposes_changes_and_case_collisions() {

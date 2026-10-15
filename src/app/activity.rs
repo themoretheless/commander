@@ -609,12 +609,23 @@ impl App {
             // Errors collected during the transfer
             if error_count > 0 {
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(format!("{}:", plural(error_count, "error")))
-                        .size(12.0)
-                        .strong()
-                        .color(t.accent_red),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{}:", plural(error_count, "error")))
+                            .size(12.0)
+                            .strong()
+                            .color(t.accent_red),
+                    );
+                    if ui
+                        .small_button("Copy errors")
+                        .on_hover_text("Copy every error of this transfer to the clipboard")
+                        .clicked()
+                    {
+                        // The visible list is capped; the copy takes them all.
+                        let text = errors_clipboard_text(&crate::lock_util::recover(&state).errors);
+                        self.write_clipboard(&text, &plural(error_count, "error"), ctx);
+                    }
+                });
                 egui::ScrollArea::vertical()
                     .id_salt("transfer_errors")
                     .max_height(120.0)
@@ -1090,6 +1101,11 @@ fn caption_on_fill(fill: Color32, base: Color32, dark: Color32) -> Color32 {
     }
 }
 
+/// Clipboard text for "Copy errors": every error, one per line, oldest first.
+fn errors_clipboard_text(errors: &[String]) -> String {
+    errors.join("\n")
+}
+
 /// One row of the details view's error list.
 #[derive(Debug, PartialEq)]
 struct ErrorRow {
@@ -1163,10 +1179,11 @@ fn graph_speeds(samples: &[(f64, f64)]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackgroundTransfer, FileLine, TransferLine, announce, background_transfer_text,
-        caption_on_fill, delta_text, file_line, format_eta, graph_speeds, labeled_error_rows,
-        operations_panel_hint, phase_progress_text, phase_row, requeued_text, review_text,
-        right_aligned_in_reading_order, speed_text, strip_bar, transfer_status_text,
+        BackgroundTransfer, DETAIL_ERROR_ROWS, FileLine, TransferLine, announce,
+        background_transfer_text, caption_on_fill, delta_text, errors_clipboard_text, file_line,
+        format_eta, graph_speeds, labeled_error_rows, operations_panel_hint, phase_progress_text,
+        phase_row, requeued_text, review_text, right_aligned_in_reading_order, speed_text,
+        strip_bar, transfer_status_text,
     };
     use crate::operation::{ClassifiedFailure, FailureClass};
 
@@ -1180,6 +1197,17 @@ mod tests {
         assert_eq!(format_eta(7_503.0), "2:05:03");
         // A wild estimate saturates instead of wrapping or panicking.
         assert!(format_eta(1e30).ends_with(":15"));
+    }
+
+    #[test]
+    fn copied_errors_include_every_error_one_per_line() {
+        let errors: Vec<String> = (0..DETAIL_ERROR_ROWS + 5)
+            .map(|index| format!("Failed to copy: f{index}"))
+            .collect();
+        let text = errors_clipboard_text(&errors);
+        assert_eq!(text.lines().count(), DETAIL_ERROR_ROWS + 5);
+        assert_eq!(text.lines().next(), Some("Failed to copy: f0"));
+        assert!(!text.ends_with('\n'));
     }
 
     #[test]

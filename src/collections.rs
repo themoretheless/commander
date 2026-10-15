@@ -129,12 +129,32 @@ pub struct VirtualEntry {
     pub entry: FileEntry,
 }
 
+/// A root the view could not list, with why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnavailableRoot {
+    pub path: PathBuf,
+    pub kind: std::io::ErrorKind,
+}
+
+impl UnavailableRoot {
+    /// A short reason for the dialog: missing vs denied vs anything else.
+    pub fn reason(&self) -> &'static str {
+        use std::io::ErrorKind;
+        match self.kind {
+            ErrorKind::NotFound => "missing",
+            ErrorKind::PermissionDenied => "permission denied",
+            ErrorKind::NotADirectory => "not a folder",
+            _ => "cannot be read",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ViewEvent {
     Batch(Vec<VirtualEntry>),
     Complete {
         scanned: usize,
-        unavailable_roots: Vec<PathBuf>,
+        unavailable_roots: Vec<UnavailableRoot>,
         truncated: bool,
         cancelled: bool,
     },
@@ -190,9 +210,15 @@ fn spawn_view_with_cap(
             if worker_cancelled.load(Ordering::Acquire) {
                 break;
             }
-            let Ok(read_dir) = std::fs::read_dir(&root) else {
-                unavailable_roots.push(root);
-                continue;
+            let read_dir = match std::fs::read_dir(&root) {
+                Ok(read_dir) => read_dir,
+                Err(error) => {
+                    unavailable_roots.push(UnavailableRoot {
+                        path: root,
+                        kind: error.kind(),
+                    });
+                    continue;
+                }
             };
             let mut entries: Vec<_> = read_dir.filter_map(Result::ok).collect();
             entries.retain(|entry| listed(&entry.file_name(), show_hidden));
@@ -437,7 +463,32 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(unavailable, vec![missing]);
+        assert_eq!(
+            unavailable,
+            vec![UnavailableRoot {
+                path: missing,
+                kind: std::io::ErrorKind::NotFound,
+            }]
+        );
+        assert_eq!(unavailable[0].reason(), "missing");
+    }
+
+    #[test]
+    fn unavailable_reasons_tell_missing_from_denied() {
+        let reason = |kind| {
+            UnavailableRoot {
+                path: PathBuf::from("/x"),
+                kind,
+            }
+            .reason()
+        };
+        assert_eq!(reason(std::io::ErrorKind::NotFound), "missing");
+        assert_eq!(
+            reason(std::io::ErrorKind::PermissionDenied),
+            "permission denied"
+        );
+        assert_eq!(reason(std::io::ErrorKind::NotADirectory), "not a folder");
+        assert_eq!(reason(std::io::ErrorKind::Other), "cannot be read");
     }
 
     fn view_names(root: &Path, show_hidden: bool) -> Vec<String> {

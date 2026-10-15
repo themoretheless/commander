@@ -1495,12 +1495,18 @@ pub fn mark_placement_placed(
     })
 }
 
+/// Durably record a step's completed effect.
+///
+/// `Err` means the completion was not recorded. Once the step is durably
+/// `Completed`, a failure to release the overwrite backup does not undo
+/// that: it comes back as `Ok(Some(warning))` so the caller can report the
+/// kept backup instead of a failed journal update.
 pub fn mark_completed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
     destination: &Path,
     fast_path: crate::transfer_tuning::FastPath,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let destination_after = PathIdentity::observe_deep(destination)
         .map_err(|error| format!("Could not capture completed effect: {error}"))?;
     let replacement = mutate(|journal| {
@@ -1551,12 +1557,18 @@ pub fn mark_completed(
         Ok(step.replacement.clone())
     })?;
 
-    if let Some(replacement) = replacement {
-        let backup = PathIdentity::observe_deep(&replacement.path)
-            .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))?;
-        release_overwrite_backup(operation_id, key, &replacement, &backup)?;
-    }
-    Ok(())
+    let Some(replacement) = replacement else {
+        return Ok(None);
+    };
+    let cleanup = PathIdentity::observe_deep(&replacement.path)
+        .map_err(|error| format!("Could not inspect overwrite backup cleanup: {error}"))
+        .and_then(|backup| release_overwrite_backup(operation_id, key, &replacement, &backup));
+    Ok(cleanup.err().map(|error| {
+        format!(
+            "copy completed, but the overwritten original at {} was not cleaned up: {error}",
+            replacement.path.display()
+        )
+    }))
 }
 
 /// A repeated completion of an already completed step must match the
@@ -1775,12 +1787,29 @@ pub fn completed_effect_is_current(
     prove_completed_effect(step)
 }
 
-pub fn step_is_settled(operation_id: &OperationId, key: &IdempotencyKey) -> Result<bool, String> {
-    let operation = operation(operation_id)?;
-    let Some(step) = operation.steps.iter().find(|step| &step.key == key) else {
-        return Ok(false);
-    };
-    settled_step(step)
+/// The step states an operation held when a run started, loaded once so the
+/// run does not lock and parse the whole journal for every item.
+///
+/// Only a previous run can have settled a step: within a run each step is
+/// checked before it is worked on and never again after it completes. The
+/// completed-effect proof is still checked against the live filesystem.
+pub struct SettledSteps {
+    steps: std::collections::HashMap<IdempotencyKey, OperationStep>,
+}
+
+impl SettledSteps {
+    pub fn load(operation_id: &OperationId) -> Result<Self, String> {
+        let steps = operation(operation_id)?
+            .steps
+            .into_iter()
+            .map(|step| (step.key.clone(), step))
+            .collect();
+        Ok(Self { steps })
+    }
+
+    pub fn is_settled(&self, key: &IdempotencyKey) -> Result<bool, String> {
+        self.steps.get(key).map_or(Ok(false), settled_step)
+    }
 }
 
 pub fn step_checkpoint(
@@ -2335,56 +2364,12 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
             staging.display()
         ));
     }
-    let source = PathIdentity::observe_deep(&step.source)
-        .map_err(|error| format!("Could not verify checkpoint source: {error}"))?;
-    if !checkpoint.source.same_binding(&source) {
-        return Err(format!(
-            "Recovery source changed after checkpoint: {}",
-            step.source.display()
-        ));
-    }
-    let partial = PathIdentity::observe_deep(staging)
-        .map_err(|error| format!("Could not verify checkpoint staging: {error}"))?;
-    let ids_known = checkpoint
-        .partial
-        .volume
-        .zip(checkpoint.partial.file_id)
-        .is_some()
-        && partial.volume.zip(partial.file_id).is_some();
-    // Without file ids (Windows) a prefix staging cannot be followed by
-    // identity, and the tail written after the last checkpoint changes its
-    // size and mtime. The prefix digests below prove the resumed bytes.
-    let same_object =
-        if !ids_known && checkpoint.layout == crate::transfer::CheckpointLayout::Prefix {
-            checkpoint.partial.exists && partial.exists && checkpoint.partial.kind == partial.kind
-        } else {
-            checkpoint.partial.same_object(&partial)
-        };
-    if !same_object
-        || partial.kind != Some(crate::path_identity::PathKind::File)
-        || !checkpoint.size_fits(&partial)
-    {
-        return Err(format!(
-            "Recovery staging changed after checkpoint: {}",
-            staging.display()
-        ));
-    }
-    let expected = checkpoint.content_digest.ok_or_else(|| {
+    checkpoint.verify(&step.source, staging).map_err(|reason| {
         format!(
-            "Recovery checkpoint has no content proof; inspect manually: {}",
+            "Recovery checkpoint cannot be used ({reason}); inspect manually: {}",
             staging.display()
         )
     })?;
-    let partial_digest = crate::transfer::prefix_digest(staging, checkpoint.offset)
-        .map_err(|error| format!("Could not hash recovery staging: {error}"))?;
-    let source_digest = crate::transfer::prefix_digest(&step.source, checkpoint.offset)
-        .map_err(|error| format!("Could not hash recovery source: {error}"))?;
-    if partial_digest != expected || source_digest != expected {
-        return Err(format!(
-            "Recovery checkpoint bytes changed after proof: {}",
-            staging.display()
-        ));
-    }
     Ok(Some(checkpoint.clone()))
 }
 
@@ -2475,20 +2460,30 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
 }
 
 fn restore_version_item(step: &OperationStep, effect: &Path) -> RepairItem {
-    let has_version = step
+    let receipt_has_version = step
         .rollback
         .as_ref()
-        .is_some_and(|receipt| receipt.version.is_some())
-        || crate::version_store::record_for_key(&step.key).is_some();
+        .is_some_and(|receipt| receipt.version.is_some());
+    let stored = if receipt_has_version {
+        Ok(true)
+    } else {
+        crate::version_store::record_for_key(&step.key).map(|record| record.is_some())
+    };
+    let (action, automatic) = match stored {
+        Ok(true) => ("Restore replaced local version".to_string(), true),
+        Ok(false) => (
+            "No preserved version of the replaced original was found; inspect manually".to_string(),
+            false,
+        ),
+        Err(error) => (
+            format!("Could not read the version store ({error}); inspect manually"),
+            false,
+        ),
+    };
     RepairItem {
         path: effect.to_path_buf(),
-        action: if has_version {
-            "Restore replaced local version"
-        } else {
-            "No preserved version of the replaced original was found; inspect manually"
-        }
-        .to_string(),
-        automatic: has_version,
+        action,
+        automatic,
     }
 }
 
@@ -2604,6 +2599,7 @@ fn rollback_version_receipt(
         return Ok(None);
     }
     let version = crate::version_store::record_for_key(&step.key)
+        .map_err(|error| format!("Could not read the version store: {error}"))?
         .ok_or_else(|| "Replaced destination has no local version".to_string())?;
     if version.key != step.key || version.original != effect {
         return Err("Replaced destination version is bound to another journal step".to_string());

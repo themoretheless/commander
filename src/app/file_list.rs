@@ -1,13 +1,29 @@
 use super::*;
 
+/// Why a row has no context menu: the menu binds to the file identity
+/// captured with the listing, so a row without one cannot get a menu.
+fn context_menu_unavailable_reason(identity: &crate::panel::ListingIdentity) -> Option<String> {
+    match identity {
+        crate::panel::ListingIdentity::Captured(_) => None,
+        crate::panel::ListingIdentity::CaptureFailed(failure) => Some(format!(
+            "Menu unavailable: file identity could not be read ({})",
+            failure.message
+        )),
+        crate::panel::ListingIdentity::Unavailable => {
+            Some("Menu unavailable: file identity could not be read".to_string())
+        }
+    }
+}
+
+/// The context-menu request for a row, or the reason it has none.
 fn context_menu_candidate(
     entry: &crate::panel::FileEntry,
     trigger: crate::ports::ContextMenuTrigger,
     row_rect: egui::Rect,
     response: &egui::Response,
-) -> Option<ui_state::ContextMenuCandidate> {
+) -> Result<ui_state::ContextMenuCandidate, String> {
     let crate::panel::ListingIdentity::Captured(expected) = &entry.identity else {
-        return None;
+        return Err(context_menu_unavailable_reason(&entry.identity).unwrap_or_default());
     };
     // AppKit converts this anchor through the full content view. Using the
     // viewport origin keeps egui and AppKit coordinates aligned when a safe
@@ -37,7 +53,7 @@ fn context_menu_candidate(
             })
         }
     };
-    Some(ui_state::ContextMenuCandidate {
+    Ok(ui_state::ContextMenuCandidate {
         target: crate::ports::ContextMenuTarget {
             path: entry.path.clone(),
             expected: expected.clone(),
@@ -174,6 +190,7 @@ fn folder_changed(ctx: &egui::Context, panel_side: &str, path: &std::path::Path)
 enum EmptyAction {
     Reveal,
     GoUp,
+    Retry,
     ClearFilters,
 }
 
@@ -192,11 +209,11 @@ fn empty_state(
     filter_active: bool,
 ) -> (
     &'static str,
-    &'static str,
+    std::borrow::Cow<'static, str>,
     Option<(&'static str, EmptyAction)>,
 ) {
     use crate::panel::DirStatus;
-    match status {
+    let (glyph, message, action) = match status {
         DirStatus::Denied => (
             "\u{1f512}",
             "No permission to read this folder",
@@ -209,6 +226,11 @@ fn empty_state(
             "This folder no longer exists",
             Some(("Go up", EmptyAction::GoUp)),
         ),
+        DirStatus::Unavailable => (
+            "\u{26a0}",
+            "This folder can't be read right now",
+            Some(("Retry", EmptyAction::Retry)),
+        ),
         DirStatus::Loading => ("\u{2026}", "Loading folder\u{2026}", None),
         _ if filter_active => (
             "\u{1f50d}",
@@ -216,7 +238,21 @@ fn empty_state(
             Some(("Clear filters", EmptyAction::ClearFilters)),
         ),
         DirStatus::Partial => ("\u{21bb}", "Folder changed while reading; retrying", None),
+        DirStatus::HiddenOnly(count) => {
+            return ("\u{1f4c2}", hidden_only_message(count).into(), None);
+        }
         DirStatus::Listed | DirStatus::Empty => ("\u{1f4c2}", "Empty", None),
+    };
+    (glyph, message.into(), action)
+}
+
+/// Empty-state text for a folder whose only entries are hidden, so it does
+/// not read as empty and says how to reveal them.
+fn hidden_only_message(count: usize) -> String {
+    let noun = if count == 1 { "item" } else { "items" };
+    match super::toolbar::command_shortcut(crate::command::Command::ToggleHidden) {
+        Some(shortcut) => format!("{count} hidden {noun}; press {shortcut} to show"),
+        None => format!("{count} hidden {noun}"),
     }
 }
 
@@ -347,6 +383,47 @@ const fn follow_cursor_focus(
     cursor_moved && is_active && enabled && !text_editing && focus_in_list
 }
 
+/// Temp-memory key of a pending "give the cursor row focus back" request,
+/// holding the last pass on which it may still be honored.
+const REFOCUS_CURSOR_ROW: &str = "file_list_refocus_cursor_row";
+/// Passes a refocus request stays pending: the closing modal's focused
+/// widget is only dropped by egui at the end of the pass after it vanished.
+const REFOCUS_PASSES: u64 = 3;
+
+/// Ask the active pane to put keyboard focus back on its cursor row, e.g.
+/// after a modal closed and took the focused widget with it.
+pub(super) fn request_cursor_row_refocus(ctx: &egui::Context) {
+    let deadline = ctx.cumulative_pass_nr() + REFOCUS_PASSES;
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(REFOCUS_CURSOR_ROW), deadline));
+    ctx.request_repaint();
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Refocus {
+    /// Focus the cursor row now.
+    Now,
+    /// Not yet possible (focus still held elsewhere, pane disabled); retry.
+    Wait,
+    /// Drop the request: none pending, or its window passed.
+    Drop,
+}
+
+/// What to do with a pending refocus request on pass `pass`, given whether
+/// the pane may take focus now (`eligible`: active, enabled, no text
+/// editing, and focus free or already on this list).
+const fn refocus_decision(deadline: Option<u64>, pass: u64, eligible: bool) -> Refocus {
+    match deadline {
+        Some(deadline) if pass <= deadline => {
+            if eligible {
+                Refocus::Now
+            } else {
+                Refocus::Wait
+            }
+        }
+        _ => Refocus::Drop,
+    }
+}
+
 /// Per-pane id of the list row that last held keyboard focus.
 fn list_focus_key(panel_side: &str) -> egui::Id {
     egui::Id::new(("file_list_focus", panel_side))
@@ -381,8 +458,19 @@ fn focus_cursor_row(ui: &egui::Ui, panel_side: &str, response: &egui::Response) 
 /// Footer item count with the folder size. Under a filter the size is
 /// still the whole folder's, so it is labelled as such rather than read as
 /// the size of the matching rows.
-fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<u64>) -> String {
-    let size = size.map_or_else(|| "\u{2026}".to_string(), format_size);
+fn count_summary(
+    shown: usize,
+    total: usize,
+    filters_active: bool,
+    size: Option<u64>,
+    partial: bool,
+) -> String {
+    // A total that still misses unmeasured folders is a lower bound.
+    let size = match size {
+        None => "\u{2026}".to_string(),
+        Some(bytes) if partial => format!("\u{2265} {}\u{2026}", format_size(bytes)),
+        Some(bytes) => format_size(bytes),
+    };
     if filters_active {
         format!(
             "{shown} of {} (folder {size})",
@@ -560,7 +648,7 @@ impl App {
         dragged: &[PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
-    ) -> Option<ui_state::ContextMenuCandidate> {
+    ) -> Option<Result<ui_state::ContextMenuCandidate, String>> {
         // Only claim Shift+F10 when the cursor is on a file row; on ".." or an
         // empty list there is nothing for the menu to target.
         let keyboard_context_menu_requested = is_active
@@ -581,6 +669,35 @@ impl App {
                 .ctx()
                 .data(|data| data.get_temp::<egui::Id>(list_focus_key(panel_side)));
             focused.is_none() || focused == ours
+        };
+        let refocus_cursor = is_active && {
+            let key = egui::Id::new(REFOCUS_CURSOR_ROW);
+            let deadline = ui.ctx().data(|data| data.get_temp::<u64>(key));
+            let eligible = follow_cursor_focus(
+                true,
+                is_active,
+                ui.is_enabled(),
+                crate::accessibility::text_input_state(ui.ctx())
+                    .mode()
+                    .is_some(),
+                focus_in_list,
+            );
+            match refocus_decision(deadline, ui.ctx().cumulative_pass_nr(), eligible) {
+                Refocus::Now => {
+                    ui.ctx().data_mut(|data| data.remove::<u64>(key));
+                    true
+                }
+                Refocus::Wait => {
+                    ui.ctx().request_repaint();
+                    false
+                }
+                Refocus::Drop => {
+                    if deadline.is_some() {
+                        ui.ctx().data_mut(|data| data.remove::<u64>(key));
+                    }
+                    false
+                }
+            }
         };
         let follow_focus = |ui: &egui::Ui, cursor_moved: bool| {
             follow_cursor_focus(
@@ -694,6 +811,8 @@ impl App {
                         if follow_focus(ui, true) {
                             focus_cursor_row(ui, panel_side, &up_row);
                         }
+                    } else if is_cursor_on_up && refocus_cursor {
+                        focus_cursor_row(ui, panel_side, &up_row);
                     }
                     if up_row.double_clicked() {
                         panel.go_up();
@@ -766,6 +885,7 @@ impl App {
                                         ))
                                     }
                                     EmptyAction::GoUp => panel.go_up(),
+                                    EmptyAction::Retry => panel.refresh(),
                                     EmptyAction::ClearFilters => panel.clear_filters(),
                                 }
                             }
@@ -940,29 +1060,17 @@ impl App {
                         is_cursor,
                         entry.is_dir,
                     );
-                    row_resp.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::SelectableLabel,
-                            ui.is_enabled(),
-                            semantics.selected,
-                            row_spoken_label(
-                                &semantics.label,
-                                item_count,
-                                compare_status.map(|status| compare_marker(status).1),
-                            ),
-                        )
-                    });
-                    ui.ctx().accesskit_node_builder(row_resp.id, |node| {
-                        node.set_role(egui::accesskit::Role::Row);
-                        node.set_row_index(grid_row_index(idx, can_go_up));
-                        node.set_selected(semantics.selected);
-                        if ui.is_enabled() {
-                            node.add_action(egui::accesskit::Action::ShowContextMenu);
-                        }
-                        if let Some(expanded) = semantics.expanded {
-                            node.set_expanded(expanded);
-                        }
-                    });
+                    crate::accessibility::publish_row_semantics(
+                        ui,
+                        &row_resp,
+                        &semantics,
+                        row_spoken_label(
+                            &semantics.label,
+                            item_count,
+                            compare_status.map(|status| compare_marker(status).1),
+                        ),
+                        grid_row_index(idx, can_go_up),
+                    );
                     let accesskit_context_menu_requested = ui.is_enabled()
                         && crate::accessibility::consume_show_context_menu(ui.ctx(), row_resp.id);
                     #[cfg(feature = "visual-qa")]
@@ -979,7 +1087,7 @@ impl App {
                         ui.scroll_to_rect(row_rect, Some(Align::Center));
                         scrolled = true;
                     }
-                    if is_cursor && follow_focus(ui, scroll_pending) {
+                    if is_cursor && (refocus_cursor || follow_focus(ui, scroll_pending)) {
                         focus_cursor_row(ui, panel_side, &row_resp);
                     }
 
@@ -1108,7 +1216,7 @@ impl App {
                         }
 
                         if entry.is_dir {
-                            Self::paint_folder_icon(ui, item_count);
+                            Self::paint_folder_icon(ui, item_count, t.folder);
                         } else {
                             ui.add_space(3.0);
                             let (red, green, blue) = crate::file_color::kind_color(
@@ -1232,23 +1340,23 @@ impl App {
                     {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
-                        context_menu_request = context_menu_candidate(
+                        context_menu_request = Some(context_menu_candidate(
                             entry,
                             crate::ports::ContextMenuTrigger::Keyboard,
                             full_rect,
                             &row_resp,
-                        );
+                        ));
                     }
 
                     if row_resp.secondary_clicked() {
                         row_resp.request_focus();
                         pending_cursor = Some(row_cursor);
-                        context_menu_request = context_menu_candidate(
+                        context_menu_request = Some(context_menu_candidate(
                             entry,
                             crate::ports::ContextMenuTrigger::Pointer,
                             full_rect,
                             &row_resp,
-                        );
+                        ));
                     }
 
                     if row_resp.double_clicked() {
@@ -1389,7 +1497,13 @@ impl App {
                                     .truncate()
                             };
                             ui.add(footer(
-                                count_summary(shown, total, filters_active, overview.total),
+                                count_summary(
+                                    shown,
+                                    total,
+                                    filters_active,
+                                    overview.total,
+                                    overview.partial,
+                                ),
                                 t.text_muted,
                             ));
                             if filters_active {
@@ -1486,7 +1600,7 @@ impl App {
             });
     }
 
-    pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>) {
+    pub(crate) fn paint_folder_icon(ui: &mut egui::Ui, count: Option<usize>, color: Color32) {
         let size = Vec2::new(24.0, 18.0);
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         let p = ui.painter();
@@ -1495,7 +1609,6 @@ impl App {
         let w = size.x;
         let h = size.y;
 
-        let color = Color32::from_rgb(200, 175, 100);
         let s = Stroke::new(1.2_f32, color);
 
         let tab_w = w * 0.35;
@@ -1602,14 +1715,38 @@ pub(super) fn append_highlighted(
 #[cfg(test)]
 mod tests {
     use super::{
-        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
-        append_highlighted, click_range, compare_marker, count_summary, cursor_chevron_fits,
-        cursor_row_to_reveal, drop_target_writable, empty_state, filter_footer, folder_changed,
-        folder_extremes, follow_cursor_focus, grid_row_index, highlight_name_job,
-        map_ranges_to_display, name_char_budget, name_column_width, parent_row_label,
-        row_click_kind, row_content_height, row_spoken_label, selection_footer,
-        selection_size_label, selection_summary_with, visible_rows, visible_selection_summary,
+        EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, Refocus, RowClick,
+        accepts_row_drop, append_highlighted, click_range, compare_marker,
+        context_menu_unavailable_reason, count_summary, cursor_chevron_fits, cursor_row_to_reveal,
+        drop_target_writable, empty_state, filter_footer, folder_changed, folder_extremes,
+        follow_cursor_focus, grid_row_index, highlight_name_job, map_ranges_to_display,
+        name_char_budget, name_column_width, parent_row_label, refocus_decision, row_click_kind,
+        row_content_height, row_spoken_label, selection_footer, selection_size_label,
+        selection_summary_with, visible_rows, visible_selection_summary,
     };
+
+    #[test]
+    fn modal_close_refocus_waits_for_free_focus_then_expires() {
+        assert_eq!(refocus_decision(None, 5, true), Refocus::Drop);
+        assert_eq!(refocus_decision(Some(8), 5, false), Refocus::Wait);
+        assert_eq!(refocus_decision(Some(8), 8, true), Refocus::Now);
+        assert_eq!(refocus_decision(Some(8), 9, true), Refocus::Drop);
+        assert_eq!(refocus_decision(Some(8), 9, false), Refocus::Drop);
+    }
+
+    #[test]
+    fn rows_without_a_captured_identity_explain_the_missing_menu() {
+        let failed = crate::panel::ListingIdentity::CaptureFailed(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Denied,
+            message: "permission denied".to_string(),
+        });
+        let reason = context_menu_unavailable_reason(&failed).unwrap();
+        assert!(reason.starts_with("Menu unavailable"), "{reason}");
+        assert!(reason.contains("permission denied"), "{reason}");
+        assert!(
+            context_menu_unavailable_reason(&crate::panel::ListingIdentity::Unavailable).is_some()
+        );
+    }
 
     #[test]
     fn degenerate_viewport_never_inverts_the_row_window() {
@@ -1768,7 +1905,12 @@ mod tests {
     fn unlistable_folder_wins_over_the_filter_empty_state() {
         use crate::panel::DirStatus;
         // A remembered filter must not turn these into "No matches".
-        for status in [DirStatus::Denied, DirStatus::Gone, DirStatus::Loading] {
+        for status in [
+            DirStatus::Denied,
+            DirStatus::Unavailable,
+            DirStatus::Gone,
+            DirStatus::Loading,
+        ] {
             assert_ne!(empty_state(status, true).1, "No matches", "{status:?}");
             assert_eq!(empty_state(status, true), empty_state(status, false));
         }
@@ -1791,6 +1933,27 @@ mod tests {
         if !cfg!(target_os = "macos") {
             assert!(!label.contains("Finder"), "{label}");
         }
+    }
+
+    #[test]
+    fn folder_of_only_hidden_items_does_not_read_as_empty() {
+        use crate::panel::DirStatus;
+        let (_, message, _) = empty_state(DirStatus::HiddenOnly(3), false);
+        assert!(message.starts_with("3 hidden items"), "{message}");
+        assert_ne!(message, "Empty");
+        let (_, one, _) = empty_state(DirStatus::HiddenOnly(1), false);
+        assert!(one.starts_with("1 hidden item;"), "{one}");
+        // A filter still explains its own empty result.
+        assert_eq!(empty_state(DirStatus::HiddenOnly(3), true).1, "No matches");
+    }
+
+    #[test]
+    fn unavailable_folder_offers_a_retry_not_a_permission_message() {
+        use crate::panel::DirStatus;
+        let (glyph, message, action) = empty_state(DirStatus::Unavailable, false);
+        assert!(!glyph.contains('\u{fe0f}'));
+        assert!(!message.contains("permission"), "{message}");
+        assert_eq!(action, Some(("Retry", EmptyAction::Retry)));
     }
 
     #[test]
@@ -1966,18 +2129,29 @@ mod tests {
 
     #[test]
     fn footer_count_is_singular_for_one_item() {
-        assert_eq!(count_summary(1, 1, false, Some(3)), "1 item (3 B)");
-        assert_eq!(count_summary(2, 2, false, None), "2 items (\u{2026})");
+        assert_eq!(count_summary(1, 1, false, Some(3), false), "1 item (3 B)");
         assert_eq!(
-            count_summary(0, 1, true, Some(3)),
+            count_summary(2, 2, false, None, false),
+            "2 items (\u{2026})"
+        );
+        assert_eq!(
+            count_summary(0, 1, true, Some(3), false),
             "0 of 1 item (folder 3 B)"
+        );
+    }
+
+    #[test]
+    fn partial_folder_total_reads_as_a_lower_bound() {
+        assert_eq!(
+            count_summary(2, 2, false, Some(3), true),
+            "2 items (\u{2265} 3 B\u{2026})"
         );
     }
 
     #[test]
     fn filtered_footer_marks_the_size_as_the_folder_total() {
         assert_eq!(
-            count_summary(12, 400, true, Some(2048)),
+            count_summary(12, 400, true, Some(2048), false),
             format!(
                 "12 of 400 items (folder {})",
                 crate::panel::format_size(2048)
@@ -2084,6 +2258,30 @@ mod tests {
                 render_list_frame(&ctx, &mut panel, Vec::new());
             }
         }
+    }
+
+    #[test]
+    fn a_refocus_request_puts_focus_back_on_the_cursor_row() {
+        let temp = crate::testutil::TempDir::new();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(temp.path().join(name), name).expect("write file");
+        }
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.set_cursor(2);
+        let ctx = egui::Context::default();
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        assert_eq!(ctx.memory(|memory| memory.focused()), None);
+
+        super::request_cursor_row_refocus(&ctx);
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        let focused = ctx.memory(|memory| memory.focused());
+        assert!(focused.is_some());
+        let ours = ctx.data(|data| data.get_temp::<egui::Id>(super::list_focus_key("left")));
+        assert_eq!(focused, ours, "focus is on this list's row");
+        assert_eq!(panel.cursor(), 2, "refocusing does not move the cursor");
     }
 
     #[test]

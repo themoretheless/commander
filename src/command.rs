@@ -25,6 +25,14 @@ pub enum Command {
     ExtendSelectUp,
     /// Shift+Down: select the current row and move down (range selection).
     ExtendSelectDown,
+    /// Shift+Home: select every row from the cursor up to the first entry.
+    ExtendSelectHome,
+    /// Shift+End: select every row from the cursor down to the last entry.
+    ExtendSelectEnd,
+    /// Shift+PageUp: select the rows from the cursor one page up.
+    ExtendSelectPageUp,
+    /// Shift+PageDown: select the rows from the cursor one page down.
+    ExtendSelectPageDown,
     /// Enter: open file / enter dir / go up on the ".." row.
     Activate,
     GoUp,
@@ -89,6 +97,8 @@ pub enum Command {
     DiskTreemap,
     /// Cmd+F: open the recursive find sheet.
     BeginFind,
+    /// Cmd+Shift+F: move keyboard focus into the active pane's filter box.
+    FocusFilter,
     /// Open the saved-search (smart folder) picker.
     OpenSavedSearch,
     /// Open named multi-root project collections.
@@ -120,6 +130,14 @@ pub enum Command {
     /// Show/hide the transfer-queue panel (pause/resume/reorder/cancel the
     /// jobs waiting behind the active transfer).
     ToggleQueuePanel,
+    /// Turn panel comparison (difference highlighting) on or off.
+    ToggleCompare,
+    /// Switch between the light and dark theme.
+    ToggleTheme,
+    /// Show or hide the size bars behind file sizes.
+    ToggleSizeBars,
+    /// Show or hide the folder sidebar.
+    ToggleFolderSidebar,
     /// Open the searchable history of completed moves/deletes/batch-renames.
     OpenReceipts,
     /// Open interrupted-operation recovery, rollback, and staging cleanup.
@@ -129,6 +147,12 @@ pub enum Command {
     ToggleFoldersFirst,
     /// Toggle natural (`file2` < `file10`) vs plain A-Z name ordering.
     ToggleNaturalSort,
+    /// Sort the active panel by name (again: flip the order).
+    SortByName,
+    /// Sort the active panel by size (again: flip the order).
+    SortBySize,
+    /// Sort the active panel by modification time (again: flip the order).
+    SortByModified,
     /// Sort the active panel by file extension.
     SortByExtension,
     /// Sort the active panel by coarse kind (folder/image/doc/...).
@@ -202,6 +226,8 @@ pub struct CommandContext {
     pub selected_entries: usize,
     pub listing_entries: usize,
     pub cursor_entry: bool,
+    /// The cursor row is already selected, so Space would deselect it.
+    pub cursor_selected: bool,
     pub cursor_is_dir: bool,
     pub cursor_is_file: bool,
     pub cursor_has_extension: bool,
@@ -427,7 +453,8 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         SelectJunk | SelectLargest | SelectEmptyFiles => VISIBLE_FILES,
         SelectLikeCursor => EXTENSION,
         CopyListingText | CopyListingCsv | CopyListingMarkdown => LISTING,
-        ToggleSelect | ExtendSelectUp | ExtendSelectDown => CURSOR,
+        ToggleSelect | ExtendSelectUp | ExtendSelectDown | ExtendSelectHome | ExtendSelectEnd
+        | ExtendSelectPageUp | ExtendSelectPageDown => CURSOR,
         JumpBack => BACK,
         JumpForward => FORWARD,
         GoUp => UP,
@@ -476,7 +503,11 @@ pub fn contextual_shortcuts(context: &CommandContext) -> Vec<ShortcutHint> {
         },
         ShortcutHint {
             key: "Space",
-            label: "Select",
+            label: if context.cursor_selected {
+                "Deselect"
+            } else {
+                "Select"
+            },
             command: Command::ToggleSelect,
         },
         ShortcutHint {
@@ -575,6 +606,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Diff files", "Cmd+D", "view diff compare text", Command::DiffFiles),
     entry("Disk usage map", "Cmd+Shift+M", "view disk usage map treemap size", Command::DiskTreemap),
     entry("Find files", "Cmd+F", "file find recursive search", Command::BeginFind),
+    entry("Filter this pane", "Cmd+Shift+F", "filter pane narrow quick search focus", Command::FocusFilter),
     entry("Open saved search", "", "file saved search smart folder", Command::OpenSavedSearch),
     entry("Project collections", "", "project collection workspace roots virtual view", Command::OpenProjectCollections),
     entry("Copy path", "Cmd+Shift+C", "clipboard copy path", Command::CopyPath),
@@ -622,9 +654,16 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Toggle hidden files", "Cmd+H", "view hidden show hidden dotfiles invisible", Command::ToggleHidden),
     entry("Sort: folders first (toggle)", "", "sort folders first dirs top order grouping directories", Command::ToggleFoldersFirst),
     entry("Sort: natural order (toggle)", "", "sort natural numeric ascii alphabetical order names file10", Command::ToggleNaturalSort),
+    entry("Sort by name", "", "sort name alphabetical filename order a-z", Command::SortByName),
+    entry("Sort by size", "", "sort size bytes largest smallest big", Command::SortBySize),
+    entry("Sort by modified", "", "sort modified date time newest oldest recent mtime", Command::SortByModified),
     entry("Sort by extension", "", "sort extension type suffix group ext", Command::SortByExtension),
     entry("Sort by kind", "", "sort kind category group images docs code archives", Command::SortByKind),
     entry("Reverse sort order", "", "sort reverse flip order ascending descending invert", Command::ReverseSort),
+    entry("Compare panels (toggle)", "", "compare panels differences diff highlight mirror", Command::ToggleCompare),
+    entry("Switch light/dark theme", "", "view theme dark light mode appearance colors", Command::ToggleTheme),
+    entry("Size bars (toggle)", "", "view size bars graph usage proportion", Command::ToggleSizeBars),
+    entry("Folder sidebar (toggle)", "", "view folder sidebar tree navigation outline", Command::ToggleFolderSidebar),
     entry("Cycle density", "Cmd+Shift+D", "view density rows compact comfortable spacious", Command::CycleDensity),
     entry("Toggle preview", "F3", "view preview quick look viewer inspect", Command::TogglePreview),
     entry("Equalize panels", "Cmd+E", "panels equalize same folder mirror", Command::EqualizePanels),
@@ -876,6 +915,10 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         Tab => Some(Command::SwitchPanel),
         Up if press.shift => Some(Command::ExtendSelectUp),
         Down if press.shift => Some(Command::ExtendSelectDown),
+        Home if press.shift => Some(Command::ExtendSelectHome),
+        End if press.shift => Some(Command::ExtendSelectEnd),
+        PageUp if press.shift => Some(Command::ExtendSelectPageUp),
+        PageDown if press.shift => Some(Command::ExtendSelectPageDown),
         Up => Some(Command::CursorUp),
         Down => Some(Command::CursorDown),
         Home => Some(Command::CursorHome),
@@ -903,6 +946,7 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         D if press.command => Some(Command::DiffFiles),
         M if press.command && press.shift => Some(Command::DiskTreemap),
         N if press.command && press.shift => Some(Command::GatherIntoFolder),
+        F if press.command && press.shift => Some(Command::FocusFilter),
         F if press.command => Some(Command::BeginFind),
         C if press.command && press.shift => Some(Command::CopyPath),
         F3 => Some(Command::TogglePreview),
@@ -1141,6 +1185,25 @@ mod tests {
                 .iter()
                 .all(|hint| matches!(hint.command, Command::RequestCopy | Command::RequestMove))
         );
+    }
+
+    #[test]
+    fn space_hint_names_the_toggle_it_would_perform() {
+        let space_label = |cursor_selected| {
+            let context = CommandContext {
+                cursor_entry: true,
+                cursor_is_file: true,
+                cursor_selected,
+                picked_entries: 1,
+                ..CommandContext::default()
+            };
+            contextual_shortcuts(&context)
+                .into_iter()
+                .find(|hint| hint.command == Command::ToggleSelect)
+                .map(|hint| hint.label)
+        };
+        assert_eq!(space_label(false), Some("Select"));
+        assert_eq!(space_label(true), Some("Deselect"));
     }
 
     #[test]
@@ -1499,6 +1562,20 @@ mod tests {
     }
 
     #[test]
+    fn cmd_shift_f_focuses_the_pane_filter() {
+        let cmd_shift_f = KeyPress {
+            code: KeyCode::F,
+            command: true,
+            shift: true,
+        };
+        assert_eq!(map_key(cmd_shift_f), Some(Command::FocusFilter));
+        assert_eq!(
+            filter_commands("filter pane")[0].command,
+            Command::FocusFilter
+        );
+    }
+
+    #[test]
     fn cmd_shift_m_opens_treemap() {
         let cmd_shift_m = KeyPress {
             code: KeyCode::M,
@@ -1547,6 +1624,27 @@ mod tests {
             map_key(shift_press(KeyCode::Down)),
             Some(Command::ExtendSelectDown)
         );
+        for (code, extend, plain) in [
+            (
+                KeyCode::Home,
+                Command::ExtendSelectHome,
+                Command::CursorHome,
+            ),
+            (KeyCode::End, Command::ExtendSelectEnd, Command::CursorEnd),
+            (
+                KeyCode::PageUp,
+                Command::ExtendSelectPageUp,
+                Command::CursorPageUp,
+            ),
+            (
+                KeyCode::PageDown,
+                Command::ExtendSelectPageDown,
+                Command::CursorPageDown,
+            ),
+        ] {
+            assert_eq!(map_key(shift_press(code)), Some(extend));
+            assert_eq!(map_key(press(code)), Some(plain));
+        }
     }
 
     #[test]
