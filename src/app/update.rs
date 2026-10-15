@@ -689,6 +689,13 @@ fn toast_stack_offsets(heights: &[Option<f32>]) -> (Vec<f32>, f32) {
     (offsets, y)
 }
 
+/// Whether the pointer rests on one of the shown toasts. While it does the
+/// stack holds its lifetime, so an error being read or an Undo being reached
+/// for does not vanish under the pointer.
+fn pointer_over_toast(rects: &[egui::Rect], pointer: Option<egui::Pos2>) -> bool {
+    pointer.is_some_and(|pos| rects.iter().any(|rect| rect.contains(pos)))
+}
+
 /// The visible toast text. Errors carry a warning icon so their kind is not
 /// told by the accent colour alone.
 fn toast_text(kind: crate::toasts::ToastKind, message: &str) -> String {
@@ -2405,6 +2412,7 @@ impl App {
         let undo_toast = newest_undoable_toast(active);
         // Newest on top, in the nearest corner that preserves focus and errors.
         let undo_label = format!("Undo {}", command_shortcut("Z"));
+        let mut shown = Vec::with_capacity(active.len());
         for (toast, offset) in active.iter().rev().zip(offsets) {
             let y = stack.y + offset;
             let accent = match toast.kind {
@@ -2417,7 +2425,7 @@ impl App {
             } else {
                 crate::toasts::remaining_fraction(toast, now)
             };
-            egui::Area::new(egui::Id::new(("toast", toast.id())))
+            let area = egui::Area::new(egui::Id::new(("toast", toast.id())))
                 .fixed_pos(egui::pos2(stack.x, y))
                 .order(egui::Order::Tooltip)
                 .enabled(input_enabled)
@@ -2486,6 +2494,10 @@ impl App {
                             );
                         });
                 });
+            shown.push(area.response.rect);
+        }
+        if pointer_over_toast(&shown, ctx.pointer_hover_pos()) {
+            self.toasts.hold(now);
         }
         if input_enabled && undo {
             self.ws.execute(crate::command::Command::Undo);
@@ -2558,7 +2570,7 @@ mod tests {
         dragged_split_ratio, key_bar_modifier_held, selection_hud_bottom, split_left_width,
     };
     use super::{drop_busy_reason, smart_folder_saved_toast};
-    use super::{toast_live_region, toast_stack_offsets, toast_text};
+    use super::{pointer_over_toast, toast_live_region, toast_stack_offsets, toast_text};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -3321,6 +3333,18 @@ mod tests {
         assert_eq!(offsets, vec![0.0, 44.0, 120.0]);
         assert_eq!(total, 156.0);
         assert_eq!(toast_stack_offsets(&[]), (Vec::new(), 0.0));
+    }
+
+    #[test]
+    fn hovering_a_toast_holds_the_stack() {
+        let rects = [
+            egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 40.0)),
+            egui::Rect::from_min_size(egui::pos2(10.0, 60.0), egui::vec2(100.0, 40.0)),
+        ];
+        assert!(pointer_over_toast(&rects, Some(egui::pos2(50.0, 70.0))));
+        assert!(!pointer_over_toast(&rects, Some(egui::pos2(50.0, 55.0))));
+        assert!(!pointer_over_toast(&rects, None));
+        assert!(!pointer_over_toast(&[], Some(egui::pos2(50.0, 70.0))));
     }
 
     #[test]
