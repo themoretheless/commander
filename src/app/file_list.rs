@@ -169,6 +169,57 @@ fn folder_changed(ctx: &egui::Context, panel_side: &str, path: &std::path::Path)
     })
 }
 
+/// The button an empty list offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmptyAction {
+    Reveal,
+    GoUp,
+    ClearFilters,
+}
+
+/// Label of the reveal action, named after the platform's file manager.
+const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else {
+    "Show in file manager"
+};
+
+/// Glyph, message and optional action of an empty list. A folder that
+/// cannot be listed right now (unreadable, deleted, still loading) says so
+/// even under an active filter: "No matches" would blame the filter.
+fn empty_state(
+    status: crate::panel::DirStatus,
+    filter_active: bool,
+) -> (
+    &'static str,
+    &'static str,
+    Option<(&'static str, EmptyAction)>,
+) {
+    use crate::panel::DirStatus;
+    match status {
+        DirStatus::Denied => (
+            "\u{1f512}",
+            "No permission to read this folder",
+            Some((REVEAL_LABEL, EmptyAction::Reveal)),
+        ),
+        // U+26A0 alone: no bundled font maps the U+FE0F variation selector,
+        // which rendered as a replacement box.
+        DirStatus::Gone => (
+            "\u{26a0}",
+            "This folder no longer exists",
+            Some(("Go up", EmptyAction::GoUp)),
+        ),
+        DirStatus::Loading => ("\u{2026}", "Loading folder\u{2026}", None),
+        _ if filter_active => (
+            "\u{1f50d}",
+            "No matches",
+            Some(("Clear filters", EmptyAction::ClearFilters)),
+        ),
+        DirStatus::Partial => ("\u{21bb}", "Folder changed while reading; retrying", None),
+        DirStatus::Listed | DirStatus::Empty => ("\u{1f4c2}", "Empty", None),
+    }
+}
+
 /// Spoken label of the ".." row. Like file rows it says "State: cursor"
 /// while the keyboard cursor sits on it.
 fn parent_row_label(is_cursor: bool) -> &'static str {
@@ -420,52 +471,35 @@ impl App {
                 let query = panel.search_query().trim().to_string();
 
                 if filtered.is_empty() {
-                    use crate::panel::DirStatus;
                     // Distinguish a filtered-to-nothing list, a truly empty
                     // folder, and an unreadable/vanished one.
-                    let (glyph, message, action): (&str, &str, Option<(&str, &str)>) =
-                        if crate::panel::filter_is_active(panel.search_query(), &panel.facets()) {
-                            (
-                                "\u{1f50d}",
-                                "No matches",
-                                Some(("Clear filters", "clear_filters")),
-                            )
-                        } else {
-                            match panel.dir_status() {
-                                DirStatus::Denied => (
-                                    "\u{1f512}",
-                                    "No permission to read this folder",
-                                    Some(("Open in Finder", "finder")),
-                                ),
-                                DirStatus::Gone => (
-                                    "\u{26a0}\u{fe0f}",
-                                    "This folder no longer exists",
-                                    Some(("Go up", "up")),
-                                ),
-                                DirStatus::Partial => {
-                                    ("\u{21bb}", "Folder changed while reading; retrying", None)
-                                }
-                                DirStatus::Loading => ("\u{2026}", "Loading folder\u{2026}", None),
-                                _ => ("\u{1f4c2}", "Empty", None),
-                            }
-                        };
+                    let (glyph, message, action) = empty_state(
+                        panel.dir_status(),
+                        crate::panel::filter_is_active(panel.search_query(), &panel.facets()),
+                    );
                     ui.add_space(40.0);
                     ui.with_layout(Layout::top_down(Align::Center), |ui| {
                         ui.label(egui::RichText::new(glyph).size(28.0));
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new(message).size(13.0).color(t.text_muted));
+                        let status =
+                            ui.label(egui::RichText::new(message).size(13.0).color(t.text_muted));
+                        // Announced when it appears or changes, like other
+                        // status lines.
+                        ui.ctx().accesskit_node_builder(status.id, |node| {
+                            node.set_role(egui::accesskit::Role::Status);
+                            node.set_live(egui::accesskit::Live::Polite);
+                        });
                         if let Some((label, kind)) = action {
                             ui.add_space(8.0);
                             if ui.button(label).clicked() {
                                 match kind {
-                                    "finder" => opener(crate::ports::OpenRequest::Reveal(
-                                        panel.current_path.clone(),
-                                    )),
-                                    "up" => panel.go_up(),
-                                    "clear_filters" => {
-                                        panel.clear_filters();
+                                    EmptyAction::Reveal => {
+                                        opener(crate::ports::OpenRequest::Reveal(
+                                            panel.current_path.clone(),
+                                        ))
                                     }
-                                    _ => {}
+                                    EmptyAction::GoUp => panel.go_up(),
+                                    EmptyAction::ClearFilters => panel.clear_filters(),
                                 }
                             }
                         }
@@ -1213,9 +1247,9 @@ fn highlight_name_job(
 #[cfg(test)]
 mod tests {
     use super::{
-        cursor_row_to_reveal, drop_target_writable, folder_changed, map_ranges_to_display,
-        name_char_budget, parent_row_label, selection_size_label, selection_summary_with,
-        visible_rows, visible_selection_summary,
+        EmptyAction, cursor_row_to_reveal, drop_target_writable, empty_state, folder_changed,
+        map_ranges_to_display, name_char_budget, parent_row_label, selection_size_label,
+        selection_summary_with, visible_rows, visible_selection_summary,
     };
 
     #[test]
@@ -1369,5 +1403,34 @@ mod tests {
     fn parent_row_announces_the_cursor() {
         assert_eq!(parent_row_label(false), "Parent folder");
         assert_eq!(parent_row_label(true), "Parent folder; State: cursor");
+    }
+
+    #[test]
+    fn unlistable_folder_wins_over_the_filter_empty_state() {
+        use crate::panel::DirStatus;
+        // A remembered filter must not turn these into "No matches".
+        for status in [DirStatus::Denied, DirStatus::Gone, DirStatus::Loading] {
+            assert_ne!(empty_state(status, true).1, "No matches", "{status:?}");
+            assert_eq!(empty_state(status, true), empty_state(status, false));
+        }
+        assert_eq!(empty_state(DirStatus::Listed, true).1, "No matches");
+        assert_eq!(
+            empty_state(DirStatus::Empty, true).2,
+            Some(("Clear filters", EmptyAction::ClearFilters))
+        );
+        assert_eq!(empty_state(DirStatus::Empty, false).1, "Empty");
+    }
+
+    #[test]
+    fn empty_state_text_is_renderable_and_platform_neutral() {
+        use crate::panel::DirStatus;
+        // No bundled font maps U+FE0F; it rendered as a replacement box.
+        assert!(!empty_state(DirStatus::Gone, false).0.contains('\u{fe0f}'));
+        let (_, _, action) = empty_state(DirStatus::Denied, false);
+        let (label, kind) = action.expect("denied offers a reveal");
+        assert_eq!(kind, EmptyAction::Reveal);
+        if !cfg!(target_os = "macos") {
+            assert!(!label.contains("Finder"), "{label}");
+        }
     }
 }
