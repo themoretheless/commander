@@ -250,12 +250,16 @@ impl TransferProgress {
         })
     }
 
-    /// Estimate the remainder of the current phase. Transfer uses its rolling
-    /// byte-rate; verification/finalization use completed-file throughput.
+    /// Estimate the remainder of the current phase. Only Transfer publishes
+    /// an ETA (from its rolling byte-rate); the other phases have no measured
+    /// throughput and return `None`.
     pub fn phase_eta_secs(&self) -> Option<f64> {
         use crate::operation_view::OperationPhase;
         match self.phase {
-            OperationPhase::Transfer => (self.eta_secs() > 0.0).then(|| self.eta_secs()),
+            OperationPhase::Transfer => {
+                let eta = self.eta_secs();
+                (eta > 0.0).then_some(eta)
+            }
             OperationPhase::Scan
             | OperationPhase::Plan
             | OperationPhase::Verify
@@ -331,11 +335,7 @@ const fn requires_resumable_buffer(
         && source_size >= crate::delta_copy::DELTA_MIN_BYTES
 }
 
-/// A copy/move request, fully described and detached from any UI state.
-///
-/// Note there is no conflict list here: the engine checks the destination
-/// live at copy time (the confirmation dialog may sit open while the
-/// filesystem changes), driven only by [`OverwritePolicy`].
+/// Cleanup that runs only after every entry of a transfer succeeded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PostTransferAction {
     /// Remove a directory only if it is empty after a successful transfer.
@@ -344,6 +344,11 @@ pub enum PostTransferAction {
     RemoveEmptyDir(PathBuf),
 }
 
+/// A copy/move request, fully described and detached from any UI state.
+///
+/// Note there is no conflict list here: the engine checks the destination
+/// live at copy time (the confirmation dialog may sit open while the
+/// filesystem changes), driven only by [`OverwritePolicy`].
 #[derive(Clone)]
 pub struct TransferSpec {
     pub operation_id: OperationId,
@@ -1041,10 +1046,7 @@ fn planned_total_bytes(spec: &TransferSpec) -> u64 {
     })
 }
 
-/// Run the transfer on a background thread.
-///
-/// `notify` is invoked whenever visible progress changed; the UI passes a
-/// repaint request here, keeping this module free of egui types.
+/// How the optional post-success action ended for a finished transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PostSuccessOutcome {
     NotRequired,
@@ -1068,6 +1070,10 @@ impl FinalizationOutcome {
     }
 }
 
+/// Run the transfer on a background thread.
+///
+/// `notify` is invoked whenever visible progress changed; the UI passes a
+/// repaint request here, keeping this module free of egui types.
 pub fn spawn_transfer(
     spec: TransferSpec,
     progress: TransferState,
