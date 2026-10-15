@@ -744,17 +744,33 @@ impl TransferQueueController {
         self.queue.resume(job_id)
     }
 
+    /// Move a waiting job to the first waiting slot: right below the running
+    /// row, never above it, where it would look like it runs first.
     pub(super) fn promote(&mut self, job_id: JobId) {
-        self.queue.promote(job_id);
+        let first = self.first_waiting_slot();
+        self.queue.reorder(job_id, first);
     }
 
     pub(super) fn move_job(&mut self, job_id: JobId, offset: i32) {
         let Some(from) = self.queue.jobs().iter().position(|job| job.id == job_id) else {
             return;
         };
-        let last = self.queue.jobs().len() as i32 - 1;
-        let to = (from as i32 + offset).clamp(0, last.max(0)) as usize;
+        let last = self.queue.jobs().len().saturating_sub(1);
+        // A row already above the running one (not normally possible) may
+        // still move within that range rather than jump down.
+        let floor = self.first_waiting_slot().min(from);
+        let to = from
+            .saturating_add_signed(offset as isize)
+            .clamp(floor, last);
         self.queue.reorder(job_id, to);
+    }
+
+    fn first_waiting_slot(&self) -> usize {
+        self.queue
+            .jobs()
+            .iter()
+            .rposition(|job| job.state == JobState::Running)
+            .map_or(0, |index| index + 1)
     }
 
     pub(super) fn cancel(&mut self, job_id: JobId) -> Option<HistorySettlement> {
@@ -1573,5 +1589,33 @@ mod tests {
             vec![(running_id, JobState::Running)]
         );
         assert!(controller.queue.get(pending_id).is_none());
+    }
+
+    #[test]
+    fn reordering_never_lifts_a_waiting_job_above_the_running_row() {
+        let mut controller = TransferQueueController::default();
+        let running_id = controller.enqueue(spec("order-running"), HistoryIntent::None);
+        let first_id = controller.enqueue(spec("order-first"), HistoryIntent::None);
+        let second_id = controller.enqueue(spec("order-second"), HistoryIntent::None);
+        launch(&mut controller);
+        let order = |controller: &TransferQueueController| {
+            controller
+                .queue
+                .jobs()
+                .iter()
+                .map(|job| job.id)
+                .collect::<Vec<_>>()
+        };
+
+        controller.promote(second_id);
+        assert_eq!(order(&controller), vec![running_id, second_id, first_id]);
+
+        controller.move_job(second_id, -1);
+        assert_eq!(order(&controller), vec![running_id, second_id, first_id]);
+
+        controller.move_job(second_id, 1);
+        assert_eq!(order(&controller), vec![running_id, first_id, second_id]);
+        controller.move_job(second_id, 5);
+        assert_eq!(order(&controller), vec![running_id, first_id, second_id]);
     }
 }
