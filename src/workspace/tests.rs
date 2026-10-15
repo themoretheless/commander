@@ -1225,6 +1225,33 @@ fn request_delete_builds_pending_op() {
 }
 
 #[test]
+fn context_menu_trash_on_a_selected_row_takes_the_selection_from_every_folder() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let sub = left.dir("sub");
+    let inner = left.file("sub/inner.txt", "i");
+    let here = left.file("here.txt", "h");
+    let mut ws = workspace(&left, &right);
+    ws.left.navigate_to(sub);
+    ws.left.select_path(inner.clone());
+    ws.left.navigate_to(left.path().to_path_buf());
+    ws.left.select_path(here.clone());
+
+    ws.request_context_delete(ActivePanel::Left, &here);
+
+    match &ws.pending_op {
+        Some(PendingOp::Delete { entries, .. }) => {
+            let mut paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+            paths.sort();
+            // The same items the Delete key would trash.
+            let mut expected = vec![here, inner];
+            expected.sort();
+            assert_eq!(paths, expected);
+        }
+        _ => panic!("expected a pending delete"),
+    }
+}
+
+#[test]
 fn context_menu_trash_routes_through_confirmation_and_background_port() {
     let (left, right) = (TempDir::new(), TempDir::new());
     let path = left.file("a.txt", "x");
@@ -2409,6 +2436,40 @@ fn find_duplicates_groups_identical_files_in_active_dir() {
 }
 
 #[test]
+fn find_duplicates_skips_empty_files() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("__init__.py", "");
+    l.file(".gitkeep", "");
+    let mut ws = workspace(&l, &r);
+    if !ws.left.show_hidden() {
+        let _ = ws.left.toggle_hidden();
+    }
+
+    // Empty markers are not clutter.
+    assert!(ws.find_duplicates().is_empty());
+}
+
+// Listings capture (volume, file id) only on unix, so hard links are
+// recognised there only.
+#[cfg(unix)]
+#[test]
+fn find_duplicates_skips_hard_links() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let original = l.file("original.bin", "shared bytes");
+    std::fs::hard_link(&original, l.path().join("link.bin")).unwrap();
+    let mut ws = workspace(&l, &r);
+
+    // One inode frees nothing when one of its names is trashed.
+    assert!(ws.find_duplicates().is_empty());
+
+    l.file("copy.bin", "shared bytes");
+    ws.left.refresh();
+    let groups = ws.find_duplicates();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].files.len(), 2, "{:?}", groups[0].files);
+}
+
+#[test]
 fn duplicate_groups_are_confirmed_by_the_full_digest() {
     let key = |name: &str| crate::dedup::FileKey {
         path: PathBuf::from(format!("/dups/{name}")),
@@ -2467,6 +2528,105 @@ fn diff_targets_picks_two_selected_or_same_named() {
     let (x, y) = ws.diff_targets().unwrap();
     assert_eq!(y, a, "active file is the second target");
     assert_eq!(x, r.path().join("a.txt"), "other-panel same name is first");
+}
+
+#[test]
+fn diff_pairs_one_selected_file_per_pane_and_refuses_three() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "1");
+    let b = l.file("b.txt", "2");
+    let c = l.file("c.txt", "3");
+    let other = r.file("other.txt", "9");
+    let mut ws = workspace(&l, &r);
+
+    // One selected file in each pane, names differ: that pair.
+    ws.left.select_path(a.clone());
+    ws.right.select_path(other.clone());
+    assert_eq!(ws.diff_targets(), Some((other, a.clone())));
+    assert!(ws.command_context().can_diff);
+
+    // Three selected: no pair, and the command says so.
+    ws.left.select_path(b);
+    ws.left.select_path(c);
+    assert_eq!(ws.diff_targets(), None);
+    assert!(!ws.command_context().can_diff);
+}
+
+#[test]
+fn select_same_named_matches_rows_the_other_filter_hides() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let shared = l.file("shared.txt", "l");
+    r.file("shared.txt", "r");
+    r.file("visible.txt", "r");
+    let mut ws = workspace(&l, &r);
+    ws.right.set_search_query("visible");
+
+    ws.execute(Command::SelectSameNamed);
+
+    assert!(ws.left.is_selected(&shared));
+}
+
+#[test]
+fn move_within_one_folder_explains_instead_of_listing_conflicts() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.right.navigate_to(l.path().to_path_buf());
+    ws.left.set_cursor(1);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::RequestMove);
+
+    assert!(ws.pending_op.is_none());
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Both panes show this folder: open the destination in the other pane first"
+                .to_string(),
+            error: false,
+        }]
+    );
+    // Copy still offers its conflict sheet (Keep Both duplicates).
+    ws.execute(Command::RequestCopy);
+    assert!(ws.pending_op.is_some());
+}
+
+#[test]
+fn get_info_fills_in_a_folder_size_once_it_is_measured() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let folder = l.dir("box");
+    l.file("box/a.bin", "12345");
+    let mut ws = workspace(&l, &r);
+    let entry = ws
+        .left
+        .entries()
+        .iter()
+        .find(|entry| entry.name == "box")
+        .cloned()
+        .unwrap();
+    // As built while the size was still being measured.
+    let card = crate::panel::make_info(&entry, None, None);
+    assert_eq!(card.size, crate::panel::MEASURING);
+    ws.right.preview = Some(PreviewContent::Info(card));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.size_snapshot().size_of(&folder).is_none()
+        || ws.left.size_snapshot().count_of(&folder).is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "folder never measured"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    ws.sync_preview();
+
+    let Some(PreviewContent::Info(card)) = &ws.right.preview else {
+        panic!("info card stays open");
+    };
+    assert_eq!(card.size, "5 B");
+    assert_eq!(card.children, Some(1));
+    assert_eq!(card.pending, None);
 }
 
 #[test]
@@ -4288,17 +4448,211 @@ fn gather_into_folder_reports_when_the_folder_cannot_be_created() {
 
 #[test]
 fn link_report_message_shows_the_first_failure() {
-    assert_eq!(
-        link_report_message("symlink(s)", 2, &[]),
-        "Created 2 symlink(s)"
-    );
+    let symlinks = ("symlink", "symlinks");
+    assert_eq!(link_report_message(symlinks, 2, &[]), "Created 2 symlinks");
+    assert_eq!(link_report_message(symlinks, 1, &[]), "Created 1 symlink");
     let one = vec!["Could not symlink /d/a -> /s/a: File exists (os error 17)".to_string()];
     assert_eq!(
-        link_report_message("symlink(s)", 0, &one),
-        "Created 0 symlink(s); Could not symlink /d/a -> /s/a: File exists (os error 17)"
+        link_report_message(symlinks, 0, &one),
+        "Created 0 symlinks; Could not symlink /d/a -> /s/a: File exists (os error 17)"
     );
     let three = vec![one[0].clone(), "b".to_string(), "c".to_string()];
-    assert!(link_report_message("hard link(s)", 1, &three).ends_with("(os error 17) (+2 more)"));
+    let message = link_report_message(("hard link", "hard links"), 1, &three);
+    assert!(message.starts_with("Created 1 hard link;"), "{message}");
+    assert!(message.ends_with("(os error 17) (+2 more)"));
+}
+
+#[test]
+fn feedback_text_uses_singular_and_plural_nouns() {
+    assert_eq!(count_noun(1, "row", "rows"), "1 row");
+    assert_eq!(count_noun(0, "row", "rows"), "0 rows");
+    assert_eq!(
+        smart_select_message(1, ("empty file", "empty files"), "none"),
+        "Selected 1 empty file"
+    );
+    assert_eq!(
+        smart_select_message(4, ("clutter file", "clutter files"), "none"),
+        "Selected 4 clutter files"
+    );
+    assert_eq!(
+        smart_select_message(0, ("a", "b"), "No empty files"),
+        "No empty files"
+    );
+    assert_eq!(
+        sort_notice("kind", crate::panel::SortOrder::Desc),
+        "Sorted by kind, descending"
+    );
+    assert_eq!(toggle_notice("Folders first", false), "Folders first: off");
+    assert_eq!(
+        assign_slot_message(3, "src", None),
+        "Quick jump 3 \u{2192} src"
+    );
+    assert_eq!(
+        assign_slot_message(3, "src", Some("docs")),
+        "Quick jump 3 \u{2192} src (was docs)"
+    );
+    let root = Path::new("/x/y");
+    assert_eq!(
+        trust_notice(root, crate::trust::TrustLabel::Restricted),
+        "Marked /x/y as Restricted: external providers and automatic archive inspection are blocked"
+    );
+    assert_eq!(
+        trust_notice(root, crate::trust::TrustLabel::Untrusted),
+        "Marked /x/y as Untrusted: Run command, external providers and automatic archive inspection are blocked"
+    );
+    assert_eq!(
+        trust_notice(root, crate::trust::TrustLabel::Trusted),
+        "Marked /x/y as Trusted: everything is allowed"
+    );
+}
+
+#[test]
+fn listing_copy_label_counts_a_single_row() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("only.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CopyListingCsv);
+
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [UiRequest::CopyText { label, .. }] if label == "listing (1 row as CSV)"
+        ),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn smart_select_reports_what_it_selected() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    l.file("empty.txt", "");
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::SelectEmptyFiles);
+    ws.execute(Command::SelectJunk);
+    ws.left.set_cursor(0);
+    ws.execute(Command::SelectLikeCursor);
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice {
+                message,
+                error: false,
+            } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "Selected 1 empty file",
+            "No clutter files to select here",
+            "Highlight a file with an extension first",
+        ]
+    );
+}
+
+#[test]
+fn sort_and_view_toggles_say_what_changed() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::SortByExtension);
+    ws.execute(Command::SortByExtension);
+    ws.execute(Command::ToggleNaturalSort);
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "Sorted by extension, ascending",
+            "Sorted by extension, descending",
+            "Natural name sort: off",
+        ]
+    );
+}
+
+#[test]
+fn bookmark_and_quick_jump_commands_confirm_what_they_did() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let docs = l.dir("docs");
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(docs.clone());
+    ws.drain_ui_requests();
+
+    ws.execute(Command::JumpSlot(4));
+    ws.execute(Command::BookmarkCurrentDir);
+    ws.execute(Command::BookmarkCurrentDir);
+    ws.execute(Command::AssignSlot(4));
+    ws.left.navigate_to(l.path().to_path_buf());
+    ws.execute(Command::AssignSlot(4));
+
+    let messages: Vec<String> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            UiRequest::Notice {
+                message,
+                error: false,
+            } => Some(message),
+            _ => None,
+        })
+        .collect();
+    let root_name = l.path().file_name().unwrap().to_string_lossy().to_string();
+    assert_eq!(
+        messages,
+        [
+            "Quick jump 4 is empty: Cmd+Shift+4 assigns the current folder".to_string(),
+            "Added to Favorites".to_string(),
+            "Removed from Favorites".to_string(),
+            "Quick jump 4 \u{2192} docs".to_string(),
+            format!("Quick jump 4 \u{2192} {root_name} (was docs)"),
+        ]
+    );
+}
+
+#[test]
+fn nav_lock_says_when_the_other_pane_cannot_follow() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("only-left");
+    let mut ws = workspace(&l, &r);
+    ws.execute(Command::ToggleNavLock);
+    ws.left.refresh();
+    ws.drain_ui_requests();
+    let row = ws
+        .left
+        .filtered_entries()
+        .iter()
+        .position(|entry| entry.name == "only-left")
+        .unwrap();
+    ws.left.set_cursor(row + 1);
+
+    ws.execute(Command::Activate);
+
+    assert_eq!(ws.right.current_path, r.path());
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Navigation lock: no folder \u{201c}only-left\u{201d} in the other pane"
+                .to_string(),
+            error: false,
+        }]
+    );
 }
 
 #[test]

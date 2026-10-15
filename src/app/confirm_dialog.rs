@@ -2094,7 +2094,7 @@ mod tests {
         assert!(!ws.confirm_pending_op(|| {}));
         assert!(matches!(ws.pending_op, Some(PendingOp::Delete { .. })));
         let message = unstarted_delete_explanation(&ws).expect("explained");
-        assert!(message.contains("Safe-state review"), "{message}");
+        assert!(message.contains("integrity review"), "{message}");
 
         ws.dismiss_pending_op();
         assert_eq!(unstarted_delete_explanation(&ws), None);
