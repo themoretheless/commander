@@ -269,7 +269,7 @@ impl ContentIndex {
             self.active = None;
         }
         if !enabled {
-            self.evict_snapshot(&root);
+            self.forget_root_index(&root, &index_path(&root));
         }
         self.unloadable.remove(&root);
         self.settings_error = None;
@@ -514,6 +514,24 @@ impl ContentIndex {
         if let Some(position) = self.snapshot_order.iter().position(|cached| cached == root) {
             let cached = self.snapshot_order.remove(position);
             self.snapshot_order.push(cached);
+        }
+    }
+
+    /// Drop a disabled root's cached index, its load error and its index
+    /// file, which holds up to `MAX_CONTENT_BYTES` of the folder's text.
+    /// Enabling always rebuilds, so nothing reusable is lost. Best effort: a
+    /// file that cannot be removed is only logged.
+    fn forget_root_index(&mut self, root: &Path, index_file: &Path) {
+        self.evict_snapshot(root);
+        self.load_errors.remove(root);
+        if let Err(error) = fs::remove_file(index_file)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(
+                target: "commander::content_index",
+                "Could not remove disabled index {}: {error}",
+                index_file.display()
+            );
         }
     }
 
@@ -1593,6 +1611,27 @@ mod tests {
 
         index.unloadable.clear();
         assert!(index.snapshot_from(&path, temp.path()).is_some());
+    }
+
+    #[test]
+    fn disabling_a_root_forgets_its_index_file_and_errors() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "private text");
+        let path = temp.path().join("index.json");
+        save_index_to(&path, &scan(temp.path(), Vec::new())).unwrap();
+        let mut index = test_content_index();
+        assert!(index.snapshot_from(&path, temp.path()).is_some());
+        index
+            .load_errors
+            .insert(temp.path().to_path_buf(), "old".to_string());
+
+        index.forget_root_index(temp.path(), &path);
+
+        assert!(!path.exists(), "disabled index kept its file contents");
+        assert!(!index.snapshots.contains_key(temp.path()));
+        assert!(!index.load_errors.contains_key(temp.path()));
+        // Already gone: forgetting again is a quiet no-op.
+        index.forget_root_index(temp.path(), &path);
     }
 
     #[test]
