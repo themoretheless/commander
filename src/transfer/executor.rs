@@ -1762,12 +1762,37 @@ fn rename_entry(
 /// overwrite copy before swapping it into place (same directory = same
 /// volume, so the final rename is atomic and clone-friendly).
 fn staging_path(dest: &Path) -> PathBuf {
-    let name = dest
+    hidden_sibling(dest, "cmdr-tmp")
+}
+
+/// Longest leaf name accepted by the supported filesystems: 255 bytes on
+/// Linux and macOS, 255 UTF-16 units on Windows (a UTF-8 byte bound is the
+/// stricter of the two).
+const MAX_LEAF_BYTES: usize = 255;
+
+/// A free hidden sibling `.{name}.{tag}.{index}` of `path`. The journal
+/// records the exact pathname, and recovery only matches the `.{tag}.`
+/// infix, so the name part may be shortened to keep the leaf valid.
+fn hidden_sibling(path: &Path, tag: &str) -> PathBuf {
+    let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
+        .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "item".to_string());
-    let parent = dest.parent().unwrap_or(Path::new("."));
-    fs_util::first_available(|i| parent.join(format!(".{}.cmdr-tmp.{}", name, i)))
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs_util::first_available(|index| parent.join(hidden_sibling_name(&name, tag, index)))
+}
+
+/// `.{name}.{tag}.{index}`, with `name` cut on a char boundary so the whole
+/// leaf fits in [`MAX_LEAF_BYTES`]. Without the cut, a name only a dozen
+/// bytes under the limit could never be staged (`ENAMETOOLONG`).
+fn hidden_sibling_name(name: &str, tag: &str, index: usize) -> String {
+    let suffix = format!(".{tag}.{index}");
+    let budget = MAX_LEAF_BYTES.saturating_sub(1 + suffix.len());
+    let mut end = name.len().min(budget);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(".{}{suffix}", &name[..end])
 }
 
 /// Remove a file or directory tree, treating "not found" as success.
@@ -1839,12 +1864,7 @@ pub(super) fn cleanup_moved_source(
 }
 
 fn source_cleanup_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "item".to_string());
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs_util::first_available(|index| parent.join(format!(".{name}.cmdr-source-cleanup.{index}")))
+    hidden_sibling(path, "cmdr-source-cleanup")
 }
 
 fn restore_cleanup_quarantine(path: &Path, quarantine: &Path, reason: &str) -> std::io::Error {
@@ -2077,6 +2097,129 @@ mod tests {
             state.placements = placements;
         }
         progress
+    }
+
+    fn entry_for(path: &Path) -> FileEntry {
+        let lexical = std::fs::symlink_metadata(path).unwrap();
+        let display = std::fs::metadata(path).unwrap_or_else(|_| lexical.clone());
+        let mut entry = FileEntry::from_meta(path.to_path_buf(), &display).unwrap();
+        entry.identity = crate::panel::ListingIdentity::Captured(PathIdentity::from_metadata(
+            path.to_path_buf(),
+            &lexical,
+        ));
+        entry
+    }
+
+    fn spec(kind: TransferKind, entries: Vec<FileEntry>, target: &Path) -> TransferSpec {
+        TransferSpec {
+            expectations: capture_expectations(&entries, target),
+            method: CopyMethod::Buffered,
+            durability: DurabilityProfile::Fast,
+            ..TransferSpec::new(kind, entries, target.to_path_buf())
+        }
+    }
+
+    fn run_with_backends(spec: TransferSpec, backends: backend::BackendPorts) -> TransferProgress {
+        let total = total_bytes(&spec.entries);
+        let progress: TransferState =
+            Arc::new(Mutex::new(TransferProgress::new(total, spec.entries.len())));
+        TransferExecutor::with_backends(
+            crate::workload::global_handle(),
+            spec,
+            Arc::clone(&progress),
+            || {},
+            backends,
+        )
+        .submit();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            {
+                let state = crate::lock_util::recover(&progress);
+                if state.finished {
+                    return state.clone();
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "transfer timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn run(spec: TransferSpec) -> TransferProgress {
+        run_with_backends(spec, backend::BackendPorts::production())
+    }
+
+    fn hidden_entries(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with('.'))
+            .collect()
+    }
+
+    #[test]
+    fn hidden_sibling_names_stay_within_the_leaf_limit() {
+        assert_eq!(
+            hidden_sibling_name("a.txt", "cmdr-tmp", 0),
+            ".a.txt.cmdr-tmp.0"
+        );
+        let long = "я".repeat(127);
+        for (tag, index) in [("cmdr-tmp", 0), ("cmdr-source-cleanup", 12)] {
+            let leaf = hidden_sibling_name(&long, tag, index);
+            assert!(leaf.len() <= MAX_LEAF_BYTES, "{} bytes", leaf.len());
+            assert!(leaf.starts_with(".я"), "{leaf}");
+            assert!(leaf.ends_with(&format!("я.{tag}.{index}")), "{leaf}");
+        }
+    }
+
+    #[test]
+    fn hidden_sibling_skips_taken_names() {
+        let root = TempDir::new();
+        let dest = root.path().join("a.txt");
+        root.file(".a.txt.cmdr-tmp.0", "taken");
+        assert_eq!(staging_path(&dest), root.path().join(".a.txt.cmdr-tmp.1"));
+        assert_eq!(
+            source_cleanup_path(&dest),
+            root.path().join(".a.txt.cmdr-source-cleanup.0")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_of_a_name_near_the_leaf_limit_is_staged_and_placed() {
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let name = "я".repeat(125);
+        let file = source.file(&name, "long name");
+
+        let state = run(spec(
+            TransferKind::Copy,
+            vec![entry_for(&file)],
+            target.path(),
+        ));
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(
+            std::fs::read_to_string(target.path().join(&name)).unwrap(),
+            "long name"
+        );
+        assert!(hidden_entries(target.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn moved_source_cleanup_handles_a_name_near_the_leaf_limit() {
+        let root = TempDir::new();
+        let path = root.file(&"s".repeat(240), "moved away");
+        let expected = PathIdentity::observe(&path).unwrap();
+
+        cleanup_moved_source(
+            &path,
+            &expected,
+            crate::filesystem_policy::SymlinkPolicy::Preserve,
+        )
+        .unwrap();
+
+        assert!(!path.exists());
+        assert!(hidden_entries(root.path()).is_empty());
     }
 
     #[test]
