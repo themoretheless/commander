@@ -5130,3 +5130,196 @@ fn partially_failed_trash_undo_restores_the_first_item_and_latches_safe_state() 
         "the failed undo stays on the history stack"
     );
 }
+
+fn review_state(id: &str) -> crate::operation::SafeState {
+    crate::operation::SafeState {
+        operation_id: crate::operation::OperationId(id.to_string()),
+        reason: "review required".to_string(),
+        paths: Vec::new(),
+        failures: Vec::new(),
+    }
+}
+
+fn orphan_at(path: &Path) -> crate::operation_journal::OrphanStaging {
+    crate::operation_journal::OrphanStaging {
+        path: path.to_path_buf(),
+        identity: crate::path_identity::PathIdentity::observe_deep(path).unwrap(),
+    }
+}
+
+#[test]
+fn cleaning_orphan_staging_waits_for_review_and_queued_transfers() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let staged = l.file(".a.txt.cmdr-tmp.0", "staged");
+    let mut ws = workspace(&l, &r);
+
+    ws.safe_state = Some(review_state("review"));
+    assert_eq!(
+        ws.clean_recovery_orphan(&orphan_at(&staged)),
+        Err("Finish the integrity review before cleaning staging".to_string())
+    );
+    ws.safe_state = None;
+    ws.launch_test_transfer(
+        test_transfer_spec("busy-clean", r.path()),
+        transfer_queue::HistoryIntent::None,
+    );
+    assert_eq!(
+        ws.clean_recovery_orphan(&orphan_at(&staged)),
+        Err("Wait for the transfer queue before cleaning staging".to_string())
+    );
+    assert!(staged.is_file(), "a refused clean leaves the staging file");
+}
+
+#[test]
+fn cleaning_orphan_staging_waits_for_an_active_trash() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    let staged = l.file(".a.txt.cmdr-tmp.0", "staged");
+    let (release, gate) = mpsc::channel();
+    let trash = Arc::new(GatedTrashPort {
+        release: Mutex::new(gate),
+    });
+    let mut ws = workspace_with_trash(&l, &r, trash);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.request_delete();
+    assert!(ws.confirm_pending_op(|| {}));
+
+    assert_eq!(
+        ws.clean_recovery_orphan(&orphan_at(&staged)),
+        Err("Wait for the current Trash operation before cleaning staging".to_string())
+    );
+    assert!(staged.is_file());
+
+    release.send(()).unwrap();
+    ws.finish_delete().expect("delete retirement");
+}
+
+#[test]
+fn cleaning_orphan_staging_removes_it_and_refreshes_the_panes() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let staged = l.file(".a.txt.cmdr-tmp.0", "staged");
+    let mut ws = workspace(&l, &r);
+    assert_eq!(ws.left.toggle_hidden(), panel::ViewApplyOutcome::Applied);
+    assert!(ws.left.entries().iter().any(|entry| entry.path == staged));
+
+    ws.clean_recovery_orphan(&orphan_at(&staged)).unwrap();
+
+    assert!(!staged.exists());
+    assert!(
+        !ws.left.entries().iter().any(|entry| entry.path == staged),
+        "the listing no longer shows the cleaned file"
+    );
+}
+
+#[test]
+fn drop_while_another_operation_is_open_clears_the_drag_and_stages_nothing() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "x");
+    let sub = l.dir("sub");
+    let mut ws = workspace(&l, &r);
+    let drag_onto_sub = |ws: &mut Workspace| {
+        ws.left.drag.set(vec![file.clone()]);
+        ws.left.drag.set_drop_target(sub.clone());
+        ws.drop_dragged(|| {});
+        assert!(ws.left.drag.is_empty() && !ws.left.drag.has_drop_target());
+    };
+
+    // A confirmation is open: the drop must not replace it.
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.request_copy();
+    drag_onto_sub(&mut ws);
+    match &ws.pending_op {
+        Some(PendingOp::Transfer(transfer)) => {
+            assert_eq!(transfer.kind, TransferKind::Copy);
+            assert_eq!(transfer.target, r.path());
+        }
+        _ => panic!("the open confirmation survives the drop"),
+    }
+    ws.dismiss_pending_op();
+
+    // A transfer is running: the drop is not staged behind it.
+    ws.launch_test_transfer(
+        test_transfer_spec("busy-drop", r.path()),
+        transfer_queue::HistoryIntent::None,
+    );
+    drag_onto_sub(&mut ws);
+    assert!(ws.pending_op.is_none());
+    assert!(file.is_file() && !sub.join("a.txt").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_land_in_the_other_pane_and_report_their_count() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateSymlink);
+
+    let link = r.path().join("a.txt");
+    assert_eq!(std::fs::read_link(&link).unwrap(), file);
+    assert!(ws.right.entries().iter().any(|entry| entry.path == link));
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Created 1 symlink".to_string(),
+            error: false,
+        }]
+    );
+}
+
+#[test]
+fn hard_links_take_a_numbered_name_beside_an_existing_one() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "linked");
+    r.file("a.txt", "already here");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateHardlink);
+
+    let link = r.path().join("a.txt link 2");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "linked");
+    std::fs::write(&file, "changed").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&link).unwrap(),
+        "changed",
+        "a hard link shares the original's content"
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("a.txt")).unwrap(),
+        "already here"
+    );
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Created 1 hard link".to_string(),
+            error: false,
+        }]
+    );
+}
+
+#[test]
+fn hard_linking_a_folder_is_refused_with_an_error_toast() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.dir("sub");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "sub"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateHardlink);
+
+    assert!(!r.path().join("sub").exists());
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message:
+                "Created 0 hard links; Could not hard-link sub: hard links require a regular file"
+                    .to_string(),
+            error: true,
+        }]
+    );
+}
