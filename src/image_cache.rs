@@ -1896,6 +1896,140 @@ unsafe fn create_srgb_color_space() -> *mut objc::runtime::Object {
     unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) }
 }
 
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn CGImageGetWidth(image: *mut objc::runtime::Object) -> usize;
+    fn CGImageGetHeight(image: *mut objc::runtime::Object) -> usize;
+    fn CGBitmapContextCreate(
+        data: *mut u8,
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bytes_per_row: usize,
+        space: *mut objc::runtime::Object,
+        bitmap_info: u32,
+    ) -> *mut objc::runtime::Object;
+    fn CGContextDrawImage(
+        ctx: *mut objc::runtime::Object,
+        rect: CGRect,
+        image: *mut objc::runtime::Object,
+    );
+    fn CGContextRelease(ctx: *mut objc::runtime::Object);
+    fn CGColorSpaceRelease(space: *mut objc::runtime::Object);
+    fn CGImageRelease(image: *mut objc::runtime::Object);
+}
+
+/// An `NSAutoreleasePool` drained when dropped, so every return path of an
+/// Objective-C loader (including `?`) releases its autoreleased objects.
+#[cfg(target_os = "macos")]
+struct AutoreleasePool(*mut objc::runtime::Object);
+
+#[cfg(target_os = "macos")]
+impl AutoreleasePool {
+    fn new() -> Self {
+        use objc::{class, msg_send, sel, sel_impl};
+        // SAFETY: `+new` on NSAutoreleasePool takes no arguments; the pool
+        // is drained exactly once, by Drop, on the thread that created it.
+        Self(unsafe { msg_send![class!(NSAutoreleasePool), new] })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for AutoreleasePool {
+    fn drop(&mut self) {
+        use objc::{msg_send, sel, sel_impl};
+        if !self.0.is_null() {
+            // SAFETY: the pool came from `new` and has not been drained yet.
+            unsafe {
+                let _: () = msg_send![self.0, drain];
+            }
+        }
+    }
+}
+
+/// Premultiplied RGBA (the only 8-bit RGBA layout CoreGraphics draws) to
+/// straight alpha, in place. Opaque and fully transparent pixels are left
+/// alone; rounding overshoot clamps to 255.
+#[cfg(any(target_os = "macos", test))]
+fn unpremultiply_rgba(pixels: &mut [u8]) {
+    for chunk in pixels.as_chunks_mut::<4>().0 {
+        let a = chunk[3] as u16;
+        if a > 0 && a < 255 {
+            chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
+            chunk[1] = ((chunk[1] as u16 * 255) / a).min(255) as u8;
+            chunk[2] = ((chunk[2] as u16 * 255) / a).min(255) as u8;
+        }
+    }
+}
+
+/// Draw `cg_image` into a straight-alpha sRGB RGBA buffer and release it,
+/// on success and on every failure. `what` names the source in the
+/// zero-dimension error.
+///
+/// # Safety
+/// `cg_image` must be a valid, owned (+1) `CGImageRef`.
+#[cfg(target_os = "macos")]
+unsafe fn cgimage_to_rgba(
+    cg_image: *mut objc::runtime::Object,
+    what: &str,
+) -> Result<([usize; 2], Vec<u8>), String> {
+    // SAFETY: the caller hands over a valid CGImage; the color space and
+    // bitmap context are released here, and the context draws into
+    // `pixels`, which outlives it.
+    unsafe {
+        let draw = || {
+            let w = CGImageGetWidth(cg_image);
+            let h = CGImageGetHeight(cg_image);
+            if w == 0 || h == 0 {
+                return Err(format!("{what} has zero dimensions"));
+            }
+            let (bytes_per_row, mut pixels) = allocate_rgba_pixels(w, h)?;
+            let color_space = create_srgb_color_space();
+            if color_space.is_null() {
+                return Err("sRGB color space could not be created".to_string());
+            }
+            // kCGImageAlphaPremultipliedLast = 1
+            let bitmap_info: u32 = 1;
+            let cg_ctx = CGBitmapContextCreate(
+                pixels.as_mut_ptr(),
+                w,
+                h,
+                8,
+                bytes_per_row,
+                color_space,
+                bitmap_info,
+            );
+            if cg_ctx.is_null() {
+                CGColorSpaceRelease(color_space);
+                return Err("CGBitmapContextCreate failed".to_string());
+            }
+            let rect = CGRect {
+                x: 0.0,
+                y: 0.0,
+                w: w as f64,
+                h: h as f64,
+            };
+            CGContextDrawImage(cg_ctx, rect, cg_image);
+            CGContextRelease(cg_ctx);
+            CGColorSpaceRelease(color_space);
+            unpremultiply_rgba(&mut pixels);
+            Ok(([w, h], pixels))
+        };
+        let result = draw();
+        CGImageRelease(cg_image);
+        result
+    }
+}
+
 /// Load image via macOS CoreGraphics/ImageIO.
 /// Supports: DNG, CR2, NEF, ARW, ORF, RAF, RW2, HEIC, TIFF, and all standard formats.
 #[cfg(target_os = "macos")]
@@ -1904,24 +2038,20 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 
-    // Validate the path before creating the pool: an early `?` return after
-    // it would skip the drain.
     let path_str = path.to_str().ok_or("invalid path")?;
     let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
 
     unsafe {
-        let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let _pool = AutoreleasePool::new();
 
         // Create CFURL from path
         let cf_str: *mut Object =
             msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
         if cf_str.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSString".into());
         }
         let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: cf_str];
         if url.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSURL".into());
         }
 
@@ -1938,35 +2068,11 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
                 index: usize,
                 options: *mut Object,
             ) -> *mut Object;
-            fn CGImageGetWidth(image: *mut Object) -> usize;
-            fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGBitmapContextCreate(
-                data: *mut u8,
-                width: usize,
-                height: usize,
-                bits_per_component: usize,
-                bytes_per_row: usize,
-                space: *mut Object,
-                bitmap_info: u32,
-            ) -> *mut Object;
-            fn CGContextDrawImage(ctx: *mut Object, rect: CGRect, image: *mut Object);
-            fn CGContextRelease(ctx: *mut Object);
-            fn CGColorSpaceRelease(space: *mut Object);
-            fn CGImageRelease(image: *mut Object);
             fn CFRelease(cf: *mut Object);
-        }
-
-        #[repr(C)]
-        struct CGRect {
-            x: f64,
-            y: f64,
-            w: f64,
-            h: f64,
         }
 
         let source = CGImageSourceCreateWithURL(url, std::ptr::null_mut());
         if source.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("CGImageSourceCreateWithURL failed".into());
         }
 
@@ -1993,7 +2099,6 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
             || max_size.is_null()
         {
             CFRelease(source);
-            let _: () = msg_send![pool, drain];
             return Err("ImageIO thumbnail options could not be created".into());
         }
         let _: () = msg_send![options, setObject: yes forKey: always_key];
@@ -2005,81 +2110,14 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
         let cg_image = CGImageSourceCreateThumbnailAtIndex(source, primary_index, options);
         if cg_image.is_null() {
             CFRelease(source);
-            let _: () = msg_send![pool, drain];
             return Err("CGImageSourceCreateThumbnailAtIndex failed".into());
         }
 
-        let w = CGImageGetWidth(cg_image);
-        let h = CGImageGetHeight(cg_image);
-        if w == 0 || h == 0 {
-            CGImageRelease(cg_image);
-            CFRelease(source);
-            let _: () = msg_send![pool, drain];
-            return Err("image has zero dimensions".into());
-        }
-
-        // Draw into RGBA bitmap context
-        let (bytes_per_row, mut pixels) = match allocate_rgba_pixels(w, h) {
-            Ok(layout) => layout,
-            Err(error) => {
-                CGImageRelease(cg_image);
-                CFRelease(source);
-                let _: () = msg_send![pool, drain];
-                return Err(error);
-            }
-        };
-        let color_space = create_srgb_color_space();
-        if color_space.is_null() {
-            CGImageRelease(cg_image);
-            CFRelease(source);
-            let _: () = msg_send![pool, drain];
-            return Err("sRGB color space could not be created".into());
-        }
-        // kCGImageAlphaPremultipliedLast = 1
-        let bitmap_info: u32 = 1;
-        let cg_ctx = CGBitmapContextCreate(
-            pixels.as_mut_ptr(),
-            w,
-            h,
-            8,
-            bytes_per_row,
-            color_space,
-            bitmap_info,
-        );
-
-        if cg_ctx.is_null() {
-            CGColorSpaceRelease(color_space);
-            CGImageRelease(cg_image);
-            CFRelease(source);
-            let _: () = msg_send![pool, drain];
-            return Err("CGBitmapContextCreate failed".into());
-        }
-
-        let rect = CGRect {
-            x: 0.0,
-            y: 0.0,
-            w: w as f64,
-            h: h as f64,
-        };
-        CGContextDrawImage(cg_ctx, rect, cg_image);
-
-        // Unpremultiply alpha (premultiplied → straight)
-        for chunk in pixels.as_chunks_mut::<4>().0 {
-            let a = chunk[3] as u16;
-            if a > 0 && a < 255 {
-                chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
-                chunk[1] = ((chunk[1] as u16 * 255) / a).min(255) as u8;
-                chunk[2] = ((chunk[2] as u16 * 255) / a).min(255) as u8;
-            }
-        }
-
-        CGContextRelease(cg_ctx);
-        CGColorSpaceRelease(color_space);
-        CGImageRelease(cg_image);
+        let rgba = cgimage_to_rgba(cg_image, "image");
         CFRelease(source);
-        let _: () = msg_send![pool, drain];
+        let (size, pixels) = rgba?;
 
-        let (image, byte_size) = color_image_from_rgba([w, h], pixels)?;
+        let (image, byte_size) = color_image_from_rgba(size, pixels)?;
         Ok(DecodedPreview {
             image,
             byte_size,
@@ -2155,13 +2193,11 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 
-    // Validate the path before creating the pool: an early `?` return after
-    // it would skip the drain.
     let path_str = path.to_str().ok_or("invalid path")?;
     let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
 
     unsafe {
-        let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let _pool = AutoreleasePool::new();
 
         // NSURL
         let ns_str: *mut Object =
@@ -2169,19 +2205,16 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         // `fileURLWithPath:` raises an ObjC exception on nil, which aborts
         // the process across the FFI boundary.
         if ns_str.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSString".into());
         }
         let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_str];
         if url.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSURL".into());
         }
 
         // AVAsset
         let asset: *mut Object = msg_send![class!(AVAsset), assetWithURL: url];
         if asset.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("AVAsset creation failed".into());
         }
 
@@ -2189,7 +2222,6 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         let generator: *mut Object = msg_send![class!(AVAssetImageGenerator), alloc];
         let generator: *mut Object = msg_send![generator, initWithAsset: asset];
         if generator.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("AVAssetImageGenerator creation failed".into());
         }
 
@@ -2249,7 +2281,7 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         let _: () = msg_send![generator, release];
 
         if cg_image.is_null() {
-            // The NSError is autoreleased: read it before draining the pool.
+            // The NSError is autoreleased: read it while the pool is alive.
             let failure = if error.is_null() {
                 video_failure_message(path, None)
             } else {
@@ -2265,101 +2297,11 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
                     )),
                 )
             };
-            let _: () = msg_send![pool, drain];
             return Err(failure);
         }
 
-        // Convert CGImage to RGBA pixels (same as imageio path)
-        unsafe extern "C" {
-            fn CGImageGetWidth(image: *mut Object) -> usize;
-            fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGBitmapContextCreate(
-                data: *mut u8,
-                width: usize,
-                height: usize,
-                bits_per_component: usize,
-                bytes_per_row: usize,
-                space: *mut Object,
-                bitmap_info: u32,
-            ) -> *mut Object;
-            fn CGContextDrawImage(ctx: *mut Object, rect: CGRect, image: *mut Object);
-            fn CGContextRelease(ctx: *mut Object);
-            fn CGColorSpaceRelease(space: *mut Object);
-            fn CGImageRelease(image: *mut Object);
-        }
-
-        #[repr(C)]
-        struct CGRect {
-            x: f64,
-            y: f64,
-            w: f64,
-            h: f64,
-        }
-
-        let w = CGImageGetWidth(cg_image);
-        let h = CGImageGetHeight(cg_image);
-        if w == 0 || h == 0 {
-            CGImageRelease(cg_image);
-            let _: () = msg_send![pool, drain];
-            return Err("video frame has zero dimensions".into());
-        }
-
-        let (bytes_per_row, mut pixels) = match allocate_rgba_pixels(w, h) {
-            Ok(layout) => layout,
-            Err(error) => {
-                CGImageRelease(cg_image);
-                let _: () = msg_send![pool, drain];
-                return Err(error);
-            }
-        };
-        let color_space = create_srgb_color_space();
-        if color_space.is_null() {
-            CGImageRelease(cg_image);
-            let _: () = msg_send![pool, drain];
-            return Err("sRGB color space could not be created for video".into());
-        }
-        let bitmap_info: u32 = 1; // kCGImageAlphaPremultipliedLast
-        let cg_ctx = CGBitmapContextCreate(
-            pixels.as_mut_ptr(),
-            w,
-            h,
-            8,
-            bytes_per_row,
-            color_space,
-            bitmap_info,
-        );
-
-        if cg_ctx.is_null() {
-            CGColorSpaceRelease(color_space);
-            CGImageRelease(cg_image);
-            let _: () = msg_send![pool, drain];
-            return Err("CGBitmapContextCreate failed for video".into());
-        }
-
-        let rect = CGRect {
-            x: 0.0,
-            y: 0.0,
-            w: w as f64,
-            h: h as f64,
-        };
-        CGContextDrawImage(cg_ctx, rect, cg_image);
-
-        // Unpremultiply
-        for chunk in pixels.as_chunks_mut::<4>().0 {
-            let a = chunk[3] as u16;
-            if a > 0 && a < 255 {
-                chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
-                chunk[1] = ((chunk[1] as u16 * 255) / a).min(255) as u8;
-                chunk[2] = ((chunk[2] as u16 * 255) / a).min(255) as u8;
-            }
-        }
-
-        CGContextRelease(cg_ctx);
-        CGColorSpaceRelease(color_space);
-        CGImageRelease(cg_image);
-        let _: () = msg_send![pool, drain];
-
-        let (image, byte_size) = color_image_from_rgba([w, h], pixels)?;
+        let (size, pixels) = cgimage_to_rgba(cg_image, "video frame")?;
+        let (image, byte_size) = color_image_from_rgba(size, pixels)?;
         Ok(DecodedPreview {
             image,
             byte_size,
@@ -2377,7 +2319,7 @@ mod tests {
         TextPreviewJob, TextPreviewPipeline, TextPreviewPoll, TextPreviewStore,
         TextPreviewSubmission, TextPreviewTaskHandle, allocate_rgba_pixels, classify_failure,
         color_image_from_rgba, counts_against_decoder, decode_text_bytes, fit_oriented,
-        load_via_image_crate,
+        load_via_image_crate, unpremultiply_rgba,
     };
     use crate::panel::PreviewIdentity;
     use crate::testutil::TempDir;
@@ -3758,6 +3700,26 @@ mod tests {
         assert_eq!(
             decode_text_bytes(one_in_nineteen),
             Err(PreviewError::Binary)
+        );
+    }
+
+    #[test]
+    fn unpremultiply_restores_straight_alpha_and_skips_opaque_and_clear() {
+        let mut pixels = [
+            // Half-transparent mid grey: 64 / 128 * 255 rounds down to 127.
+            64, 64, 64, 128, //
+            // Opaque and fully transparent pixels are untouched.
+            10, 20, 30, 255, //
+            7, 8, 9, 0, //
+            // Overshoot from rounding in the premultiplied value clamps.
+            200, 1, 0, 100,
+        ];
+        unpremultiply_rgba(&mut pixels);
+        assert_eq!(
+            pixels,
+            [
+                127, 127, 127, 128, 10, 20, 30, 255, 7, 8, 9, 0, 255, 2, 0, 100
+            ]
         );
     }
 
