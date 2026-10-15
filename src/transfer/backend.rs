@@ -504,7 +504,7 @@ fn sync_staged_artifact(staging: &Path) -> std::io::Result<()> {
             children.sort_by_key(|entry| entry.file_name());
             pending.extend(children.into_iter().rev().map(|entry| entry.path()));
         } else if metadata.is_file() {
-            open_for_sync(&path)?.sync_data()?;
+            sync_staged_file(&path)?;
         }
     }
     for directory in directories.into_iter().rev() {
@@ -516,18 +516,40 @@ fn sync_staged_artifact(staging: &Path) -> std::io::Result<()> {
     crate::fs_util::sync_parent_namespace(staging)
 }
 
-/// Open a staged file so its data can be flushed. Windows' `FlushFileBuffers`
-/// needs a writable handle, so a read-only open there always failed; a file
-/// that refuses a writable open (read-only attribute) keeps the read handle
-/// and fails closed exactly as before.
-fn open_for_sync(path: &Path) -> std::io::Result<std::fs::File> {
-    #[cfg(not(unix))]
-    match std::fs::OpenOptions::new().write(true).open(path) {
-        Ok(file) => return Ok(file),
-        Err(error) if error.kind() != std::io::ErrorKind::PermissionDenied => return Err(error),
-        Err(_) => {}
+/// Flush a staged file's data. Windows' `FlushFileBuffers` needs a writable
+/// handle, so a read-only open there always failed. A staged file that
+/// inherited the source's read-only attribute refuses a writable open, so the
+/// attribute is cleared for the sync and put back afterwards; a failed sync
+/// still fails closed.
+fn sync_staged_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)?.sync_data()
     }
-    std::fs::File::open(path)
+    #[cfg(not(unix))]
+    {
+        let open_writable = || std::fs::OpenOptions::new().write(true).open(path);
+        let refused = match open_writable() {
+            Ok(file) => return file.sync_data(),
+            Err(error) if error.kind() != std::io::ErrorKind::PermissionDenied => {
+                return Err(error);
+            }
+            Err(error) => error,
+        };
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        if !permissions.readonly() {
+            return Err(refused);
+        }
+        // Only reached off Unix, where this clears the read-only attribute
+        // rather than granting world write.
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions.clone())?;
+        let synced = open_writable().and_then(|file| file.sync_data());
+        permissions.set_readonly(true);
+        let _ = std::fs::set_permissions(path, permissions);
+        synced
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +578,28 @@ mod tests {
                 ..TuningSnapshot::default()
             },
         }
+    }
+
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn staged_sync_handles_read_only_files_and_keeps_the_attribute() {
+        // A read-only source makes a read-only staged file; on Windows the
+        // sync used to fail for it because FlushFileBuffers needs a
+        // writable handle.
+        let tmp = crate::testutil::TempDir::new();
+        let staging = tmp.dir("staged");
+        let file = staging.join("object");
+        std::fs::write(&file, b"packed").unwrap();
+        let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&file, permissions.clone()).unwrap();
+
+        sync_staged_artifact(&staging).unwrap();
+
+        assert!(std::fs::metadata(&file).unwrap().permissions().readonly());
+        assert_eq!(std::fs::read(&file).unwrap(), b"packed");
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&file, permissions).unwrap();
     }
 
     #[test]
