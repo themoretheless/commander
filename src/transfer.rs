@@ -1009,12 +1009,15 @@ fn transfer_paths_equal(
                     let Some(destination_names) = transfer_child_names(&destination, None) else {
                         return false;
                     };
-                    if source_names != destination_names {
+                    let Some(pairs) = pair_child_names(source_names, destination_names) else {
                         return false;
-                    }
+                    };
                     tasks.push(Task::ExitDirectory(canonical));
-                    for name in source_names.into_iter().rev() {
-                        tasks.push(Task::Compare(source.join(&name), destination.join(name)));
+                    for (source_name, destination_name) in pairs.into_iter().rev() {
+                        tasks.push(Task::Compare(
+                            source.join(source_name),
+                            destination.join(destination_name),
+                        ));
                     }
                     continue;
                 }
@@ -1046,6 +1049,67 @@ fn transfer_child_names(
     }
     names.sort();
     Some(names)
+}
+
+/// Pair every source child with the destination child that holds its copy,
+/// or `None` when the two directories do not list the same entries.
+///
+/// Names normally match exactly. A destination that stores names in another
+/// Unicode normalization (HFS+ and some SMB servers store NFD) still pairs
+/// one-to-one by NFC form; on macOS the `._name` `AppleDouble` files the kernel
+/// writes for extended attributes on exFAT/FAT/SMB are not extra entries.
+fn pair_child_names(
+    source: Vec<std::ffi::OsString>,
+    destination: Vec<std::ffi::OsString>,
+) -> Option<Vec<(std::ffi::OsString, std::ffi::OsString)>> {
+    use unicode_normalization::UnicodeNormalization;
+
+    #[cfg(target_os = "macos")]
+    let destination = drop_apple_double_companions(&source, destination);
+    if source == destination {
+        return Some(
+            source
+                .into_iter()
+                .map(|name| (name.clone(), name))
+                .collect(),
+        );
+    }
+    if source.len() != destination.len() {
+        return None;
+    }
+    let nfc = |name: &std::ffi::OsStr| name.to_str().map(|name| name.nfc().collect::<String>());
+    let mut by_form = std::collections::HashMap::with_capacity(destination.len());
+    for name in destination {
+        if by_form.insert(nfc(&name)?, name).is_some() {
+            return None;
+        }
+    }
+    source
+        .into_iter()
+        .map(|name| {
+            let destination = by_form.remove(&nfc(&name)?)?;
+            Some((name, destination))
+        })
+        .collect()
+}
+
+/// Remove destination `._X` names that are `AppleDouble` companions of a
+/// copied `X` rather than entries of the source itself.
+#[cfg(any(test, target_os = "macos"))]
+fn drop_apple_double_companions(
+    source: &[std::ffi::OsString],
+    mut destination: Vec<std::ffi::OsString>,
+) -> Vec<std::ffi::OsString> {
+    destination.retain(|name| {
+        let companion_of = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("._"))
+            .map(std::ffi::OsStr::new);
+        !companion_of.is_some_and(|base| {
+            source.iter().any(|source| source == base) && !source.contains(name)
+        })
+    });
+    destination
 }
 
 /// Total bytes for all entries (recursively for dirs).
@@ -3532,6 +3596,44 @@ mod tests {
             &destination,
             crate::filesystem_policy::SymlinkPolicy::Preserve,
         ));
+    }
+
+    fn names(names: &[&str]) -> Vec<std::ffi::OsString> {
+        names.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    #[test]
+    fn child_pairing_tolerates_another_unicode_normalization_only() {
+        let nfc = "caf\u{e9}.txt";
+        let nfd = "cafe\u{301}.txt";
+        let pairs = pair_child_names(names(&["a", nfc]), names(&["a", nfd])).unwrap();
+        assert!(pairs.contains(&(nfc.into(), nfd.into())));
+        assert!(pairs.contains(&("a".into(), "a".into())));
+
+        assert!(pair_child_names(names(&["a", nfc]), names(&["a", "cafe.txt"])).is_none());
+        assert!(pair_child_names(names(&["a"]), names(&["a", "b"])).is_none());
+        // Two destination names folding to one source name stay ambiguous.
+        assert!(pair_child_names(names(&[nfc, "z"]), names(&[nfc, nfd])).is_none());
+    }
+
+    #[test]
+    fn apple_double_companions_are_dropped_only_for_copied_names() {
+        let source = names(&["a.txt", "._b.txt"]);
+        let destination = names(&["._a.txt", "._b.txt", "._c.txt", "a.txt"]);
+        let destination = drop_apple_double_companions(&source, destination);
+        assert_eq!(destination, names(&["._b.txt", "._c.txt", "a.txt"]));
+    }
+
+    #[test]
+    fn verification_pairs_children_stored_in_another_normalization() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.file("tree/caf\u{e9}.txt", "same");
+        dst.file("tree/cafe\u{301}.txt", "same");
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        let (source, destination) = (src.path().join("tree"), dst.path().join("tree"));
+        assert!(transfer_paths_equal(&source, &destination, policy));
+        std::fs::write(dst.path().join("tree/cafe\u{301}.txt"), "diff").unwrap();
+        assert!(!transfer_paths_equal(&source, &destination, policy));
     }
 
     #[cfg(unix)]
