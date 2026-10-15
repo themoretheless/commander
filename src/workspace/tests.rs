@@ -1225,6 +1225,33 @@ fn request_delete_builds_pending_op() {
 }
 
 #[test]
+fn context_menu_trash_on_a_selected_row_takes_the_selection_from_every_folder() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let sub = left.dir("sub");
+    let inner = left.file("sub/inner.txt", "i");
+    let here = left.file("here.txt", "h");
+    let mut ws = workspace(&left, &right);
+    ws.left.navigate_to(sub);
+    ws.left.select_path(inner.clone());
+    ws.left.navigate_to(left.path().to_path_buf());
+    ws.left.select_path(here.clone());
+
+    ws.request_context_delete(ActivePanel::Left, &here);
+
+    match &ws.pending_op {
+        Some(PendingOp::Delete { entries, .. }) => {
+            let mut paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+            paths.sort();
+            // The same items the Delete key would trash.
+            let mut expected = vec![here, inner];
+            expected.sort();
+            assert_eq!(paths, expected);
+        }
+        _ => panic!("expected a pending delete"),
+    }
+}
+
+#[test]
 fn context_menu_trash_routes_through_confirmation_and_background_port() {
     let (left, right) = (TempDir::new(), TempDir::new());
     let path = left.file("a.txt", "x");
@@ -2409,6 +2436,29 @@ fn find_duplicates_groups_identical_files_in_active_dir() {
 }
 
 #[test]
+fn find_duplicates_skips_empty_files_and_hard_links() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("__init__.py", "");
+    l.file(".gitkeep", "");
+    let original = l.file("original.bin", "shared bytes");
+    std::fs::hard_link(&original, l.path().join("link.bin")).unwrap();
+    let mut ws = workspace(&l, &r);
+    if !ws.left.show_hidden() {
+        let _ = ws.left.toggle_hidden();
+    }
+
+    // Empty markers are not clutter, and one inode frees nothing when one
+    // of its names is trashed.
+    assert!(ws.find_duplicates().is_empty());
+
+    l.file("copy.bin", "shared bytes");
+    ws.left.refresh();
+    let groups = ws.find_duplicates();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].files.len(), 2, "{:?}", groups[0].files);
+}
+
+#[test]
 fn duplicate_groups_are_confirmed_by_the_full_digest() {
     let key = |name: &str| crate::dedup::FileKey {
         path: PathBuf::from(format!("/dups/{name}")),
@@ -2467,6 +2517,105 @@ fn diff_targets_picks_two_selected_or_same_named() {
     let (x, y) = ws.diff_targets().unwrap();
     assert_eq!(y, a, "active file is the second target");
     assert_eq!(x, r.path().join("a.txt"), "other-panel same name is first");
+}
+
+#[test]
+fn diff_pairs_one_selected_file_per_pane_and_refuses_three() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "1");
+    let b = l.file("b.txt", "2");
+    let c = l.file("c.txt", "3");
+    let other = r.file("other.txt", "9");
+    let mut ws = workspace(&l, &r);
+
+    // One selected file in each pane, names differ: that pair.
+    ws.left.select_path(a.clone());
+    ws.right.select_path(other.clone());
+    assert_eq!(ws.diff_targets(), Some((other, a.clone())));
+    assert!(ws.command_context().can_diff);
+
+    // Three selected: no pair, and the command says so.
+    ws.left.select_path(b);
+    ws.left.select_path(c);
+    assert_eq!(ws.diff_targets(), None);
+    assert!(!ws.command_context().can_diff);
+}
+
+#[test]
+fn select_same_named_matches_rows_the_other_filter_hides() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let shared = l.file("shared.txt", "l");
+    r.file("shared.txt", "r");
+    r.file("visible.txt", "r");
+    let mut ws = workspace(&l, &r);
+    ws.right.set_search_query("visible");
+
+    ws.execute(Command::SelectSameNamed);
+
+    assert!(ws.left.is_selected(&shared));
+}
+
+#[test]
+fn move_within_one_folder_explains_instead_of_listing_conflicts() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("a.txt", "x");
+    let mut ws = workspace(&l, &r);
+    ws.right.navigate_to(l.path().to_path_buf());
+    ws.left.set_cursor(1);
+    ws.drain_ui_requests();
+
+    ws.execute(Command::RequestMove);
+
+    assert!(ws.pending_op.is_none());
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Both panes show this folder: open the destination in the other pane first"
+                .to_string(),
+            error: false,
+        }]
+    );
+    // Copy still offers its conflict sheet (Keep Both duplicates).
+    ws.execute(Command::RequestCopy);
+    assert!(ws.pending_op.is_some());
+}
+
+#[test]
+fn get_info_fills_in_a_folder_size_once_it_is_measured() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let folder = l.dir("box");
+    l.file("box/a.bin", "12345");
+    let mut ws = workspace(&l, &r);
+    let entry = ws
+        .left
+        .entries()
+        .iter()
+        .find(|entry| entry.name == "box")
+        .cloned()
+        .unwrap();
+    // As built while the size was still being measured.
+    let card = crate::panel::make_info(&entry, None, None);
+    assert_eq!(card.size, crate::panel::MEASURING);
+    ws.right.preview = Some(PreviewContent::Info(card));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.size_snapshot().size_of(&folder).is_none()
+        || ws.left.size_snapshot().count_of(&folder).is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "folder never measured"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    ws.sync_preview();
+
+    let Some(PreviewContent::Info(card)) = &ws.right.preview else {
+        panic!("info card stays open");
+    };
+    assert_eq!(card.size, "5 B");
+    assert_eq!(card.children, Some(1));
+    assert_eq!(card.pending, None);
 }
 
 #[test]

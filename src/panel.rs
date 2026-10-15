@@ -35,8 +35,8 @@ use listing_job::{ListingJobController, PendingFocus};
 // Re-export preview/visit public API under `crate::panel::...` for stable paths.
 #[allow(unused_imports)]
 pub use preview::{
-    InfoCard, PreviewContent, PreviewIdentity, format_mode, image_preview_unavailable_message,
-    make_info, make_preview,
+    InfoCard, MEASURING, PreviewContent, PreviewIdentity, format_mode,
+    image_preview_unavailable_message, make_info, make_preview,
 };
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;

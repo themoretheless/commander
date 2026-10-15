@@ -47,7 +47,13 @@ pub struct InfoCard {
     pub children: Option<usize>,
     pub modified: String,
     pub permissions: String,
+    /// The folder whose size or item count was still being measured when
+    /// the card was built, so the card can fill it in once it lands.
+    pub pending: Option<PathBuf>,
 }
+
+/// The size shown while a folder is still being measured.
+pub const MEASURING: &str = "\u{2026}";
 
 /// Format the permission bits of a unix mode as "rwxr-xr-x". Like `ls -l`,
 /// setuid/setgid show as `s` (`S` without execute) in the owner/group
@@ -122,7 +128,7 @@ pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usiz
         entry.is_symlink() && fs::metadata(&entry.path).is_err(),
     );
     let size = if entry.is_dir {
-        dir_size.map_or_else(|| "\u{2026}".to_string(), format_size)
+        dir_size.map_or_else(|| MEASURING.to_string(), format_size)
     } else {
         format_size(entry.size)
     };
@@ -131,7 +137,12 @@ pub fn make_info(entry: &FileEntry, dir_size: Option<u64>, children: Option<usiz
         Some(target) => format!("{} \u{2192} {}", entry.path.display(), target.display()),
         None => entry.path.display().to_string(),
     };
+    // Folder links are never measured (see `SizeIndex::schedule`).
+    let pending =
+        (entry.is_dir && !entry.is_symlink() && (dir_size.is_none() || children.is_none()))
+            .then(|| entry.path.clone());
     InfoCard {
+        pending,
         name: entry.name.clone(),
         path,
         kind,

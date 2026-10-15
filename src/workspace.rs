@@ -362,6 +362,48 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
         .collect()
 }
 
+/// `(volume, file id)` of a listed file, when the listing captured both:
+/// rows sharing it are hard links to one inode.
+fn hard_link_key(entry: &FileEntry) -> Option<(u64, u64)> {
+    match &entry.identity {
+        crate::panel::ListingIdentity::Captured(identity) => {
+            Some((identity.volume?, identity.file_id?))
+        }
+        _ => None,
+    }
+}
+
+/// The panel's only selected file, when exactly one file (and no other
+/// file) is selected among its visible rows.
+fn single_selected_file(panel: &PanelState) -> Option<PathBuf> {
+    let mut files = panel.selected_entries().into_iter().filter(|e| !e.is_dir);
+    let only = files.next()?;
+    files.next().is_none().then_some(only.path)
+}
+
+/// Whether a Move would put every entry back in the folder it is in.
+fn moves_within_folder(entries: &[FileEntry], target: &Path) -> bool {
+    entries
+        .iter()
+        .all(|entry| entry.path.parent() == Some(target))
+}
+
+/// A Get-Info card rebuilt once the folder size or item count it was
+/// waiting for has been measured; `None` while nothing new is known.
+fn refreshed_info(source: &PanelState, card: &panel::InfoCard) -> Option<panel::InfoCard> {
+    let path = card.pending.as_ref()?;
+    let sizes = source.size_snapshot();
+    let (size, children) = (sizes.size_of(path), sizes.count_of(path));
+    // Map lookups only: the listing is searched once something new landed.
+    let size_landed = size.is_some() && card.size == panel::MEASURING;
+    let children_landed = children.is_some() && card.children.is_none();
+    if !size_landed && !children_landed {
+        return None;
+    }
+    let entry = source.entries().iter().find(|entry| &entry.path == path)?;
+    Some(panel::make_info(entry, size, children))
+}
+
 /// "1 symlink" / "3 symlinks": a count with its noun in the right number,
 /// shared by the toasts here so none falls back to "symlink(s)".
 fn count_noun(count: usize, singular: &str, plural: &str) -> String {
@@ -768,6 +810,11 @@ impl Workspace {
 
         let can_diff = if selected_file_count == 2 {
             true
+        } else if selected_file_count > 2 {
+            // Diff takes a pair; it must not quietly ignore the selection.
+            false
+        } else if selected_file_count == 1 && single_selected_file(inactive).is_some() {
+            true
         } else {
             let candidate = if selected_file_count == 1 {
                 first_selected_file_index.and_then(|index| active.entries().get(index))
@@ -870,11 +917,13 @@ impl Workspace {
 
     /// Add to the active panel's selection every visible entry whose name also
     /// exists in the inactive panel (by lowercased name). Builds on top of any
-    /// existing selection so it composes with mask/manual picks.
+    /// existing selection so it composes with mask/manual picks. Like the
+    /// relation selectors, it compares against the other folder's full
+    /// contents, not just the rows its filter shows.
     pub fn select_same_named(&mut self) {
         let names: std::collections::HashSet<String> = self
             .inactive_panel()
-            .filtered_entries()
+            .entries()
             .iter()
             .map(|e| e.name_lower.clone())
             .collect();
@@ -1674,6 +1723,15 @@ impl Workspace {
         if entries.is_empty() {
             return;
         }
+        if kind == TransferKind::Move && moves_within_folder(&entries, &target) {
+            // Every item would "already exist" at its own path; Copy keeps
+            // its conflict sheet, where Keep Both makes duplicates.
+            self.notice(
+                "Both panes show this folder: open the destination in the other pane first"
+                    .to_string(),
+            );
+            return;
+        }
         let wake = self.active_panel_ref().notify_callback();
         self.stage_transfer(kind, entries, target, false, move || {
             if let Some(wake) = &wake {
@@ -1964,7 +2022,10 @@ impl Workspace {
         self.active = panel;
         let source = self.active_panel_ref();
         let entries = if source.is_selected(path) {
-            source.selected_or_cursor().unwrap_or_default()
+            // The same picks as the Delete key, including rows selected in
+            // other folders. A selected row means the selection is non-empty,
+            // so this never falls back to a (possibly stale) cursor.
+            source.picked_entries().unwrap_or_default()
         } else {
             source
                 .entries()
@@ -2628,11 +2689,16 @@ impl Workspace {
     /// digest that groups it also confirms it.
     pub fn find_duplicates(&self) -> Vec<crate::dedup::DupGroup> {
         use std::collections::HashMap;
+        // Empty files all "match" (a folder of `__init__.py`/`.gitkeep`
+        // markers is not clutter), and a hard link shares its twin's bytes:
+        // trashing either frees nothing, so each inode is offered once.
+        let mut inodes = std::collections::HashSet::new();
         let files: Vec<&FileEntry> = self
             .active_panel_ref()
             .entries()
             .iter()
-            .filter(|e| !e.is_dir)
+            .filter(|e| !e.is_dir && e.size > 0)
+            .filter(|e| hard_link_key(e).is_none_or(|key| inodes.insert(key)))
             .collect();
         let mut size_counts: HashMap<u64, usize> = HashMap::new();
         for f in &files {
@@ -2793,8 +2859,10 @@ impl Workspace {
     // ── Diff ────────────────────────────────────────────────────────────
 
     /// Pick the file pair to diff: two selected files in the active panel (in
-    /// the panel's order), or one active file paired with a same-named file in
-    /// the other panel. Returns `None` when no sensible pair exists.
+    /// the panel's order), one selected file in each panel, or one active file
+    /// paired with a same-named file in the other panel. Returns `None` when
+    /// no sensible pair exists, including when more than two files are
+    /// selected.
     pub fn diff_targets(&self) -> Option<(PathBuf, PathBuf)> {
         let active = self.active_panel_ref();
         let files: Vec<PathBuf> = active
@@ -2803,8 +2871,15 @@ impl Workspace {
             .filter(|e| !e.is_dir)
             .map(|e| e.path)
             .collect();
-        if files.len() == 2 {
-            return Some((files[0].clone(), files[1].clone()));
+        match files.len() {
+            2 => return Some((files[0].clone(), files[1].clone())),
+            3.. => return None,
+            1 => {
+                if let Some(other) = single_selected_file(self.inactive_panel()) {
+                    return Some((other, files[0].clone()));
+                }
+            }
+            0 => {}
         }
         // One file (selected, else under the cursor) vs the same name opposite.
         let one = if files.len() == 1 {
@@ -3019,6 +3094,14 @@ impl Workspace {
             return;
         };
 
+        if let Some(PreviewContent::Info(card)) = &mut target.preview {
+            // The Get-Info card is a deliberate snapshot; don't auto-follow
+            // it, but fill in a folder size that was still being measured.
+            if let Some(updated) = refreshed_info(source, card) {
+                *card = updated;
+            }
+            return;
+        }
         let Some(entry) = source.cursor_entry() else {
             return;
         };
@@ -3031,7 +3114,6 @@ impl Workspace {
             | Some(PreviewContent::Text { identity, .. }) => {
                 !entry.is_image() && identity.matches_entry(entry)
             }
-            // The Get-Info card is a deliberate snapshot; don't auto-follow it.
             Some(PreviewContent::Info(_)) => return,
             None => false,
         };
