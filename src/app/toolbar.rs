@@ -44,11 +44,17 @@ fn omnibar_trigger_label(full_path: &str) -> String {
 /// The trigger's hover text, led by the full path when the visible one is
 /// elided.
 fn omnibar_trigger_hover(full_path: &str, truncated: bool) -> String {
-    let hint = "Go to folder, run a command, search (\u{2318}K, \u{2318}L, \u{2318}P)";
+    omnibar_trigger_hover_for(full_path, truncated, cfg!(target_os = "macos"))
+}
+
+fn omnibar_trigger_hover_for(full_path: &str, truncated: bool, mac: bool) -> String {
+    let [palette, go_to, recent] =
+        ["Cmd+K", "Cmd+L", "Cmd+P"].map(|shortcut| platform_shortcut_for(shortcut, mac));
+    let hint = format!("Go to folder, run a command, search ({palette}, {go_to}, {recent})");
     if truncated {
         format!("{full_path}\n{hint}")
     } else {
-        hint.to_string()
+        hint
     }
 }
 
@@ -385,7 +391,7 @@ fn zoom_to_adopt(ui_scale: f32, zoom: f32) -> Option<f32> {
 mod tests {
     use super::{
         command_shortcut, compact_path, normalized_ui_scale, omnibar_trigger_hover,
-        omnibar_trigger_label, platform_shortcut_for, zoom_to_adopt,
+        omnibar_trigger_hover_for, omnibar_trigger_label, platform_shortcut_for, zoom_to_adopt,
     };
     use std::path::Path;
 
@@ -438,6 +444,8 @@ mod tests {
         );
         assert!(omnibar_trigger_hover("/deep/path", true).starts_with("/deep/path\n"));
         assert!(!omnibar_trigger_hover("/deep/path", false).contains("/deep/path"));
+        assert!(omnibar_trigger_hover_for("/p", false, false).contains("(Ctrl+K, Ctrl+L, Ctrl+P)"));
+        assert!(omnibar_trigger_hover_for("/p", false, true).contains("(Cmd+K, Cmd+L, Cmd+P)"));
     }
 
     #[test]
