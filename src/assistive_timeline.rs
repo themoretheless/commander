@@ -236,4 +236,49 @@ mod tests {
         timeline.note_pause(Some(op), "Quiet hours", 2000);
         assert_eq!(timeline.events().count(), 2);
     }
+
+    #[test]
+    fn same_phase_is_announced_once_even_after_the_interval() {
+        let mut timeline = AssistiveTimeline::default();
+        let op = OperationId("op".into());
+        timeline.note_phase(op.clone(), OperationPhase::Transfer, "copying", 1000);
+        timeline.note_phase(op.clone(), OperationPhase::Transfer, "copying more", 5000);
+        assert_eq!(timeline.events().count(), 1);
+        // The same phase of a different operation is a new announcement.
+        timeline.note_phase(
+            OperationId("other".into()),
+            OperationPhase::Transfer,
+            "x",
+            9000,
+        );
+        assert_eq!(timeline.events().count(), 2);
+    }
+
+    #[test]
+    fn history_keeps_only_the_newest_max_events() {
+        let mut timeline = AssistiveTimeline::default();
+        for step in 0..=MAX_EVENTS as u64 {
+            timeline.note_failure(None, format!("failure {step}"), 1000 + step);
+        }
+        assert_eq!(timeline.events().count(), MAX_EVENTS);
+        let newest = timeline.events().next().unwrap();
+        assert_eq!(newest.message, format!("failure {MAX_EVENTS}"));
+        let oldest = timeline.events().last().unwrap();
+        assert_eq!(oldest.message, "failure 1");
+    }
+
+    #[test]
+    fn recovery_bypasses_the_rate_limit_and_reannounces_the_phase() {
+        let mut timeline = AssistiveTimeline::default();
+        let op = OperationId("op".into());
+        timeline.note_phase(op.clone(), OperationPhase::Transfer, "copying", 1000);
+        timeline.note_recovery(Some(op.clone()), "retrying", 1010);
+        assert_eq!(timeline.events().count(), 2);
+        assert_eq!(timeline.current(), "retrying");
+        let newest = timeline.events().next().unwrap();
+        assert_eq!(newest.kind, TimelineKind::Recovery);
+        // The recovery forgot the announced phase, so the same phase returns.
+        timeline.note_phase(op, OperationPhase::Transfer, "copying", 3000);
+        assert_eq!(timeline.events().count(), 3);
+    }
 }

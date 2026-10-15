@@ -263,4 +263,18 @@ mod tests {
             "/a/x.txt\n/a/y.txt"
         );
     }
+
+    #[test]
+    fn file_url_escapes_url_syntax_and_multibyte_names() {
+        // `%`, `#` and `?` would otherwise read as an escape, a fragment and
+        // a query; `é` is encoded as its two UTF-8 bytes.
+        assert_eq!(
+            format(&[p("/a/é%#?.txt")], PathStyle::FileUrl, None),
+            "file:///a/%C3%A9%25%23%3F.txt"
+        );
+        assert_eq!(
+            percent_encode_path("/Az09-_.~/+&=:;@'!".as_bytes()),
+            "/Az09-_.~/%2B%26%3D%3A%3B%40%27%21"
+        );
+    }
 }

@@ -371,4 +371,58 @@ mod tests {
             assert_eq!(metadata.len(), entry.size_bytes);
         }
     }
+
+    #[test]
+    fn validate_rejects_each_malformed_field() {
+        type Mutation = fn(&mut BenchmarkTreeProfile);
+        let cases: [(&str, Mutation, &str); 12] = [
+            ("schema", |p| p.schema = 2, "schema must be 1"),
+            ("blank name", |p| p.name = "  ".into(), "needs a name"),
+            ("no entries", |p| p.entries = 0, "byte budget"),
+            ("no budget", |p| p.max_total_bytes = 0, "byte budget"),
+            ("depth 0", |p| p.depths[0].value = 0, "depth distribution"),
+            ("depth 33", |p| p.depths[0].value = 33, "depth distribution"),
+            ("no depths", |p| p.depths.clear(), "depth distribution"),
+            (
+                "zero fanout weight",
+                |p| p.fanouts[0].weight = 0,
+                "fanout distribution",
+            ),
+            (
+                "zero size weight",
+                |p| p.sizes[0].weight = 0,
+                "size buckets",
+            ),
+            (
+                "min above max",
+                |p| p.sizes[0].min_bytes = p.sizes[0].max_bytes + 1,
+                "size buckets",
+            ),
+            (
+                "unsafe extension",
+                |p| p.file_types[0].extension = "../x".into(),
+                "safe extensions",
+            ),
+            (
+                "zero type weight",
+                |p| p.file_types[1].weight = 0,
+                "safe extensions",
+            ),
+        ];
+        for (label, mutate, expected) in cases {
+            let mut profile = small_profile();
+            mutate(&mut profile);
+            match profile.validate() {
+                Err(FixtureError::Validation(message)) => {
+                    assert!(message.contains(expected), "{label}: {message}");
+                }
+                other => panic!("{label}: expected a validation error, got {other:?}"),
+            }
+        }
+        // Range boundaries themselves are accepted.
+        let mut profile = small_profile();
+        profile.depths[0].value = 32;
+        profile.sizes[0].min_bytes = profile.sizes[0].max_bytes;
+        assert!(profile.validate().is_ok());
+    }
 }

@@ -173,4 +173,16 @@ mod tests {
         assert_eq!(truncate_preserving_extension("long.txt", 1), "\u{2026}");
         assert_eq!(truncate_preserving_extension("long.txt", 2), "l\u{2026}");
     }
+
+    #[test]
+    fn compound_extensions_match_in_any_case() {
+        assert_eq!(
+            truncate_preserving_extension("BACKUP-PRODUCTION.TAR.GZ", 14),
+            "BACKUP\u{2026}.TAR.GZ"
+        );
+        assert_eq!(
+            truncate_preserving_extension("Weekly-Archive.Tar.Zst", 13),
+            "Week\u{2026}.Tar.Zst"
+        );
+    }
 }

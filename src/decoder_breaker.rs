@@ -48,8 +48,12 @@ pub enum AdmitDecision {
 pub fn admit(path: &Path) -> AdmitDecision {
     let key = format_key(path);
     let mut table = crate::lock_util::recover(table());
-    let state = table.formats.entry(key).or_default();
-    let now = Instant::now();
+    admit_at(table.formats.entry(key).or_default(), path, Instant::now())
+}
+
+/// [`admit`] against one format's state at `now`; an expired quarantine
+/// resets the format so its files are tried again.
+fn admit_at(state: &mut FormatState, path: &Path, now: Instant) -> AdmitDecision {
     if let Some(until) = state.quarantined_until {
         if now < until {
             if state.probe_armed.as_deref() == Some(path) {
@@ -150,6 +154,40 @@ mod tests {
         assert_eq!(admit(&corrupt), AdmitDecision::Allow);
         assert_eq!(
             admit(Path::new("/tmp/fine.j010repeat")),
+            AdmitDecision::Allow
+        );
+    }
+
+    #[test]
+    fn expired_cooldown_readmits_the_format_with_a_fresh_count() {
+        let path = Path::new("/tmp/expired.j010cool");
+        let start = Instant::now();
+        let mut state = FormatState {
+            failing_paths: (0..FAILURE_THRESHOLD)
+                .map(|n| PathBuf::from(format!("/tmp/{n}.j010cool")))
+                .collect(),
+            half_open: true,
+            quarantined_until: Some(start + COOLDOWN),
+            probe_armed: None,
+        };
+        // Still cooling down one instant before the deadline.
+        let before = start + COOLDOWN - Duration::from_millis(1);
+        assert_eq!(
+            admit_at(&mut state, path, before),
+            AdmitDecision::Quarantined
+        );
+        assert!(state.quarantined_until.is_some());
+        // At the deadline the format is allowed again and its failure count
+        // and half-open probe are reset, so it starts counting afresh.
+        assert_eq!(
+            admit_at(&mut state, path, start + COOLDOWN),
+            AdmitDecision::Allow
+        );
+        assert_eq!(state.quarantined_until, None);
+        assert!(state.failing_paths.is_empty());
+        assert!(!state.half_open);
+        assert_eq!(
+            admit_at(&mut state, path, start + COOLDOWN * 2),
             AdmitDecision::Allow
         );
     }
