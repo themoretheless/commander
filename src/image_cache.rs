@@ -2376,7 +2376,8 @@ mod tests {
         TEXT_PREVIEW_TIMEOUT, TextPreviewClock, TextPreviewExecutor, TextPreviewFingerprint,
         TextPreviewJob, TextPreviewPipeline, TextPreviewPoll, TextPreviewStore,
         TextPreviewSubmission, TextPreviewTaskHandle, allocate_rgba_pixels, classify_failure,
-        color_image_from_rgba, decode_text_bytes, fit_oriented, load_via_image_crate,
+        color_image_from_rgba, counts_against_decoder, decode_text_bytes, fit_oriented,
+        load_via_image_crate,
     };
     use crate::panel::PreviewIdentity;
     use crate::testutil::TempDir;
@@ -3691,5 +3692,194 @@ mod tests {
                     if ready_at == now + TEXT_PREVIEW_DEBOUNCE
             ));
         }
+    }
+
+    #[test]
+    fn preview_target_floors_clamps_and_survives_non_finite_extents() {
+        let target = |w, h, ppp| {
+            let target = PreviewTarget::from_points(w, h, ppp);
+            (target.width, target.height)
+        };
+        assert_eq!(target(300.0, 200.0, 2.0), (600, 400));
+        // Fractional pixels round up so the texture never undershoots.
+        assert_eq!(target(10.2, 10.0, 1.0), (11, 10));
+        // Sub-point extents and scale factors floor at one.
+        assert_eq!(target(0.0, 0.5, 2.0), (2, 2));
+        assert_eq!(target(100.0, 50.0, 0.5), (100, 50));
+        // Huge panes clamp to the decode ceiling on each axis independently.
+        assert_eq!(target(100_000.0, 300.0, 2.0), (4_096, 600));
+        // NaN or infinite inputs fall back to a single pixel.
+        assert_eq!(target(f32::NAN, 10.0, 1.0), (1, 10));
+        assert_eq!(target(f32::INFINITY, 10.0, 1.0), (1, 10));
+        assert_eq!(target(300.0, 200.0, f32::NAN), (1, 1));
+    }
+
+    #[test]
+    fn fingerprint_matches_request_only_when_path_size_and_known_mtime_agree() {
+        let mtime = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mut stamped = fingerprint("notes.txt", 1, 5);
+        stamped.modified = Some(mtime);
+        let request = |path: &str, size, modified| PreviewIdentity {
+            path: PathBuf::from(path),
+            size,
+            modified,
+        };
+
+        assert!(stamped.matches_request(&request("notes.txt", 5, Some(mtime))));
+        // A listing without an mtime trusts path and size alone.
+        assert!(stamped.matches_request(&request("notes.txt", 5, None)));
+        assert!(!stamped.matches_request(&request(
+            "notes.txt",
+            5,
+            Some(mtime + Duration::from_secs(1))
+        )));
+        assert!(!stamped.matches_request(&request("notes.txt", 6, Some(mtime))));
+        assert!(!stamped.matches_request(&request("other.txt", 5, Some(mtime))));
+        // A file whose mtime cannot be read no longer matches a stamped row.
+        let unstamped = fingerprint("notes.txt", 1, 5);
+        assert!(!unstamped.matches_request(&request("notes.txt", 5, Some(mtime))));
+        assert!(unstamped.matches_request(&request("notes.txt", 5, None)));
+    }
+
+    #[test]
+    fn control_character_threshold_allows_exactly_one_in_twenty() {
+        let mut one_in_twenty = b"abcdefghijklmnopqrs".to_vec();
+        one_in_twenty.push(0x01);
+        assert_eq!(one_in_twenty.len(), 20);
+        assert!(decode_text_bytes(one_in_twenty.clone()).is_ok());
+
+        // DEL counts as a control too: two in twenty is over the line.
+        let mut two_in_twenty = one_in_twenty.clone();
+        two_in_twenty[0] = 0x7f;
+        assert_eq!(decode_text_bytes(two_in_twenty), Err(PreviewError::Binary));
+
+        // One control in nineteen bytes is also just over 5 %.
+        let one_in_nineteen = one_in_twenty[1..].to_vec();
+        assert_eq!(
+            decode_text_bytes(one_in_nineteen),
+            Err(PreviewError::Binary)
+        );
+    }
+
+    #[test]
+    fn retry_of_a_ready_preview_rereads_instead_of_serving_the_cache() {
+        let (mut pipeline, executor, provider, clock, ctx) = pipeline_harness();
+        let request = identity("edited.txt", 5);
+        provider.push(ScriptedAction::Text("old"));
+        provider.push(ScriptedAction::Text("new"));
+
+        submit_after_debounce(&mut pipeline, &executor, &clock, &ctx, &request);
+        executor.run_all();
+        match pipeline.request(&ctx, &request) {
+            TextPreviewPoll::Ready(content) => assert_eq!(content.as_ref(), "old"),
+            other => panic!("expected ready preview, got {other:?}"),
+        }
+
+        pipeline.retry(&request.path);
+        submit_after_debounce(&mut pipeline, &executor, &clock, &ctx, &request);
+        executor.run_all();
+        match pipeline.request(&ctx, &request) {
+            TextPreviewPoll::Ready(content) => assert_eq!(content.as_ref(), "new"),
+            other => panic!("expected re-read preview, got {other:?}"),
+        }
+        assert_eq!(provider.reads.load(Ordering::Relaxed), 2);
+    }
+
+    /// Run `probe` until it holds or about two seconds pass.
+    fn eventually(probe: impl Fn() -> bool) -> bool {
+        for _ in 0..400 {
+            if probe() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        probe()
+    }
+
+    #[test]
+    fn isolated_executor_refuses_a_second_job_and_recovers_after_a_panic() {
+        let executor = super::IsolatedTextPreviewExecutor::default();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let (saw_cancel_tx, saw_cancel) = std::sync::mpsc::channel();
+        let job: TextPreviewJob = Box::new(move |cancelled| {
+            let _ = gate.recv();
+            let _ = saw_cancel_tx.send(cancelled());
+        });
+        let first = executor
+            .submit(TextPreviewSubmission { generation: 1 }, job)
+            .unwrap();
+
+        let refused = executor.submit(TextPreviewSubmission { generation: 2 }, Box::new(|_| {}));
+        assert!(matches!(refused, Err(PreviewError::WorkerBusy)));
+
+        assert!(first.cancel(), "first cancel reports the transition");
+        assert!(!first.cancel(), "repeat cancel is a no-op");
+        drop(release);
+        assert_eq!(saw_cancel.recv_timeout(Duration::from_secs(2)), Ok(true));
+        assert!(eventually(|| first.is_finished()));
+
+        let panicking = executor
+            .submit(
+                TextPreviewSubmission { generation: 3 },
+                Box::new(|_| panic!("text preview job panic")),
+            )
+            .unwrap();
+        assert!(eventually(|| panicking.is_finished()));
+        // The worker slot is free again after the panic.
+        let after = executor
+            .submit(TextPreviewSubmission { generation: 4 }, Box::new(|_| {}))
+            .unwrap();
+        assert!(eventually(|| after.is_finished()));
+    }
+
+    #[test]
+    fn decode_timeout_keeps_the_permit_until_the_decoder_returns() {
+        fn decoded() -> Result<super::DecodedPreview, String> {
+            Ok(super::DecodedPreview {
+                image: egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                byte_size: 4,
+                decoded_for: PreviewTarget::DEFAULT,
+            })
+        }
+        let stats = super::preview_provider_stats;
+
+        assert!(super::run_decode_with_timeout(Duration::from_secs(2), decoded).is_ok());
+
+        // Hung decoders time out but keep their permits until they return.
+        let timeouts_before = stats().timeouts;
+        let mut releases = Vec::new();
+        for _ in 0..super::MAX_PRELOAD_WORKERS {
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            releases.push(release);
+            let error = super::run_decode_with_timeout(Duration::from_millis(10), move || {
+                let _ = gate.recv();
+                decoded()
+            })
+            .unwrap_err();
+            assert_eq!(classify_failure(&error), PreviewFailure::TimedOut);
+        }
+        assert!(stats().timeouts >= timeouts_before + super::MAX_PRELOAD_WORKERS as u64);
+
+        // With every permit held the next decode is refused without running.
+        let saturated_before = stats().saturated;
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_probe = Arc::clone(&ran);
+        let error = super::run_decode_with_timeout(Duration::from_secs(2), move || {
+            ran_probe.store(true, Ordering::Release);
+            decoded()
+        })
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Busy);
+        assert!(!counts_against_decoder(&error));
+        assert!(stats().saturated > saturated_before);
+        assert!(!ran.load(Ordering::Acquire));
+
+        // Once the hung decoders finish, their permits come back.
+        drop(releases);
+        assert!(eventually(|| super::run_decode_with_timeout(
+            Duration::from_secs(2),
+            decoded
+        )
+        .is_ok()));
     }
 }
