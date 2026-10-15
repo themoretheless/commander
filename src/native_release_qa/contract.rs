@@ -178,6 +178,29 @@ pub struct DisplayTopology {
 }
 
 #[cfg(any(test, feature = "visual-qa"))]
+impl DisplayTopology {
+    /// Geometry the release checks can reason about: both frames valid, the
+    /// visible frame inside the frame, and a positive finite backing scale.
+    pub(super) fn has_valid_geometry(&self) -> bool {
+        self.frame.is_valid()
+            && self.visible_frame.is_valid()
+            && self.frame.contains_rect(self.visible_frame)
+            && self.backing_scale.is_finite()
+            && self.backing_scale > 0.0
+    }
+}
+
+/// The first display id that repeats an earlier one, if any.
+#[cfg(any(test, feature = "visual-qa"))]
+pub(super) fn duplicate_display_id(displays: &[DisplayTopology]) -> Option<&str> {
+    let mut seen = std::collections::HashSet::new();
+    displays
+        .iter()
+        .map(|display| display.id.as_str())
+        .find(|id| !seen.insert(*id))
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityState {
@@ -346,8 +369,52 @@ pub(super) struct NativeReleaseEvidence {
     pub reasons: Vec<String>,
 }
 
-#[cfg(all(test, feature = "visual-qa"))]
+#[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn display(id: &str) -> DisplayTopology {
+        DisplayTopology {
+            id: id.to_string(),
+            main: false,
+            frame: ScreenRect::new(0.0, 0.0, 100.0, 100.0),
+            visible_frame: ScreenRect::new(0.0, 10.0, 100.0, 90.0),
+            backing_scale: 2.0,
+        }
+    }
+
+    #[test]
+    fn display_geometry_needs_nested_frames_and_a_positive_scale() {
+        assert!(display("ok").has_valid_geometry());
+        let invalid: [fn(&mut DisplayTopology); 5] = [
+            |display| display.frame = ScreenRect::new(0.0, 0.0, 0.0, 100.0),
+            |display| display.visible_frame = ScreenRect::new(0.0, f64::NAN, 10.0, 10.0),
+            |display| display.visible_frame = ScreenRect::new(50.0, 0.0, 100.0, 10.0),
+            |display| display.backing_scale = f64::INFINITY,
+            |display| display.backing_scale = -1.0,
+        ];
+        for corrupt in invalid {
+            let mut entry = display("bad");
+            corrupt(&mut entry);
+            assert!(!entry.has_valid_geometry(), "{entry:?}");
+        }
+    }
+
+    #[test]
+    fn duplicate_display_id_names_the_first_repeat() {
+        assert_eq!(duplicate_display_id(&[]), None);
+        assert_eq!(duplicate_display_id(&[display("a"), display("b")]), None);
+        assert_eq!(
+            duplicate_display_id(&[display("a"), display("b"), display("b"), display("a")]),
+            Some("b")
+        );
+        // Exact ids: case and spacing differences are distinct displays.
+        assert_eq!(duplicate_display_id(&[display("a"), display("A")]), None);
+    }
+}
+
+#[cfg(all(test, feature = "visual-qa"))]
+mod request_tests {
     use super::*;
 
     fn parse(arguments: &[&str]) -> Result<NativeQaRequest, String> {

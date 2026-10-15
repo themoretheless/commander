@@ -1,6 +1,5 @@
-use super::contract::{DisplayTopology, QaSubject, ScreenRect};
+use super::contract::{DisplayTopology, QaSubject, ScreenRect, duplicate_display_id};
 use serde::Serialize;
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 #[cfg(target_os = "macos")]
@@ -39,21 +38,18 @@ pub(super) fn topology_fingerprint(displays: &[DisplayTopology]) -> Result<Strin
     if !displays.is_empty() && displays.iter().filter(|display| display.main).count() != 1 {
         return Err("display topology must contain exactly one main display".to_string());
     }
-    let mut ids = HashSet::new();
+    if let Some(id) = duplicate_display_id(displays) {
+        return Err(format!("display id is empty or duplicated: {id:?}"));
+    }
     let mut canonical = Vec::with_capacity(displays.len());
     for display in displays {
-        if display.id.trim().is_empty() || !ids.insert(display.id.clone()) {
+        if display.id.trim().is_empty() {
             return Err(format!(
                 "display id is empty or duplicated: {:?}",
                 display.id
             ));
         }
-        if !display.frame.is_valid()
-            || !display.visible_frame.is_valid()
-            || !display.frame.contains_rect(display.visible_frame)
-            || !display.backing_scale.is_finite()
-            || display.backing_scale <= 0.0
-        {
+        if !display.has_valid_geometry() {
             return Err(format!("invalid display topology entry: {}", display.id));
         }
         canonical.push(CanonicalDisplay {

@@ -2,6 +2,7 @@
 use super::contract::{
     ATTESTATION_SCHEMA, AttestationMode, CheckEvidence, CheckStatus, ManualAttestation, ManualCase,
     NativeCapabilities, NativeVerdict, QaSubject, QaSubjectBinding, REQUIRED_MANUAL_CASES,
+    duplicate_display_id,
 };
 use super::contract::{DisplayTopology, PopupPlacement, PopupSize, ScreenPoint, ScreenRect};
 #[cfg(any(test, feature = "visual-qa"))]
@@ -69,25 +70,6 @@ pub fn place_popup(
 }
 
 #[cfg(any(test, feature = "visual-qa"))]
-fn valid_topology_entry(display: &DisplayTopology) -> bool {
-    display.frame.is_valid()
-        && display.visible_frame.is_valid()
-        && display.frame.contains_rect(display.visible_frame)
-        && display.backing_scale.is_finite()
-        && display.backing_scale > 0.0
-        && !display.id.trim().is_empty()
-}
-
-#[cfg(any(test, feature = "visual-qa"))]
-fn topology_ids_are_unique(displays: &[DisplayTopology]) -> bool {
-    displays.iter().enumerate().all(|(index, display)| {
-        displays[index + 1..]
-            .iter()
-            .all(|other| display.id != other.id)
-    })
-}
-
-#[cfg(any(test, feature = "visual-qa"))]
 pub(super) fn popup_placement_matrix(
     displays: &[DisplayTopology],
     popup_size: Option<PopupSize>,
@@ -101,7 +83,7 @@ pub(super) fn popup_placement_matrix(
     if displays.is_empty() {
         return CheckEvidence::failed("popup_content_rect_matrix", "no NSScreen topology");
     }
-    if !topology_ids_are_unique(displays) {
+    if duplicate_display_id(displays).is_some() {
         return CheckEvidence::failed(
             "popup_content_rect_matrix",
             "NSScreen topology contains duplicate display identifiers",
@@ -109,7 +91,7 @@ pub(super) fn popup_placement_matrix(
     }
     let mut samples = 0_usize;
     for display in displays {
-        if !valid_topology_entry(display) {
+        if !display.has_valid_geometry() || display.id.trim().is_empty() {
             return CheckEvidence::failed(
                 "popup_content_rect_matrix",
                 format!("invalid display geometry: {}", display.id),
