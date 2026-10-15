@@ -1695,11 +1695,7 @@ pub(super) fn run_failure_rollback(
             }
         };
     }
-    let journal_steps = journal_enabled
-        .then(|| crate::operation_journal::operation(operation_id).ok())
-        .flatten()
-        .map(|operation| operation.steps);
-
+    // Without a journal, the in-memory placements are the only record.
     let mut failed = Vec::new();
     let mut complete = true;
     for (source, landing) in placements.into_iter().rev() {
@@ -1734,32 +1730,6 @@ pub(super) fn run_failure_rollback(
                 ),
             );
             failed.push((source, landing));
-            continue;
-        }
-
-        if journal_enabled {
-            let key = journal_steps.as_ref().and_then(|steps| {
-                steps
-                    .iter()
-                    .find(|step| {
-                        step.source == source
-                            && step.landing.as_deref().unwrap_or(&step.destination) == landing
-                    })
-                    .map(|step| step.key.clone())
-            });
-            let journal_result = key.map_or_else(
-                || Err("completed rollback effect is missing from the journal".to_string()),
-                |key| crate::operation_journal::mark_rolled_back(operation_id, &key),
-            );
-            if let Err(error) = journal_result {
-                complete = false;
-                record_journal_error(
-                    progress,
-                    &landing.display().to_string(),
-                    Some(source),
-                    error,
-                );
-            }
         }
     }
 
