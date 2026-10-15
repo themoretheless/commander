@@ -265,7 +265,7 @@ fn open_dir_for_times(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// Windows opens a directory handle only with backup semantics, and setting
-/// times needs FILE_WRITE_ATTRIBUTES.
+/// times needs `FILE_WRITE_ATTRIBUTES`.
 #[cfg(windows)]
 fn open_dir_for_times(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
