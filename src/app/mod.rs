@@ -439,7 +439,10 @@ pub struct FindState {
     pub last_query: Option<(String, crate::query::MatchMode, PathBuf)>,
     pub time_pivot: crate::search::TimePivot,
     pub history_open: bool,
-    pub explanation_open: Option<crate::search::FileIdentity>,
+    /// The hit whose "why matched" line is open. Keyed by identity and
+    /// location: hard links share an identity, so identity alone would open
+    /// the first link's explanation for every link.
+    pub explanation_open: Option<find_dialog::ExplainKey>,
     pub pending_rerun: bool,
     pub last_edit_at: f64,
     pub search_source: String,

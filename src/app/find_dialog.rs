@@ -17,6 +17,23 @@ const fn result_row_height(pivot_active: bool) -> f32 {
 /// Display order of the results: grouped by time bucket under a pivot,
 /// stable within a bucket. Each hit's bucket (a local-calendar conversion) is
 /// computed once, not once per sort comparison.
+/// Which hit's explanation is open: identity plus where the hit was found.
+pub type ExplainKey = (crate::search::FileIdentity, crate::search::SearchLocation);
+
+fn explain_key(hit: &crate::search::SearchHit) -> ExplainKey {
+    (hit.identity.clone(), hit.location.clone())
+}
+
+/// The hit `key` names, telling apart hard links that share an identity.
+fn explained_hit<'a>(
+    results: &'a [crate::search::SearchHit],
+    key: &ExplainKey,
+) -> Option<&'a crate::search::SearchHit> {
+    results
+        .iter()
+        .find(|hit| hit.identity == key.0 && hit.location == key.1)
+}
+
 fn pivot_order(
     results: &[crate::search::SearchHit],
     pivot: crate::search::TimePivot,
@@ -839,7 +856,7 @@ impl App {
                                         ui.set_min_height(row_height);
                                         let index = indices[row];
                                         let hit = &state.results[index];
-                                        let identity = hit.identity.clone();
+                                        let key = explain_key(hit);
                                         let path = hit.reveal_path().to_path_buf();
                                         let relative = hit.relative_to(&root).display().to_string();
                                         let size = if hit.entry.is_dir {
@@ -906,7 +923,7 @@ impl App {
                                                     .color(t.text_muted),
                                             );
                                             let explaining =
-                                                open_explanation.as_ref() == Some(&identity);
+                                                open_explanation.as_ref() == Some(&key);
                                             let why = ui
                                                 .add(
                                                     egui::Button::selectable(explaining, "?")
@@ -923,7 +940,7 @@ impl App {
                                             });
                                             if why.clicked() {
                                                 explanation_change =
-                                                    Some((!explaining).then_some(identity));
+                                                    Some((!explaining).then_some(key));
                                             }
                                         });
                                     },
@@ -946,9 +963,8 @@ impl App {
                             .color(t.text_muted),
                         );
                     }
-                    if let Some(identity) = &state.explanation_open
-                        && let Some(hit) =
-                            state.results.iter().find(|hit| &hit.identity == identity)
+                    if let Some(key) = &state.explanation_open
+                        && let Some(hit) = explained_hit(&state.results, key)
                     {
                         ui.separator();
                         ui.label(
@@ -1199,8 +1215,8 @@ impl FindState {
 mod tests {
     use super::FindState;
     use super::{
-        add_smart_folder, history_row_label, index_build_refusal, index_skipped_summary,
-        pivot_order, result_row_height, search_root_error,
+        add_smart_folder, explain_key, explained_hit, history_row_label, index_build_refusal,
+        index_skipped_summary, pivot_order, result_row_height, search_root_error,
     };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -1282,6 +1298,17 @@ mod tests {
             explanation: crate::search::MatchExplanation::default(),
             location: crate::search::SearchLocation::Native(path),
         }
+    }
+
+    #[test]
+    fn hard_links_keep_separate_explanations() {
+        // Both helper hits share one native identity, like two hard links.
+        let results = [hit("a", None), hit("b", None)];
+        assert_eq!(results[0].identity, results[1].identity);
+        let key = explain_key(&results[1]);
+        let shown = explained_hit(&results, &key).expect("hit is listed");
+        assert_eq!(shown.entry.name, "b");
+        assert_ne!(explain_key(&results[0]), key);
     }
 
     #[test]
