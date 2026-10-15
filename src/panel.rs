@@ -4682,4 +4682,26 @@ mod tests {
         assert!(p.entries().iter().any(|entry| entry.path == hidden));
         assert_eq!(p.entries_gen(), revision);
     }
+
+    #[test]
+    fn preview_identity_goes_stale_when_size_or_date_changes() {
+        let mut file = entry("notes.txt", false, 5);
+        file.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100));
+        let identity = PreviewIdentity::from_entry(&file);
+        assert!(identity.matches_entry(&file));
+
+        let mut grown = file.clone();
+        grown.size = 6;
+        assert!(!identity.matches_entry(&grown));
+
+        let mut touched = file.clone();
+        touched.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(101));
+        assert!(!identity.matches_entry(&touched));
+        touched.modified = None;
+        assert!(!identity.matches_entry(&touched));
+
+        let mut moved = file;
+        moved.path = PathBuf::from("/test/other.txt");
+        assert!(!identity.matches_entry(&moved));
+    }
 }
