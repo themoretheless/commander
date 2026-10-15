@@ -1,5 +1,6 @@
 //! Shared filesystem helpers used across panels, transfers and menus.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -234,7 +235,46 @@ fn fill_new_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
             )),
         };
     }
+    copy_dir_metadata(src, dst);
     Ok(())
+}
+
+/// Give the filled copy `dst` the permissions and modification time of
+/// `src`, as `fs::copy` does for files: a private 0700 folder must not come
+/// out 0755, and a duplicate keeps its date. Runs after the contents are
+/// in, so a read-only mode cannot block the copy and the writes do not
+/// bump the restored time. Best effort, like the file metadata.
+fn copy_dir_metadata(src: &Path, dst: &Path) {
+    let Ok(metadata) = std::fs::metadata(src) else {
+        return;
+    };
+    if let Err(error) = std::fs::set_permissions(dst, metadata.permissions()) {
+        log::debug!(target: "commander::fs_util", "could not copy mode to {}: {error}", dst.display());
+    }
+    let Ok(modified) = metadata.modified() else {
+        return;
+    };
+    if let Err(error) = open_dir_for_times(dst).and_then(|dir| dir.set_modified(modified)) {
+        log::debug!(target: "commander::fs_util", "could not copy mtime to {}: {error}", dst.display());
+    }
+}
+
+#[cfg(not(windows))]
+fn open_dir_for_times(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+/// Windows opens a directory handle only with backup semantics, and setting
+/// times needs FILE_WRITE_ATTRIBUTES.
+#[cfg(windows)]
+fn open_dir_for_times(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    std::fs::OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
 }
 
 fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -369,6 +409,7 @@ pub fn available_copy_name(path: &Path) -> PathBuf {
     } else {
         (path.file_stem().unwrap_or_default(), path.extension())
     };
+    let stem = strip_copy_suffix(stem);
     first_available(|i| {
         let mut name = stem.to_os_string();
         if i == 0 {
@@ -382,6 +423,29 @@ pub fn available_copy_name(path: &Path) -> PathBuf {
         }
         parent.join(name)
     })
+}
+
+/// `stem` without a trailing " copy" or " copy N" left by an earlier
+/// duplicate, so duplicating "doc copy" yields "doc copy 2" (as Finder does)
+/// rather than "doc copy copy". A stem that is only the suffix is kept.
+fn strip_copy_suffix(stem: &OsStr) -> &OsStr {
+    let Some(text) = stem.to_str() else {
+        return stem;
+    };
+    let without_number = match text.rsplit_once(' ') {
+        Some((head, number))
+            if !number.is_empty()
+                && number.bytes().all(|byte| byte.is_ascii_digit())
+                && !number.starts_with('0') =>
+        {
+            head
+        }
+        _ => text,
+    };
+    match without_number.strip_suffix(" copy") {
+        Some(base) if !base.is_empty() => OsStr::new(base),
+        _ => stem,
+    }
 }
 
 /// Duplicate a file or directory next to itself, Finder-style. Returns the
@@ -717,6 +781,52 @@ mod tests {
 
         let second = duplicate(&f).unwrap();
         assert_eq!(second, tmp.path().join("doc copy 2.txt"));
+    }
+
+    #[test]
+    fn duplicating_a_copy_counts_up_instead_of_stacking_suffixes() {
+        let tmp = TempDir::new();
+        let copy = tmp.file("doc copy.txt", "data");
+
+        let next = duplicate(&copy).unwrap();
+
+        assert_eq!(next, tmp.path().join("doc copy 2.txt"));
+        let numbered = duplicate(&next).unwrap();
+        assert_eq!(numbered, tmp.path().join("doc copy 3.txt"));
+    }
+
+    #[test]
+    fn copy_suffix_strip_keeps_names_that_are_not_copies() {
+        let strip = |name: &str| strip_copy_suffix(OsStr::new(name)).to_owned();
+        assert_eq!(strip("doc copy"), "doc");
+        assert_eq!(strip("doc copy 12"), "doc");
+        assert_eq!(strip("doc"), "doc");
+        assert_eq!(strip("doc 2"), "doc 2");
+        assert_eq!(strip("photocopy"), "photocopy");
+        assert_eq!(strip(" copy"), " copy");
+        assert_eq!(strip("doc copy 0"), "doc copy 0");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_keeps_folder_mode_and_mtime() {
+        use std::os::unix::fs::PermissionsExt;
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.file("private/a.txt", "1");
+        let private = src.path().join("private");
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+        std::fs::File::open(&private)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+
+        let copy = dst.path().join("copy");
+        copy_dir_all(src.path(), &copy).unwrap();
+
+        let metadata = std::fs::metadata(copy.join("private")).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        assert_eq!(metadata.modified().unwrap(), stamp);
     }
 
     #[test]
