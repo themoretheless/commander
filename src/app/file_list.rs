@@ -190,6 +190,7 @@ fn folder_changed(ctx: &egui::Context, panel_side: &str, path: &std::path::Path)
 enum EmptyAction {
     Reveal,
     GoUp,
+    Retry,
     ClearFilters,
 }
 
@@ -224,6 +225,11 @@ fn empty_state(
             "\u{26a0}",
             "This folder no longer exists",
             Some(("Go up", EmptyAction::GoUp)),
+        ),
+        DirStatus::Unavailable => (
+            "\u{26a0}",
+            "This folder can't be read right now",
+            Some(("Retry", EmptyAction::Retry)),
         ),
         DirStatus::Loading => ("\u{2026}", "Loading folder\u{2026}", None),
         _ if filter_active => (
@@ -854,6 +860,7 @@ impl App {
                                         ))
                                     }
                                     EmptyAction::GoUp => panel.go_up(),
+                                    EmptyAction::Retry => panel.refresh(),
                                     EmptyAction::ClearFilters => panel.clear_filters(),
                                 }
                             }
@@ -1879,7 +1886,12 @@ mod tests {
     fn unlistable_folder_wins_over_the_filter_empty_state() {
         use crate::panel::DirStatus;
         // A remembered filter must not turn these into "No matches".
-        for status in [DirStatus::Denied, DirStatus::Gone, DirStatus::Loading] {
+        for status in [
+            DirStatus::Denied,
+            DirStatus::Unavailable,
+            DirStatus::Gone,
+            DirStatus::Loading,
+        ] {
             assert_ne!(empty_state(status, true).1, "No matches", "{status:?}");
             assert_eq!(empty_state(status, true), empty_state(status, false));
         }
@@ -1902,6 +1914,15 @@ mod tests {
         if !cfg!(target_os = "macos") {
             assert!(!label.contains("Finder"), "{label}");
         }
+    }
+
+    #[test]
+    fn unavailable_folder_offers_a_retry_not_a_permission_message() {
+        use crate::panel::DirStatus;
+        let (glyph, message, action) = empty_state(DirStatus::Unavailable, false);
+        assert!(!glyph.contains('\u{fe0f}'));
+        assert!(!message.contains("permission"), "{message}");
+        assert_eq!(action, Some(("Retry", EmptyAction::Retry)));
     }
 
     #[test]

@@ -307,7 +307,14 @@ impl ListingJobController {
                 });
                 self.poll_terminals();
             }
-            Err(_) => self.finish(binding, DirectoryRead::Incomplete(DirStatus::Denied)),
+            Err(error) => {
+                log::warn!(
+                    target: "commander::listing",
+                    "listing {} was not admitted: {error:?}",
+                    binding.path.display()
+                );
+                self.finish(binding, DirectoryRead::Incomplete(DirStatus::Unavailable));
+            }
         }
     }
 
@@ -361,9 +368,16 @@ impl ListingJobController {
                     self.finish(binding, read);
                 }
                 WorkerEvent::Completed { .. } | WorkerEvent::Abandoned { .. } => {
+                    if let WorkerEvent::Abandoned { reason, .. } = &event {
+                        log::warn!(
+                            target: "commander::listing",
+                            "listing {} was abandoned: {reason}",
+                            retired.binding.path.display()
+                        );
+                    }
                     self.finish(
                         retired.binding,
-                        DirectoryRead::Incomplete(DirStatus::Denied),
+                        DirectoryRead::Incomplete(DirStatus::Unavailable),
                     );
                 }
                 WorkerEvent::Cancelled { .. } => {
@@ -722,7 +736,7 @@ mod tests {
         assert_eq!(ready.binding, binding);
         assert!(matches!(
             ready.read,
-            DirectoryRead::Incomplete(DirStatus::Denied)
+            DirectoryRead::Incomplete(DirStatus::Unavailable)
         ));
         assert_eq!(named(&ready.focus), Some("child"));
         assert!(!job.is_awaiting());
@@ -745,7 +759,7 @@ mod tests {
         assert_eq!(ready.binding, binding);
         assert!(matches!(
             ready.read,
-            DirectoryRead::Incomplete(DirStatus::Denied)
+            DirectoryRead::Incomplete(DirStatus::Unavailable)
         ));
     }
 }

@@ -72,6 +72,10 @@ pub enum DirStatus {
     Empty,
     /// Permission denied.
     Denied,
+    /// The directory could not be read for another reason (an I/O error,
+    /// too many open files, a stalled mount, or the listing worker could not
+    /// run it). Retrying may succeed.
+    Unavailable,
     /// The directory no longer exists.
     Gone,
     /// The directory opened, but at least one child could not be observed.
@@ -103,12 +107,14 @@ const fn watcher_provenance(recovered_gap: bool) -> crate::change_provenance::Ch
 }
 
 /// Why a directory could not be opened, for UI messaging. A path that names
-/// a file is no folder to show, like a gone one; anything else is treated
-/// as unreadable.
+/// a file is no folder to show, like a gone one; only a permission error is
+/// "denied", and any other failure (EIO, EMFILE, a mount timeout) is shown
+/// as unavailable rather than blamed on permissions.
 fn status_for_read_error(error: &std::io::Error) -> DirStatus {
     match error.kind() {
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => DirStatus::Gone,
-        _ => DirStatus::Denied,
+        std::io::ErrorKind::PermissionDenied => DirStatus::Denied,
+        _ => DirStatus::Unavailable,
     }
 }
 
@@ -3002,10 +3008,15 @@ mod tests {
             status_for_read_error(&Error::from(ErrorKind::PermissionDenied)),
             DirStatus::Denied
         );
-        // Anything else (an I/O error on a dying disk) is unreadable too.
+        // Anything else (an I/O error on a dying disk, too many open files)
+        // is not a permission problem.
         assert_eq!(
             status_for_read_error(&Error::other("io")),
-            DirStatus::Denied
+            DirStatus::Unavailable
+        );
+        assert_eq!(
+            status_for_read_error(&Error::from(ErrorKind::TimedOut)),
+            DirStatus::Unavailable
         );
     }
 

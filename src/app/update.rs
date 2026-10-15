@@ -72,6 +72,7 @@ fn perform_open(
 const fn hidden_files_rejection_message(status: crate::panel::DirStatus) -> &'static str {
     match status {
         crate::panel::DirStatus::Denied => "folder access was denied",
+        crate::panel::DirStatus::Unavailable => "the folder could not be read",
         crate::panel::DirStatus::Gone => "the folder is no longer available",
         crate::panel::DirStatus::Partial => "the folder could not be read completely",
         crate::panel::DirStatus::Loading => "the folder is still loading",
@@ -2840,6 +2841,10 @@ mod tests {
         assert_eq!(
             hidden_files_rejection_message(crate::panel::DirStatus::Partial),
             "the folder could not be read completely"
+        );
+        assert_eq!(
+            hidden_files_rejection_message(crate::panel::DirStatus::Unavailable),
+            "the folder could not be read"
         );
     }
 
