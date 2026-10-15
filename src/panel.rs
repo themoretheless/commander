@@ -4705,6 +4705,48 @@ mod tests {
         assert!(!identity.matches_entry(&moved));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recursive_size_does_not_follow_folder_symlinks_or_loop() {
+        let outside = TempDir::new();
+        outside.file("big.bin", &"x".repeat(4000));
+        let tmp = TempDir::new();
+        tmp.file("small.bin", "12345");
+        tmp.dir("sub");
+        // A link back to the walked folder and one to a folder elsewhere.
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("sub/loop")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("away")).unwrap();
+        let link_len = |name: &str| {
+            std::fs::symlink_metadata(tmp.path().join(name))
+                .unwrap()
+                .len()
+        };
+
+        assert_eq!(
+            dir_size_walk_until(tmp.path(), false, || false),
+            Some(DirWalk {
+                size: 5 + link_len("sub/loop") + link_len("away"),
+                complete: true,
+            })
+        );
+    }
+
+    #[test]
+    fn cache_files_from_another_schema_load_empty() {
+        let entry = r#"{"key":{"path":"/s","volume_id":1,"generation":1},"mtime_secs":5,"mtime_nanos":0,"size":7}"#;
+        for json in [
+            format!(r#"{{"schema":2,"entries":[{entry}]}}"#),
+            format!(r#"{{"entries":[{entry}]}}"#),
+            format!(r#"{{"schema":0,"entries":[{entry}]}}"#),
+        ] {
+            let cache = load_cache_from_reader_with_bounds(json.as_bytes(), 8, 6).unwrap();
+            assert!(cache.is_empty(), "{json}");
+        }
+        let current = format!(r#"{{"schema":1,"entries":[{entry}]}}"#);
+        let cache = load_cache_from_reader_with_bounds(current.as_bytes(), 8, 6).unwrap();
+        assert_eq!(cache.len(), 1);
+    }
+
     #[test]
     fn persisted_snapshot_round_trips_and_drops_pre_epoch_dates() {
         let key = |name: &str| VolumePathKey {
@@ -4736,6 +4778,138 @@ mod tests {
         let mut expected = cache;
         expected.remove(&key("ancient"));
         assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn path_epoch_is_shared_while_live_and_replaced_once_cancelled() {
+        let tmp = TempDir::new();
+        let key = VolumePathKey::observe(&tmp.dir("epoch"));
+        let first = capture_path_epoch(&key);
+        let second = capture_path_epoch(&key);
+        assert!(Arc::ptr_eq(&first, &second), "concurrent walkers share it");
+
+        first.cancel();
+        let fresh = capture_path_epoch(&key);
+        assert!(!Arc::ptr_eq(&first, &fresh));
+        assert!(!fresh.is_cancelled());
+        assert!(Arc::ptr_eq(&fresh, &capture_path_epoch(&key)));
+    }
+
+    #[test]
+    fn invalidation_keeps_a_sibling_that_shares_a_name_prefix() {
+        let tmp = TempDir::new();
+        let b = VolumePathKey::observe(&tmp.dir("b"));
+        let bc = VolumePathKey::observe(&tmp.dir("bc"));
+        let now = SystemTime::now();
+        {
+            let _boundary = lock_recover(scan_commit_boundary());
+            let mut cache = lock_recover(dir_size_cache());
+            cache.insert(b.clone(), (now, 1));
+            cache.insert(bc.clone(), (now, 2));
+        }
+
+        invalidate_size_cache(&tmp.path().join("bc/file.txt"));
+
+        let cache = lock_recover(dir_size_cache());
+        assert!(!cache.contains_key(&bc));
+        assert_eq!(cache.get(&b), Some(&(now, 1)), "b is not an ancestor of bc");
+    }
+
+    /// A fresh panel scan over one folder, with its own size map.
+    struct TestScan {
+        current: Mutex<Arc<ScanEpoch>>,
+        epoch: Arc<ScanEpoch>,
+        sizes: Mutex<HashMap<PathBuf, u64>>,
+        revision: AtomicU64,
+    }
+
+    fn scan_for(directory: &Path) -> TestScan {
+        let current = Mutex::new(Arc::new(ScanEpoch::new()));
+        let sizes = Mutex::new(HashMap::new());
+        let revision = AtomicU64::new(0);
+        let epoch = begin_panel_scan(
+            &current,
+            &sizes,
+            &Mutex::new(HashMap::new()),
+            &HashSet::from([directory.to_path_buf()]),
+            &revision,
+        );
+        TestScan {
+            current,
+            epoch,
+            sizes,
+            revision,
+        }
+    }
+
+    #[test]
+    fn cached_size_is_reused_only_for_the_same_folder_mtime() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("cached");
+        let key = VolumePathKey::observe(&directory);
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5_000);
+        {
+            let _boundary = lock_recover(scan_commit_boundary());
+            lock_recover(dir_size_cache()).insert(key.clone(), (mtime, 77));
+        }
+        let scan = scan_for(&directory);
+        let sizes = &scan.sizes;
+        let publish = |expected: Option<SystemTime>| {
+            publish_cached_size_if_current(
+                &scan.current,
+                &scan.epoch,
+                sizes,
+                &directory,
+                &key,
+                expected,
+                &scan.revision,
+            )
+        };
+
+        let later = mtime + std::time::Duration::from_secs(1);
+        assert!(!publish(Some(later)), "the folder changed since");
+        assert_eq!(lock_recover(sizes).get(&directory), None);
+
+        assert!(publish(Some(mtime)));
+        assert_eq!(lock_recover(sizes).get(&directory), Some(&77));
+        // No expected mtime (a walk held back by its cooldown) takes it as is.
+        lock_recover(sizes).clear();
+        assert!(publish(None));
+        assert_eq!(lock_recover(sizes).get(&directory), Some(&77));
+    }
+
+    #[test]
+    fn measurement_without_an_mtime_is_shown_but_not_cached() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("undated");
+        let cache_key = VolumePathKey::observe(&directory);
+        let path_epoch = capture_path_epoch(&cache_key);
+        let scan = scan_for(&directory);
+        let measurement = DirMeasurement {
+            path: directory.clone(),
+            modified: None,
+            complete: true,
+            cache_key: cache_key.clone(),
+            path_epoch,
+            size: 9,
+            completed_at: std::time::Instant::now(),
+            elapsed: std::time::Duration::from_millis(1),
+        };
+
+        let outcome = publish_dir_measurements_if_current(
+            &scan.current,
+            &scan.epoch,
+            &scan.sizes,
+            &[measurement],
+            &scan.revision,
+        );
+
+        assert_eq!(outcome.published, 1);
+        assert!(!outcome.cache_changed);
+        assert_eq!(lock_recover(&scan.sizes).get(&directory), Some(&9));
+        let _boundary = lock_recover(scan_commit_boundary());
+        assert!(!lock_recover(dir_size_cache()).contains_key(&cache_key));
+        assert!(!lock_recover(partial_size_cache()).contains_key(&cache_key));
     }
 
     #[test]
