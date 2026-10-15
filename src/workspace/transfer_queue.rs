@@ -1528,4 +1528,50 @@ mod tests {
             OperationId("waiting-recovery".to_string())
         );
     }
+
+    #[test]
+    fn cancel_pending_cancels_every_waiting_job_and_settles_its_history() {
+        let undo = replay_reservation(crate::undo::ReplayDirection::Undo);
+        let recovery = replay_reservation(crate::undo::ReplayDirection::Undo);
+        let mut controller = TransferQueueController::default();
+        let running_id = controller.enqueue(spec("bulk-running"), HistoryIntent::None);
+        let pending_id = controller.enqueue(spec("bulk-pending"), HistoryIntent::None);
+        let paused_id = controller.enqueue(spec("bulk-paused"), HistoryIntent::None);
+        controller.pause(paused_id);
+        controller.enqueue(spec("bulk-replay"), HistoryIntent::replay(undo));
+        let recovery_id =
+            controller.enqueue(spec("bulk-recovery"), HistoryIntent::recovery(recovery));
+        controller.pause(recovery_id);
+        let (started_id, progress) = launch(&mut controller);
+        assert_eq!(started_id, running_id);
+
+        let settlements = controller.cancel_pending();
+
+        let settled = settlements
+            .iter()
+            .map(|settlement| (settlement.operation_id.0.as_str(), &settlement.history))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            settled,
+            vec![
+                ("bulk-pending", &HistoryOutcome::None),
+                ("bulk-paused", &HistoryOutcome::None),
+                ("bulk-replay", &HistoryOutcome::AbortReplay(undo)),
+                ("bulk-recovery", &HistoryOutcome::InterruptReplay(recovery)),
+            ]
+        );
+        // The running job is untouched; the cancelled rows are cleared.
+        assert!(!crate::lock_util::recover(&progress).cancelled);
+        assert_eq!(controller.active_job_id(), Some(running_id));
+        assert_eq!(
+            controller
+                .queue
+                .jobs()
+                .iter()
+                .map(|job| (job.id, job.state))
+                .collect::<Vec<_>>(),
+            vec![(running_id, JobState::Running)]
+        );
+        assert!(controller.queue.get(pending_id).is_none());
+    }
 }
