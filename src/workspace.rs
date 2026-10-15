@@ -363,7 +363,9 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
 }
 
 /// `(volume, file id)` of a listed file, when the listing captured both:
-/// rows sharing it are hard links to one inode.
+/// rows sharing it are hard links to one inode. Only unix listings capture
+/// these today (`path_identity::native_identity` returns none elsewhere), so
+/// hard-link dedup is unix-only until Windows file indexes are captured.
 fn hard_link_key(entry: &FileEntry) -> Option<(u64, u64)> {
     match &entry.identity {
         crate::panel::ListingIdentity::Captured(identity) => {

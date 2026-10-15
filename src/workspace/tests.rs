@@ -2436,19 +2436,30 @@ fn find_duplicates_groups_identical_files_in_active_dir() {
 }
 
 #[test]
-fn find_duplicates_skips_empty_files_and_hard_links() {
+fn find_duplicates_skips_empty_files() {
     let (l, r) = (TempDir::new(), TempDir::new());
     l.file("__init__.py", "");
     l.file(".gitkeep", "");
-    let original = l.file("original.bin", "shared bytes");
-    std::fs::hard_link(&original, l.path().join("link.bin")).unwrap();
     let mut ws = workspace(&l, &r);
     if !ws.left.show_hidden() {
         let _ = ws.left.toggle_hidden();
     }
 
-    // Empty markers are not clutter, and one inode frees nothing when one
-    // of its names is trashed.
+    // Empty markers are not clutter.
+    assert!(ws.find_duplicates().is_empty());
+}
+
+// Listings capture (volume, file id) only on unix, so hard links are
+// recognised there only.
+#[cfg(unix)]
+#[test]
+fn find_duplicates_skips_hard_links() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let original = l.file("original.bin", "shared bytes");
+    std::fs::hard_link(&original, l.path().join("link.bin")).unwrap();
+    let mut ws = workspace(&l, &r);
+
+    // One inode frees nothing when one of its names is trashed.
     assert!(ws.find_duplicates().is_empty());
 
     l.file("copy.bin", "shared bytes");
