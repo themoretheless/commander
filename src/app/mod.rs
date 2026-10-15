@@ -137,6 +137,9 @@ pub struct App {
     pub(crate) confirm_cache: confirm_dialog::ConfirmCache,
     /// Startup instrumentation remains live through the first directory read.
     pub(crate) startup_trace: Option<crate::measurement::StartupTrace>,
+    /// Entries the panels focus once their first listing is scheduled (a
+    /// file launch argument), taken on the first frame.
+    pub(crate) launch_focus: (Option<String>, Option<String>),
     pub(crate) show_developer_panel: bool,
     pub(crate) developer_notice: Option<DeveloperNotice>,
     pub(crate) developer_store_usage: developer_panel::StoreUsageCache,
@@ -745,18 +748,22 @@ struct AppParts {
     project_collections: crate::collections::ProjectCollections,
 }
 
-/// The panels' start folders. Launch paths win over the restored ones, and a
-/// single launch path opens in both panels so the right one does not show an
-/// unrelated restored folder beside it.
+/// The panels' start folders and the entry each one focuses. Launch paths win
+/// over the restored ones, and a single launch path opens in both panels so
+/// the right one does not show an unrelated restored folder beside it. A file
+/// launch argument puts the cursor on that file wherever its folder opens.
 fn resolve_start_paths(
     restored: (PathBuf, PathBuf),
     launch: crate::launch::LaunchPaths,
-) -> (PathBuf, PathBuf) {
+) -> ((PathBuf, PathBuf), (Option<String>, Option<String>)) {
     match (launch.left, launch.right) {
-        (Some(left), Some(right)) => (left, right),
-        (Some(left), None) => (left.clone(), left),
-        (None, Some(right)) => (restored.0, right),
-        (None, None) => restored,
+        (Some(left), Some(right)) => ((left, right), (launch.left_focus, launch.right_focus)),
+        (Some(left), None) => (
+            (left.clone(), left),
+            (launch.left_focus.clone(), launch.left_focus),
+        ),
+        (None, Some(right)) => ((restored.0, right), (None, launch.right_focus)),
+        (None, None) => (restored, (None, None)),
     }
 }
 
@@ -818,7 +825,7 @@ impl App {
         apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
         startup.checkpoint(crate::measurement::StartupPhase::Appearance);
 
-        let (left, right) = resolve_start_paths(
+        let ((left, right), (left_focus, right_focus)) = resolve_start_paths(
             session
                 .as_ref()
                 .map(|s| s.sanitized_paths(&home))
@@ -837,7 +844,6 @@ impl App {
             free_space,
             persistence.clone(),
         );
-
         let ui_scale =
             crate::accessibility::sanitize_text_scale(session.as_ref().map_or(1.0, |s| s.ui_scale));
         cc.egui_ctx.set_zoom_factor(ui_scale);
@@ -890,6 +896,7 @@ impl App {
                 .unwrap_or_default(),
             palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
             startup_trace: Some(startup),
+            launch_focus: (left_focus, right_focus),
             ..Self::assemble(AppParts {
                 ws,
                 context_menu,
@@ -1035,6 +1042,7 @@ impl App {
             compare_cache: None,
             confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: None,
+            launch_focus: (None, None),
             show_developer_panel: false,
             developer_notice: None,
             developer_store_usage: developer_panel::StoreUsageCache::default(),
@@ -1205,23 +1213,47 @@ mod tests {
         let launch = |left: Option<&str>, right: Option<&str>| LaunchPaths {
             left: left.map(PathBuf::from),
             right: right.map(PathBuf::from),
+            ..LaunchPaths::default()
         };
-        assert_eq!(
-            resolve_start_paths(restored(), launch(None, None)),
-            restored()
-        );
+        let paths = |launch| resolve_start_paths(restored(), launch).0;
+        assert_eq!(paths(launch(None, None)), restored());
         // One argument opens in both panels instead of beside a stale folder.
         assert_eq!(
-            resolve_start_paths(restored(), launch(Some("/a"), None)),
+            paths(launch(Some("/a"), None)),
             (PathBuf::from("/a"), PathBuf::from("/a"))
         );
         assert_eq!(
-            resolve_start_paths(restored(), launch(Some("/a"), Some("/b"))),
+            paths(launch(Some("/a"), Some("/b"))),
             (PathBuf::from("/a"), PathBuf::from("/b"))
         );
         assert_eq!(
-            resolve_start_paths(restored(), launch(None, Some("/b"))),
+            paths(launch(None, Some("/b"))),
             (PathBuf::from("/saved/l"), PathBuf::from("/b"))
+        );
+    }
+
+    #[test]
+    fn a_file_launch_argument_focuses_it_where_its_folder_opens() {
+        let restored = (PathBuf::from("/saved/l"), PathBuf::from("/saved/r"));
+        let single = LaunchPaths {
+            left: Some(PathBuf::from("/notes")),
+            left_focus: Some("todo.txt".to_string()),
+            ..LaunchPaths::default()
+        };
+        let focus = |name: &str| Some(name.to_string());
+        assert_eq!(
+            resolve_start_paths(restored.clone(), single).1,
+            (focus("todo.txt"), focus("todo.txt"))
+        );
+        let pair = LaunchPaths {
+            left: Some(PathBuf::from("/a")),
+            right: Some(PathBuf::from("/b")),
+            left_focus: None,
+            right_focus: focus("b.txt"),
+        };
+        assert_eq!(
+            resolve_start_paths(restored, pair).1,
+            (None, focus("b.txt"))
         );
     }
 

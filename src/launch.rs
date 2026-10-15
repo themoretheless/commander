@@ -8,6 +8,10 @@ use std::path::{Component, Path, PathBuf};
 pub struct LaunchPaths {
     pub left: Option<PathBuf>,
     pub right: Option<PathBuf>,
+    /// The file to put the cursor on in `left` (`commander ~/notes.txt`).
+    pub left_focus: Option<String>,
+    /// The file to put the cursor on in `right`.
+    pub right_focus: Option<String>,
 }
 
 /// Takes raw `OsStr` arguments so a non-UTF-8 path cannot panic at startup.
@@ -46,10 +50,12 @@ where
 }
 
 /// Resolve launch arguments to folders: a folder opens as given, a file
-/// opens its containing folder (`commander ~/notes.txt`), and a missing path
-/// is dropped with a log warning instead of silently.
+/// opens its containing folder with the cursor on it (`commander
+/// ~/notes.txt`), and a missing path is dropped with a log warning instead of
+/// silently.
 pub fn sanitize_launch_paths(paths: LaunchPaths) -> LaunchPaths {
-    let accept = |path: PathBuf| {
+    let accept = |path: Option<PathBuf>| {
+        let path = path?;
         let resolved = launch_folder(&path, |p| p.is_dir(), |p| p.exists());
         if resolved.is_none() {
             log::warn!(
@@ -60,30 +66,36 @@ pub fn sanitize_launch_paths(paths: LaunchPaths) -> LaunchPaths {
         }
         resolved
     };
+    let (left, left_focus) = accept(paths.left).unzip();
+    let (right, right_focus) = accept(paths.right).unzip();
     LaunchPaths {
-        left: paths.left.and_then(accept),
-        right: paths.right.and_then(accept),
+        left,
+        right,
+        left_focus: left_focus.flatten(),
+        right_focus: right_focus.flatten(),
     }
 }
 
-/// The folder a launch argument opens: itself when `is_dir`, its parent when
-/// it `exists` as something else (a file), `None` when it is missing.
+/// The folder a launch argument opens, plus the entry to focus in it: the
+/// folder itself (no focus) when `is_dir`, its parent focused on the file
+/// when it `exists` as something else, `None` when it is missing.
 fn launch_folder(
     path: &Path,
     is_dir: impl Fn(&Path) -> bool,
     exists: impl Fn(&Path) -> bool,
-) -> Option<PathBuf> {
+) -> Option<(PathBuf, Option<String>)> {
     let absolute = absolutize(path)?;
     if is_dir(&absolute) {
-        return Some(absolute);
+        return Some((absolute, None));
     }
     if !exists(&absolute) {
         return None;
     }
+    let name = absolute.file_name()?.to_string_lossy().into_owned();
     absolute
         .parent()
         .filter(|parent| is_dir(parent))
-        .map(Path::to_path_buf)
+        .map(|parent| (parent.to_path_buf(), Some(name)))
 }
 
 /// Resolves a relative launch path (`.`, `..`, `sub/dir`) against the working
@@ -120,6 +132,7 @@ mod tests {
             LaunchPaths {
                 left: Some(PathBuf::from("/tmp/a")),
                 right: Some(PathBuf::from("/tmp/b")),
+                ..LaunchPaths::default()
             }
         );
         assert_eq!(
@@ -127,6 +140,7 @@ mod tests {
             LaunchPaths {
                 left: Some(PathBuf::from("/tmp/only")),
                 right: None,
+                ..LaunchPaths::default()
             }
         );
     }
@@ -138,6 +152,7 @@ mod tests {
             LaunchPaths {
                 left: Some(PathBuf::from("/left")),
                 right: Some(PathBuf::from("/right")),
+                ..LaunchPaths::default()
             }
         );
     }
@@ -149,6 +164,7 @@ mod tests {
             LaunchPaths {
                 left: Some(PathBuf::from("-left")),
                 right: Some(PathBuf::from("--right")),
+                ..LaunchPaths::default()
             }
         );
     }
@@ -171,9 +187,18 @@ mod tests {
         let sanitized = sanitize_launch_paths(LaunchPaths {
             left: Some(file),
             right: Some(root.path().join("missing.txt")),
+            ..LaunchPaths::default()
         });
         assert_eq!(sanitized.left.as_deref(), Some(root.path()));
+        assert_eq!(sanitized.left_focus.as_deref(), Some("notes.txt"));
         assert_eq!(sanitized.right, None);
+        assert_eq!(sanitized.right_focus, None);
+        let folder = sanitize_launch_paths(LaunchPaths {
+            left: Some(root.path().to_path_buf()),
+            ..LaunchPaths::default()
+        });
+        assert_eq!(folder.left.as_deref(), Some(root.path()));
+        assert_eq!(folder.left_focus, None, "a folder argument focuses nothing");
     }
 
     #[test]
@@ -182,6 +207,7 @@ mod tests {
         let sanitized = sanitize_launch_paths(LaunchPaths {
             left: Some(PathBuf::from(".")),
             right: Some(PathBuf::from("..")),
+            ..LaunchPaths::default()
         });
         assert_eq!(sanitized.left.as_deref(), Some(cwd.as_path()));
         assert_eq!(sanitized.right.as_deref(), cwd.parent());

@@ -1181,6 +1181,9 @@ impl App {
                 .set_notify(std::sync::Arc::new(move || c.request_repaint()));
             self.ws.left.set_workload(self.workload.clone());
             self.ws.left.refresh();
+            if let Some(name) = self.launch_focus.0.take() {
+                self.ws.left.focus_child(name);
+            }
         }
         if !self.ws.right.has_notify() {
             let c = ctx.clone();
@@ -1189,6 +1192,9 @@ impl App {
                 .set_notify(std::sync::Arc::new(move || c.request_repaint()));
             self.ws.right.set_workload(self.workload.clone());
             self.ws.right.refresh();
+            if let Some(name) = self.launch_focus.1.take() {
+                self.ws.right.focus_child(name);
+            }
         }
         drop(listing_latency);
         if first_listing && let Some(mut trace) = self.startup_trace.take() {

@@ -4788,6 +4788,24 @@ mod tests {
     }
 
     #[test]
+    fn first_async_listing_lands_on_a_launch_file() {
+        // App startup: the panel is built unlisted, then the first frame
+        // wires the workload, refreshes and focuses the launch file.
+        let tmp = TempDir::new();
+        tmp.file("aaa.txt", "a");
+        tmp.file("notes.txt", "n");
+        tmp.file("zzz.txt", "z");
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        let workload = deterministic_listings(&mut p);
+        p.refresh();
+        p.focus_child("notes.txt".to_string());
+
+        assert!(workload.run_next());
+        assert!(p.poll_listing());
+        assert_eq!(p.cursor_entry().unwrap().name, "notes.txt");
+    }
+
+    #[test]
     fn listing_read_under_the_old_hidden_setting_is_not_applied() {
         let tmp = TempDir::new();
         tmp.file("visible.txt", "v");
