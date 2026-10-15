@@ -1326,10 +1326,34 @@ pub fn mark_replacement_backed_up(
     })
 }
 
+/// The journal's current record of one step, read under the journal lock and
+/// released again so filesystem proofs can run without holding it.
+fn step_snapshot(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+) -> Result<Option<OperationStep>, String> {
+    let record = operation(operation_id)?;
+    Ok((record.status == OperationStatus::Running)
+        .then(|| record.steps.into_iter().find(|step| &step.key == key))
+        .flatten())
+}
+
 pub fn mark_replacement_placed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
 ) -> Result<(), String> {
+    // Walk both trees before taking the journal lock; the update below only
+    // compares these observations with the proof it finds there.
+    let observed = step_snapshot(operation_id, key)?
+        .and_then(|step| step.replacement)
+        .filter(|replacement| replacement.phase == ReplacementPhase::OriginalBackedUp)
+        .map(|replacement| {
+            let destination = PathIdentity::observe_deep(&replacement.original.path)
+                .map_err(|error| format!("Could not prove overwrite placement: {error}"));
+            let backup = PathIdentity::observe_deep(&replacement.path)
+                .map_err(|error| format!("Could not recheck overwrite backup: {error}"));
+            (replacement, destination, backup)
+        });
     update_step(operation_id, key, &[OperationStatus::Running], |step| {
         let replacement = step
             .replacement
@@ -1341,14 +1365,16 @@ pub fn mark_replacement_placed(
         if replacement.phase != ReplacementPhase::OriginalBackedUp {
             return Err("Overwrite placement callback arrived in a stale phase".to_string());
         }
-        let destination = PathIdentity::observe_deep(&replacement.original.path)
-            .map_err(|error| format!("Could not prove overwrite placement: {error}"))?;
-        if !replacement.replacement.same_version(&destination) {
+        let Some((_, destination, backup)) = observed
+            .as_ref()
+            .filter(|(proved, _, _)| proved == replacement)
+        else {
+            return Err("Overwrite proof changed while its placement was being proven".to_string());
+        };
+        if !replacement.replacement.same_version(destination.as_ref()?) {
             return Err("Overwrite destination is not the proven staged object".to_string());
         }
-        let backup = PathIdentity::observe_deep(&replacement.path)
-            .map_err(|error| format!("Could not recheck overwrite backup: {error}"))?;
-        if !replacement.original.same_version(&backup) {
+        if !replacement.original.same_version(backup.as_ref()?) {
             return Err("Overwrite original changed in its backup location".to_string());
         }
         replacement.phase = ReplacementPhase::ReplacementPlaced;
@@ -1420,6 +1446,19 @@ pub fn mark_placement_placed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
 ) -> Result<(), String> {
+    // Walk the landing before taking the journal lock (see above).
+    let observed = step_snapshot(operation_id, key)?
+        .filter(|step| {
+            step.placement
+                .as_ref()
+                .is_some_and(|placement| placement.phase == PlacementPhase::Prepared)
+        })
+        .and_then(|step| step.landing.map(|landing| (step.placement, landing)))
+        .map(|(placement, landing)| {
+            let destination = PathIdentity::observe_deep(&landing)
+                .map_err(|error| format!("Could not prove non-overwrite placement: {error}"));
+            (placement, landing, destination)
+        });
     update_step(operation_id, key, &[OperationStatus::Running], |step| {
         let placement = step
             .placement
@@ -1435,9 +1474,14 @@ pub fn mark_placement_placed(
             .landing
             .as_deref()
             .ok_or_else(|| "Non-overwrite placement has no landing".to_string())?;
-        let destination = PathIdentity::observe_deep(landing)
-            .map_err(|error| format!("Could not prove non-overwrite placement: {error}"))?;
-        if !placement.staged.same_version(&destination) {
+        let Some((_, _, destination)) = observed.as_ref().filter(|(proved, proved_landing, _)| {
+            proved.as_ref() == Some(&*placement) && proved_landing == landing
+        }) else {
+            return Err(
+                "Non-overwrite proof changed while its placement was being proven".to_string(),
+            );
+        };
+        if !placement.staged.same_version(destination.as_ref()?) {
             return Err("Non-overwrite destination is not the proven staged object".to_string());
         }
         placement.phase = PlacementPhase::Placed;
@@ -1602,6 +1646,21 @@ pub fn mark_rolled_back(operation_id: &OperationId, key: &IdempotencyKey) -> Res
 }
 
 pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(), String> {
+    // Re-prove completed effects (deep tree walks) before taking the journal
+    // lock; inside it each proof is only matched to the unchanged step.
+    let proofs = if status == OperationStatus::Completed {
+        operation(operation_id)?
+            .steps
+            .into_iter()
+            .filter(|step| step.status == StepStatus::Completed)
+            .map(|step| {
+                let proof = prove_completed_effect(&step);
+                (step, proof)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     mutate(|journal| {
         let operation = operation_mut(&mut journal.operations, operation_id)?;
         let event = match status {
@@ -1630,7 +1689,16 @@ pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(),
                                 step.key.0
                             ));
                         }
-                        prove_completed_effect(step)?;
+                        let (_, proof) = proofs
+                            .iter()
+                            .find(|(proved, _)| proved == step)
+                            .ok_or_else(|| {
+                                format!(
+                                    "Operation step {} changed while its effect was being proven",
+                                    step.key.0
+                                )
+                            })?;
+                        proof.clone()?;
                     }
                     StepStatus::Skipped => {}
                     _ => {
