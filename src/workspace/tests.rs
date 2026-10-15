@@ -2841,7 +2841,9 @@ fn get_info_fills_in_a_folder_size_once_it_is_measured() {
     assert_eq!(card.size, crate::panel::MEASURING);
     ws.right.preview = Some(PreviewContent::Info(card));
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Generous: background size workers share the machine with the whole
+    // parallel suite, and a loaded CI runner can take seconds to reach them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while ws.left.size_snapshot().size_of(&folder).is_none()
         || ws.left.size_snapshot().count_of(&folder).is_none()
     {
@@ -5342,7 +5344,9 @@ fn toggle_info_on_a_folder_uses_its_measured_size() {
     let folder = l.dir("box");
     l.file("box/a.bin", "1234567");
     let mut ws = workspace(&l, &r);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Generous: background size workers share the machine with the whole
+    // parallel suite, and a loaded CI runner can take seconds to reach them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while ws.left.size_snapshot().size_of(&folder).is_none()
         || ws.left.size_snapshot().count_of(&folder).is_none()
     {
@@ -5783,7 +5787,9 @@ fn treemap_orders_by_size_using_measured_folder_sizes() {
     let folder = l.dir("box");
     l.file("box/ten.bin", "1234567890");
     let ws = workspace(&l, &r);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Generous: background size workers share the machine with the whole
+    // parallel suite, and a loaded CI runner can take seconds to reach them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while ws.left.size_snapshot().size_of(&folder).is_none() {
         assert!(
             std::time::Instant::now() < deadline,

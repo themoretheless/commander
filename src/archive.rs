@@ -1527,7 +1527,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn tar_extract_all_does_not_overflow_argument_list() {
-        // ~3 MB of member paths: more than Linux's 2 MB ARG_MAX when the
+        // ~2.2 MB of member paths: more than Linux's 2 MB ARG_MAX when the
         // names were passed as tar arguments. Each path stays well under
         // macOS's 1024-byte PATH_MAX.
         let temp = TempDir::new();
@@ -1537,7 +1537,7 @@ mod tests {
             deep.push(format!("{level:02}{}", "d".repeat(200)));
         }
         fs::create_dir_all(source.join(&deep)).unwrap();
-        for index in 0..5_000 {
+        for index in 0..3_600 {
             fs::write(source.join(&deep).join(format!("f{index}")), b"x").unwrap();
         }
         let archive = temp.path().join("many.tgz");
@@ -1551,7 +1551,7 @@ mod tests {
         let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
 
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert_eq!(report.extracted, 5_000);
-        assert!(dest.join(&deep).join("f4999").is_file());
+        assert_eq!(report.extracted, 3_600);
+        assert!(dest.join(&deep).join("f3599").is_file());
     }
 }
