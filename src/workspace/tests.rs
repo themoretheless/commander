@@ -1656,6 +1656,29 @@ fn apply_batch_rename_refreshes_the_other_panel_showing_the_folder() {
     assert!(!names.contains(&"a.txt".to_string()), "{names:?}");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn apply_batch_rename_refuses_a_non_utf8_name_instead_of_touching_its_lossy_twin() {
+    use std::os::unix::ffi::OsStrExt;
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let raw = l.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9.txt"));
+    std::fs::write(&raw, "raw").unwrap();
+    let twin = l.file("caf\u{fffd}.txt", "twin");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(raw.clone());
+
+    let rule = crate::rename::RenameRule {
+        prefix: "x_".into(),
+        ..Default::default()
+    };
+    let error = apply_batch_rename(&mut ws, &rule).unwrap_err();
+
+    assert!(error.contains("UTF-8"), "{error}");
+    assert_eq!(std::fs::read_to_string(&raw).unwrap(), "raw");
+    assert_eq!(std::fs::read_to_string(&twin).unwrap(), "twin");
+    assert!(!ws.can_undo());
+}
+
 #[test]
 fn batch_rename_context_does_not_follow_a_later_panel_switch() {
     let (l, r) = (TempDir::new(), TempDir::new());
