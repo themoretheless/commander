@@ -394,6 +394,26 @@ fn count_summary(shown: usize, total: usize, filters_active: bool, size: Option<
 }
 
 /// A name cut to the footer's fixed budget, keeping its extension.
+/// The footer's filter note: the facet count, or "Filter text" when only
+/// the search query filters the list.
+fn filter_footer(active_facets: usize) -> String {
+    if active_facets > 0 {
+        format!("  |  Filters {active_facets}")
+    } else {
+        "  |  Filter text".to_string()
+    }
+}
+
+/// The footer's selection note; names how many selected rows the filter
+/// still shows when it hides some of them.
+fn selection_footer(selected: usize, visible: usize, size: &str) -> String {
+    if visible == selected {
+        format!("  |  {selected} selected ({size})")
+    } else {
+        format!("  |  {selected} selected ({visible} visible, {size})")
+    }
+}
+
 fn footer_name(name: &str) -> std::borrow::Cow<'_, str> {
     crate::display_name::truncate_preserving_extension(name, 16)
 }
@@ -1373,27 +1393,22 @@ impl App {
                                 t.text_muted,
                             ));
                             if filters_active {
-                                let active_count = panel.facets().active_count();
-                                let filter_label = if active_count > 0 {
-                                    format!("  |  Filters {active_count}")
-                                } else {
-                                    "  |  Filter text".to_string()
-                                };
-                                ui.add(footer(filter_label, t.accent));
+                                ui.add(footer(
+                                    filter_footer(panel.facets().active_count()),
+                                    t.accent,
+                                ));
                             }
                             if selected_total > 0 {
                                 let selected_size =
                                     selection_size_label(selected_bytes, selected_pending);
-                                let selection_text = if selected_visible == selected_total {
-                                    format!("{selected_total} selected ({selected_size})")
-                                } else {
-                                    format!(
-                                        "{selected_total} selected ({selected_visible} visible, \
-                                         {selected_size})"
-                                    )
-                                };
-                                let selection = ui
-                                    .add(footer(format!("  |  {selection_text}"), t.accent_purple));
+                                let selection = ui.add(footer(
+                                    selection_footer(
+                                        selected_total,
+                                        selected_visible,
+                                        &selected_size,
+                                    ),
+                                    t.accent_purple,
+                                ));
                                 // Spoken when Space/Insert changes the count.
                                 ui.ctx().accesskit_node_builder(selection.id, |node| {
                                     node.set_role(egui::accesskit::Role::Status);
@@ -1589,11 +1604,11 @@ mod tests {
     use super::{
         EmptyAction, INLINE_COMPARE_WIDTH, PENDING_SIZE_SPOKEN, RowClick, accepts_row_drop,
         append_highlighted, click_range, compare_marker, count_summary, cursor_chevron_fits,
-        cursor_row_to_reveal, drop_target_writable, empty_state, folder_changed, folder_extremes,
-        follow_cursor_focus, grid_row_index, highlight_name_job, map_ranges_to_display,
-        name_char_budget, name_column_width, parent_row_label, row_click_kind, row_content_height,
-        row_spoken_label, selection_size_label, selection_summary_with, visible_rows,
-        visible_selection_summary,
+        cursor_row_to_reveal, drop_target_writable, empty_state, filter_footer, folder_changed,
+        folder_extremes, follow_cursor_focus, grid_row_index, highlight_name_job,
+        map_ranges_to_display, name_char_budget, name_column_width, parent_row_label,
+        row_click_kind, row_content_height, row_spoken_label, selection_footer,
+        selection_size_label, selection_summary_with, visible_rows, visible_selection_summary,
     };
 
     #[test]
@@ -1967,6 +1982,22 @@ mod tests {
                 "12 of 400 items (folder {})",
                 crate::panel::format_size(2048)
             )
+        );
+    }
+
+    #[test]
+    fn footer_notes_name_filters_and_hidden_selected_rows() {
+        assert_eq!(filter_footer(0), "  |  Filter text");
+        assert_eq!(filter_footer(2), "  |  Filters 2");
+        assert_eq!(selection_footer(3, 3, "1 KB"), "  |  3 selected (1 KB)");
+        assert_eq!(
+            selection_footer(3, 1, "1 KB"),
+            "  |  3 selected (1 visible, 1 KB)"
+        );
+        // Every selected row filtered away still says so.
+        assert_eq!(
+            selection_footer(2, 0, "\u{2026}"),
+            "  |  2 selected (0 visible, \u{2026})"
         );
     }
 
