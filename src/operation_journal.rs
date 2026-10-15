@@ -423,26 +423,29 @@ fn acquire_store_lock(path: &Path) -> Result<StoreLock, String> {
     options.read(true).write(true).create(true);
     #[cfg(unix)]
     {
-        use std::os::fd::AsRawFd;
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        let file = options
-            .open(&lock_path)
-            .map_err(|error| format!("Could not open operation journal lock: {error}"))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(format!(
-                "Could not acquire operation journal lock: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(StoreLock { _file: file })
     }
-    #[cfg(not(unix))]
-    {
-        let file = options
-            .open(&lock_path)
-            .map_err(|error| format!("Could not open operation journal lock: {error}"))?;
-        Ok(StoreLock { _file: file })
+    let file = options.open(&lock_path).map_err(|error| {
+        format!(
+            "Could not open operation journal lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    // `File::lock` is an exclusive advisory lock on every platform (flock on
+    // unix, LockFileEx on Windows), so a second instance waits instead of
+    // interleaving its load/modify/save. A signal only interrupts the wait.
+    loop {
+        match file.lock() {
+            Ok(()) => return Ok(StoreLock { _file: file }),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not acquire operation journal lock {}: {error}",
+                    lock_path.display()
+                ));
+            }
+        }
     }
 }
 
@@ -844,10 +847,17 @@ fn load_journal_at(path: &Path) -> Result<LoadedJournal, String> {
             gate,
         });
     };
-    if !(1..=JOURNAL_SCHEMA).contains(&journal.schema) {
+    if journal.schema > JOURNAL_SCHEMA {
         return Err(format!(
-            "Unsupported operation journal schema {}; expected {JOURNAL_SCHEMA}",
-            journal.schema
+            "Unsupported operation journal schema {} at {}: it was written by a newer Commander version; upgrade Commander to recover its operations",
+            journal.schema,
+            path.display()
+        ));
+    }
+    if journal.schema == 0 {
+        return Err(format!(
+            "Unsupported operation journal schema 0 at {}; expected {JOURNAL_SCHEMA}",
+            path.display()
         ));
     }
     Ok(LoadedJournal {
@@ -863,15 +873,35 @@ fn load_at(path: &Path) -> Result<Journal, String> {
     Ok(load_journal_at(path)?.journal)
 }
 
-fn map_journal_save_error(error: crate::persistence::JsonSaveError) -> String {
+fn map_journal_save_error(path: &Path, error: crate::persistence::JsonSaveError) -> String {
+    use crate::persistence::PreCommitError;
     match error {
-        crate::persistence::JsonSaveError::PreCommit(
-            crate::persistence::PreCommitError::Conflict,
-        ) => "Operation journal revision mismatch: another writer changed the store".to_string(),
-        crate::persistence::JsonSaveError::PreCommit(error) => format!(
-            "Operation journal was not committed at {:?}: {error:?}",
-            error.stage()
-        ),
+        crate::persistence::JsonSaveError::PreCommit(error) => {
+            let stage = error.stage();
+            match error {
+                PreCommitError::Conflict => {
+                    "Operation journal revision mismatch: another writer changed the store"
+                        .to_string()
+                }
+                PreCommitError::Serialize(error) => {
+                    format!("Operation journal could not be serialized: {error}")
+                }
+                PreCommitError::Io {
+                    source, cleanup, ..
+                } => {
+                    let mut message =
+                        format!("Operation journal {} was not committed", path.display());
+                    if let Some(stage) = stage {
+                        message.push_str(&format!(": could not {stage}"));
+                    }
+                    message.push_str(&format!(": {source}"));
+                    if let Some(cleanup) = cleanup {
+                        message.push_str(&format!("; cleanup also failed: {cleanup}"));
+                    }
+                    message
+                }
+            }
+        }
         crate::persistence::JsonSaveError::Blocked(status) => {
             format!("Operation journal save blocked ({status:?})")
         }
@@ -900,7 +930,7 @@ fn save_journal_at(
         crate::persistence::SaveIntent::Automatic,
     ) {
         Ok(outcome) => crate::persistence::require_durable(JOURNAL_NOUN, outcome),
-        Err(error) => Err(map_journal_save_error(error)),
+        Err(error) => Err(map_journal_save_error(path, error)),
     }
 }
 
@@ -1007,24 +1037,34 @@ pub fn begin(spec: &TransferSpec) -> Result<(), String> {
                     spec.operation_id.0
                 ));
             }
-            let finalization_only = spec.entries.is_empty()
-                && existing
-                    .steps
+            // A resume manifest lists only the steps still to run, in journal
+            // order; every step it omits must already be settled.
+            let settled = |step: &OperationStep| {
+                matches!(step.status, StepStatus::Completed | StepStatus::Skipped)
+            };
+            let mut cursor = 0;
+            for (key, source, destination) in &manifest {
+                let matched = existing.steps[cursor..]
                     .iter()
-                    .all(|step| matches!(step.status, StepStatus::Completed | StepStatus::Skipped));
-            if !finalization_only && existing.steps.len() != spec.entries.len() {
-                return Err(format!(
-                    "Operation {} was reused with a different manifest length",
-                    spec.operation_id.0
-                ));
-            }
-            for (step, (key, source, destination)) in existing.steps.iter().zip(manifest.iter()) {
-                if step.key != *key || step.source != *source || step.destination != *destination {
+                    .position(|step| step.key == *key)
+                    .map(|offset| cursor + offset)
+                    .filter(|&index| existing.steps[cursor..index].iter().all(settled));
+                let Some(index) = matched.filter(|&index| {
+                    let step = &existing.steps[index];
+                    step.source == *source && step.destination == *destination
+                }) else {
                     return Err(format!(
                         "Operation {} was reused with a reordered or different manifest entry",
                         spec.operation_id.0
                     ));
-                }
+                };
+                cursor = index + 1;
+            }
+            if !existing.steps[cursor..].iter().all(settled) {
+                return Err(format!(
+                    "Operation {} was reused with a different manifest length",
+                    spec.operation_id.0
+                ));
             }
             existing.status = existing
                 .status
@@ -1292,10 +1332,34 @@ pub fn mark_replacement_backed_up(
     })
 }
 
+/// The journal's current record of one step, read under the journal lock and
+/// released again so filesystem proofs can run without holding it.
+fn step_snapshot(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+) -> Result<Option<OperationStep>, String> {
+    let record = operation(operation_id)?;
+    Ok((record.status == OperationStatus::Running)
+        .then(|| record.steps.into_iter().find(|step| &step.key == key))
+        .flatten())
+}
+
 pub fn mark_replacement_placed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
 ) -> Result<(), String> {
+    // Walk both trees before taking the journal lock; the update below only
+    // compares these observations with the proof it finds there.
+    let observed = step_snapshot(operation_id, key)?
+        .and_then(|step| step.replacement)
+        .filter(|replacement| replacement.phase == ReplacementPhase::OriginalBackedUp)
+        .map(|replacement| {
+            let destination = PathIdentity::observe_deep(&replacement.original.path)
+                .map_err(|error| format!("Could not prove overwrite placement: {error}"));
+            let backup = PathIdentity::observe_deep(&replacement.path)
+                .map_err(|error| format!("Could not recheck overwrite backup: {error}"));
+            (replacement, destination, backup)
+        });
     update_step(operation_id, key, &[OperationStatus::Running], |step| {
         let replacement = step
             .replacement
@@ -1307,14 +1371,16 @@ pub fn mark_replacement_placed(
         if replacement.phase != ReplacementPhase::OriginalBackedUp {
             return Err("Overwrite placement callback arrived in a stale phase".to_string());
         }
-        let destination = PathIdentity::observe_deep(&replacement.original.path)
-            .map_err(|error| format!("Could not prove overwrite placement: {error}"))?;
-        if !replacement.replacement.same_version(&destination) {
+        let Some((_, destination, backup)) = observed
+            .as_ref()
+            .filter(|(proved, _, _)| proved == replacement)
+        else {
+            return Err("Overwrite proof changed while its placement was being proven".to_string());
+        };
+        if !replacement.replacement.same_version(destination.as_ref()?) {
             return Err("Overwrite destination is not the proven staged object".to_string());
         }
-        let backup = PathIdentity::observe_deep(&replacement.path)
-            .map_err(|error| format!("Could not recheck overwrite backup: {error}"))?;
-        if !replacement.original.same_version(&backup) {
+        if !replacement.original.same_version(backup.as_ref()?) {
             return Err("Overwrite original changed in its backup location".to_string());
         }
         replacement.phase = ReplacementPhase::ReplacementPlaced;
@@ -1386,6 +1452,19 @@ pub fn mark_placement_placed(
     operation_id: &OperationId,
     key: &IdempotencyKey,
 ) -> Result<(), String> {
+    // Walk the landing before taking the journal lock (see above).
+    let observed = step_snapshot(operation_id, key)?
+        .filter(|step| {
+            step.placement
+                .as_ref()
+                .is_some_and(|placement| placement.phase == PlacementPhase::Prepared)
+        })
+        .and_then(|step| step.landing.map(|landing| (step.placement, landing)))
+        .map(|(placement, landing)| {
+            let destination = PathIdentity::observe_deep(&landing)
+                .map_err(|error| format!("Could not prove non-overwrite placement: {error}"));
+            (placement, landing, destination)
+        });
     update_step(operation_id, key, &[OperationStatus::Running], |step| {
         let placement = step
             .placement
@@ -1401,9 +1480,14 @@ pub fn mark_placement_placed(
             .landing
             .as_deref()
             .ok_or_else(|| "Non-overwrite placement has no landing".to_string())?;
-        let destination = PathIdentity::observe_deep(landing)
-            .map_err(|error| format!("Could not prove non-overwrite placement: {error}"))?;
-        if !placement.staged.same_version(&destination) {
+        let Some((_, _, destination)) = observed.as_ref().filter(|(proved, proved_landing, _)| {
+            proved.as_ref() == Some(&*placement) && proved_landing == landing
+        }) else {
+            return Err(
+                "Non-overwrite proof changed while its placement was being proven".to_string(),
+            );
+        };
+        if !placement.staged.same_version(destination.as_ref()?) {
             return Err("Non-overwrite destination is not the proven staged object".to_string());
         }
         placement.phase = PlacementPhase::Placed;
@@ -1424,19 +1508,7 @@ pub fn mark_completed(
         let step = step_mut(&mut operation.steps, key)?;
 
         if step.status == StepStatus::Completed {
-            let existing = step
-                .destination_after
-                .as_ref()
-                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
-            if step.landing.as_deref() != Some(destination)
-                || step.fast_path != Some(fast_path)
-                || !existing.same_binding(&destination_after)
-            {
-                return Err(format!(
-                    "Duplicate completion for step {} conflicts with its immutable proof",
-                    key.0
-                ));
-            }
+            check_duplicate_completion(step, destination, &destination_after, Some(fast_path))?;
             return Ok(step.replacement.clone());
         }
         if operation.status != OperationStatus::Running {
@@ -1487,6 +1559,31 @@ pub fn mark_completed(
     Ok(())
 }
 
+/// A repeated completion of an already completed step must match the
+/// immutable proof the first completion recorded. `fast_path` is compared
+/// only when the caller knows it (recovery promotions do not).
+fn check_duplicate_completion(
+    step: &OperationStep,
+    landing: &Path,
+    destination_after: &PathIdentity,
+    fast_path: Option<crate::transfer_tuning::FastPath>,
+) -> Result<(), String> {
+    let existing = step
+        .destination_after
+        .as_ref()
+        .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
+    if step.landing.as_deref() != Some(landing)
+        || fast_path.is_some_and(|fast_path| step.fast_path != Some(fast_path))
+        || !existing.same_binding(destination_after)
+    {
+        return Err(format!(
+            "Duplicate completion for step {} conflicts with its immutable proof",
+            step.key.0
+        ));
+    }
+    Ok(())
+}
+
 pub fn mark_skipped(operation_id: &OperationId, key: &IdempotencyKey) -> Result<(), String> {
     update_step(operation_id, key, &[OperationStatus::Running], |step| {
         step.status = step
@@ -1495,6 +1592,7 @@ pub fn mark_skipped(operation_id: &OperationId, key: &IdempotencyKey) -> Result<
             .map_err(|error| error.to_string())?;
         step.staging = None;
         step.checkpoint = None;
+        step.failure = None;
         Ok(())
     })
 }
@@ -1509,7 +1607,13 @@ pub fn mark_failed(
             .status
             .transition(StepEvent::Fail)
             .map_err(|error| error.to_string())?;
-        if failure.class != FailureClass::IntegrityUncertain && step.checkpoint.is_none() {
+        // An overwrite or placement proof is bound to the staging path, so
+        // the path stays recorded until resume reconciles that proof.
+        let proof_holds_staging = step.replacement.is_some() || step.placement.is_some();
+        if failure.class != FailureClass::IntegrityUncertain
+            && step.checkpoint.is_none()
+            && !proof_holds_staging
+        {
             step.staging = None;
         }
         step.failure = Some(failure);
@@ -1561,6 +1665,21 @@ pub fn mark_rolled_back(operation_id: &OperationId, key: &IdempotencyKey) -> Res
 }
 
 pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(), String> {
+    // Re-prove completed effects (deep tree walks) before taking the journal
+    // lock; inside it each proof is only matched to the unchanged step.
+    let proofs = if status == OperationStatus::Completed {
+        operation(operation_id)?
+            .steps
+            .into_iter()
+            .filter(|step| step.status == StepStatus::Completed)
+            .map(|step| {
+                let proof = prove_completed_effect(&step);
+                (step, proof)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     mutate(|journal| {
         let operation = operation_mut(&mut journal.operations, operation_id)?;
         let event = match status {
@@ -1589,7 +1708,16 @@ pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(),
                                 step.key.0
                             ));
                         }
-                        prove_completed_effect(step)?;
+                        let (_, proof) = proofs
+                            .iter()
+                            .find(|(proved, _)| proved == step)
+                            .ok_or_else(|| {
+                                format!(
+                                    "Operation step {} changed while its effect was being proven",
+                                    step.key.0
+                                )
+                            })?;
+                        proof.clone()?;
                     }
                     StepStatus::Skipped => {}
                     _ => {
@@ -1838,19 +1966,7 @@ fn complete_interrupted_overwrite_placement(
             ));
         }
         if step.status == StepStatus::Completed {
-            let existing = step
-                .destination_after
-                .as_ref()
-                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
-            if step.landing.as_deref() != Some(landing.as_path())
-                || !existing.same_binding(&destination_after)
-            {
-                return Err(format!(
-                    "Duplicate completion for step {} conflicts with its immutable proof",
-                    key.0
-                ));
-            }
-            return Ok(());
+            return check_duplicate_completion(step, &landing, &destination_after, None);
         }
         step.status = step
             .status
@@ -1941,9 +2057,31 @@ fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), St
             )?;
             continue;
         }
+        let retryable_failure = step.status == StepStatus::Failed
+            && step
+                .failure
+                .as_ref()
+                .is_none_or(|failure| failure.class != FailureClass::IntegrityUncertain);
+        if retryable_failure && placement.phase == PlacementPhase::Prepared && staging_gone {
+            // An ordinary placement failure already undid its staging (deleted
+            // the copy or moved a renamed source back); nothing was placed, so
+            // the step is retried from its source.
+            clear_failed_placement(operation_id, &step.key, placement)?;
+            continue;
+        }
         match placement.phase {
             PlacementPhase::Prepared if !destination.exists && !staging_gone => {
                 // Staging still holds the sealed object; resume can retry rename.
+            }
+            PlacementPhase::Prepared if !staging_gone => {
+                return Err(format!(
+                    "Interrupted placement for {} cannot finish: the destination is now occupied by another object; the staged copy is kept at {}",
+                    landing.display(),
+                    step.staging
+                        .as_deref()
+                        .unwrap_or_else(|| Path::new("?"))
+                        .display()
+                ));
             }
             PlacementPhase::Prepared | PlacementPhase::Placed => {
                 return Err(format!(
@@ -1954,6 +2092,28 @@ fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), St
         }
     }
     Ok(())
+}
+
+fn clear_failed_placement(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+    placement: &PlacementProof,
+) -> Result<(), String> {
+    mutate(|journal| {
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        let step = step_mut(&mut operation.steps, key)?;
+        if step.status != StepStatus::Failed || step.placement.as_ref() != Some(placement) {
+            return Err(format!(
+                "Placement proof changed while retrying failed step {}",
+                key.0
+            ));
+        }
+        step.placement = None;
+        step.staging = None;
+        step.checkpoint = None;
+        operation.updated_at_secs = now_secs();
+        Ok(())
+    })
 }
 
 fn complete_interrupted_placement(
@@ -1978,19 +2138,7 @@ fn complete_interrupted_placement(
             ));
         }
         if step.status == StepStatus::Completed {
-            let existing = step
-                .destination_after
-                .as_ref()
-                .ok_or_else(|| "Completed step has no immutable effect proof".to_string())?;
-            if step.landing.as_deref() != Some(landing)
-                || !existing.same_binding(&destination_after)
-            {
-                return Err(format!(
-                    "Duplicate completion for step {} conflicts with its immutable proof",
-                    key.0
-                ));
-            }
-            return Ok(());
+            return check_duplicate_completion(step, landing, &destination_after, None);
         }
         step.status = step
             .status
@@ -2197,18 +2345,21 @@ fn validated_checkpoint(step: &OperationStep) -> Result<Option<ResumeCheckpoint>
     }
     let partial = PathIdentity::observe_deep(staging)
         .map_err(|error| format!("Could not verify checkpoint staging: {error}"))?;
-    let same_object = match (
-        checkpoint.partial.volume.zip(checkpoint.partial.file_id),
-        partial.volume.zip(partial.file_id),
-    ) {
-        (Some(expected), Some(current)) => {
-            checkpoint.partial.exists
-                && partial.exists
-                && checkpoint.partial.kind == partial.kind
-                && expected == current
-        }
-        _ => checkpoint.partial.same_version(&partial),
-    };
+    let ids_known = checkpoint
+        .partial
+        .volume
+        .zip(checkpoint.partial.file_id)
+        .is_some()
+        && partial.volume.zip(partial.file_id).is_some();
+    // Without file ids (Windows) a prefix staging cannot be followed by
+    // identity, and the tail written after the last checkpoint changes its
+    // size and mtime. The prefix digests below prove the resumed bytes.
+    let same_object =
+        if !ids_known && checkpoint.layout == crate::transfer::CheckpointLayout::Prefix {
+            checkpoint.partial.exists && partial.exists && checkpoint.partial.kind == partial.kind
+        } else {
+            checkpoint.partial.same_object(&partial)
+        };
     if !same_object
         || partial.kind != Some(crate::path_identity::PathKind::File)
         || !checkpoint.size_fits(&partial)
@@ -2247,12 +2398,21 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
         match step.status {
             StepStatus::Completed => {
                 let effect = effect_path(step);
-                let current = PathIdentity::observe_deep(effect).ok();
+                let current = match PathIdentity::observe_deep(effect) {
+                    Ok(current) => current,
+                    Err(error) => {
+                        plan.remaining.push(RepairItem {
+                            path: effect.to_path_buf(),
+                            action: format!("Could not inspect completed effect: {error}"),
+                            automatic: false,
+                        });
+                        continue;
+                    }
+                };
                 let unchanged = step
                     .destination_after
                     .as_ref()
-                    .zip(current.as_ref())
-                    .is_some_and(|(expected, current)| expected.same_binding(current));
+                    .is_some_and(|expected| expected.same_binding(&current));
                 if !unchanged {
                     plan.remaining.push(RepairItem {
                         path: effect.to_path_buf(),
@@ -2265,6 +2425,15 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
                         action: format!("Move back to {}", step.source.display()),
                         automatic: !crate::fs_util::path_is_taken(&step.source),
                     });
+                    // Rolling back an overwriting move also needs the
+                    // replaced destination's version.
+                    if step
+                        .destination_before
+                        .as_ref()
+                        .is_some_and(|identity| identity.exists)
+                    {
+                        plan.remaining.push(restore_version_item(step, effect));
+                    }
                 } else if step
                     .destination_before
                     .as_ref()
@@ -2276,12 +2445,7 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
                         automatic: true,
                     });
                 } else {
-                    let has_version = crate::version_store::record_for_key(&step.key).is_some();
-                    plan.remaining.push(RepairItem {
-                        path: effect.to_path_buf(),
-                        action: "Restore replaced local version".to_string(),
-                        automatic: has_version,
-                    });
+                    plan.remaining.push(restore_version_item(step, effect));
                 }
             }
             StepStatus::Failed
@@ -2308,6 +2472,24 @@ pub fn repair_plan(operation_id: &OperationId) -> Result<RepairPlan, String> {
         });
     }
     Ok(plan)
+}
+
+fn restore_version_item(step: &OperationStep, effect: &Path) -> RepairItem {
+    let has_version = step
+        .rollback
+        .as_ref()
+        .is_some_and(|receipt| receipt.version.is_some())
+        || crate::version_store::record_for_key(&step.key).is_some();
+    RepairItem {
+        path: effect.to_path_buf(),
+        action: if has_version {
+            "Restore replaced local version"
+        } else {
+            "No preserved version of the replaced original was found; inspect manually"
+        }
+        .to_string(),
+        automatic: has_version,
+    }
 }
 
 fn cleanup_contains_only_operation_effects(record: &OperationRecord, cleanup: &Path) -> bool {
@@ -2341,11 +2523,20 @@ fn remove_path(path: &Path) -> Result<(), String> {
     result.map_err(|error| format!("Could not remove {}: {error}", path.display()))
 }
 
+/// Longest stem kept in `.{stem}.cmdr-quarantine.{index}`, so the name fits
+/// the common 255-byte file-name limit with room for any index.
+const QUARANTINE_STEM_MAX: usize = 255 - ".".len() - ".cmdr-quarantine.".len() - 20;
+
 fn quarantine_path(path: &Path) -> PathBuf {
-    let name = path
+    let mut name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "item".to_string());
+    let mut end = name.len().min(QUARANTINE_STEM_MAX);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     crate::fs_util::first_available(|index| parent.join(format!(".{name}.cmdr-quarantine.{index}")))
 }
@@ -2357,10 +2548,20 @@ fn detach_expected_path(
 ) -> Result<PathBuf, String> {
     crate::fs_at::rename_noreplace(path, quarantine)
         .map_err(|error| format!("Could not quarantine {}: {error}", path.display()))?;
-    crate::fs_util::sync_parent_namespace(path)
-        .map_err(|error| format!("Could not sync quarantine rename: {error}"))?;
-    let moved = observe_with_expected_depth(quarantine, expected)
-        .map_err(|error| format!("Could not prove quarantined object: {error}"))?;
+    // From here on the object sits at `quarantine`; every error names it.
+    crate::fs_util::sync_parent_namespace(path).map_err(|error| {
+        format!(
+            "Could not sync quarantine rename of {} to {}: {error}",
+            path.display(),
+            quarantine.display()
+        )
+    })?;
+    let moved = observe_with_expected_depth(quarantine, expected).map_err(|error| {
+        format!(
+            "Could not prove quarantined object at {}: {error}",
+            quarantine.display()
+        )
+    })?;
     if expected.same_version(&moved) {
         return Ok(quarantine.to_path_buf());
     }
@@ -2427,7 +2628,18 @@ fn prepare_rollback_receipt(
         .iter()
         .find(|step| &step.key == key)
         .ok_or_else(|| format!("Unknown operation step {}", key.0))?;
-    let version = rollback_version_receipt(step, effect)?;
+    // A receipt that already holds its version is reused below; the stored
+    // version is re-proved by identity before restore, so a version-store
+    // record pruned since the first attempt must not block the retry.
+    let version = if step
+        .rollback
+        .as_ref()
+        .is_some_and(|receipt| receipt.version.is_some())
+    {
+        None
+    } else {
+        rollback_version_receipt(step, effect)?
+    };
     mutate(|journal| {
         let operation = operation_mut(&mut journal.operations, operation_id)?;
         if !matches!(
@@ -2692,8 +2904,13 @@ fn rollback_step(
                     "Rollback quarantine no longer contains the completed effect".to_string(),
                 );
             }
-            crate::fs_at::rename_noreplace(&receipt.quarantine, &step.source)
-                .map_err(|error| error.to_string())?;
+            crate::fs_at::rename_noreplace(&receipt.quarantine, &step.source).map_err(|error| {
+                format!(
+                    "Could not move {} back to {}: {error}",
+                    receipt.quarantine.display(),
+                    step.source.display()
+                )
+            })?;
             crate::fs_util::sync_parent_namespace(&step.source)
                 .map_err(|error| format!("Could not sync restored source: {error}"))?;
             crate::fs_util::sync_parent_namespace(&receipt.quarantine)
@@ -2755,7 +2972,7 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
         });
         return;
     };
-    let quarantine = record
+    let mut quarantine = record
         .rollback_cleanup_quarantine
         .clone()
         .unwrap_or_else(|| quarantine_path(cleanup));
@@ -2779,11 +2996,20 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
         return;
     }
 
-    let quarantined = PathIdentity::observe_deep(&quarantine).ok();
-    if quarantined
-        .as_ref()
-        .is_none_or(|identity| !expected.same_object(identity))
-    {
+    // An unreadable quarantine may still hold the folder; never treat it as
+    // absent, or the record that points at it would be cleared below.
+    let quarantined = match PathIdentity::observe_deep(&quarantine) {
+        Ok(identity) => identity,
+        Err(error) => {
+            plan.remaining.push(RepairItem {
+                path: quarantine,
+                action: format!("Could not inspect operation-created folder quarantine: {error}"),
+                automatic: false,
+            });
+            return;
+        }
+    };
+    if !expected.same_object(&quarantined) {
         let current = match PathIdentity::observe_deep(cleanup) {
             Ok(identity) => identity,
             Err(error) => {
@@ -2796,7 +3022,13 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
             }
         };
         if !current.exists {
-            let _ = clear_container_quarantine(&record.id, &quarantine);
+            if let Err(error) = clear_container_quarantine(&record.id, &quarantine) {
+                plan.remaining.push(RepairItem {
+                    path: cleanup.clone(),
+                    action: error,
+                    automatic: false,
+                });
+            }
             return;
         }
         if !expected.same_binding(&current) {
@@ -2806,6 +3038,20 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
                 automatic: false,
             });
             return;
+        }
+        if quarantined.exists {
+            // A foreign object took the persisted quarantine name; leave it
+            // untouched and detach the folder under a fresh name instead.
+            let fresh = quarantine_path(cleanup);
+            if let Err(error) = replace_container_quarantine(&record.id, &quarantine, &fresh) {
+                plan.remaining.push(RepairItem {
+                    path: cleanup.clone(),
+                    action: error,
+                    automatic: false,
+                });
+                return;
+            }
+            quarantine = fresh;
         }
         if let Err(error) = detach_expected_path(cleanup, expected, &quarantine) {
             plan.remaining.push(RepairItem {
@@ -2858,6 +3104,22 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
     }
 }
 
+fn replace_container_quarantine(
+    operation_id: &OperationId,
+    quarantine: &Path,
+    fresh: &Path,
+) -> Result<(), String> {
+    mutate(|journal| {
+        let operation = operation_mut(&mut journal.operations, operation_id)?;
+        if operation.rollback_cleanup_quarantine.as_deref() != Some(quarantine) {
+            return Err("Rollback container quarantine changed before cleanup".to_string());
+        }
+        operation.rollback_cleanup_quarantine = Some(fresh.to_path_buf());
+        operation.updated_at_secs = now_secs();
+        Ok(())
+    })
+}
+
 fn clear_container_quarantine(operation_id: &OperationId, quarantine: &Path) -> Result<(), String> {
     mutate(|journal| {
         let operation = operation_mut(&mut journal.operations, operation_id)?;
@@ -2899,10 +3161,10 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
                     });
                     continue;
                 }
-                Err(_) => {
+                Err(error) => {
                     plan.remaining.push(RepairItem {
                         path: effect.to_path_buf(),
-                        action: "Completed effect changed; inspect manually".to_string(),
+                        action: format!("Could not verify completed effect: {error}"),
                         automatic: false,
                     });
                     continue;
@@ -2926,7 +3188,21 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
             }),
         }
     }
-    rollback_created_container(&record, &mut plan);
+    // Detaching a folder that still holds unresolved entries would only
+    // rename it to a hidden name and back. A persisted quarantine still runs:
+    // the folder may be sitting under it from an interrupted attempt.
+    if plan.remaining.is_empty() || record.rollback_cleanup_quarantine.is_some() {
+        rollback_created_container(&record, &mut plan);
+    } else if let Some(cleanup) = &record.rollback_cleanup
+        && crate::fs_util::path_is_taken(cleanup)
+    {
+        plan.remaining.push(RepairItem {
+            path: cleanup.clone(),
+            action: "Operation-created folder is kept until the remaining entries are resolved"
+                .to_string(),
+            automatic: false,
+        });
+    }
     finish(
         operation_id,
         if plan.remaining.is_empty() {
@@ -3022,8 +3298,7 @@ fn discover_orphan_staging_with(
             let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let temporary = name.contains(".cmdr-tmp.") || name.contains(".cmdr-quarantine.");
-            if temporary
+            if is_commander_temporary_name(&name)
                 && !referenced.contains(&path)
                 && let Ok(identity) = PathIdentity::observe_deep(&path)
             {
@@ -3033,6 +3308,19 @@ fn discover_orphan_staging_with(
     }
     orphans.sort_by(|left, right| left.path.cmp(&right.path));
     orphans
+}
+
+/// Match only names Commander generates: `.{name}.cmdr-tmp.{n}` and
+/// `.{name}.cmdr-quarantine.{n}`. A user file that merely contains a marker
+/// is never offered for deletion.
+fn is_commander_temporary_name(name: &str) -> bool {
+    name.starts_with('.')
+        && [".cmdr-tmp.", ".cmdr-quarantine."].iter().any(|marker| {
+            name.rfind(marker).is_some_and(|at| {
+                let index = &name[at + marker.len()..];
+                at > 0 && !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
 }
 
 pub fn clean_orphan(orphan: &OrphanStaging) -> Result<(), String> {
