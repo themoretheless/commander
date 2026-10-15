@@ -325,7 +325,7 @@ impl ArchiveProvider {
         let modified = metadata.modified().ok();
         let accessed = metadata.accessed().ok();
         // Every member shows the archive's own mtime; format it once.
-        let modified_str = modified.map_or_else(|| "-".to_string(), format_modified);
+        let modified_str = modified_label(modified);
         let mut keep_going = true;
         let result = crate::archive::visit_members(
             archive_path,
@@ -333,38 +333,22 @@ impl ArchiveProvider {
             budget,
             || request.cancelled(),
             |member| {
-                let Some(name) = member.member.path.file_name() else {
+                // The virtual path ends in the member's own name.
+                if member.member.path.file_name().is_none() {
                     keep_going = emit(None);
                     return keep_going;
-                };
-                let name = name.to_string_lossy().to_string();
+                }
                 let virtual_path =
                     crate::archive::virtual_member_path(archive_path, &member.member.path);
-                let extension = member
-                    .member
-                    .path
-                    .extension()
-                    .map(|extension| extension.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                let entry = FileEntry {
-                    name_lower: name.to_lowercase(),
-                    name,
-                    path: virtual_path.clone(),
-                    identity: crate::panel::ListingIdentity::Unavailable,
-                    is_dir: member.member.is_dir,
-                    size: if member.member.is_dir {
-                        0
-                    } else {
-                        member.member.size
-                    },
-                    extension,
+                let Some(entry) = synthetic_entry(
+                    virtual_path,
+                    member.member.is_dir,
+                    member.member.size,
                     modified,
-                    modified_str: modified_str.clone(),
-                    size_str: if member.member.is_dir {
-                        "...".to_string()
-                    } else {
-                        crate::panel::format_size(member.member.size)
-                    },
+                    modified_str.clone(),
+                ) else {
+                    keep_going = emit(None);
+                    return keep_going;
                 };
                 keep_going = emit(Some(SearchCandidate {
                     entry,
@@ -947,91 +931,34 @@ fn run_worker(
             return false;
         }
         scanned += 1;
-        let Some(candidate) = record else {
-            channel_open = maybe_send_progress(
-                generation,
-                scanned,
-                matched,
-                &mut last_progress,
-                &sender,
-                &notify,
-            );
-            return channel_open;
-        };
-
-        let SearchCandidate {
-            entry,
-            identity,
-            accessed,
-            content,
-            location,
-        } = candidate;
-        let Some(mut explanation) = query.evaluate_metadata(&entry, &root, now) else {
-            channel_open = maybe_send_progress(
-                generation,
-                scanned,
-                matched,
-                &mut last_progress,
-                &sender,
-                &notify,
-            );
-            return channel_open;
-        };
-        match query.evaluate_content(&entry, &content, &mut explanation) {
-            ContentVerdict::NotMatched => {
-                channel_open = maybe_send_progress(
-                    generation,
-                    scanned,
-                    matched,
-                    &mut last_progress,
-                    &sender,
-                    &notify,
-                );
-                return channel_open;
-            }
-            ContentVerdict::Skipped => {
-                content_skipped += 1;
-                channel_open = maybe_send_progress(
-                    generation,
-                    scanned,
-                    matched,
-                    &mut last_progress,
-                    &sender,
-                    &notify,
-                );
-                return channel_open;
-            }
-            ContentVerdict::Matched => {}
-        }
-        // Only a match beyond the cap proves the results are truncated; a
-        // walk that ends with exactly `cap` matches is complete.
-        if matched >= cap {
-            truncated = true;
-            return false;
-        }
-        batch.push(SearchHit {
-            entry,
-            identity,
-            accessed,
-            explanation,
-            location,
+        let hit = record.and_then(|candidate| {
+            evaluate_candidate(&query, candidate, &root, now, &mut content_skipped)
         });
-        matched += 1;
-        if batch.len() >= BATCH_SIZE {
-            sort_new_hits(&mut batch);
-            let hits = std::mem::take(&mut batch);
-            if sender
-                .send(SearchEvent::Batch {
-                    generation,
-                    hits,
-                    scanned,
-                })
-                .is_err()
-            {
-                channel_open = false;
+        if let Some(hit) = hit {
+            // Only a match beyond the cap proves the results are truncated; a
+            // walk that ends with exactly `cap` matches is complete.
+            if matched >= cap {
+                truncated = true;
                 return false;
             }
-            notify();
+            batch.push(hit);
+            matched += 1;
+            if batch.len() >= BATCH_SIZE {
+                sort_new_hits(&mut batch);
+                let hits = std::mem::take(&mut batch);
+                if sender
+                    .send(SearchEvent::Batch {
+                        generation,
+                        hits,
+                        scanned,
+                    })
+                    .is_err()
+                {
+                    channel_open = false;
+                    return false;
+                }
+                notify();
+            }
         }
         channel_open = maybe_send_progress(
             generation,
@@ -1081,6 +1008,40 @@ fn run_worker(
         summary,
     });
     notify();
+}
+
+/// The hit for one provider record, or `None` when its metadata or content
+/// does not match. A candidate whose content could not be searched counts
+/// in `content_skipped`.
+fn evaluate_candidate(
+    query: &CompiledQuery,
+    candidate: SearchCandidate,
+    root: &Path,
+    now: SystemTime,
+    content_skipped: &mut usize,
+) -> Option<SearchHit> {
+    let SearchCandidate {
+        entry,
+        identity,
+        accessed,
+        content,
+        location,
+    } = candidate;
+    let mut explanation = query.evaluate_metadata(&entry, root, now)?;
+    match query.evaluate_content(&entry, &content, &mut explanation) {
+        ContentVerdict::NotMatched => None,
+        ContentVerdict::Skipped => {
+            *content_skipped += 1;
+            None
+        }
+        ContentVerdict::Matched => Some(SearchHit {
+            entry,
+            identity,
+            accessed,
+            explanation,
+            location,
+        }),
+    }
 }
 
 fn maybe_send_progress(
@@ -1226,13 +1187,54 @@ fn local_date(time: SystemTime) -> Option<chrono::NaiveDate> {
     local_datetime(time).map(|local| local.date_naive())
 }
 
-/// Listing-style "modified" text for `time`, or "-" when chrono cannot
+/// Placeholder for a date the listing cannot show, as in the live panel.
+const UNKNOWN_MODIFIED: &str = "\u{2013}";
+
+/// Listing-style "modified" text for `time`, or a dash when chrono cannot
 /// represent it (an mtime past ~year 262k): `From<SystemTime>` panics there.
 pub fn format_modified(time: SystemTime) -> String {
     local_datetime(time).map_or_else(
-        || "-".to_string(),
+        || UNKNOWN_MODIFIED.to_string(),
         |local| local.format("%d %b %y  %H:%M").to_string(),
     )
+}
+
+/// `format_modified` for an optional time; a missing time shows the dash.
+pub fn modified_label(time: Option<SystemTime>) -> String {
+    time.map_or_else(|| UNKNOWN_MODIFIED.to_string(), format_modified)
+}
+
+/// A listing row for something that is not stat-ed on disk (an index
+/// document or an archive member), with the live panel's placeholders.
+/// `None` when `path` has no file name.
+pub fn synthetic_entry(
+    path: PathBuf,
+    is_dir: bool,
+    size: u64,
+    modified: Option<SystemTime>,
+    modified_str: String,
+) -> Option<FileEntry> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    Some(FileEntry {
+        name_lower: name.to_lowercase(),
+        name,
+        path,
+        identity: crate::panel::ListingIdentity::Unavailable,
+        is_dir,
+        size: if is_dir { 0 } else { size },
+        extension,
+        modified,
+        modified_str,
+        size_str: if is_dir {
+            "\u{2026}".to_string()
+        } else {
+            crate::panel::format_size(size)
+        },
+    })
 }
 
 fn local_datetime(time: SystemTime) -> Option<chrono::DateTime<chrono::Local>> {
@@ -1358,11 +1360,11 @@ mod tests {
     #[test]
     fn modified_text_falls_back_for_times_chrono_cannot_hold() {
         let epoch = format_modified(std::time::UNIX_EPOCH);
-        assert_ne!(epoch, "-");
+        assert_ne!(epoch, "\u{2013}");
         // ~278k years: past chrono's range. Skipped where SystemTime itself
         // cannot hold it (Windows FILETIME).
         if let Some(far) = std::time::UNIX_EPOCH.checked_add(Duration::from_secs(1 << 43)) {
-            assert_eq!(format_modified(far), "-");
+            assert_eq!(format_modified(far), "\u{2013}");
         }
     }
 
@@ -1741,6 +1743,17 @@ mod tests {
             time_bucket(&hit, TimePivot::Accessed, now),
             TimeBucket::ThisMonth
         );
+        // Clock skew: a time ahead of now is still today, not "older".
+        hit.entry.modified = Some(now + Duration::from_secs(3_600));
+        assert_eq!(
+            time_bucket(&hit, TimePivot::Modified, now),
+            TimeBucket::Today
+        );
+        hit.accessed = None;
+        assert_eq!(
+            time_bucket(&hit, TimePivot::Accessed, now),
+            TimeBucket::Unknown
+        );
     }
 
     #[test]
@@ -1932,5 +1945,86 @@ mod tests {
                 TimeBucket::Older
             );
         }
+    }
+
+    #[test]
+    fn content_search_skips_binary_files_and_counts_them() {
+        let tmp = TempDir::new();
+        tmp.file("text.txt", "needle here");
+        std::fs::write(tmp.path().join("blob.bin"), b"needle\0here").unwrap();
+
+        let engine = SearchEngine::default();
+        let run = engine
+            .start(
+                tmp.path().to_path_buf(),
+                Query::parse("content:needle", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+        let (hits, summary) = collect_run(&run);
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.name, "text.txt");
+        assert_eq!(summary.content_skipped, 1);
+    }
+
+    #[test]
+    fn highlight_ranges_count_characters_not_bytes() {
+        // Two-byte, three-byte (CJK) and four-byte (emoji) characters, plus
+        // a decomposed e + combining acute that is two chars.
+        let name = "r\u{e9}sum\u{e9} \u{65e5}\u{672c} \u{1f600} e\u{301}Report.txt";
+        let report_at = name.chars().position(|c| c == 'R').unwrap();
+        let expected = vec![(report_at, report_at + 6)];
+
+        let exact = TextMatcher::new(MatchMode::Exact, "report".to_string()).unwrap();
+        assert_eq!(exact.evaluate(name).unwrap().matched_ranges, expected);
+        let regex = TextMatcher::new(MatchMode::Regex, "rep.rt".to_string()).unwrap();
+        assert_eq!(regex.evaluate(name).unwrap().matched_ranges, expected);
+
+        // A match that itself spans multibyte characters.
+        let cjk = TextMatcher::new(MatchMode::Exact, "\u{65e5}\u{672c}".to_string()).unwrap();
+        assert_eq!(cjk.evaluate(name).unwrap().matched_ranges, vec![(7, 9)]);
+        assert_eq!(byte_range_to_char_range(name, 0, 0), (0, 0));
+        assert_eq!(
+            byte_range_to_char_range(name, name.len(), name.len()),
+            (24, 24)
+        );
+    }
+
+    #[test]
+    fn synthetic_entries_use_the_panel_placeholders() {
+        let dir = synthetic_entry(
+            PathBuf::from("/a.zip!/Docs"),
+            true,
+            4096,
+            None,
+            modified_label(None),
+        )
+        .unwrap();
+        assert_eq!(
+            (dir.name.as_str(), dir.name_lower.as_str()),
+            ("Docs", "docs")
+        );
+        assert_eq!((dir.size, dir.size_str.as_str()), (0, "\u{2026}"));
+        assert_eq!(dir.modified_str, "\u{2013}");
+        assert!(matches!(
+            dir.identity,
+            crate::panel::ListingIdentity::Unavailable
+        ));
+
+        let file = synthetic_entry(
+            PathBuf::from("/data/Report.PDF"),
+            false,
+            2048,
+            None,
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(file.extension, "pdf");
+        assert_eq!(file.size, 2048);
+        assert_eq!(file.size_str, crate::panel::format_size(2048));
+
+        assert!(synthetic_entry(PathBuf::from("/"), true, 0, None, String::new()).is_none());
     }
 }

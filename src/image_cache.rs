@@ -465,6 +465,16 @@ fn read_preview_bytes(
     Ok(bytes)
 }
 
+/// Fingerprint an open handle (fstat), so a rename or rewrite after the
+/// path check is still caught.
+fn handle_fingerprint(
+    file: &std::fs::File,
+    path: &Path,
+) -> Result<TextPreviewFingerprint, PreviewError> {
+    let metadata = file.metadata().map_err(|_| PreviewError::Unreadable)?;
+    TextPreviewFingerprint::from_metadata(path, &metadata)
+}
+
 impl TextPreviewProvider for FsTextPreviewProvider {
     fn supports(&self, identity: &crate::panel::PreviewIdentity) -> bool {
         let extension = identity
@@ -508,12 +518,7 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         }
 
         let mut file = std::fs::File::open(&identity.path).map_err(|_| PreviewError::Unreadable)?;
-        let opened = file
-            .metadata()
-            .map_err(|_| PreviewError::Unreadable)
-            .and_then(|metadata| {
-                TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
-            })?;
+        let opened = handle_fingerprint(&file, &identity.path)?;
         if &opened != expected {
             return Err(PreviewError::Changed);
         }
@@ -528,12 +533,7 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         if cancelled() {
             return Err(PreviewError::Cancelled);
         }
-        let after_handle = file
-            .metadata()
-            .map_err(|_| PreviewError::Unreadable)
-            .and_then(|metadata| {
-                TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
-            })?;
+        let after_handle = handle_fingerprint(&file, &identity.path)?;
         let after_path = self.fingerprint(identity)?;
         if &after_handle != expected || &after_path != expected {
             return Err(PreviewError::Changed);
@@ -545,12 +545,7 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         {
             let mut verification_file =
                 std::fs::File::open(&identity.path).map_err(|_| PreviewError::Unreadable)?;
-            let verification_opened = verification_file
-                .metadata()
-                .map_err(|_| PreviewError::Unreadable)
-                .and_then(|metadata| {
-                    TextPreviewFingerprint::from_metadata(&identity.path, &metadata)
-                })?;
+            let verification_opened = handle_fingerprint(&verification_file, &identity.path)?;
             if &verification_opened != expected {
                 return Err(PreviewError::Changed);
             }
@@ -723,6 +718,18 @@ impl TextPreviewPipeline<IsolatedTextPreviewExecutor> {
     }
 }
 
+/// The phase a fresh or retried request starts in: files over the preview
+/// cap fail at once, everything else waits out the debounce first.
+fn initial_text_phase(size: u64, now: Instant) -> TextPreviewPhase {
+    if size > MAX_TEXT_PREVIEW_BYTES {
+        TextPreviewPhase::Failed(PreviewError::TooLarge)
+    } else {
+        TextPreviewPhase::Debouncing {
+            ready_at: now + TEXT_PREVIEW_DEBOUNCE,
+        }
+    }
+}
+
 impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
     fn with_parts(
         executor: E,
@@ -763,13 +770,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         self.advance_generation();
         self.active = Some(ownership.clone());
         self.delivered = false;
-        self.phase = if ownership.identity.size > MAX_TEXT_PREVIEW_BYTES {
-            TextPreviewPhase::Failed(PreviewError::TooLarge)
-        } else {
-            TextPreviewPhase::Debouncing {
-                ready_at: now + TEXT_PREVIEW_DEBOUNCE,
-            }
-        };
+        self.phase = initial_text_phase(ownership.identity.size, now);
     }
 
     fn request(
@@ -1027,17 +1028,11 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         {
             self.cancel_task();
             self.advance_generation();
-            self.phase = if self
+            let size = self
                 .active
                 .as_ref()
-                .is_some_and(|active| active.identity.size > MAX_TEXT_PREVIEW_BYTES)
-            {
-                TextPreviewPhase::Failed(PreviewError::TooLarge)
-            } else {
-                TextPreviewPhase::Debouncing {
-                    ready_at: self.clock.now() + TEXT_PREVIEW_DEBOUNCE,
-                }
-            };
+                .map_or(0, |active| active.identity.size);
+            self.phase = initial_text_phase(size, self.clock.now());
             self.delivered = false;
         }
     }
@@ -1283,8 +1278,7 @@ impl ImageCache {
                 self.generation.fetch_add(1, Ordering::AcqRel);
             }
             drop(pending);
-            self.entries.clear();
-            self.total_bytes = 0;
+            self.clear_entries();
             self.current_dir = None;
             crate::lock_util::recover(&self.failed).clear();
             return;
@@ -1296,49 +1290,51 @@ impl ImageCache {
         // and two folders can hold same-named-but-different images).
         if self.current_dir.as_deref() != Some(dir) {
             self.current_dir = Some(dir.to_path_buf());
-            self.entries.clear();
-            self.total_bytes = 0;
+            self.clear_entries();
             self.generation.fetch_add(1, Ordering::AcqRel);
             crate::lock_util::recover(&self.pending).clear();
             crate::lock_util::recover(&self.failed).clear();
         }
 
         // Publish finished decodes before calculating free worker slots.
-        {
+        let completed: Vec<(PathBuf, DecodedPreview)> = {
             let mut pending = crate::lock_util::recover(&self.pending);
-            let completed: Vec<_> = pending
+            let paths: Vec<_> = pending
                 .iter()
                 .filter(|(_, slot)| slot.decoded.is_some())
                 .map(|(path, _)| path.clone())
                 .collect();
-            for path in completed {
-                if let Some(PendingLoad {
-                    decoded: Some(decoded),
-                    ..
-                }) = pending.remove(&path)
-                {
-                    let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let texture = ctx.load_texture(&name, decoded.image, TextureOptions::LINEAR);
-                    self.total_bytes = self.total_bytes.saturating_add(decoded.byte_size);
-                    // A sharper re-decode replaces the smaller texture that
-                    // stayed on screen while it loaded.
-                    if let Some(replaced) = self.entries.insert(
-                        path,
-                        CacheEntry {
-                            texture,
-                            byte_size: decoded.byte_size,
-                            last_used: self.frame,
-                            decoded_for: decoded.decoded_for,
-                        },
-                    ) {
-                        self.total_bytes = self.total_bytes.saturating_sub(replaced.byte_size);
-                    }
-                }
-            }
+            paths
+                .into_iter()
+                .filter_map(|path| match pending.remove(&path) {
+                    Some(PendingLoad {
+                        decoded: Some(decoded),
+                        ..
+                    }) => Some((path, decoded)),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (path, decoded) in completed {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let texture = ctx.load_texture(&name, decoded.image, TextureOptions::LINEAR);
+            // A sharper re-decode replaces the smaller texture that stayed
+            // on screen while it loaded.
+            self.remove_entry(&path);
+            self.total_bytes = self.total_bytes.saturating_add(decoded.byte_size);
+            self.entries.insert(
+                path,
+                CacheEntry {
+                    texture,
+                    byte_size: decoded.byte_size,
+                    last_used: self.frame,
+                    decoded_for: decoded.decoded_for,
+                },
+            );
         }
 
         let target = self.preview_target;
@@ -1448,34 +1444,29 @@ impl ImageCache {
     }
 
     fn evict(&mut self, keep: &std::collections::HashSet<&PathBuf>) {
-        if self.total_bytes <= MAX_CACHE_BYTES {
-            return; // Under budget — keep everything
+        let victims = eviction_order(
+            self.entries
+                .iter()
+                .map(|(path, entry)| (path, entry.byte_size, entry.last_used)),
+            keep,
+            self.total_bytes,
+            MAX_CACHE_BYTES,
+        );
+        for path in victims {
+            self.remove_entry(&path);
         }
+    }
 
-        // Over budget — first remove entries from other directories (not in keep set)
-        let to_remove: Vec<PathBuf> = self
-            .entries
-            .keys()
-            .filter(|k| !keep.contains(k))
-            .cloned()
-            .collect();
-        for path in to_remove {
-            if let Some(entry) = self.entries.remove(&path) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-            }
-        }
+    /// Drop one texture and release its bytes from the running total.
+    fn remove_entry(&mut self, path: &Path) -> Option<CacheEntry> {
+        let entry = self.entries.remove(path)?;
+        self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
+        Some(entry)
+    }
 
-        // Still over budget — evict oldest from current set
-        // O(n log n) sort-based eviction instead of O(n²) repeated min scans
-        while self.total_bytes > MAX_CACHE_BYTES && !self.entries.is_empty() {
-            let mut sorted: Vec<_> = self.entries.iter().collect();
-            sorted.sort_by_key(|(_, e)| e.last_used);
-
-            let oldest_key = sorted[0].0.clone();
-            if let Some(entry) = self.entries.remove(&oldest_key) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-            }
-        }
+    fn clear_entries(&mut self) {
+        self.entries.clear();
+        self.total_bytes = 0;
     }
 
     pub fn load_state(&self, path: &Path) -> PreviewLoadState {
@@ -1503,9 +1494,7 @@ impl ImageCache {
         crate::decoder_breaker::arm_probe_retry(path);
         crate::lock_util::recover(&self.failed).remove(path);
         crate::lock_util::recover(&self.pending).remove(path);
-        if let Some(entry) = self.entries.remove(path) {
-            self.total_bytes = self.total_bytes.saturating_sub(entry.byte_size);
-        }
+        self.remove_entry(path);
     }
 
     pub fn stats(&self) -> ImageCacheStats {
@@ -1517,6 +1506,40 @@ impl ImageCache {
             providers: preview_provider_stats(),
         }
     }
+}
+
+/// Which cached textures to drop, in order, to get `total_bytes` within
+/// `budget`. Under budget nothing goes. Over it, every entry outside `keep`
+/// (another folder's or no longer visible) goes first, then the least
+/// recently used of the kept ones until the total fits.
+fn eviction_order<'a>(
+    entries: impl Iterator<Item = (&'a PathBuf, usize, u64)>,
+    keep: &std::collections::HashSet<&PathBuf>,
+    mut total_bytes: usize,
+    budget: usize,
+) -> Vec<PathBuf> {
+    if total_bytes <= budget {
+        return Vec::new();
+    }
+    let mut victims = Vec::new();
+    let mut kept = Vec::new();
+    for (path, byte_size, last_used) in entries {
+        if keep.contains(path) {
+            kept.push((path, byte_size, last_used));
+        } else {
+            total_bytes = total_bytes.saturating_sub(byte_size);
+            victims.push(path.clone());
+        }
+    }
+    kept.sort_by_key(|(_, _, last_used)| *last_used);
+    for (path, byte_size, _) in kept {
+        if total_bytes <= budget {
+            break;
+        }
+        total_bytes = total_bytes.saturating_sub(byte_size);
+        victims.push(path.clone());
+    }
+    victims
 }
 
 fn classify_failure(error: &str) -> PreviewFailure {
@@ -1660,6 +1683,15 @@ fn color_image_from_rgba_managed(
 }
 
 static ACTIVE_DECODERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Serializes tests that drive `run_decode_with_timeout`. The decoder permits
+/// in `ACTIVE_DECODERS` are process-global, so a test that deliberately holds
+/// all of them would make a concurrent decode in another test see "busy" (or
+/// see its own decode refused). Any test reaching the decode path, directly or
+/// through `preload_images`, must hold this lock (widen its visibility when a
+/// test outside this module needs it).
+#[cfg(test)]
+static DECODER_PERMITS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct DecoderPermit;
 
@@ -1873,6 +1905,140 @@ unsafe fn create_srgb_color_space() -> *mut objc::runtime::Object {
     unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) }
 }
 
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn CGImageGetWidth(image: *mut objc::runtime::Object) -> usize;
+    fn CGImageGetHeight(image: *mut objc::runtime::Object) -> usize;
+    fn CGBitmapContextCreate(
+        data: *mut u8,
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bytes_per_row: usize,
+        space: *mut objc::runtime::Object,
+        bitmap_info: u32,
+    ) -> *mut objc::runtime::Object;
+    fn CGContextDrawImage(
+        ctx: *mut objc::runtime::Object,
+        rect: CGRect,
+        image: *mut objc::runtime::Object,
+    );
+    fn CGContextRelease(ctx: *mut objc::runtime::Object);
+    fn CGColorSpaceRelease(space: *mut objc::runtime::Object);
+    fn CGImageRelease(image: *mut objc::runtime::Object);
+}
+
+/// An `NSAutoreleasePool` drained when dropped, so every return path of an
+/// Objective-C loader (including `?`) releases its autoreleased objects.
+#[cfg(target_os = "macos")]
+struct AutoreleasePool(*mut objc::runtime::Object);
+
+#[cfg(target_os = "macos")]
+impl AutoreleasePool {
+    fn new() -> Self {
+        use objc::{class, msg_send, sel, sel_impl};
+        // SAFETY: `+new` on NSAutoreleasePool takes no arguments; the pool
+        // is drained exactly once, by Drop, on the thread that created it.
+        Self(unsafe { msg_send![class!(NSAutoreleasePool), new] })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for AutoreleasePool {
+    fn drop(&mut self) {
+        use objc::{msg_send, sel, sel_impl};
+        if !self.0.is_null() {
+            // SAFETY: the pool came from `new` and has not been drained yet.
+            unsafe {
+                let _: () = msg_send![self.0, drain];
+            }
+        }
+    }
+}
+
+/// Premultiplied RGBA (the only 8-bit RGBA layout CoreGraphics draws) to
+/// straight alpha, in place. Opaque and fully transparent pixels are left
+/// alone; rounding overshoot clamps to 255.
+#[cfg(any(target_os = "macos", test))]
+fn unpremultiply_rgba(pixels: &mut [u8]) {
+    for chunk in pixels.as_chunks_mut::<4>().0 {
+        let a = chunk[3] as u16;
+        if a > 0 && a < 255 {
+            chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
+            chunk[1] = ((chunk[1] as u16 * 255) / a).min(255) as u8;
+            chunk[2] = ((chunk[2] as u16 * 255) / a).min(255) as u8;
+        }
+    }
+}
+
+/// Draw `cg_image` into a straight-alpha sRGB RGBA buffer and release it,
+/// on success and on every failure. `what` names the source in the
+/// zero-dimension error.
+///
+/// # Safety
+/// `cg_image` must be a valid, owned (+1) `CGImageRef`.
+#[cfg(target_os = "macos")]
+unsafe fn cgimage_to_rgba(
+    cg_image: *mut objc::runtime::Object,
+    what: &str,
+) -> Result<([usize; 2], Vec<u8>), String> {
+    // SAFETY: the caller hands over a valid CGImage; the color space and
+    // bitmap context are released here, and the context draws into
+    // `pixels`, which outlives it.
+    unsafe {
+        let draw = || {
+            let w = CGImageGetWidth(cg_image);
+            let h = CGImageGetHeight(cg_image);
+            if w == 0 || h == 0 {
+                return Err(format!("{what} has zero dimensions"));
+            }
+            let (bytes_per_row, mut pixels) = allocate_rgba_pixels(w, h)?;
+            let color_space = create_srgb_color_space();
+            if color_space.is_null() {
+                return Err("sRGB color space could not be created".to_string());
+            }
+            // kCGImageAlphaPremultipliedLast = 1
+            let bitmap_info: u32 = 1;
+            let cg_ctx = CGBitmapContextCreate(
+                pixels.as_mut_ptr(),
+                w,
+                h,
+                8,
+                bytes_per_row,
+                color_space,
+                bitmap_info,
+            );
+            if cg_ctx.is_null() {
+                CGColorSpaceRelease(color_space);
+                return Err("CGBitmapContextCreate failed".to_string());
+            }
+            let rect = CGRect {
+                x: 0.0,
+                y: 0.0,
+                w: w as f64,
+                h: h as f64,
+            };
+            CGContextDrawImage(cg_ctx, rect, cg_image);
+            CGContextRelease(cg_ctx);
+            CGColorSpaceRelease(color_space);
+            unpremultiply_rgba(&mut pixels);
+            Ok(([w, h], pixels))
+        };
+        let result = draw();
+        CGImageRelease(cg_image);
+        result
+    }
+}
+
 /// Load image via macOS CoreGraphics/ImageIO.
 /// Supports: DNG, CR2, NEF, ARW, ORF, RAF, RW2, HEIC, TIFF, and all standard formats.
 #[cfg(target_os = "macos")]
@@ -1881,24 +2047,20 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 
-    // Validate the path before creating the pool: an early `?` return after
-    // it would skip the drain.
     let path_str = path.to_str().ok_or("invalid path")?;
     let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
 
     unsafe {
-        let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let _pool = AutoreleasePool::new();
 
         // Create CFURL from path
         let cf_str: *mut Object =
             msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
         if cf_str.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSString".into());
         }
         let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: cf_str];
         if url.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSURL".into());
         }
 
@@ -1915,35 +2077,11 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
                 index: usize,
                 options: *mut Object,
             ) -> *mut Object;
-            fn CGImageGetWidth(image: *mut Object) -> usize;
-            fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGBitmapContextCreate(
-                data: *mut u8,
-                width: usize,
-                height: usize,
-                bits_per_component: usize,
-                bytes_per_row: usize,
-                space: *mut Object,
-                bitmap_info: u32,
-            ) -> *mut Object;
-            fn CGContextDrawImage(ctx: *mut Object, rect: CGRect, image: *mut Object);
-            fn CGContextRelease(ctx: *mut Object);
-            fn CGColorSpaceRelease(space: *mut Object);
-            fn CGImageRelease(image: *mut Object);
             fn CFRelease(cf: *mut Object);
-        }
-
-        #[repr(C)]
-        struct CGRect {
-            x: f64,
-            y: f64,
-            w: f64,
-            h: f64,
         }
 
         let source = CGImageSourceCreateWithURL(url, std::ptr::null_mut());
         if source.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("CGImageSourceCreateWithURL failed".into());
         }
 
@@ -1970,7 +2108,6 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
             || max_size.is_null()
         {
             CFRelease(source);
-            let _: () = msg_send![pool, drain];
             return Err("ImageIO thumbnail options could not be created".into());
         }
         let _: () = msg_send![options, setObject: yes forKey: always_key];
@@ -1982,81 +2119,14 @@ fn load_via_imageio(path: &Path, target: PreviewTarget) -> Result<DecodedPreview
         let cg_image = CGImageSourceCreateThumbnailAtIndex(source, primary_index, options);
         if cg_image.is_null() {
             CFRelease(source);
-            let _: () = msg_send![pool, drain];
             return Err("CGImageSourceCreateThumbnailAtIndex failed".into());
         }
 
-        let w = CGImageGetWidth(cg_image);
-        let h = CGImageGetHeight(cg_image);
-        if w == 0 || h == 0 {
-            CGImageRelease(cg_image);
-            CFRelease(source);
-            let _: () = msg_send![pool, drain];
-            return Err("image has zero dimensions".into());
-        }
-
-        // Draw into RGBA bitmap context
-        let (bytes_per_row, mut pixels) = match allocate_rgba_pixels(w, h) {
-            Ok(layout) => layout,
-            Err(error) => {
-                CGImageRelease(cg_image);
-                CFRelease(source);
-                let _: () = msg_send![pool, drain];
-                return Err(error);
-            }
-        };
-        let color_space = create_srgb_color_space();
-        if color_space.is_null() {
-            CGImageRelease(cg_image);
-            CFRelease(source);
-            let _: () = msg_send![pool, drain];
-            return Err("sRGB color space could not be created".into());
-        }
-        // kCGImageAlphaPremultipliedLast = 1
-        let bitmap_info: u32 = 1;
-        let cg_ctx = CGBitmapContextCreate(
-            pixels.as_mut_ptr(),
-            w,
-            h,
-            8,
-            bytes_per_row,
-            color_space,
-            bitmap_info,
-        );
-
-        if cg_ctx.is_null() {
-            CGColorSpaceRelease(color_space);
-            CGImageRelease(cg_image);
-            CFRelease(source);
-            let _: () = msg_send![pool, drain];
-            return Err("CGBitmapContextCreate failed".into());
-        }
-
-        let rect = CGRect {
-            x: 0.0,
-            y: 0.0,
-            w: w as f64,
-            h: h as f64,
-        };
-        CGContextDrawImage(cg_ctx, rect, cg_image);
-
-        // Unpremultiply alpha (premultiplied → straight)
-        for chunk in pixels.as_chunks_mut::<4>().0 {
-            let a = chunk[3] as u16;
-            if a > 0 && a < 255 {
-                chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
-                chunk[1] = ((chunk[1] as u16 * 255) / a).min(255) as u8;
-                chunk[2] = ((chunk[2] as u16 * 255) / a).min(255) as u8;
-            }
-        }
-
-        CGContextRelease(cg_ctx);
-        CGColorSpaceRelease(color_space);
-        CGImageRelease(cg_image);
+        let rgba = cgimage_to_rgba(cg_image, "image");
         CFRelease(source);
-        let _: () = msg_send![pool, drain];
+        let (size, pixels) = rgba?;
 
-        let (image, byte_size) = color_image_from_rgba([w, h], pixels)?;
+        let (image, byte_size) = color_image_from_rgba(size, pixels)?;
         Ok(DecodedPreview {
             image,
             byte_size,
@@ -2132,13 +2202,11 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::CString;
 
-    // Validate the path before creating the pool: an early `?` return after
-    // it would skip the drain.
     let path_str = path.to_str().ok_or("invalid path")?;
     let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
 
     unsafe {
-        let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let _pool = AutoreleasePool::new();
 
         // NSURL
         let ns_str: *mut Object =
@@ -2146,19 +2214,16 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         // `fileURLWithPath:` raises an ObjC exception on nil, which aborts
         // the process across the FFI boundary.
         if ns_str.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSString".into());
         }
         let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_str];
         if url.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("failed to create NSURL".into());
         }
 
         // AVAsset
         let asset: *mut Object = msg_send![class!(AVAsset), assetWithURL: url];
         if asset.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("AVAsset creation failed".into());
         }
 
@@ -2166,7 +2231,6 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         let generator: *mut Object = msg_send![class!(AVAssetImageGenerator), alloc];
         let generator: *mut Object = msg_send![generator, initWithAsset: asset];
         if generator.is_null() {
-            let _: () = msg_send![pool, drain];
             return Err("AVAssetImageGenerator creation failed".into());
         }
 
@@ -2226,7 +2290,7 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
         let _: () = msg_send![generator, release];
 
         if cg_image.is_null() {
-            // The NSError is autoreleased: read it before draining the pool.
+            // The NSError is autoreleased: read it while the pool is alive.
             let failure = if error.is_null() {
                 video_failure_message(path, None)
             } else {
@@ -2242,101 +2306,11 @@ fn load_video_thumbnail(path: &Path, target: PreviewTarget) -> Result<DecodedPre
                     )),
                 )
             };
-            let _: () = msg_send![pool, drain];
             return Err(failure);
         }
 
-        // Convert CGImage to RGBA pixels (same as imageio path)
-        unsafe extern "C" {
-            fn CGImageGetWidth(image: *mut Object) -> usize;
-            fn CGImageGetHeight(image: *mut Object) -> usize;
-            fn CGBitmapContextCreate(
-                data: *mut u8,
-                width: usize,
-                height: usize,
-                bits_per_component: usize,
-                bytes_per_row: usize,
-                space: *mut Object,
-                bitmap_info: u32,
-            ) -> *mut Object;
-            fn CGContextDrawImage(ctx: *mut Object, rect: CGRect, image: *mut Object);
-            fn CGContextRelease(ctx: *mut Object);
-            fn CGColorSpaceRelease(space: *mut Object);
-            fn CGImageRelease(image: *mut Object);
-        }
-
-        #[repr(C)]
-        struct CGRect {
-            x: f64,
-            y: f64,
-            w: f64,
-            h: f64,
-        }
-
-        let w = CGImageGetWidth(cg_image);
-        let h = CGImageGetHeight(cg_image);
-        if w == 0 || h == 0 {
-            CGImageRelease(cg_image);
-            let _: () = msg_send![pool, drain];
-            return Err("video frame has zero dimensions".into());
-        }
-
-        let (bytes_per_row, mut pixels) = match allocate_rgba_pixels(w, h) {
-            Ok(layout) => layout,
-            Err(error) => {
-                CGImageRelease(cg_image);
-                let _: () = msg_send![pool, drain];
-                return Err(error);
-            }
-        };
-        let color_space = create_srgb_color_space();
-        if color_space.is_null() {
-            CGImageRelease(cg_image);
-            let _: () = msg_send![pool, drain];
-            return Err("sRGB color space could not be created for video".into());
-        }
-        let bitmap_info: u32 = 1; // kCGImageAlphaPremultipliedLast
-        let cg_ctx = CGBitmapContextCreate(
-            pixels.as_mut_ptr(),
-            w,
-            h,
-            8,
-            bytes_per_row,
-            color_space,
-            bitmap_info,
-        );
-
-        if cg_ctx.is_null() {
-            CGColorSpaceRelease(color_space);
-            CGImageRelease(cg_image);
-            let _: () = msg_send![pool, drain];
-            return Err("CGBitmapContextCreate failed for video".into());
-        }
-
-        let rect = CGRect {
-            x: 0.0,
-            y: 0.0,
-            w: w as f64,
-            h: h as f64,
-        };
-        CGContextDrawImage(cg_ctx, rect, cg_image);
-
-        // Unpremultiply
-        for chunk in pixels.as_chunks_mut::<4>().0 {
-            let a = chunk[3] as u16;
-            if a > 0 && a < 255 {
-                chunk[0] = ((chunk[0] as u16 * 255) / a).min(255) as u8;
-                chunk[1] = ((chunk[1] as u16 * 255) / a).min(255) as u8;
-                chunk[2] = ((chunk[2] as u16 * 255) / a).min(255) as u8;
-            }
-        }
-
-        CGContextRelease(cg_ctx);
-        CGColorSpaceRelease(color_space);
-        CGImageRelease(cg_image);
-        let _: () = msg_send![pool, drain];
-
-        let (image, byte_size) = color_image_from_rgba([w, h], pixels)?;
+        let (size, pixels) = cgimage_to_rgba(cg_image, "video frame")?;
+        let (image, byte_size) = color_image_from_rgba(size, pixels)?;
         Ok(DecodedPreview {
             image,
             byte_size,
@@ -2353,7 +2327,8 @@ mod tests {
         TEXT_PREVIEW_TIMEOUT, TextPreviewClock, TextPreviewExecutor, TextPreviewFingerprint,
         TextPreviewJob, TextPreviewPipeline, TextPreviewPoll, TextPreviewStore,
         TextPreviewSubmission, TextPreviewTaskHandle, allocate_rgba_pixels, classify_failure,
-        color_image_from_rgba, decode_text_bytes, fit_oriented, load_via_image_crate,
+        color_image_from_rgba, counts_against_decoder, decode_text_bytes, fit_oriented,
+        load_via_image_crate, unpremultiply_rgba,
     };
     use crate::panel::PreviewIdentity;
     use crate::testutil::TempDir;
@@ -3588,5 +3563,299 @@ mod tests {
             super::free_preload_slots(1, 3),
             super::MAX_PRELOAD_WORKERS - 3
         );
+    }
+
+    #[test]
+    fn eviction_drops_other_folders_first_then_least_recently_used() {
+        let [a, b, c, other, stale] =
+            ["a.png", "b.png", "c.png", "other.png", "stale.png"].map(PathBuf::from);
+        let entries = [
+            (&a, 10, 3),
+            (&b, 10, 1),
+            (&c, 10, 2),
+            (&other, 5, 9),
+            (&stale, 5, 0),
+        ];
+        let keep: std::collections::HashSet<&PathBuf> = [&a, &b, &c].into_iter().collect();
+
+        // Within budget nothing is evicted, not even entries outside the keep set.
+        assert!(super::eviction_order(entries.into_iter(), &keep, 40, 40).is_empty());
+
+        // Every non-kept entry goes even when dropping one would be enough.
+        let mut victims = super::eviction_order(entries.into_iter(), &keep, 40, 39);
+        victims.sort();
+        assert_eq!(victims, vec![other.clone(), stale.clone()]);
+
+        // Still over budget: kept entries go oldest first, and only as many
+        // as needed.
+        let victims = super::eviction_order(entries.into_iter(), &keep, 40, 15);
+        assert_eq!(victims.len(), 4);
+        assert_eq!(victims[2..], [b.clone(), c.clone()]);
+
+        // A budget nothing fits under drains the whole cache.
+        assert_eq!(
+            super::eviction_order(entries.into_iter(), &keep, 40, 0).len(),
+            5
+        );
+    }
+
+    #[test]
+    fn removing_an_entry_keeps_the_byte_total_in_sync() {
+        let ctx = egui::Context::default();
+        let mut cache = ImageCache::new();
+        for (name, bytes) in [("a.png", 4), ("b.png", 16)] {
+            cache.entries.insert(
+                PathBuf::from(name),
+                super::CacheEntry {
+                    texture: ctx.load_texture(
+                        name,
+                        egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                        egui::TextureOptions::LINEAR,
+                    ),
+                    byte_size: bytes,
+                    last_used: 0,
+                    decoded_for: PreviewTarget::DEFAULT,
+                },
+            );
+        }
+        cache.total_bytes = 20;
+
+        cache.retry(&PathBuf::from("b.png"));
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.stats().bytes, 4);
+        // A path that is not cached leaves the total alone.
+        cache.retry(&PathBuf::from("missing.png"));
+        assert_eq!(cache.stats().bytes, 4);
+    }
+
+    #[test]
+    fn oversized_text_fails_at_once_and_the_rest_debounces() {
+        let now = Instant::now();
+        assert!(matches!(
+            super::initial_text_phase(MAX_TEXT_PREVIEW_BYTES + 1, now),
+            super::TextPreviewPhase::Failed(PreviewError::TooLarge)
+        ));
+        // The cap itself is still previewable.
+        for size in [0, MAX_TEXT_PREVIEW_BYTES] {
+            assert!(matches!(
+                super::initial_text_phase(size, now),
+                super::TextPreviewPhase::Debouncing { ready_at }
+                    if ready_at == now + TEXT_PREVIEW_DEBOUNCE
+            ));
+        }
+    }
+
+    #[test]
+    fn preview_target_floors_clamps_and_survives_non_finite_extents() {
+        let target = |w, h, ppp| {
+            let target = PreviewTarget::from_points(w, h, ppp);
+            (target.width, target.height)
+        };
+        assert_eq!(target(300.0, 200.0, 2.0), (600, 400));
+        // Fractional pixels round up so the texture never undershoots.
+        assert_eq!(target(10.2, 10.0, 1.0), (11, 10));
+        // Sub-point extents and scale factors floor at one.
+        assert_eq!(target(0.0, 0.5, 2.0), (2, 2));
+        assert_eq!(target(100.0, 50.0, 0.5), (100, 50));
+        // Huge panes clamp to the decode ceiling on each axis independently.
+        assert_eq!(target(100_000.0, 300.0, 2.0), (4_096, 600));
+        // NaN or infinite inputs fall back to a single pixel.
+        assert_eq!(target(f32::NAN, 10.0, 1.0), (1, 10));
+        assert_eq!(target(f32::INFINITY, 10.0, 1.0), (1, 10));
+        assert_eq!(target(300.0, 200.0, f32::NAN), (1, 1));
+    }
+
+    #[test]
+    fn fingerprint_matches_request_only_when_path_size_and_known_mtime_agree() {
+        let mtime = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mut stamped = fingerprint("notes.txt", 1, 5);
+        stamped.modified = Some(mtime);
+        let request = |path: &str, size, modified| PreviewIdentity {
+            path: PathBuf::from(path),
+            size,
+            modified,
+        };
+
+        assert!(stamped.matches_request(&request("notes.txt", 5, Some(mtime))));
+        // A listing without an mtime trusts path and size alone.
+        assert!(stamped.matches_request(&request("notes.txt", 5, None)));
+        assert!(!stamped.matches_request(&request(
+            "notes.txt",
+            5,
+            Some(mtime + Duration::from_secs(1))
+        )));
+        assert!(!stamped.matches_request(&request("notes.txt", 6, Some(mtime))));
+        assert!(!stamped.matches_request(&request("other.txt", 5, Some(mtime))));
+        // A file whose mtime cannot be read no longer matches a stamped row.
+        let unstamped = fingerprint("notes.txt", 1, 5);
+        assert!(!unstamped.matches_request(&request("notes.txt", 5, Some(mtime))));
+        assert!(unstamped.matches_request(&request("notes.txt", 5, None)));
+    }
+
+    #[test]
+    fn control_character_threshold_allows_exactly_one_in_twenty() {
+        let mut one_in_twenty = b"abcdefghijklmnopqrs".to_vec();
+        one_in_twenty.push(0x01);
+        assert_eq!(one_in_twenty.len(), 20);
+        assert!(decode_text_bytes(one_in_twenty.clone()).is_ok());
+
+        // DEL counts as a control too: two in twenty is over the line.
+        let mut two_in_twenty = one_in_twenty.clone();
+        two_in_twenty[0] = 0x7f;
+        assert_eq!(decode_text_bytes(two_in_twenty), Err(PreviewError::Binary));
+
+        // One control in nineteen bytes is also just over 5 %.
+        let one_in_nineteen = one_in_twenty[1..].to_vec();
+        assert_eq!(
+            decode_text_bytes(one_in_nineteen),
+            Err(PreviewError::Binary)
+        );
+    }
+
+    #[test]
+    fn unpremultiply_restores_straight_alpha_and_skips_opaque_and_clear() {
+        let mut pixels = [
+            // Half-transparent mid grey: 64 / 128 * 255 rounds down to 127.
+            64, 64, 64, 128, //
+            // Opaque and fully transparent pixels are untouched.
+            10, 20, 30, 255, //
+            7, 8, 9, 0, //
+            // Overshoot from rounding in the premultiplied value clamps.
+            200, 1, 0, 100,
+        ];
+        unpremultiply_rgba(&mut pixels);
+        assert_eq!(
+            pixels,
+            [
+                127, 127, 127, 128, 10, 20, 30, 255, 7, 8, 9, 0, 255, 2, 0, 100
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_of_a_ready_preview_rereads_instead_of_serving_the_cache() {
+        let (mut pipeline, executor, provider, clock, ctx) = pipeline_harness();
+        let request = identity("edited.txt", 5);
+        provider.push(ScriptedAction::Text("old"));
+        provider.push(ScriptedAction::Text("new"));
+
+        submit_after_debounce(&mut pipeline, &executor, &clock, &ctx, &request);
+        executor.run_all();
+        match pipeline.request(&ctx, &request) {
+            TextPreviewPoll::Ready(content) => assert_eq!(content.as_ref(), "old"),
+            other => panic!("expected ready preview, got {other:?}"),
+        }
+
+        pipeline.retry(&request.path);
+        submit_after_debounce(&mut pipeline, &executor, &clock, &ctx, &request);
+        executor.run_all();
+        match pipeline.request(&ctx, &request) {
+            TextPreviewPoll::Ready(content) => assert_eq!(content.as_ref(), "new"),
+            other => panic!("expected re-read preview, got {other:?}"),
+        }
+        assert_eq!(provider.reads.load(Ordering::Relaxed), 2);
+    }
+
+    /// Run `probe` until it holds or about two seconds pass.
+    fn eventually(probe: impl Fn() -> bool) -> bool {
+        for _ in 0..400 {
+            if probe() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        probe()
+    }
+
+    #[test]
+    fn isolated_executor_refuses_a_second_job_and_recovers_after_a_panic() {
+        let executor = super::IsolatedTextPreviewExecutor::default();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let (saw_cancel_tx, saw_cancel) = std::sync::mpsc::channel();
+        let job: TextPreviewJob = Box::new(move |cancelled| {
+            let _ = gate.recv();
+            let _ = saw_cancel_tx.send(cancelled());
+        });
+        let first = executor
+            .submit(TextPreviewSubmission { generation: 1 }, job)
+            .unwrap();
+
+        let refused = executor.submit(TextPreviewSubmission { generation: 2 }, Box::new(|_| {}));
+        assert!(matches!(refused, Err(PreviewError::WorkerBusy)));
+
+        assert!(first.cancel(), "first cancel reports the transition");
+        assert!(!first.cancel(), "repeat cancel is a no-op");
+        drop(release);
+        assert_eq!(saw_cancel.recv_timeout(Duration::from_secs(2)), Ok(true));
+        assert!(eventually(|| first.is_finished()));
+
+        let panicking = executor
+            .submit(
+                TextPreviewSubmission { generation: 3 },
+                Box::new(|_| panic!("text preview job panic")),
+            )
+            .unwrap();
+        assert!(eventually(|| panicking.is_finished()));
+        // The worker slot is free again after the panic.
+        let after = executor
+            .submit(TextPreviewSubmission { generation: 4 }, Box::new(|_| {}))
+            .unwrap();
+        assert!(eventually(|| after.is_finished()));
+    }
+
+    #[test]
+    fn decode_timeout_keeps_the_permit_until_the_decoder_returns() {
+        // Holds every global decoder permit for a moment; keep other decode-path
+        // tests out while it runs.
+        let _permits = super::DECODER_PERMITS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        fn decoded() -> Result<super::DecodedPreview, String> {
+            Ok(super::DecodedPreview {
+                image: egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                byte_size: 4,
+                decoded_for: PreviewTarget::DEFAULT,
+            })
+        }
+        let stats = super::preview_provider_stats;
+
+        assert!(super::run_decode_with_timeout(Duration::from_secs(2), decoded).is_ok());
+
+        // Hung decoders time out but keep their permits until they return.
+        let timeouts_before = stats().timeouts;
+        let mut releases = Vec::new();
+        for _ in 0..super::MAX_PRELOAD_WORKERS {
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            releases.push(release);
+            let error = super::run_decode_with_timeout(Duration::from_millis(10), move || {
+                let _ = gate.recv();
+                decoded()
+            })
+            .unwrap_err();
+            assert_eq!(classify_failure(&error), PreviewFailure::TimedOut);
+        }
+        assert!(stats().timeouts >= timeouts_before + super::MAX_PRELOAD_WORKERS as u64);
+
+        // With every permit held the next decode is refused without running.
+        let saturated_before = stats().saturated;
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_probe = Arc::clone(&ran);
+        let error = super::run_decode_with_timeout(Duration::from_secs(2), move || {
+            ran_probe.store(true, Ordering::Release);
+            decoded()
+        })
+        .unwrap_err();
+        assert_eq!(classify_failure(&error), PreviewFailure::Busy);
+        assert!(!counts_against_decoder(&error));
+        assert!(stats().saturated > saturated_before);
+        assert!(!ran.load(Ordering::Acquire));
+
+        // Once the hung decoders finish, their permits come back.
+        drop(releases);
+        assert!(eventually(|| super::run_decode_with_timeout(
+            Duration::from_secs(2),
+            decoded
+        )
+        .is_ok()));
     }
 }
