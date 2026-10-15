@@ -1145,4 +1145,125 @@ mod tests {
         assert!(outcome.indeterminate);
         assert!(!controller.is_active());
     }
+
+    /// Real version store that records discards and can be told to refuse
+    /// them, so rejected-version cleanup is observable.
+    struct RecordingVersionStore {
+        inner: TempVersionStore,
+        discarded: Mutex<Vec<crate::version_store::VersionRecord>>,
+        fail_discard: bool,
+    }
+
+    impl RecordingVersionStore {
+        fn new(root: PathBuf, fail_discard: bool) -> Self {
+            Self {
+                inner: TempVersionStore { root },
+                discarded: Mutex::new(Vec::new()),
+                fail_discard,
+            }
+        }
+    }
+
+    impl DeleteVersionStore for RecordingVersionStore {
+        fn preserve(
+            &self,
+            target: &TrashTarget,
+            operation_id: &OperationId,
+            key: crate::operation::IdempotencyKey,
+            retention: crate::operation::VersionRetentionPolicy,
+        ) -> Result<Option<crate::version_store::VersionRecord>, NativeFailure> {
+            self.inner.preserve(target, operation_id, key, retention)
+        }
+
+        fn discard(
+            &self,
+            record: &crate::version_store::VersionRecord,
+        ) -> Result<(), NativeFailure> {
+            self.discarded.lock().unwrap().push(record.clone());
+            if self.fail_discard {
+                return Err(NativeFailure {
+                    kind: NativeFailureKind::Unknown,
+                    message: "scripted discard failure".to_string(),
+                });
+            }
+            self.inner.discard(record)
+        }
+    }
+
+    fn run_versioned_batch(
+        items: Vec<TrashBatchItem>,
+        port: &dyn TrashPort,
+        versions: &dyn DeleteVersionStore,
+        cancel: &AtomicBool,
+    ) -> DeleteOutcome {
+        let context = DeleteRunContext::capture(&items, DeleteOrigin::Confirmation);
+        let progress = Mutex::new(DeleteProgress::default());
+        run_batch(
+            items,
+            DeleteBatchRuntime {
+                context: &context,
+                port,
+                versions,
+                cancel,
+                progress: &progress,
+                notify: &|| {},
+                durability: crate::operation::DurabilityProfile::Versioned,
+                retention: crate::operation::VersionRetentionPolicy::Recent,
+            },
+        )
+    }
+
+    fn denied(message: &str) -> NativeFailure {
+        NativeFailure {
+            kind: NativeFailureKind::Denied,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn preserved_version_is_discarded_when_the_trash_did_not_happen() {
+        for rejected in [
+            TrashItemOutcome::Failed(denied("denied")),
+            TrashItemOutcome::Unsupported(denied("no Trash on this volume")),
+            TrashItemOutcome::Cancelled,
+        ] {
+            let temp = TempDir::new();
+            let path = temp.file("kept.txt", "value");
+            let versions = RecordingVersionStore::new(temp.path().join("versions"), false);
+            let port = ScriptedTrash::new([rejected.clone()]);
+
+            let outcome = run_versioned_batch(
+                vec![ready(path.clone())],
+                &port,
+                &versions,
+                &AtomicBool::new(false),
+            );
+
+            assert_eq!(outcome.items[0].outcome, rejected);
+            assert_eq!(outcome.items[0].version, None);
+            let discarded = versions.discarded.lock().unwrap();
+            assert_eq!(discarded.len(), 1, "{rejected:?}");
+            assert!(!discarded[0].stored.exists(), "{rejected:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "value");
+        }
+    }
+
+    #[test]
+    fn preserved_version_is_kept_when_the_trash_result_is_indeterminate() {
+        let temp = TempDir::new();
+        let path = temp.file("unknown.txt", "value");
+        let versions = RecordingVersionStore::new(temp.path().join("versions"), false);
+        let port = ScriptedTrash::new([TrashItemOutcome::Indeterminate(denied("lost reply"))]);
+
+        let outcome =
+            run_versioned_batch(vec![ready(path)], &port, &versions, &AtomicBool::new(false));
+
+        assert!(matches!(
+            outcome.items[0].outcome,
+            TrashItemOutcome::Indeterminate(_)
+        ));
+        let record = outcome.items[0].version.as_ref().expect("kept version");
+        assert!(record.stored.exists());
+        assert!(versions.discarded.lock().unwrap().is_empty());
+    }
 }
