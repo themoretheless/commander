@@ -4,7 +4,7 @@
 
 use crate::selection_summary::Kind;
 
-/// Name and stub colors per kind, as `(dark, light)`. The six hued kinds were
+/// Stub and glyph colors per kind (never text), as `(dark, light)`. The six hued kinds were
 /// searched in OKLCH so each clears 4.5:1 on plain, zebra and hovered rows,
 /// at least the 3:1 graphics bar on cursor and selected rows in every theme,
 /// and stays apart under deuteranopia, protanopia and tritanopia; Folder and
@@ -71,7 +71,11 @@ mod tests {
         Kind::Other,
     ];
 
-    // Row backgrounds per theme: panel, cursor, selected, hover.
+    // Hand-copied row backgrounds (panel, cursor, selected, hover) from an
+    // older palette. They no longer match what file_list paints; the
+    // ThemeColors-based tests (`hued_kinds_stay_legible_on_the_real_theme_rows`
+    // and `every_stub_clears_three_to_one_in_every_theme`) are the
+    // authoritative contrast checks. These stay as an extra fixed fixture.
     const DARK_ROWS: [(u8, u8, u8); 4] = [
         (0x1b, 0x18, 0x15),
         (0x2d, 0x29, 0x25),
