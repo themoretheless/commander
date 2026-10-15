@@ -1480,6 +1480,11 @@ fn link_onto_itself(dest: &Path, link: &Path) -> bool {
 /// but also what a child deleted or truncated mid-copy looks like. While both
 /// volumes are still mounted, the reconnect wait returns at once and the entry
 /// would only be recopied, so the failure is reported instead.
+///
+/// Trade-off: a transient `NotFound` or `UnexpectedEof` on a network share
+/// whose mount still probes as available is no longer retried immediately;
+/// the entry fails at once instead of being recopied up to
+/// `MAX_MOUNT_RETRIES` times.
 fn vanished_on_mounted_volumes(
     error: &std::io::Error,
     source_mount: &crate::mount_guard::MountGuard,
