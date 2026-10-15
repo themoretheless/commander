@@ -4843,6 +4843,25 @@ fn nav_lock_mirrors_enter_and_go_up_only_while_on() {
 }
 
 #[test]
+fn nav_lock_go_up_leaves_an_other_pane_at_the_root_in_place() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let left_sub = l.dir("sub");
+    let root = r.path().ancestors().last().unwrap().to_path_buf();
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(left_sub);
+    ws.right.navigate_to(root.clone());
+    ws.execute(Command::ToggleNavLock);
+
+    ws.execute(Command::GoUp);
+
+    assert_eq!(ws.left.current_path, l.path(), "the active pane moves up");
+    assert_eq!(
+        ws.right.current_path, root,
+        "the root has no parent to follow"
+    );
+}
+
+#[test]
 fn activating_the_parent_row_goes_up_onto_the_folder_left() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let sub = l.dir("sub");
@@ -5270,6 +5289,28 @@ fn symlinks_land_in_the_other_pane_and_report_their_count() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn symlinks_take_a_numbered_name_beside_an_existing_one() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("a.txt", "linked");
+    r.file("a.txt", "already here");
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "a.txt"));
+    ws.drain_ui_requests();
+
+    ws.execute(Command::CreateSymlink);
+
+    assert_eq!(
+        std::fs::read_link(r.path().join("a.txt link 2")).unwrap(),
+        file
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.path().join("a.txt")).unwrap(),
+        "already here"
+    );
+}
+
 #[test]
 fn hard_links_take_a_numbered_name_beside_an_existing_one() {
     let (l, r) = (TempDir::new(), TempDir::new());
@@ -5406,12 +5447,34 @@ fn applying_a_profile_restores_both_folders_filters_and_policies() {
     gone.left_root = l.path().join("removed");
     gone.right_root = r.path().join("removed");
     gone.symlink_policy = crate::filesystem_policy::SymlinkPolicy::Skip;
+    gone.left_filter = "other".to_string();
+    gone.right_filter = "other".to_string();
     ws.apply_profile(&gone);
     assert_eq!(ws.left.current_path, left_saved);
     assert_eq!(ws.right.current_path, right_saved);
     assert_eq!(
+        ws.left.search_query(),
+        "jpg",
+        "a missing side keeps its filter"
+    );
+    assert_eq!(
+        ws.right.search_query(),
+        "raw",
+        "a missing side keeps its filter"
+    );
+    assert_eq!(
         ws.symlink_policy,
         crate::filesystem_policy::SymlinkPolicy::Skip
+    );
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [UiRequest::Notice { message, error: true }]
+                if message.contains(&gone.left_root.display().to_string())
+                    && message.contains(&gone.right_root.display().to_string())
+        ),
+        "{requests:?}"
     );
 }
 
