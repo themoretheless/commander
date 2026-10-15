@@ -1087,7 +1087,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 if clean
                     && spec.durability.verifies()
                     && !renamed
-                    && !transfer_paths_equal(&entry.path, &copy_target, spec.symlink_policy)
+                    && let Some(mismatch) =
+                        transfer_paths_mismatch(&entry.path, &copy_target, spec.symlink_policy)
                 {
                     record_failure(
                         &progress,
@@ -1095,7 +1096,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                         ClassifiedFailure::message(
                             FailureClass::IntegrityUncertain,
                             Some(copy_target.clone()),
-                            "copy verification failed",
+                            format!("copy verification failed: {mismatch}"),
                         ),
                     );
                     clean = false;

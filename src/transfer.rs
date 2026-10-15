@@ -946,16 +946,38 @@ fn entry_size(entry: &FileEntry) -> u64 {
     }
 }
 
+#[cfg(test)]
 fn transfer_paths_equal(
     source: &Path,
     destination: &Path,
     symlink_policy: crate::filesystem_policy::SymlinkPolicy,
 ) -> bool {
+    transfer_paths_mismatch(source, destination, symlink_policy).is_none()
+}
+
+/// Compare a finished copy with its source. `None` means they match;
+/// otherwise the first difference found, naming the entry (relative to the
+/// copied item) and why it differs.
+fn transfer_paths_mismatch(
+    source: &Path,
+    destination: &Path,
+    symlink_policy: crate::filesystem_policy::SymlinkPolicy,
+) -> Option<String> {
     enum Task {
         Compare(PathBuf, PathBuf),
         ExitDirectory(PathBuf),
     }
 
+    // The copy may still sit at a hidden staging name, so a difference at
+    // the root is reported by reason alone; the caller names the item.
+    let root = destination;
+    let mismatch = |at: &Path, reason: &str| -> Option<String> {
+        match at.strip_prefix(root) {
+            Ok(relative) if relative.as_os_str().is_empty() => Some(reason.to_string()),
+            Ok(relative) => Some(format!("{}: {reason}", relative.display())),
+            Err(_) => Some(format!("{}: {reason}", at.display())),
+        }
+    };
     let mut tasks = vec![Task::Compare(
         source.to_path_buf(),
         destination.to_path_buf(),
@@ -968,28 +990,35 @@ fn transfer_paths_equal(
             }
             Task::Compare(source, destination) => {
                 let Ok(source_metadata) = std::fs::symlink_metadata(&source) else {
-                    return false;
+                    return mismatch(&destination, "source can no longer be read");
                 };
                 let Ok(destination_metadata) = std::fs::symlink_metadata(&destination) else {
-                    return false;
+                    return mismatch(&destination, "copy is missing");
                 };
                 if source_metadata.file_type().is_symlink() {
                     match symlink_policy {
                         crate::filesystem_policy::SymlinkPolicy::Preserve => {
-                            if !destination_metadata.file_type().is_symlink()
-                                || std::fs::read_link(&source).ok()
-                                    != std::fs::read_link(&destination).ok()
+                            if !destination_metadata.file_type().is_symlink() {
+                                return mismatch(&destination, "copy is not a symbolic link");
+                            }
+                            if std::fs::read_link(&source).ok()
+                                != std::fs::read_link(&destination).ok()
                             {
-                                return false;
+                                return mismatch(&destination, "symbolic link target differs");
                             }
                         }
-                        crate::filesystem_policy::SymlinkPolicy::Skip => return false,
+                        crate::filesystem_policy::SymlinkPolicy::Skip => {
+                            return mismatch(&destination, "skipped symbolic link was copied");
+                        }
                         crate::filesystem_policy::SymlinkPolicy::Follow => {
                             if destination_metadata.file_type().is_symlink() {
-                                return false;
+                                return mismatch(
+                                    &destination,
+                                    "copy is a symbolic link, not its target",
+                                );
                             }
                             let Ok(followed) = std::fs::canonicalize(&source) else {
-                                return false;
+                                return mismatch(&destination, "source link cannot be followed");
                             };
                             tasks.push(Task::Compare(followed, destination));
                         }
@@ -1000,23 +1029,23 @@ fn transfer_paths_equal(
                     if !destination_metadata.is_dir()
                         || destination_metadata.file_type().is_symlink()
                     {
-                        return false;
+                        return mismatch(&destination, "copy is not a folder");
                     }
                     let Ok(canonical) = std::fs::canonicalize(&source) else {
-                        return false;
+                        return mismatch(&destination, "source folder cannot be resolved");
                     };
                     if !ancestors.insert(canonical.clone()) {
-                        return false;
+                        return mismatch(&destination, "source folder loops back on itself");
                     }
                     let Some(source_names) = transfer_child_names(&source, Some(symlink_policy))
                     else {
-                        return false;
+                        return mismatch(&destination, "source folder cannot be listed");
                     };
                     let Some(destination_names) = transfer_child_names(&destination, None) else {
-                        return false;
+                        return mismatch(&destination, "copied folder cannot be listed");
                     };
                     let Some(pairs) = pair_child_names(source_names, destination_names) else {
-                        return false;
+                        return mismatch(&destination, "folder contents differ");
                     };
                     tasks.push(Task::ExitDirectory(canonical));
                     for (source_name, destination_name) in pairs.into_iter().rev() {
@@ -1027,16 +1056,16 @@ fn transfer_paths_equal(
                     }
                     continue;
                 }
-                if destination_metadata.is_dir()
-                    || destination_metadata.file_type().is_symlink()
-                    || !crate::fs_util::files_equal(&source, &destination)
-                {
-                    return false;
+                if destination_metadata.is_dir() || destination_metadata.file_type().is_symlink() {
+                    return mismatch(&destination, "copy is not a regular file");
+                }
+                if !crate::fs_util::files_equal(&source, &destination) {
+                    return mismatch(&destination, "contents differ");
                 }
             }
         }
     }
-    true
+    None
 }
 
 fn transfer_child_names(
@@ -3627,6 +3656,35 @@ mod tests {
             &destination,
             crate::filesystem_policy::SymlinkPolicy::Preserve,
         ));
+    }
+
+    #[test]
+    fn verification_failure_names_the_differing_entry_and_reason() {
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        src.file("tree/sub/a.txt", "abcd");
+        dst.file("tree/sub/a.txt", "abce");
+        let policy = crate::filesystem_policy::SymlinkPolicy::Preserve;
+        let (source, destination) = (src.path().join("tree"), dst.path().join("tree"));
+        let mismatch = transfer_paths_mismatch(&source, &destination, policy).unwrap();
+        assert_eq!(
+            mismatch,
+            format!(
+                "{}: contents differ",
+                Path::new("sub").join("a.txt").display()
+            )
+        );
+
+        dst.file("tree/sub/stray.txt", "");
+        assert_eq!(
+            transfer_paths_mismatch(&source, &destination, policy).unwrap(),
+            "sub: folder contents differ"
+        );
+
+        let file = src.file("one.txt", "x");
+        assert_eq!(
+            transfer_paths_mismatch(&file, &dst.path().join("missing.txt"), policy).unwrap(),
+            "copy is missing"
+        );
     }
 
     fn names(names: &[&str]) -> Vec<std::ffi::OsString> {
