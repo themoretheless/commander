@@ -1399,7 +1399,7 @@ impl App {
         }
     }
 
-    fn write_clipboard(&mut self, text: &str, label: &str, ctx: &egui::Context) {
+    pub(super) fn write_clipboard(&mut self, text: &str, label: &str, ctx: &egui::Context) {
         let feedback = perform_clipboard_write(self.clipboard.as_ref(), text, label);
         let kind = match feedback.status {
             NativeEffectStatus::Success => crate::toasts::ToastKind::Success,
