@@ -3952,6 +3952,45 @@ fn drop_prefers_source_panel_target() {
     assert!(ws.left.drag.is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn drop_moves_a_dragged_symlink_itself_not_its_target() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let target = l.file("target.txt", "keep");
+    let link = l.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let mut ws = workspace(&l, &r);
+
+    ws.left.drag.set(vec![link.clone()]);
+    ws.left.drag.set_drop_target(r.path().to_path_buf());
+    ws.drop_dragged(|| {});
+    drain_transfers(&mut ws);
+
+    assert_eq!(
+        std::fs::read_link(r.path().join("link.txt")).unwrap(),
+        target
+    );
+    assert!(std::fs::symlink_metadata(&link).is_err());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+}
+
+#[test]
+fn drop_of_vanished_items_says_so() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+
+    ws.left.drag.set(vec![l.path().join("gone.txt")]);
+    ws.left.drag.set_drop_target(r.path().to_path_buf());
+    ws.drop_dragged(|| {});
+
+    assert!(ws.pending_op.is_none());
+    assert!(
+        ws.drain_ui_requests()
+            .iter()
+            .any(|request| matches!(request, UiRequest::Notice { error: true, .. }))
+    );
+}
+
 #[test]
 fn cancel_drag_clears_both_sources_and_targets() {
     let (l, r) = (TempDir::new(), TempDir::new());

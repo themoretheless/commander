@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use super::super::{ActivePanel, FileEntry, TransferKind, Workspace};
+use crate::ui_request::UiRequest;
 
 /// Handle a completed drag (mouse released). The dragged entries are routed
 /// through the same Move engine as F6 instead of a raw rename, so conflicts
@@ -33,14 +34,18 @@ pub fn drop_dragged_as(
     let Some((paths, target)) = take_drop_plan(workspace) else {
         return;
     };
+    // Bind the dragged rows lexically, like the listing they came from: a
+    // dragged link is the link (not its target), and a broken link still
+    // moves.
     let entries: Vec<FileEntry> = paths
         .iter()
-        .filter_map(|path| {
-            let meta = std::fs::metadata(path).ok()?;
-            FileEntry::from_meta(path.clone(), &meta)
-        })
+        .filter_map(|path| FileEntry::observe_lexical(path.clone()))
         .collect();
     if entries.is_empty() {
+        workspace.emit_ui_request(UiRequest::Notice {
+            message: "Nothing to drop: the dragged items no longer exist".to_string(),
+            error: true,
+        });
         return;
     }
     workspace.stage_transfer(kind, entries, target, true, notify);

@@ -184,6 +184,22 @@ impl FileEntry {
         })
     }
 
+    /// Observe `path` the way a listing row is built: a symlink shows its
+    /// target's type (a link to a folder is a folder row) but keeps the
+    /// link's own identity, and a broken link is still an entry.
+    pub(crate) fn observe_lexical(path: PathBuf) -> Option<Self> {
+        let lexical = fs::symlink_metadata(&path).ok()?;
+        let followed = lexical
+            .file_type()
+            .is_symlink()
+            .then(|| fs::metadata(&path).ok())
+            .flatten();
+        let identity = crate::path_identity::PathIdentity::from_metadata(path.clone(), &lexical);
+        let mut entry = Self::from_meta(path, followed.as_ref().unwrap_or(&lexical))?;
+        entry.identity = ListingIdentity::Captured(identity);
+        Some(entry)
+    }
+
     /// Whether the listing captured this row as a symlink (its display
     /// fields describe the link's target).
     pub fn is_symlink(&self) -> bool {
@@ -605,22 +621,7 @@ impl PanelState {
                 paths.sort();
                 paths
             })
-            .filter_map(|path| {
-                // Like `read_dir`: a symlink shows its target's type (a link
-                // to a folder is a folder row) but keeps the link's identity.
-                let lexical = fs::symlink_metadata(path).ok()?;
-                let followed = lexical
-                    .file_type()
-                    .is_symlink()
-                    .then(|| fs::metadata(path).ok())
-                    .flatten();
-                let mut entry =
-                    FileEntry::from_meta(path.clone(), followed.as_ref().unwrap_or(&lexical))?;
-                entry.identity = ListingIdentity::Captured(
-                    crate::path_identity::PathIdentity::from_metadata(path.clone(), &lexical),
-                );
-                Some(entry)
-            })
+            .filter_map(|path| FileEntry::observe_lexical(path.clone()))
             .collect()
     }
 
