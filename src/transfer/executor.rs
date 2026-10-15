@@ -2333,6 +2333,66 @@ mod tests {
         assert!(!target.path().join("vanishing.txt").exists());
     }
 
+    /// Buffered stage that publishes a proven prefix checkpoint, then fails.
+    struct CheckpointThenFail;
+
+    impl backend::BufferedBackend for CheckpointThenFail {
+        fn stage(
+            &self,
+            request: backend::StageRequest<'_>,
+            checkpoints: &mut dyn backend::CheckpointSink,
+        ) -> std::io::Result<backend::StageReceipt> {
+            std::fs::write(request.staging, &std::fs::read(request.source)?[..4])?;
+            checkpoints.publish(ResumeCheckpoint::observe(
+                request.source,
+                request.staging,
+                4,
+                CheckpointLayout::Prefix,
+                prefix_digest(request.source, 4)?,
+            )?)?;
+            Err(std::io::Error::other("fixture write failed"))
+        }
+    }
+
+    #[test]
+    fn failed_journaled_copy_keeps_its_proven_partial_for_resume() {
+        let journal = TempDir::new();
+        let _journal =
+            crate::operation_journal::use_test_journal(journal.path().join("journal.json"));
+        let (source, target) = (TempDir::new(), TempDir::new());
+        let file = source.file("resumable.bin", "abcdefgh");
+        let mut request = spec(TransferKind::Copy, vec![entry_for(&file)], target.path());
+        request.journal_enabled = true;
+        let unused = Arc::new(ScriptedBackend(Box::new(|_| {
+            unreachable!("only the buffered port is selected")
+        })));
+
+        let state = run_with_backends(
+            request,
+            backend::BackendPorts::new(
+                unused.clone(),
+                unused.clone(),
+                unused,
+                Arc::new(CheckpointThenFail),
+            ),
+        );
+
+        assert!(
+            state
+                .errors
+                .iter()
+                .any(|error| error.contains("fixture write failed")),
+            "{:?}",
+            state.errors
+        );
+        assert!(!target.path().join("resumable.bin").exists());
+        assert_eq!(
+            std::fs::read(target.path().join(".resumable.bin.cmdr-tmp.0")).unwrap(),
+            b"abcd",
+            "a proven partial must survive for resume"
+        );
+    }
+
     #[test]
     fn a_failed_entry_still_counts_toward_the_byte_total() {
         let (source, target) = (TempDir::new(), TempDir::new());
