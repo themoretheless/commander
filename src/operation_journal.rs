@@ -2105,16 +2105,15 @@ fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), St
             .ok_or_else(|| format!("Placement step {} has no landing", step.key.0))?;
         let destination = PathIdentity::observe_deep(landing)
             .map_err(|error| format!("Could not inspect interrupted placement: {error}"))?;
-        let staging_gone = step
+        let staging = step
             .staging
             .as_ref()
             .map(|path| {
-                PathIdentity::observe(path)
-                    .map(|identity| !identity.exists)
+                PathIdentity::observe_deep(path)
                     .map_err(|error| format!("Could not inspect interrupted staging: {error}"))
             })
-            .transpose()?
-            .unwrap_or(true);
+            .transpose()?;
+        let staging_gone = staging.as_ref().is_none_or(|identity| !identity.exists);
         if destination.exists && placement.staged.same_version(&destination) {
             complete_interrupted_placement(
                 operation_id,
@@ -2139,7 +2138,45 @@ fn reconcile_interrupted_placements(operation_id: &OperationId) -> Result<(), St
         }
         match placement.phase {
             PlacementPhase::Prepared if !destination.exists && !staging_gone => {
-                // Staging still holds the sealed object; resume can retry rename.
+                let staging_path = step.staging.as_deref().ok_or_else(|| {
+                    format!("Placement step {} lost its staging path", step.key.0)
+                })?;
+                let staging = staging.as_ref().expect("present staging identity");
+                if !placement.staged.same_version(staging) {
+                    return Err(format!(
+                        "Interrupted placement staging changed and requires review: {}",
+                        staging_path.display()
+                    ));
+                }
+                crate::fs_at::rename_noreplace(staging_path, landing).map_err(|error| {
+                    format!(
+                        "Could not finish interrupted placement from {} to {}: {error}",
+                        staging_path.display(),
+                        landing.display()
+                    )
+                })?;
+                crate::fs_util::sync_parent_namespace(landing).map_err(|error| {
+                    format!(
+                        "Could not sync interrupted placement at {}: {error}",
+                        landing.display()
+                    )
+                })?;
+                let placed = PathIdentity::observe_deep(landing).map_err(|error| {
+                    format!("Could not prove finished interrupted placement: {error}")
+                })?;
+                if !placement.staged.same_version(&placed) {
+                    return Err(format!(
+                        "Interrupted placement at {} is not the sealed staged object",
+                        landing.display()
+                    ));
+                }
+                complete_interrupted_placement(
+                    operation_id,
+                    &step.key,
+                    placement,
+                    landing,
+                    &placed,
+                )?;
             }
             PlacementPhase::Prepared if !staging_gone => {
                 return Err(format!(

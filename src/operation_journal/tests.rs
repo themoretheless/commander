@@ -2627,6 +2627,118 @@ fn restart_reports_a_destination_taken_while_placement_was_prepared() {
 }
 
 #[test]
+fn restart_finishes_a_sealed_prepared_placement_without_the_source() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("sealed-placement-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "only copy");
+    let destination = target.join("source.txt");
+    let staging = target.join(".source.txt.cmdr-tmp.0");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("sealed-placement", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    std::fs::rename(&source, &staging).unwrap();
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+    finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+
+    let resumed = build_resume_spec(&spec.operation_id).unwrap();
+
+    assert!(resumed.entries.is_empty(), "{:?}", resumed.entries);
+    assert!(!source.exists());
+    assert!(!staging.exists());
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "only copy");
+    let step = &operation(&spec.operation_id).unwrap().steps[0];
+    assert_eq!(step.status, StepStatus::Completed);
+    assert!(step.placement.is_none());
+    assert!(step.staging.is_none());
+}
+
+#[test]
+fn restart_finishes_a_sealed_prepared_directory_placement() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("sealed-directory-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.dir("source-dir");
+    std::fs::write(source.join("nested.txt"), "nested bytes").unwrap();
+    let destination = target.join("source-dir");
+    let staging = target.join(".source-dir.cmdr-tmp.0");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("sealed-directory", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    std::fs::rename(&source, &staging).unwrap();
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+    finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+
+    let resumed = build_resume_spec(&spec.operation_id).unwrap();
+
+    assert!(resumed.entries.is_empty(), "{:?}", resumed.entries);
+    assert!(!source.exists());
+    assert!(!staging.exists());
+    assert_eq!(
+        std::fs::read_to_string(destination.join("nested.txt")).unwrap(),
+        "nested bytes"
+    );
+    assert_eq!(
+        operation(&spec.operation_id).unwrap().steps[0].status,
+        StepStatus::Completed
+    );
+}
+
+#[test]
+fn restart_keeps_a_changed_prepared_staging_for_review() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("changed-placement-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "original bytes");
+    let destination = target.join("source.txt");
+    let staging = temp.file("target/.source.txt.cmdr-tmp.0", "original bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("changed-placement", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+    finish(&spec.operation_id, OperationStatus::NeedsReview).unwrap();
+    std::fs::write(&staging, "foreign bytes").unwrap();
+
+    let error = build_resume_spec(&spec.operation_id).err().unwrap();
+
+    assert!(error.contains("staging changed"), "{error}");
+    assert_eq!(std::fs::read_to_string(&staging).unwrap(), "foreign bytes");
+    assert!(!destination.exists());
+    assert!(
+        operation(&spec.operation_id).unwrap().steps[0]
+            .placement
+            .is_some()
+    );
+}
+
+#[test]
 fn resume_without_file_ids_accepts_an_appended_prefix_tail_but_proves_its_bytes() {
     let temp = TempDir::new();
     let source = temp.file("source.txt", "source contents");
