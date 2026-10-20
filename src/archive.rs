@@ -560,7 +560,8 @@ fn extract_zip_members(
         // unsupported method).
         let label = archive
             .name_for_index(index)
-            .map_or_else(|| format!("#{index}"), str::to_owned);
+            .and_then(Result::ok)
+            .map_or_else(|| format!("#{index}"), |name| name.into_owned());
         let mut entry = match archive.by_index(index) {
             Ok(entry) => entry,
             Err(error) => {
@@ -662,24 +663,21 @@ fn copy_until_cancelled(
 /// path does, so extracted scripts stay executable and files keep their
 /// dates. Best effort: a failure leaves the defaults and is only logged.
 fn apply_zip_metadata(out: &fs::File, entry: &zip::read::ZipFile<'_, fs::File>) {
+    let name = entry
+        .name()
+        .map_or_else(|_| "<invalid member name>".into(), |name| name.into_owned());
     #[cfg(unix)]
     if let Some(mode) = entry.unix_mode() {
         use std::os::unix::fs::PermissionsExt;
         // Only rwx bits: setuid/setgid/sticky from an archive are not kept.
         if let Err(error) = out.set_permissions(fs::Permissions::from_mode(mode & 0o777)) {
-            log::debug!(
-                "zip extract: could not set mode of {}: {error}",
-                entry.name()
-            );
+            log::debug!("zip extract: could not set mode of {}: {error}", name);
         }
     }
     if let Some(modified) = zip_member_mtime(entry)
         && let Err(error) = out.set_modified(modified)
     {
-        log::debug!(
-            "zip extract: could not set mtime of {}: {error}",
-            entry.name()
-        );
+        log::debug!("zip extract: could not set mtime of {}: {error}", name);
     }
 }
 
@@ -944,6 +942,7 @@ fn zip_member_modified<R: Read>(raw: &zip::read::ZipFile<'_, R>) -> Option<std::
     let extended = raw.extra_data_fields().find_map(|field| match field {
         zip::ExtraField::ExtendedTimestamp(stamp) => stamp.mod_time(),
         zip::ExtraField::Ntfs(_) => None,
+        _ => None,
     });
     if let Some(seconds) = extended {
         return Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(seconds)));

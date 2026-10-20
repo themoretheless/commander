@@ -11,7 +11,10 @@ unsound = "all"
 maximum-db-staleness = "P7D"
 unused-ignored-advisory = "deny"
 ignore = [
-  { id = "RUSTSEC-2026-0192", reason = "TEMPORARY: Phase 5 review 2026-09-15 — Linux Wayland path via winit/sctk-adwaita still resolves unmaintained ttf-parser 0.25.1 with no patched release; owner=@themoretheless; review-by=2026-10-21; expires=2026-10-28; remove after an upstream migration or an intentional Linux support decision." },
+  { id = "RUSTSEC-2026-0192", reason = "TEMPORARY: review 2026-10-21 — Linux Wayland path via winit/sctk-adwaita still resolves unmaintained ttf-parser 0.25.1 with no patched release; owner=@themoretheless; review-by=2026-11-18; expires=2026-12-02; remove after an upstream migration or an intentional Linux support decision." },
+  { id = "RUSTSEC-2026-0370", reason = "TEMPORARY: review 2026-10-21 — Linux accessibility path via eframe/accesskit still resolves zvariant 5.15.0; the advisory provides no safe upgrade in the current stack; owner=@themoretheless; review-by=2026-11-18; expires=2026-12-02; remove when eframe/accesskit migrates to zbus 6." },
+  { id = "RUSTSEC-2026-0371", reason = "TEMPORARY: review 2026-10-21 — Linux accessibility path via eframe/accesskit still resolves zbus_names 4.3.4; the advisory provides no safe upgrade in the current stack; owner=@themoretheless; review-by=2026-11-18; expires=2026-12-02; remove when eframe/accesskit migrates to zbus 6." },
+  { id = "RUSTSEC-2026-0372", reason = "TEMPORARY: review 2026-10-21 — Linux accessibility path via eframe/accesskit still resolves zvariant_derive 5.15.0; the advisory provides no safe upgrade in the current stack; owner=@themoretheless; review-by=2026-11-18; expires=2026-12-02; remove when eframe/accesskit migrates to zbus 6." },
 ]
 
 [licenses]

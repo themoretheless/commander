@@ -120,27 +120,30 @@ jobs:
       - name: Check advisory waiver expiry
         shell: bash
         env:
-          RUSTSEC_2026_0192_OWNER: "@themoretheless"
-          RUSTSEC_2026_0192_REVIEW: "2026-10-21"
-          RUSTSEC_2026_0192_EXPIRES: "2026-10-28"
+          ADVISORY_WAIVERS: "RUSTSEC-2026-0192 RUSTSEC-2026-0370 RUSTSEC-2026-0371 RUSTSEC-2026-0372"
+          ADVISORY_WAIVER_OWNER: "@themoretheless"
+          ADVISORY_WAIVER_REVIEW: "2026-11-18"
+          ADVISORY_WAIVER_EXPIRES: "2026-12-02"
         run: |
           set -euo pipefail
-          policy="owner=${RUSTSEC_2026_0192_OWNER}; review-by=${RUSTSEC_2026_0192_REVIEW}; expires=${RUSTSEC_2026_0192_EXPIRES}"
-          grep --fixed-strings --quiet -- "$policy" deny.toml || {
-            echo "::error::RUSTSEC-2026-0192 waiver metadata drifted from deny.toml"
-            exit 1
-          }
+          policy="owner=${ADVISORY_WAIVER_OWNER}; review-by=${ADVISORY_WAIVER_REVIEW}; expires=${ADVISORY_WAIVER_EXPIRES}"
+          for advisory in ${ADVISORY_WAIVERS}; do
+            grep --fixed-strings -- "$advisory" deny.toml | grep --fixed-strings --quiet -- "$policy" || {
+              echo "::error::${advisory} waiver metadata drifted from deny.toml"
+              exit 1
+            }
+          done
 
           now="$(date -u +%s)"
-          review="$(date -u --date="${RUSTSEC_2026_0192_REVIEW}T00:00:00Z" +%s)"
-          expires="$(date -u --date="${RUSTSEC_2026_0192_EXPIRES}T00:00:00Z" +%s)"
+          review="$(date -u --date="${ADVISORY_WAIVER_REVIEW}T00:00:00Z" +%s)"
+          expires="$(date -u --date="${ADVISORY_WAIVER_EXPIRES}T00:00:00Z" +%s)"
           if (( now >= expires )); then
-            echo "::error::RUSTSEC-2026-0192 waiver expired; owner ${RUSTSEC_2026_0192_OWNER}"
+            echo "::error::advisory waivers expired; owner ${ADVISORY_WAIVER_OWNER}"
             exit 1
           fi
 
           if (( now >= review )); then
-            echo "::warning::RUSTSEC-2026-0192 waiver review is due; owner ${RUSTSEC_2026_0192_OWNER}"
+            echo "::warning::advisory waiver review is due; owner ${ADVISORY_WAIVER_OWNER}"
           fi
 
       - name: Install cargo-deny

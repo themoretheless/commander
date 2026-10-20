@@ -398,14 +398,18 @@ or OS-hardening work.
 The same checkpoint reduced the locked dependency graph from 559 to 516 crates
 by enabling only the image decoders Commander uses. The checked-in
 [`deny.toml`](deny.toml) and CI gate for pull requests, main-branch pushes, and
-a weekly refresh report zero known vulnerabilities and explicitly accept one
-unmaintained advisory, `RUSTSEC-2026-0192`, for `ttf-parser` in the Linux
-Wayland/winit stack. The waiver is owned by
-`@themoretheless`, was re-reviewed for Phase 5 on 2026-09-15 (still required at
-`ttf-parser` 0.25.1), its next review is due on 2026-10-21, and it hard-expires
-at 00:00 UTC on 2026-10-28. CI verifies the SHA-256 of pinned `cargo-deny` version
-`0.20.2` before executing it. Forty-one duplicate-crate groups remain a warning
-and tracked dependency debt. Run the same full-lockfile policy locally with:
+a weekly refresh report zero known vulnerabilities and explicitly accept four
+unmaintained advisories in Linux-only upstream UI paths: `RUSTSEC-2026-0192`
+for `ttf-parser` in Wayland/winit, plus `RUSTSEC-2026-0370`,
+`RUSTSEC-2026-0371`, and `RUSTSEC-2026-0372` for the pre-zbus-6 accessibility
+stack. The owner is `@themoretheless`. All four were reviewed on 2026-10-21,
+have no safe upgrade in the current eframe/accesskit graph, must be reviewed
+again by 2026-11-18, and hard-expire at 00:00 UTC on 2026-12-02. The same review
+upgraded `zip` to the patched 9.x line after `RUSTSEC-2026-0367`,
+`RUSTSEC-2026-0368`, and `RUSTSEC-2026-0369` were published. CI verifies the
+SHA-256 of pinned `cargo-deny` version `0.20.2` before executing it. Duplicate
+crate groups remain a warning and tracked dependency debt. Run the same
+full-lockfile policy locally with:
 
 ```sh
 cargo deny --all-features --locked check advisories bans licenses sources
