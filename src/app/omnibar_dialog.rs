@@ -15,6 +15,7 @@ pub struct OmnibarState {
     /// Path input submitted with Enter before the probe finished; it goes
     /// once the probe validates that same input.
     pub(crate) pending_go: Option<String>,
+    pub(crate) assigning_slot: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,11 +25,19 @@ enum OmniRow {
         pinned: bool,
     },
     Command(usize),
+    QuickSlot {
+        slot: u8,
+        name: String,
+        path: std::path::PathBuf,
+    },
+    AssignSlotPrompt,
+    AssignSlot(u8),
 }
 
 enum OmniAction {
     Go(std::path::PathBuf),
-    Run(&'static str, crate::command::Command),
+    Run(String, crate::command::Command),
+    ChooseSlot,
     Search(String),
     Shell(String),
 }
@@ -165,6 +174,13 @@ fn input_accessible_label(mode: &OmnibarMode<'_>) -> String {
     format!("Omnibar, {} mode", mode.label())
 }
 
+fn dynamic_row_matches(label: &str, query: &str) -> bool {
+    let label = label.to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| label.contains(&word.to_lowercase()))
+}
+
 impl App {
     pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
         self.open_omnibar(ctx, String::new());
@@ -177,6 +193,7 @@ impl App {
             selected: 0,
             probe: None,
             pending_go: None,
+            assigning_slot: false,
         });
         Self::mark_modal_opened(ctx, UiModal::Palette);
     }
@@ -207,6 +224,7 @@ impl App {
         let t = self.colors;
         let now = ctx.input(|input| input.time);
         let input = state.input.clone();
+        let assigning_slot = state.assigning_slot;
         let mode = OmnibarMode::parse(&input);
 
         // Keep a path probe alive only in path mode, fed from the shared input.
@@ -300,9 +318,37 @@ impl App {
             OmnibarMode::Command(_) => rows.extend((0..matches.len()).map(OmniRow::Command)),
             OmnibarMode::Path(_) | OmnibarMode::Search(_) | OmnibarMode::Shell(_) => {}
         }
+        if assigning_slot {
+            rows = (1..=crate::bookmarks::MAX_SLOT)
+                .map(OmniRow::AssignSlot)
+                .collect();
+        } else if let Some(query) = command_query {
+            for bookmark in self
+                .ws
+                .bookmarks
+                .items
+                .iter()
+                .filter(|bookmark| bookmark.slot.is_some())
+            {
+                let slot = bookmark.slot.unwrap_or_default();
+                let label = format!("Jump to slot {slot}: {}", bookmark.name);
+                if dynamic_row_matches(&label, query) {
+                    rows.push(OmniRow::QuickSlot {
+                        slot,
+                        name: bookmark.name.clone(),
+                        path: bookmark.path.clone(),
+                    });
+                }
+            }
+            let label = "Assign quick-jump slot";
+            if dynamic_row_matches(label, query) {
+                rows.push(OmniRow::AssignSlotPrompt);
+            }
+        }
         let row_enabled = |row: &OmniRow| match row {
             OmniRow::Folder { .. } => true,
             OmniRow::Command(i) => availabilities[*i].enabled,
+            OmniRow::QuickSlot { .. } | OmniRow::AssignSlotPrompt | OmniRow::AssignSlot(_) => true,
         };
 
         let state = self.ui.modals.palette_input.as_mut().unwrap();
@@ -568,6 +614,56 @@ impl App {
                                                         );
                                                     });
                                                 }
+                                                OmniRow::QuickSlot { slot, name, path } => {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(format!(
+                                                            "Jump to slot {slot}: {name}"
+                                                        ));
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                egui::RichText::new(
+                                                                    Self::palette_path_label(path),
+                                                                )
+                                                                .size(11.0)
+                                                                .color(t.text_muted),
+                                                            )
+                                                            .truncate(),
+                                                        );
+                                                        ui.with_layout(
+                                                            Layout::right_to_left(Align::Center),
+                                                            |ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new(format!(
+                                                                        "Cmd+{slot}"
+                                                                    ))
+                                                                    .size(10.5)
+                                                                    .color(t.text_muted),
+                                                                );
+                                                            },
+                                                        );
+                                                    });
+                                                }
+                                                OmniRow::AssignSlotPrompt => {
+                                                    ui.label("Assign quick-jump slot…");
+                                                }
+                                                OmniRow::AssignSlot(slot) => {
+                                                    let held = self
+                                                        .ws
+                                                        .bookmarks
+                                                        .by_slot(*slot)
+                                                        .map(|bookmark| bookmark.name.as_str())
+                                                        .unwrap_or("empty");
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(format!(
+                                                            "Assign current folder to slot {slot}"
+                                                        ));
+                                                        ui.label(
+                                                            egui::RichText::new(held)
+                                                                .size(11.0)
+                                                                .color(t.text_muted),
+                                                        );
+                                                    });
+                                                }
                                             }
                                         })
                                         .response;
@@ -610,6 +706,15 @@ impl App {
                                             Self::palette_path_label(path)
                                         }
                                         OmniRow::Command(i) => matches[*i].label.to_string(),
+                                        OmniRow::QuickSlot { slot, name, .. } => {
+                                            format!("Jump to slot {slot}: {name}")
+                                        }
+                                        OmniRow::AssignSlotPrompt => {
+                                            "Assign quick-jump slot".to_string()
+                                        }
+                                        OmniRow::AssignSlot(slot) => {
+                                            format!("Assign current folder to slot {slot}")
+                                        }
                                     };
                                     response.widget_info(|| {
                                         egui::WidgetInfo::selected(
@@ -627,8 +732,17 @@ impl App {
                                                 OmniAction::Go(path.clone())
                                             }
                                             OmniRow::Command(i) => OmniAction::Run(
-                                                matches[*i].label,
+                                                matches[*i].label.to_string(),
                                                 matches[*i].command,
+                                            ),
+                                            OmniRow::QuickSlot { slot, .. } => OmniAction::Run(
+                                                format!("Jump to slot {slot}"),
+                                                crate::command::Command::JumpSlot(*slot),
+                                            ),
+                                            OmniRow::AssignSlotPrompt => OmniAction::ChooseSlot,
+                                            OmniRow::AssignSlot(slot) => OmniAction::Run(
+                                                format!("Assign quick-jump slot {slot}"),
+                                                crate::command::Command::AssignSlot(*slot),
                                             ),
                                         });
                                     }
@@ -656,11 +770,25 @@ impl App {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
             }
         }
-        if cancel || action.is_some() {
+        if cancel
+            || action
+                .as_ref()
+                .is_some_and(|action| !matches!(action, OmniAction::ChooseSlot))
+        {
             self.ui.modals.palette_input = None;
         }
         match action {
             None => {}
+            Some(OmniAction::ChooseSlot) => {
+                if let Some(state) = self.ui.modals.palette_input.as_mut() {
+                    state.assigning_slot = true;
+                    state.input.clear();
+                    state.selected = 0;
+                }
+                if let Some(input_id) = input_id {
+                    ctx.memory_mut(|memory| memory.request_focus(input_id));
+                }
+            }
             Some(OmniAction::Go(path)) if !path.is_dir() => {
                 // A recent/pinned folder may have been deleted since it was
                 // recorded; navigating would land in a Gone state and
@@ -681,7 +809,7 @@ impl App {
             },
             Some(OmniAction::Run(label, cmd)) => {
                 self.palette_tick += 1;
-                self.palette_usage.record(label, self.palette_tick);
+                self.palette_usage.record(&label, self.palette_tick);
                 if super::update::switch_into_covered_pane(&self.ui.tools, self.ws.active, cmd) {
                     self.toast(
                         ctx,
@@ -890,9 +1018,9 @@ fn picked_count(panel: &PanelState) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        OmniRow, OmnibarMode, command_rows_shown, copy_preview, copy_style, home_relative_display,
-        input_accessible_label, jump_rows, path_submit, picked_count, saved_searches_label,
-        step_selection,
+        OmniRow, OmnibarMode, command_rows_shown, copy_preview, copy_style, dynamic_row_matches,
+        home_relative_display, input_accessible_label, jump_rows, path_submit, picked_count,
+        saved_searches_label, step_selection,
     };
 
     #[test]
@@ -900,6 +1028,14 @@ mod tests {
         assert_eq!(saved_searches_label(0), "0 saved searches");
         assert_eq!(saved_searches_label(1), "1 saved search");
         assert_eq!(saved_searches_label(2), "2 saved searches");
+    }
+
+    #[test]
+    fn quick_slot_rows_match_name_slot_and_assignment_terms() {
+        assert!(dynamic_row_matches("Jump to slot 3: Projects", "slot 3"));
+        assert!(dynamic_row_matches("Jump to slot 3: Projects", "projects"));
+        assert!(dynamic_row_matches("Assign quick-jump slot", "assign slot"));
+        assert!(!dynamic_row_matches("Jump to slot 3: Projects", "photos"));
     }
 
     #[test]
