@@ -22,7 +22,8 @@ const MAX_OPERATIONS: usize = 500;
 /// [`Journal::schema`] / [`JOURNAL_SCHEMA`] and migrates independently.
 const STORE: crate::persistence::StoreSpec =
     crate::persistence::StoreSpec::new("commander.operation_journal", 1, 32 * 1024 * 1024)
-        .allow_legacy_schema_marker();
+        .allow_legacy_schema_marker()
+        .compact();
 
 pub const fn schema_version() -> u32 {
     JOURNAL_SCHEMA

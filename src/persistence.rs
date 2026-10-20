@@ -669,6 +669,7 @@ pub struct StoreSpec {
     pub schema: u32,
     pub max_bytes: usize,
     legacy_schema_marker: bool,
+    compact: bool,
 }
 
 impl StoreSpec {
@@ -679,11 +680,17 @@ impl StoreSpec {
             schema,
             max_bytes,
             legacy_schema_marker: false,
+            compact: false,
         }
     }
 
     pub const fn allow_legacy_schema_marker(mut self) -> Self {
         self.legacy_schema_marker = true;
+        self
+    }
+
+    pub const fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 }
@@ -955,9 +962,13 @@ pub fn save_enveloped<T: Serialize>(
         generation,
         payload: value,
     };
-    let bytes = serde_json::to_vec_pretty(&envelope)
-        .map_err(PreCommitError::Serialize)
-        .map_err(JsonSaveError::PreCommit)?;
+    let bytes = if spec.compact {
+        serde_json::to_vec(&envelope)
+    } else {
+        serde_json::to_vec_pretty(&envelope)
+    }
+    .map_err(PreCommitError::Serialize)
+    .map_err(JsonSaveError::PreCommit)?;
     // A store the loader would reject as too large must never be committed:
     // it would replace readable data with a file that fails closed forever.
     if bytes.len() > spec.max_bytes {
@@ -2147,6 +2158,45 @@ mod tests {
             Some(value)
         );
         assert_eq!(persist.commits.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn compact_store_policy_writes_a_smaller_compatible_envelope() {
+        let value = Item {
+            name: "compact journal payload".to_string(),
+            count: 7,
+        };
+        let pretty = MemoryPersist::new(None);
+        let mut pretty_gate = StoreGate::missing();
+        save_enveloped(
+            &pretty,
+            Path::new("pretty.json"),
+            TEST_STORE,
+            &value,
+            &mut pretty_gate,
+            SaveIntent::Explicit,
+        )
+        .unwrap();
+        let compact = MemoryPersist::new(None);
+        let mut compact_gate = StoreGate::missing();
+        save_enveloped(
+            &compact,
+            Path::new("compact.json"),
+            TEST_STORE.compact(),
+            &value,
+            &mut compact_gate,
+            SaveIntent::Explicit,
+        )
+        .unwrap();
+
+        let pretty_bytes = pretty.bytes().unwrap();
+        let compact_bytes = compact.bytes().unwrap();
+        assert!(compact_bytes.len() < pretty_bytes.len());
+        assert!(!compact_bytes.contains(&b'\n'));
+        assert_eq!(
+            load_enveloped::<Item>(&compact, Path::new("compact.json"), TEST_STORE.compact()).value,
+            Some(value)
+        );
     }
 
     #[test]
