@@ -44,11 +44,13 @@ impl RecoveryState {
                 self.error = None;
                 self.operations = inventory.operations;
                 self.orphans = inventory.orphans;
+                self.retained_staging = inventory.retained;
             }
             Err(error) => {
                 self.error = Some(error);
                 self.operations.clear();
                 self.orphans.clear();
+                self.retained_staging.clear();
             }
         }
         // An explicitly requested operation that is missing from the
@@ -799,7 +801,7 @@ impl App {
                         ui.label(
                             egui::RichText::new(recovery_summary(
                                 &state.operations,
-                                state.orphans.len(),
+                                state.orphans.len() + state.retained_staging.len(),
                             ))
                             .size(10.0)
                             .color(t.text_muted),
@@ -846,7 +848,10 @@ impl App {
                     ui.selectable_value(
                         &mut section,
                         RecoverySection::Staging,
-                        format!("Staging cleanup {}", state.orphans.len()),
+                        format!(
+                            "Staging cleanup {}",
+                            state.orphans.len() + state.retained_staging.len()
+                        ),
                     );
                 });
                 ui.separator();
@@ -963,7 +968,7 @@ impl App {
                         });
                     }
                     RecoverySection::Staging => {
-                        if state.orphans.is_empty() {
+                        if state.orphans.is_empty() && state.retained_staging.is_empty() {
                             ui.label(
                                 egui::RichText::new(if state.scanning {
                                     "Scanning staging paths..."
@@ -975,6 +980,31 @@ impl App {
                             );
                         } else {
                             egui::ScrollArea::vertical().max_height(430.0).show(ui, |ui| {
+                                for retained in &state.retained_staging {
+                                    Frame::NONE
+                                        .fill(t.bg_card)
+                                        .inner_margin(Margin::symmetric(9, 7))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    retained.path.display().to_string(),
+                                                )
+                                                .size(10.0)
+                                                .monospace()
+                                                .color(t.text_primary),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} · kept by finished operation {} · cleanup disabled",
+                                                    crate::panel::format_size(retained.identity.size),
+                                                    short_id(&retained.operation_id.0)
+                                                ))
+                                                .size(9.0)
+                                                .color(t.accent_warning),
+                                            );
+                                        });
+                                    ui.add_space(4.0);
+                                }
                                 for (index, orphan) in state.orphans.iter().enumerate() {
                                     Frame::NONE
                                         .fill(t.bg_card)
@@ -1148,6 +1178,7 @@ mod tests {
                 inventory: Ok(crate::operation_journal::RecoveryInventory {
                     operations,
                     orphans: Vec::new(),
+                    retained: Vec::new(),
                 }),
             })
             .unwrap();
@@ -1513,7 +1544,11 @@ mod tests {
         state.poll_scan();
         assert!(!state.scanning && state.scan_rx.is_none());
         assert_eq!(state.error.as_deref(), Some("journal unreadable"));
-        assert!(state.operations.is_empty() && state.orphans.is_empty());
+        assert!(
+            state.operations.is_empty()
+                && state.orphans.is_empty()
+                && state.retained_staging.is_empty()
+        );
         // The old selection is not shown against an inventory that failed.
         assert_eq!(state.selected, None);
     }

@@ -1840,7 +1840,7 @@ fn validation_rejects_each_malformed_source_proof() {
 }
 
 #[test]
-fn recovery_inventory_lists_unsettled_operations_newest_first_and_hides_referenced_staging() {
+fn recovery_inventory_separates_unsettled_orphan_and_retained_staging() {
     let temp = TempDir::new();
     let _journal = use_test_journal(temp.path().join("inventory-journal.json"));
     let target = temp.dir("target");
@@ -1881,7 +1881,7 @@ fn recovery_inventory_lists_unsettled_operations_newest_first_and_hides_referenc
     terminal.steps[0].key = IdempotencyKey("terminal-step".to_string());
     terminal.status = OperationStatus::RolledBack;
     terminal.updated_at_secs = 11;
-    terminal.steps[0].staging = Some(terminal_staging);
+    terminal.steps[0].staging = Some(terminal_staging.clone());
 
     let orphan = temp.file("target/.other.txt.cmdr-tmp.0", "orphan");
     save_test_journal(vec![older, newer, pending, terminal]);
@@ -1900,6 +1900,9 @@ fn recovery_inventory_lists_unsettled_operations_newest_first_and_hides_referenc
         .map(|orphan| orphan.path)
         .collect::<Vec<_>>();
     assert_eq!(orphans, vec![orphan]);
+    assert_eq!(inventory.retained.len(), 1);
+    assert_eq!(inventory.retained[0].path, terminal_staging);
+    assert_eq!(inventory.retained[0].operation_id.0, "terminal");
 }
 
 #[test]

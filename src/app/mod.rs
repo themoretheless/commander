@@ -715,6 +715,7 @@ pub struct RecoveryState {
     pub detail: RecoveryDetail,
     pub operations: Vec<crate::operation_journal::OperationRecord>,
     pub orphans: Vec<crate::operation_journal::OrphanStaging>,
+    pub retained_staging: Vec<crate::operation_journal::RetainedStaging>,
     pub selected: Option<crate::operation::OperationId>,
     /// An operation explicitly opened (from a toast or the queue) whose scan
     /// is still pending; it stays selected even if that scan omits it.

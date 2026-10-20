@@ -381,10 +381,18 @@ pub struct OrphanStaging {
     pub identity: PathIdentity,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedStaging {
+    pub path: PathBuf,
+    pub identity: PathIdentity,
+    pub operation_id: OperationId,
+}
+
 #[derive(Clone, Debug)]
 pub struct RecoveryInventory {
     pub operations: Vec<OperationRecord>,
     pub orphans: Vec<OrphanStaging>,
+    pub retained: Vec<RetainedStaging>,
 }
 
 static JOURNAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -3293,6 +3301,7 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
         .cloned()
         .collect::<std::collections::HashSet<_>>();
     let mut referenced = std::collections::HashSet::new();
+    let mut retained = Vec::new();
     for operation in &journal.operations {
         if let Some(quarantine) = &operation.rollback_cleanup_quarantine {
             referenced.insert(quarantine.clone());
@@ -3308,6 +3317,30 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
                 && receipt.phase != RollbackPhase::Complete
             {
                 referenced.insert(receipt.quarantine.clone());
+            }
+        }
+        if !operation_needs_recovery(operation) {
+            let paths = operation.steps.iter().flat_map(|step| {
+                [
+                    step.staging.as_ref(),
+                    step.replacement
+                        .as_ref()
+                        .map(|replacement| &replacement.path),
+                    step.rollback.as_ref().map(|receipt| &receipt.quarantine),
+                ]
+                .into_iter()
+                .flatten()
+            });
+            for path in paths {
+                if let Ok(identity) = PathIdentity::observe(path)
+                    && identity.exists
+                {
+                    retained.push(RetainedStaging {
+                        path: path.clone(),
+                        identity,
+                        operation_id: operation.id.clone(),
+                    });
+                }
             }
         }
         if !operation_needs_recovery(operation) {
@@ -3348,9 +3381,12 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
         .filter(operation_needs_recovery)
         .collect::<Vec<_>>();
     operations.sort_by_key(|operation| std::cmp::Reverse(operation.updated_at_secs));
+    retained.sort_by(|a, b| a.path.cmp(&b.path));
+    retained.dedup_by(|a, b| a.path == b.path);
     Ok(RecoveryInventory {
         operations,
         orphans: discover_orphan_staging_with(&roots, &referenced),
+        retained,
     })
 }
 
