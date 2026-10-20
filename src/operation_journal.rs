@@ -1602,6 +1602,12 @@ fn check_duplicate_completion(
 
 pub fn mark_skipped(operation_id: &OperationId, key: &IdempotencyKey) -> Result<(), String> {
     update_step(operation_id, key, &[OperationStatus::Running], |step| {
+        if step.placement.is_some() || step.replacement.is_some() {
+            return Err(format!(
+                "Operation step {} has an unresolved placement proof; resume or roll it back before skipping",
+                step.key.0
+            ));
+        }
         step.status = step
             .status
             .transition(StepEvent::Skip)

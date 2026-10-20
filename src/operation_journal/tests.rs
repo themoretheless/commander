@@ -2361,6 +2361,36 @@ fn a_failure_after_prepared_placement_keeps_the_staging_its_proof_binds() {
 }
 
 #[test]
+fn skipping_a_step_with_a_placement_proof_fails_closed() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("skip-placement-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "new bytes");
+    let destination = target.join("source.txt");
+    let staging = temp.file("target/.source.txt.cmdr-tmp.0", "new bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("skip-placement", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+    prepare_placement(&spec.operation_id, &key, &staging, &destination).unwrap();
+
+    let error = mark_skipped(&spec.operation_id, &key).unwrap_err();
+    assert!(error.contains("unresolved placement proof"), "{error}");
+    let step = &operation(&spec.operation_id).unwrap().steps[0];
+    assert_eq!(step.status, StepStatus::Running);
+    assert_eq!(step.staging.as_ref(), Some(&staging));
+    assert!(step.placement.is_some());
+}
+
+#[test]
 fn skipping_a_failed_step_clears_its_stale_failure() {
     let temp = TempDir::new();
     let _journal = use_test_journal(temp.path().join("skip-journal.json"));
@@ -2652,6 +2682,22 @@ fn overwrite_backed_up(
     crate::fs_at::rename_noreplace(&destination, &backup).unwrap();
     mark_replacement_backed_up(&spec.operation_id, &key).unwrap();
     (spec.operation_id, key, destination, staging, backup)
+}
+
+#[test]
+fn skipping_a_step_with_an_overwrite_proof_fails_closed() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("skip-overwrite-journal.json"));
+    let (operation_id, key, _destination, staging, backup) =
+        overwrite_backed_up(&temp, "skip-overwrite");
+
+    let error = mark_skipped(&operation_id, &key).unwrap_err();
+    assert!(error.contains("unresolved placement proof"), "{error}");
+    let step = &operation(&operation_id).unwrap().steps[0];
+    assert_eq!(step.status, StepStatus::Running);
+    assert_eq!(step.staging.as_ref(), Some(&staging));
+    assert!(step.replacement.is_some());
+    assert!(backup.exists());
 }
 
 #[test]
