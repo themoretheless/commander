@@ -966,7 +966,7 @@ pub fn save_enveloped<T: Serialize>(
             spec.max_bytes,
         )));
     }
-    preserve_recovered_source(persist, path, spec.max_bytes, gate)?;
+    preserve_recovered_source(persist, path, spec.store, spec.max_bytes, gate)?;
     let outcome = persist
         .commit(path, &bytes, gate.expected.clone())
         .map_err(JsonSaveError::PreCommit)?;
@@ -1006,7 +1006,7 @@ pub fn save_enveloped_streaming<T: Serialize>(
         .generation
         .checked_add(1)
         .ok_or(JsonSaveError::GenerationExhausted)?;
-    preserve_recovered_source(persist, path, spec.max_bytes, gate)?;
+    preserve_recovered_source(persist, path, spec.store, spec.max_bytes, gate)?;
     let mut written = 0u64;
     let mut hasher = blake3::Hasher::new();
     let expected = gate.expected.clone();
@@ -1083,6 +1083,7 @@ impl Write for HashingWriter<'_> {
 fn preserve_recovered_source(
     persist: &dyn Persist,
     path: &Path,
+    store: &'static str,
     max_bytes: usize,
     gate: &mut StoreGate,
 ) -> Result<(), JsonSaveError> {
@@ -1116,7 +1117,22 @@ fn preserve_recovered_source(
             gate.recovered_source = None;
             Ok(())
         }
-        AtomicWriteOutcome::CommittedButNotDurable(_) => Err(JsonSaveError::RecoveryPreservation),
+        AtomicWriteOutcome::CommittedButNotDurable(error) => {
+            let verified = matches!(
+                persist.read(&quarantine, max_bytes),
+                Ok(ReadOutcome::Present { bytes, .. }) if bytes == *source
+            );
+            if !verified {
+                return Err(JsonSaveError::RecoveryPreservation);
+            }
+            record_durability_warning(store, &error);
+            gate.detail = Some(format!(
+                "Recovered source was preserved at {}, but its directory sync was not durable: {error}",
+                quarantine.display()
+            ));
+            gate.recovered_source = None;
+            Ok(())
+        }
     }
 }
 
@@ -2231,6 +2247,19 @@ mod tests {
         assert_eq!(loaded.gate.status(), LoadStatus::Recovered);
         let decoded = loaded.value.take().unwrap();
 
+        assert!(matches!(
+            save_enveloped(
+                &persist,
+                &path,
+                TEST_STORE,
+                &decoded.items,
+                &mut loaded.gate,
+                SaveIntent::Automatic,
+            ),
+            Err(JsonSaveError::Blocked(LoadStatus::Recovered))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
         save_enveloped(
             &persist,
             &path,
@@ -2253,6 +2282,37 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read(quarantine).unwrap(), original);
         assert_eq!(loaded.gate.status(), LoadStatus::Current);
+    }
+
+    #[test]
+    fn identical_recovered_quarantine_survives_a_directory_sync_warning() {
+        let source = br#"{"damaged":true}"#.to_vec();
+        let persist = MemoryPersist::not_durable(None);
+        let mut gate = StoreGate {
+            status: LoadStatus::Recovered,
+            generation: 0,
+            expected: ExpectedRevision::Missing,
+            recovered_source: Some(source.clone()),
+            detail: None,
+        };
+
+        preserve_recovered_source(
+            &persist,
+            Path::new("state.json"),
+            TEST_STORE.store,
+            TEST_STORE.max_bytes,
+            &mut gate,
+        )
+        .unwrap();
+
+        assert_eq!(persist.bytes(), Some(source));
+        assert_eq!(persist.commits.load(Ordering::Relaxed), 1);
+        assert_eq!(persist.reads.load(Ordering::Relaxed), 2);
+        assert!(gate.recovered_source.is_none());
+        assert!(
+            gate.detail()
+                .is_some_and(|detail| detail.contains("directory sync was not durable"))
+        );
     }
 
     #[test]
