@@ -1142,120 +1142,23 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     && !renamed
                     && entry.is_dir
                     && fs_util::path_is_taken(&copy_target);
-                let placed = if !clean {
-                    // Undo our placement; a pre-existing dest is untouched. For a
-                    // rename this restores the source rather than deleting its only
-                    // copy.
-                    if !resumable_partial && !preserve_partial_dir {
-                        undo_and_report(&progress, &entry.name, &copy_target, &entry.path, renamed);
-                    }
-                    false
-                } else {
-                    let mut preserved_version = None;
-                    let version_result = if replace_existing && spec.durability.keeps_versions() {
-                        crate::version_store::preserve_expected_with_policy(
-                            &landing,
-                            &expected_landing,
-                            &spec.operation_id,
-                            work_item.key.clone(),
-                            spec.version_retention,
-                        )
-                        .map(|record| {
-                            preserved_version = record;
-                        })
-                        .map_err(|failure| std::io::Error::other(failure.message))
-                    } else {
-                        Ok(())
-                    };
-                    let placement = version_result.and_then(|()| {
-                        if replace_existing {
-                            swap_into_place(
-                                &copy_target,
-                                &landing,
-                                &expected_landing,
-                                JournalStep {
-                                    operation_id: &spec.operation_id,
-                                    key: &work_item.key,
-                                    enabled: journal_enabled,
-                                },
-                            )
-                        } else {
-                            if journal_enabled {
-                                crate::operation_journal::prepare_placement(
-                                    &spec.operation_id,
-                                    &work_item.key,
-                                    &copy_target,
-                                    &landing,
-                                )
-                                .map_err(std::io::Error::other)?;
-                            }
-                            crate::fs_at::rename_sibling(&copy_target, &landing, false)?;
-                            fs_util::sync_parent_namespace(&landing)?;
-                            if journal_enabled {
-                                crate::operation_journal::mark_placement_placed(
-                                    &spec.operation_id,
-                                    &work_item.key,
-                                )
-                                .map_err(std::io::Error::other)?;
-                            }
-                            Ok(None)
-                        }
-                    });
-                    match placement {
-                        Ok(cleanup_warning) => {
-                            if let Some(message) = cleanup_warning {
-                                record_failure(
-                                    &progress,
-                                    &entry.name,
-                                    ClassifiedFailure::message(
-                                        FailureClass::IntegrityUncertain,
-                                        Some(landing.clone()),
-                                        message,
-                                    )
-                                    .with_residual_effect(),
-                                );
-                            }
-                            true
-                        }
-                        Err(e) => {
-                            if let Some(record) = &preserved_version
-                                && let Err(error) = crate::version_store::discard_record(record)
-                            {
-                                record_failure(
-                                    &progress,
-                                    &entry.name,
-                                    ClassifiedFailure::message(
-                                        FailureClass::IntegrityUncertain,
-                                        Some(record.stored.clone()),
-                                        format!(
-                                            "failed placement left an uncommitted version record: {error}"
-                                        ),
-                                    )
-                                    .with_residual_effect(),
-                                );
-                            }
-                            // The swap left the staged data at `copy_target`. For a
-                            // rename that is the source's ONLY copy, so move it back
-                            // to the source instead of deleting it (the previous
-                            // unconditional cleanup here lost the source on a failed
-                            // same-volume overwrite move).
-                            let extra = undo_placement(&copy_target, &entry.path, renamed);
-                            record_failure(
-                                &progress,
-                                &entry.name,
-                                ClassifiedFailure::io(
-                                    Some(landing.clone()),
-                                    "final placement failed",
-                                    &e,
-                                ),
-                            );
-                            if let Some(msg) = extra {
-                                report_undo_residue(&progress, &entry.name, &copy_target, msg);
-                            }
-                            false
-                        }
-                    }
-                };
+                let placed = place_entry(PlacementContext {
+                    clean,
+                    resumable_partial,
+                    preserve_partial_dir,
+                    renamed,
+                    replace_existing,
+                    journal_enabled,
+                    progress: &progress,
+                    entry: &entry,
+                    copy_target: &copy_target,
+                    landing: &landing,
+                    expected_landing: &expected_landing,
+                    operation_id: &spec.operation_id,
+                    key: &work_item.key,
+                    durability: spec.durability,
+                    version_retention: spec.version_retention,
+                });
 
                 // Delete only the source object proven before copy. The final
                 // identity fence narrows the pathname race; Skip preserves every
@@ -1916,6 +1819,139 @@ pub(super) fn cleanup_moved_source(
 
 fn source_cleanup_path(path: &Path) -> PathBuf {
     hidden_sibling(path, "cmdr-source-cleanup")
+}
+
+struct PlacementContext<'a> {
+    clean: bool,
+    resumable_partial: bool,
+    preserve_partial_dir: bool,
+    renamed: bool,
+    replace_existing: bool,
+    journal_enabled: bool,
+    progress: &'a TransferState,
+    entry: &'a FileEntry,
+    copy_target: &'a Path,
+    landing: &'a Path,
+    expected_landing: &'a PathIdentity,
+    operation_id: &'a OperationId,
+    key: &'a IdempotencyKey,
+    durability: DurabilityProfile,
+    version_retention: crate::operation::VersionRetentionPolicy,
+}
+
+fn place_entry(context: PlacementContext<'_>) -> bool {
+    if !context.clean {
+        if !context.resumable_partial && !context.preserve_partial_dir {
+            undo_and_report(
+                context.progress,
+                &context.entry.name,
+                context.copy_target,
+                &context.entry.path,
+                context.renamed,
+            );
+        }
+        return false;
+    }
+
+    let mut preserved_version = None;
+    let version_result = if context.replace_existing && context.durability.keeps_versions() {
+        crate::version_store::preserve_expected_with_policy(
+            context.landing,
+            context.expected_landing,
+            context.operation_id,
+            context.key.clone(),
+            context.version_retention,
+        )
+        .map(|record| preserved_version = record)
+        .map_err(|failure| std::io::Error::other(failure.message))
+    } else {
+        Ok(())
+    };
+    let placement = version_result.and_then(|()| {
+        if context.replace_existing {
+            swap_into_place(
+                context.copy_target,
+                context.landing,
+                context.expected_landing,
+                JournalStep {
+                    operation_id: context.operation_id,
+                    key: context.key,
+                    enabled: context.journal_enabled,
+                },
+            )
+        } else {
+            if context.journal_enabled {
+                crate::operation_journal::prepare_placement(
+                    context.operation_id,
+                    context.key,
+                    context.copy_target,
+                    context.landing,
+                )
+                .map_err(std::io::Error::other)?;
+            }
+            crate::fs_at::rename_sibling(context.copy_target, context.landing, false)?;
+            fs_util::sync_parent_namespace(context.landing)?;
+            if context.journal_enabled {
+                crate::operation_journal::mark_placement_placed(context.operation_id, context.key)
+                    .map_err(std::io::Error::other)?;
+            }
+            Ok(None)
+        }
+    });
+    match placement {
+        Ok(cleanup_warning) => {
+            if let Some(message) = cleanup_warning {
+                record_failure(
+                    context.progress,
+                    &context.entry.name,
+                    ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        Some(context.landing.to_path_buf()),
+                        message,
+                    )
+                    .with_residual_effect(),
+                );
+            }
+            true
+        }
+        Err(error) => {
+            if let Some(record) = &preserved_version
+                && let Err(discard_error) = crate::version_store::discard_record(record)
+            {
+                record_failure(
+                    context.progress,
+                    &context.entry.name,
+                    ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        Some(record.stored.clone()),
+                        format!(
+                            "failed placement left an uncommitted version record: {discard_error}"
+                        ),
+                    )
+                    .with_residual_effect(),
+                );
+            }
+            let extra = undo_placement(context.copy_target, &context.entry.path, context.renamed);
+            record_failure(
+                context.progress,
+                &context.entry.name,
+                ClassifiedFailure::io(
+                    Some(context.landing.to_path_buf()),
+                    "final placement failed",
+                    &error,
+                ),
+            );
+            if let Some(message) = extra {
+                report_undo_residue(
+                    context.progress,
+                    &context.entry.name,
+                    context.copy_target,
+                    message,
+                );
+            }
+            false
+        }
+    }
 }
 
 /// Remove the entries transferred under `Skip`, while leaving omitted
@@ -3037,6 +3073,60 @@ mod tests {
             terminal_operation_status(&residual, FailureRollback::Complete),
             crate::operation_journal::OperationStatus::NeedsReview
         );
+    }
+
+    #[test]
+    fn place_entry_undoes_failed_copy_and_renamed_source_branches() {
+        for renamed in [false, true] {
+            let root = TempDir::new();
+            let source = root.path().join("source.txt");
+            let staging = root.file(".source.txt.cmdr-tmp.0", "bytes");
+            if !renamed {
+                std::fs::write(&source, "original").unwrap();
+            }
+            let entry = FileEntry::from_meta(
+                if renamed {
+                    staging.clone()
+                } else {
+                    source.clone()
+                },
+                &std::fs::symlink_metadata(if renamed { &staging } else { &source }).unwrap(),
+            )
+            .unwrap();
+            let entry = FileEntry {
+                path: source.clone(),
+                name: "source.txt".to_string(),
+                ..entry
+            };
+            let landing = root.path().join("landing.txt");
+            let expected = PathIdentity::missing(&landing);
+            let operation_id = OperationId::new();
+            let key = operation_id.step_key(0, &landing);
+            let progress = Arc::new(Mutex::new(super::super::TransferProgress::new(0, 1)));
+
+            assert!(!place_entry(PlacementContext {
+                clean: false,
+                resumable_partial: false,
+                preserve_partial_dir: false,
+                renamed,
+                replace_existing: false,
+                journal_enabled: false,
+                progress: &progress,
+                entry: &entry,
+                copy_target: &staging,
+                landing: &landing,
+                expected_landing: &expected,
+                operation_id: &operation_id,
+                key: &key,
+                durability: DurabilityProfile::Fast,
+                version_retention: crate::operation::VersionRetentionPolicy::default(),
+            }));
+            assert!(!staging.exists());
+            assert_eq!(
+                std::fs::read_to_string(&source).unwrap(),
+                if renamed { "bytes" } else { "original" }
+            );
+        }
     }
 
     #[test]
