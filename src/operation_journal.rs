@@ -124,7 +124,11 @@ impl OperationStatus {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Planned => "Planned",
-            Self::Running => "Interrupted",
+            // A persisted Running record may belong either to another live
+            // Commander instance or to a process that stopped unexpectedly.
+            // The journal intentionally does not claim ownership liveness, so
+            // keep the user-facing label honest about both possibilities.
+            Self::Running => "Running / interrupted",
             Self::Stopped => "Stopped",
             Self::Failed => "Failed",
             Self::NeedsReview => "Review required",

@@ -2,6 +2,17 @@ use super::*;
 use crate::testutil::TempDir;
 
 #[test]
+fn operation_status_labels_do_not_claim_a_running_record_is_interrupted() {
+    assert_eq!(OperationStatus::Planned.label(), "Planned");
+    assert_eq!(OperationStatus::Running.label(), "Running / interrupted");
+    assert_eq!(OperationStatus::Stopped.label(), "Stopped");
+    assert_eq!(OperationStatus::Failed.label(), "Failed");
+    assert_eq!(OperationStatus::NeedsReview.label(), "Review required");
+    assert_eq!(OperationStatus::Completed.label(), "Completed");
+    assert_eq!(OperationStatus::RolledBack.label(), "Rolled back");
+}
+
+#[test]
 fn serializable_state_machines_exhaust_every_transition_and_terminal_state() {
     let operation_statuses = [
         OperationStatus::Planned,
