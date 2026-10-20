@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const MAX_SAMPLES: usize = 128;
-const RULE_SCHEMA: u32 = 1;
+const RULE_SCHEMA: u32 = 2;
 pub const BANDWIDTH_CHOICES: [Option<u64>; 5] = [
     None,
     Some(1024 * 1024),
@@ -230,7 +230,7 @@ fn load_store_at(path: &Path) -> RuleStore {
         }
     };
     let problem = match serde_json::from_slice::<RuleStore>(&bytes) {
-        Ok(store) if store.schema == RULE_SCHEMA => return store,
+        Ok(store) if matches!(store.schema, 1 | RULE_SCHEMA) => return store,
         Ok(store) => format!("unsupported schema {}", store.schema),
         Err(error) => error.to_string(),
     };
@@ -268,8 +268,28 @@ fn save_store_at(path: &Path, store: &RuleStore) -> Result<(), String> {
     }
 }
 
-fn rule_key(volume_id: u64) -> String {
+fn legacy_rule_key(volume_id: u64) -> String {
     format!("{volume_id:016x}")
+}
+
+fn rule_key(profile: &VolumeProfile) -> String {
+    profile.stable_id.as_ref().map_or_else(
+        || legacy_rule_key(profile.volume_id),
+        |identity| format!("v2:{}", blake3::hash(identity.as_bytes()).to_hex()),
+    )
+}
+
+fn migrated_store(store: &RuleStore, profile: &VolumeProfile) -> Option<RuleStore> {
+    let stable = rule_key(profile);
+    let legacy = legacy_rule_key(profile.volume_id);
+    if stable == legacy {
+        return None;
+    }
+    let mut updated = store.clone();
+    let legacy_rule = updated.volumes.remove(&legacy)?;
+    updated.volumes.entry(stable).or_insert(legacy_rule);
+    updated.schema = RULE_SCHEMA;
+    Some(updated)
 }
 
 fn rules() -> &'static Mutex<RuleStore> {
@@ -277,9 +297,20 @@ fn rules() -> &'static Mutex<RuleStore> {
 }
 
 pub fn rule_for(profile: &VolumeProfile) -> VolumeRule {
-    crate::lock_util::recover(rules())
+    let mut guard = crate::lock_util::recover(rules());
+    if let Some(updated) = migrated_store(&guard, profile) {
+        match save_store_at(&rules_path(), &updated) {
+            Ok(()) => *guard = updated,
+            Err(error) => log::warn!(
+                target: "commander::transfer_tuning",
+                "Could not migrate the transfer rule to its stable volume key: {error}"
+            ),
+        }
+    }
+    guard
         .volumes
-        .get(&rule_key(profile.volume_id))
+        .get(&rule_key(profile))
+        .or_else(|| guard.volumes.get(&legacy_rule_key(profile.volume_id)))
         .copied()
         .unwrap_or_default()
         .normalized()
@@ -288,11 +319,13 @@ pub fn rule_for(profile: &VolumeProfile) -> VolumeRule {
 pub fn set_rule(profile: &VolumeProfile, rule: VolumeRule) -> Result<(), String> {
     let mut guard = crate::lock_util::recover(rules());
     let mut updated = guard.clone();
+    updated.schema = RULE_SCHEMA;
     let rule = rule.normalized();
+    updated.volumes.remove(&legacy_rule_key(profile.volume_id));
     if rule == VolumeRule::default() {
-        updated.volumes.remove(&rule_key(profile.volume_id));
+        updated.volumes.remove(&rule_key(profile));
     } else {
-        updated.volumes.insert(rule_key(profile.volume_id), rule);
+        updated.volumes.insert(rule_key(profile), rule);
     }
     save_store_at(&rules_path(), &updated)?;
     *guard = updated;
@@ -343,6 +376,7 @@ mod tests {
     fn profile(backend: BackendKind, max_concurrency: usize) -> VolumeProfile {
         VolumeProfile {
             volume_id: 7,
+            stable_id: None,
             generation: 1,
             backend,
             filesystem: "test".to_string(),
@@ -439,6 +473,57 @@ mod tests {
             }),
         };
         assert_eq!(invalid.normalized(), VolumeRule::default());
+    }
+
+    #[test]
+    fn stable_rule_key_survives_a_changed_runtime_device_number() {
+        let mut first = profile(BackendKind::Remote, 2);
+        first.stable_id = Some("linux:nfs:server:/mnt/share".to_string());
+        let mut remounted = first.clone();
+        remounted.volume_id = 999;
+
+        assert_eq!(rule_key(&first), rule_key(&remounted));
+        assert_ne!(rule_key(&first), legacy_rule_key(first.volume_id));
+    }
+
+    #[test]
+    fn legacy_rule_migrates_once_without_overwriting_a_stable_rule() {
+        let mut profile = profile(BackendKind::Remote, 2);
+        profile.stable_id = Some("linux:nfs:server:/mnt/share".to_string());
+        let legacy = VolumeRule {
+            max_bytes_per_second: Some(5 * 1024 * 1024),
+            quiet_hours: None,
+        };
+        let preferred = VolumeRule {
+            max_bytes_per_second: Some(20 * 1024 * 1024),
+            quiet_hours: None,
+        };
+        let mut store = RuleStore {
+            schema: 1,
+            volumes: HashMap::from([(legacy_rule_key(profile.volume_id), legacy)]),
+        };
+
+        store = migrated_store(&store, &profile).unwrap();
+        assert_eq!(store.schema, RULE_SCHEMA);
+        assert_eq!(store.volumes.get(&rule_key(&profile)), Some(&legacy));
+        assert!(
+            !store
+                .volumes
+                .contains_key(&legacy_rule_key(profile.volume_id))
+        );
+        assert!(migrated_store(&store, &profile).is_none());
+
+        store
+            .volumes
+            .insert(legacy_rule_key(profile.volume_id), legacy);
+        store.volumes.insert(rule_key(&profile), preferred);
+        store = migrated_store(&store, &profile).unwrap();
+        assert_eq!(store.volumes.get(&rule_key(&profile)), Some(&preferred));
+        assert!(
+            !store
+                .volumes
+                .contains_key(&legacy_rule_key(profile.volume_id))
+        );
     }
 
     fn uniform(latency_ms: f64, failures: usize, total: usize) -> Vec<Sample> {

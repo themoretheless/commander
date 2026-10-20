@@ -47,6 +47,11 @@ pub struct VolumeCapabilities {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VolumeProfile {
     pub volume_id: u64,
+    /// Stable mount identity for persisted preferences. Unlike `volume_id`
+    /// (`st_dev` on Unix), this does not depend on the current boot's device
+    /// number. Missing on platforms where the mount source cannot be probed.
+    #[serde(default)]
+    pub stable_id: Option<String>,
     /// Changes when the observed mount/backend contract changes. Cache users
     /// include it in their key so a changed filesystem never reuses old data.
     pub generation: u64,
@@ -131,6 +136,7 @@ pub fn invalidate(volume_id: u64) {
 fn same_contract(left: &VolumeProfile, right: &VolumeProfile) -> bool {
     left.volume_id == right.volume_id
         && left.backend == right.backend
+        && left.stable_id == right.stable_id
         && left.filesystem == right.filesystem
         && left.mount_point == right.mount_point
         && left.read_only == right.read_only
@@ -241,6 +247,7 @@ fn probe(path: &Path, volume_id: u64) -> VolumeProfile {
     );
     VolumeProfile {
         volume_id,
+        stable_id: native.as_ref().and_then(|mount| mount.stable_id.clone()),
         generation: 0,
         backend,
         filesystem: filesystem.clone(),
@@ -258,6 +265,7 @@ fn probe(path: &Path, volume_id: u64) -> VolumeProfile {
 }
 
 struct NativeMount {
+    stable_id: Option<String>,
     filesystem: String,
     mount_point: PathBuf,
     local: bool,
@@ -284,7 +292,14 @@ fn native_mount(path: &Path) -> Option<NativeMount> {
             .to_string_lossy()
             .into_owned(),
     );
+    let mount_source = unsafe { CStr::from_ptr(stats.f_mntfromname.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
     Some(NativeMount {
+        stable_id: Some(format!(
+            "macos:{filesystem}:{mount_source}:{}",
+            mount_point.display()
+        )),
         filesystem,
         mount_point,
         local: stats.f_flags & libc::MNT_LOCAL as u32 != 0,
@@ -314,21 +329,24 @@ fn native_mount(path: &Path) -> Option<NativeMount> {
     let read_only = unsafe { libc::statvfs(c_path.as_ptr(), vfs.as_mut_ptr()) } == 0
         && unsafe { vfs.assume_init() }.f_flag & libc::ST_RDONLY != 0;
     let (mut filesystem, mut local) = linux_filesystem(magic);
+    use std::os::unix::fs::MetadataExt;
+    let device = std::fs::metadata(path).ok().map(|metadata| metadata.dev());
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok();
     if filesystem == "fuse" {
         // One magic covers every FUSE mount; the mount table tells a local
         // block-device driver (ntfs-3g, exfat-fuse: `fuseblk`) from sshfs
         // and other network filesystems.
-        use std::os::unix::fs::MetadataExt;
-        let fstype = std::fs::metadata(path).ok().and_then(|metadata| {
-            let dev = metadata.dev();
-            let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
-            mountinfo_fstype(&mountinfo, libc::major(dev), libc::minor(dev))
+        let fstype = device.and_then(|dev| {
+            mountinfo_fstype(mountinfo.as_deref()?, libc::major(dev), libc::minor(dev))
         });
         if fstype.as_deref() == Some("fuseblk") {
             (filesystem, local) = ("fuseblk", true);
         }
     }
     Some(NativeMount {
+        stable_id: device.and_then(|dev| {
+            mountinfo_identity(mountinfo.as_deref()?, libc::major(dev), libc::minor(dev))
+        }),
         filesystem: filesystem.to_string(),
         mount_point: mount_root(path),
         local,
@@ -350,6 +368,27 @@ fn mountinfo_fstype(mountinfo: &str, major: u32, minor: u32) -> Option<String> {
             let (_, after) = line.split_once(" - ")?;
             after.split(' ').next().map(str::to_string)
         })
+}
+
+/// Stable Linux mount identity from the mount table's filesystem type,
+/// source and mount point. Raw escaped fields are intentional: they remain
+/// unambiguous without lossy path decoding.
+#[cfg(target_os = "linux")]
+fn mountinfo_identity(mountinfo: &str, major: u32, minor: u32) -> Option<String> {
+    let device = format!("{major}:{minor}");
+    mountinfo.lines().rev().find_map(|line| {
+        let (before, after) = line.split_once(" - ")?;
+        let mut fields = before.split(' ');
+        let matches_device = fields.nth(2) == Some(device.as_str());
+        let mount_point = fields.nth(1)?;
+        if !matches_device {
+            return None;
+        }
+        let mut trailing = after.split(' ');
+        let filesystem = trailing.next()?;
+        let source = trailing.next()?;
+        Some(format!("linux:{filesystem}:{source}:{mount_point}"))
+    })
 }
 
 /// Whether names differ by case on a Linux filesystem. `None` where it
@@ -469,6 +508,8 @@ mod tests {
         assert_eq!(first.volume_id, second.volume_id);
         assert_eq!(first.generation, second.generation);
         assert!(!first.reason.is_empty());
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(first.stable_id.is_some());
     }
 
     #[test]
@@ -543,6 +584,10 @@ mod tests {
         assert_eq!(
             mountinfo_fstype(mountinfo, 0, 53).as_deref(),
             Some("fuse.sshfs")
+        );
+        assert_eq!(
+            mountinfo_identity(mountinfo, 0, 52).as_deref(),
+            Some("linux:fuseblk:/dev/sdb1:/media/me/USB")
         );
         assert_eq!(mountinfo_fstype(mountinfo, 9, 9), None);
         // A local fuseblk under /media is a removable drive, not a remote.

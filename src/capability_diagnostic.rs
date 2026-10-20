@@ -259,6 +259,7 @@ mod tests {
     fn profile(read_only: bool, backend: BackendKind) -> VolumeProfile {
         VolumeProfile {
             volume_id: 9,
+            stable_id: None,
             generation: 3,
             backend,
             filesystem: "testfs".to_string(),

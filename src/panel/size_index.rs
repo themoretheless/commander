@@ -885,6 +885,7 @@ mod tests {
     ) -> crate::volume_profile::VolumeProfile {
         crate::volume_profile::VolumeProfile {
             volume_id: 1,
+            stable_id: None,
             generation: 1,
             backend,
             filesystem: String::new(),

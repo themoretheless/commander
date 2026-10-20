@@ -730,6 +730,7 @@ mod tests {
         };
         VolumeProfile {
             volume_id: index as u64 + 1,
+            stable_id: None,
             generation: 1,
             backend,
             filesystem: contract.filesystem.to_string(),
