@@ -3092,3 +3092,47 @@ fn a_placement_failure_that_undid_its_staging_resumes_as_a_retry() {
     assert!(step.placement.is_none());
     assert!(step.staging.is_none());
 }
+
+#[test]
+fn rollback_preserves_and_reports_an_interrupted_running_staging() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("running-rollback-journal.json"));
+    let target = temp.dir("target");
+    let source = temp.file("source.txt", "source bytes");
+    let destination = target.join("source.txt");
+    let staging = temp.file("target/.source.txt.cmdr-tmp.0", "only staged bytes");
+    let entry = FileEntry::from_meta(source.clone(), &source.symlink_metadata().unwrap()).unwrap();
+    let spec = transfer_spec("running-rollback", vec![entry], &target);
+    begin(&spec).unwrap();
+    let key = step_key(&spec, 0, &destination);
+    mark_running(
+        &spec.operation_id,
+        &key,
+        &staging,
+        &destination,
+        PathIdentity::missing(&destination),
+    )
+    .unwrap();
+
+    let plan = rollback(&spec.operation_id).unwrap();
+
+    assert!(plan.completed.is_empty());
+    assert_eq!(plan.remaining.len(), 1);
+    assert_eq!(plan.remaining[0].path, staging);
+    assert!(!plan.remaining[0].automatic);
+    assert!(plan.remaining[0].action.contains("only copy"));
+    assert_eq!(
+        std::fs::read_to_string(&plan.remaining[0].path).unwrap(),
+        "only staged bytes"
+    );
+    let record = operation(&spec.operation_id).unwrap();
+    assert_eq!(record.status, OperationStatus::NeedsReview);
+    assert_eq!(record.steps[0].status, StepStatus::Failed);
+    assert_eq!(
+        record.steps[0]
+            .failure
+            .as_ref()
+            .map(|failure| failure.class),
+        Some(FailureClass::IntegrityUncertain)
+    );
+}

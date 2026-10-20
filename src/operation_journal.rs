@@ -3220,6 +3220,7 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
     let record = operation(operation_id)?;
     let mut plan = RepairPlan {
         operation_id: Some(record.id.clone()),
+        remaining: settle_incomplete_steps_for_rollback(operation_id, &record)?,
         ..Default::default()
     };
     for step in record
@@ -3292,6 +3293,61 @@ pub fn rollback(operation_id: &OperationId) -> Result<RepairPlan, String> {
         },
     )?;
     Ok(plan)
+}
+
+fn settle_incomplete_steps_for_rollback(
+    operation_id: &OperationId,
+    record: &OperationRecord,
+) -> Result<Vec<RepairItem>, String> {
+    let interrupted = record
+        .steps
+        .iter()
+        .filter(|step| step.status == StepStatus::Running)
+        .map(|step| step.key.clone())
+        .collect::<HashSet<_>>();
+    if !interrupted.is_empty() {
+        mutate(|journal| {
+            let operation = operation_mut(&mut journal.operations, operation_id)?;
+            for step in &mut operation.steps {
+                if interrupted.contains(&step.key) {
+                    step.status = step
+                        .status
+                        .transition(StepEvent::Fail)
+                        .map_err(|error| error.to_string())?;
+                    step.failure = Some(ClassifiedFailure::message(
+                        FailureClass::IntegrityUncertain,
+                        step.staging.clone(),
+                        "Rollback found a step interrupted before its filesystem effect was proven",
+                    ));
+                }
+            }
+            operation.updated_at_secs = now_secs();
+            Ok(())
+        })?;
+    }
+
+    Ok(record
+        .steps
+        .iter()
+        .filter(|step| {
+            interrupted.contains(&step.key)
+                || (step.status == StepStatus::Failed
+                    && (step.staging.is_some()
+                        || step.checkpoint.is_some()
+                        || step.placement.is_some()
+                        || step.replacement.is_some()))
+        })
+        .map(|step| RepairItem {
+            path: step
+                .staging
+                .clone()
+                .unwrap_or_else(|| effect_path(step).to_path_buf()),
+            action:
+                "Inspect incomplete staging; it was preserved because it may contain the only copy"
+                    .to_string(),
+            automatic: false,
+        })
+        .collect())
 }
 
 pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String> {
