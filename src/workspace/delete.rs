@@ -117,9 +117,30 @@ struct ActiveDelete {
     cancel: Arc<AtomicBool>,
 }
 
+pub(super) struct TrashReplayOutcome {
+    pub(super) reservation: crate::undo::ReplayReservation,
+    pub(super) label: &'static str,
+    pub(super) changed: Vec<PathBuf>,
+    pub(super) error: Option<String>,
+}
+
+struct ActiveTrashReplay {
+    generation: u64,
+    reservation: crate::undo::ReplayReservation,
+    label: &'static str,
+    receiver: mpsc::Receiver<TrashReplayReport>,
+}
+
+struct TrashReplayReport {
+    generation: u64,
+    changed: Vec<PathBuf>,
+    error: Option<String>,
+}
+
 pub(super) struct DeleteController {
     generation: u64,
     active: Option<ActiveDelete>,
+    replay: Option<ActiveTrashReplay>,
     port: Arc<dyn TrashPort>,
     versions: Arc<dyn DeleteVersionStore>,
 }
@@ -142,19 +163,19 @@ impl DeleteController {
         Self {
             generation: 0,
             active: None,
+            replay: None,
             port,
             versions,
         }
     }
 
-    /// Trash one item on the caller's thread (Trash redo). An adapter panic
-    /// is reported as indeterminate instead of unwinding into the UI.
-    pub(super) fn trash_one(&self, target: &TrashTarget) -> TrashItemOutcome {
-        guarded_move_to_trash(self.port.as_ref(), target)
+    pub(super) const fn is_active(&self) -> bool {
+        self.active.is_some() || self.replay.is_some()
     }
 
-    pub(super) const fn is_active(&self) -> bool {
-        self.active.is_some()
+    #[cfg(test)]
+    pub(super) fn trash_one(&self, target: &TrashTarget) -> TrashItemOutcome {
+        guarded_move_to_trash(self.port.as_ref(), target)
     }
 
     pub(super) fn activity(&self) -> Option<(usize, usize, bool)> {
@@ -183,7 +204,7 @@ impl DeleteController {
         retention: crate::operation::VersionRetentionPolicy,
         notify: impl Fn() + Send + 'static,
     ) -> bool {
-        if items.is_empty() || self.active.is_some() {
+        if items.is_empty() || self.is_active() {
             return false;
         }
         self.generation = self.generation.wrapping_add(1).max(1);
@@ -257,6 +278,88 @@ impl DeleteController {
         true
     }
 
+    pub(super) fn start_replay(
+        &mut self,
+        action: crate::undo::Action,
+        reservation: crate::undo::ReplayReservation,
+        notify: impl Fn() + Send + 'static,
+    ) -> bool {
+        if self.is_active() {
+            return false;
+        }
+        let label = match &action {
+            crate::undo::Action::RestoreTrash { .. } => "Trash undo",
+            crate::undo::Action::Trash { .. } => "Trash redo",
+            _ => return false,
+        };
+        self.generation = self.generation.wrapping_add(1).max(1);
+        let generation = self.generation;
+        let port = Arc::clone(&self.port);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let Ok(_) = std::thread::Builder::new()
+            .name("trash-replay".to_string())
+            .spawn(move || {
+                let (changed, error) = run_trash_replay(action, port.as_ref());
+                let _ = sender.send(TrashReplayReport {
+                    generation,
+                    changed,
+                    error,
+                });
+                notify();
+            })
+        else {
+            return false;
+        };
+        self.replay = Some(ActiveTrashReplay {
+            generation,
+            reservation,
+            label,
+            receiver,
+        });
+        true
+    }
+
+    pub(super) fn poll_replay(&mut self) -> Option<TrashReplayOutcome> {
+        let active = self.replay.take()?;
+        match active.receiver.try_recv() {
+            Ok(report) if report.generation == active.generation => Some(TrashReplayOutcome {
+                reservation: active.reservation,
+                label: active.label,
+                changed: report.changed,
+                error: report.error,
+            }),
+            Ok(_) | Err(mpsc::TryRecvError::Disconnected) => Some(TrashReplayOutcome {
+                reservation: active.reservation,
+                label: active.label,
+                changed: Vec::new(),
+                error: Some("Trash replay worker stopped without a valid result".to_string()),
+            }),
+            Err(mpsc::TryRecvError::Empty) => {
+                self.replay = Some(active);
+                None
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn finish_replay(&mut self) -> Option<TrashReplayOutcome> {
+        let active = self.replay.take()?;
+        match active.receiver.recv() {
+            Ok(report) if report.generation == active.generation => Some(TrashReplayOutcome {
+                reservation: active.reservation,
+                label: active.label,
+                changed: report.changed,
+                error: report.error,
+            }),
+            _ => Some(TrashReplayOutcome {
+                reservation: active.reservation,
+                label: active.label,
+                changed: Vec::new(),
+                error: Some("Trash replay worker stopped without a valid result".to_string()),
+            }),
+        }
+    }
+
     pub(super) fn poll(&mut self) -> Option<DeleteOutcome> {
         let mut active = self.active.take()?;
         if let Some(report) = active.immediate.take() {
@@ -319,6 +422,75 @@ impl DeleteController {
             )),
         }
     }
+}
+
+fn run_trash_replay(
+    action: crate::undo::Action,
+    port: &dyn TrashPort,
+) -> (Vec<PathBuf>, Option<String>) {
+    let mut changed = Vec::new();
+    match action {
+        crate::undo::Action::RestoreTrash { items } => {
+            for item in items {
+                if let Err(error) = crate::version_store::restore(&item.version) {
+                    return (
+                        changed,
+                        Some(format!(
+                            "Could not restore {}: {error}",
+                            item.version.original.display()
+                        )),
+                    );
+                }
+                changed.push(item.version.original);
+            }
+        }
+        crate::undo::Action::Trash { items } => {
+            for item in items {
+                let expected = match crate::path_identity::PathIdentity::observe(&item.path) {
+                    Ok(expected) if expected.exists => expected,
+                    Ok(_) => {
+                        return (
+                            changed,
+                            Some(format!(
+                                "Trash redo source no longer exists: {}",
+                                item.path.display()
+                            )),
+                        );
+                    }
+                    Err(error) => {
+                        return (
+                            changed,
+                            Some(format!(
+                                "Could not inspect {} for Trash redo: {error}",
+                                item.path.display()
+                            )),
+                        );
+                    }
+                };
+                let target = TrashTarget {
+                    path: item.path.clone(),
+                    expected,
+                };
+                match guarded_move_to_trash(port, &target) {
+                    TrashItemOutcome::Trashed => changed.push(item.path),
+                    outcome => {
+                        if matches!(outcome, TrashItemOutcome::Indeterminate(_)) {
+                            changed.push(item.path.clone());
+                        }
+                        return (
+                            changed,
+                            Some(format!(
+                                "Could not re-trash {}: {outcome:?}",
+                                item.path.display()
+                            )),
+                        );
+                    }
+                }
+            }
+        }
+        _ => unreachable!("only Trash history actions enter the replay worker"),
+    }
+    (changed, None)
 }
 
 struct DeleteBatchRuntime<'a> {

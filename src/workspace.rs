@@ -2565,44 +2565,20 @@ impl Workspace {
                     }
                 })
             }
-            crate::undo::Action::RestoreTrash { items } => {
-                let _ = reservation;
-                let _ = notify;
-                let mut restored = Vec::new();
-                for item in &items {
-                    if let Err(error) = crate::version_store::restore(&item.version) {
-                        let error = format!(
-                            "Could not restore {}: {error}",
-                            item.version.original.display()
-                        );
-                        return Err(self.stop_partial_trash_replay("Trash undo", &restored, error));
-                    }
-                    restored.push(item.version.original.clone());
-                }
-                self.left.refresh();
-                self.right.refresh();
-                Ok(ActionExecution::Completed)
-            }
-            crate::undo::Action::Trash { items } => {
-                let _ = reservation;
-                let _ = notify;
-                let mut trashed = Vec::new();
-                for item in &items {
-                    if let Err((error, maybe_trashed)) = self.retrash_one(&item.path) {
-                        // An indeterminate outcome may already have moved
-                        // the item: count it as changed so the stop is
-                        // reviewed instead of reported as a plain abort.
-                        if maybe_trashed {
-                            trashed.push(item.path.clone());
-                        }
-                        return Err(self.stop_partial_trash_replay("Trash redo", &trashed, error));
-                    }
-                    trashed.push(item.path.clone());
-                }
-                self.left.refresh();
-                self.right.refresh();
-                Ok(ActionExecution::Completed)
-            }
+            crate::undo::Action::RestoreTrash { items } => self
+                .deletes
+                .start_replay(
+                    crate::undo::Action::RestoreTrash { items },
+                    reservation,
+                    notify,
+                )
+                .then_some(ActionExecution::Started)
+                .ok_or_else(|| "Could not start Trash undo worker".to_string()),
+            crate::undo::Action::Trash { items } => self
+                .deletes
+                .start_replay(crate::undo::Action::Trash { items }, reservation, notify)
+                .then_some(ActionExecution::Started)
+                .ok_or_else(|| "Could not start Trash redo worker".to_string()),
         }
     }
 
@@ -2621,42 +2597,6 @@ impl Workspace {
         result
             .map(|_| ActionExecution::Completed)
             .map_err(|error| error.to_string())
-    }
-
-    /// Move one item back to the Trash for a Trash redo. The error carries
-    /// whether the item may have been trashed anyway (an indeterminate
-    /// outcome), so the caller can treat it as a possible change.
-    fn retrash_one(&self, path: &Path) -> Result<(), (String, bool)> {
-        let expected = crate::path_identity::PathIdentity::observe(path).map_err(|error| {
-            (
-                format!(
-                    "Could not inspect {} for Trash redo: {error}",
-                    path.display()
-                ),
-                false,
-            )
-        })?;
-        if !expected.exists {
-            return Err((
-                format!("Trash redo source no longer exists: {}", path.display()),
-                false,
-            ));
-        }
-        let target = crate::ports::TrashTarget {
-            path: path.to_path_buf(),
-            expected,
-        };
-        match self.deletes.trash_one(&target) {
-            crate::ports::TrashItemOutcome::Trashed => Ok(()),
-            other => {
-                let maybe_trashed =
-                    matches!(other, crate::ports::TrashItemOutcome::Indeterminate(_));
-                Err((
-                    format!("Could not re-trash {}: {other:?}", path.display()),
-                    maybe_trashed,
-                ))
-            }
-        }
     }
 
     /// A Trash undo/redo failed on one item. When earlier items already
@@ -2949,6 +2889,10 @@ impl Workspace {
     }
 
     pub fn poll_delete(&mut self) -> Option<DeleteOutcome> {
+        if let Some(outcome) = self.deletes.poll_replay() {
+            self.settle_trash_replay(outcome);
+            return None;
+        }
         let outcome = self.deletes.poll()?;
         self.settle_delete_outcome(outcome)
     }
@@ -2957,6 +2901,39 @@ impl Workspace {
     fn finish_delete(&mut self) -> Option<DeleteOutcome> {
         let outcome = self.deletes.finish()?;
         self.settle_delete_outcome(outcome)
+    }
+
+    #[cfg(test)]
+    fn finish_trash_replay(&mut self) {
+        if let Some(outcome) = self.deletes.finish_replay() {
+            self.settle_trash_replay(outcome);
+        }
+    }
+
+    fn settle_trash_replay(&mut self, outcome: delete::TrashReplayOutcome) {
+        if !outcome.changed.is_empty() {
+            self.left.refresh();
+            self.right.refresh();
+        }
+        if let Some(error) = outcome.error {
+            let error = self.stop_partial_trash_replay(outcome.label, &outcome.changed, error);
+            let message = match self.undo.abort_immediate(outcome.reservation) {
+                Ok(()) => error,
+                Err(history_error) => {
+                    format!("{error}; {}", self.history_invariant_error(history_error))
+                }
+            };
+            self.emit_ui_request(UiRequest::Notice {
+                message,
+                error: true,
+            });
+        } else if let Err(error) = self.undo.commit_immediate(outcome.reservation) {
+            let message = self.history_invariant_error(error);
+            self.emit_ui_request(UiRequest::Notice {
+                message,
+                error: true,
+            });
+        }
     }
 
     fn settle_delete_outcome(&mut self, outcome: DeleteOutcome) -> Option<DeleteOutcome> {

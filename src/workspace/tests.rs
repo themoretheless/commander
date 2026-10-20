@@ -1490,10 +1490,12 @@ fn versioned_trash_delete_records_undo_and_restores_through_version_store() {
     workspace
         .perform_undo(|| {})
         .expect("restore from version store");
+    workspace.finish_trash_replay();
     assert!(path.is_file(), "undo restores the original path");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "payload");
 
     workspace.perform_redo(|| {}).expect("re-trash");
+    workspace.finish_trash_replay();
     assert!(!path.exists(), "redo trashes the restored file again");
     assert_eq!(trash.calls.lock().unwrap().len(), 2);
 }
@@ -4893,9 +4895,11 @@ fn partially_failed_trash_redo_refreshes_and_latches_safe_state() {
     ]));
     let (mut ws, first, second) = versioned_workspace_with_two_trashed(&left, &right, trash);
     ws.perform_undo(|| {}).expect("restore both");
+    ws.finish_trash_replay();
     assert!(first.is_file() && second.is_file());
 
-    assert!(ws.perform_redo(|| {}).is_err());
+    ws.perform_redo(|| {}).expect("start redo");
+    ws.finish_trash_replay();
     assert!(!first.exists(), "the first item was trashed again");
     assert!(
         !ws.left.entries().iter().any(|entry| entry.path == first),
@@ -4920,9 +4924,11 @@ fn indeterminate_first_trash_redo_item_latches_safe_state() {
     ]));
     let (mut ws, first, second) = versioned_workspace_with_two_trashed(&left, &right, trash);
     ws.perform_undo(|| {}).expect("restore both");
+    ws.finish_trash_replay();
     assert!(first.is_file() && second.is_file());
 
-    assert!(ws.perform_redo(|| {}).is_err());
+    ws.perform_redo(|| {}).expect("start redo");
+    ws.finish_trash_replay();
     let safe = ws
         .safe_state
         .as_ref()
@@ -5793,7 +5799,19 @@ fn partially_failed_trash_undo_restores_the_first_item_and_latches_safe_state() 
     // destination is free) but cannot put that item back.
     std::fs::remove_dir(second.parent().unwrap()).unwrap();
 
-    let error = ws.perform_undo(|| {}).unwrap_err();
+    ws.perform_undo(|| {}).expect("start undo");
+    ws.finish_trash_replay();
+    let error = ws
+        .drain_ui_requests()
+        .into_iter()
+        .find_map(|request| match request {
+            UiRequest::Notice {
+                message,
+                error: true,
+            } => Some(message),
+            _ => None,
+        })
+        .expect("failed replay notice");
 
     assert!(error.contains(&second.display().to_string()), "{error}");
     assert!(first.is_file(), "the first item was restored");
