@@ -1623,6 +1623,58 @@ impl Workspace {
         self.request_transfer(TransferKind::Move);
     }
 
+    pub fn request_context_duplicate(
+        &mut self,
+        panel: ActivePanel,
+        target: &crate::ports::ContextMenuTarget,
+    ) {
+        if !self.can_request_transfer() {
+            self.notice(
+                "Duplicate is unavailable while another operation needs attention".to_string(),
+            );
+            return;
+        }
+        self.active = panel;
+        let Some(entry) = self
+            .active_panel_ref()
+            .entries()
+            .iter()
+            .find(|entry| entry.path == target.path)
+            .cloned()
+        else {
+            self.notice("The item is no longer in this folder".to_string());
+            return;
+        };
+        let matches_invocation = matches!(
+            &entry.identity,
+            crate::panel::ListingIdentity::Captured(identity)
+                if identity.same_shallow_binding(&target.expected)
+        );
+        if !matches_invocation {
+            self.notice(
+                "The item changed after the context menu opened; refresh and try again".to_string(),
+            );
+            return;
+        }
+        let Some(parent) = entry.path.parent().map(Path::to_path_buf) else {
+            self.notice("This item cannot be duplicated in place".to_string());
+            return;
+        };
+        let wake = self.active_panel_ref().notify_callback();
+        self.stage_transfer_with_policy(
+            TransferKind::Copy,
+            vec![entry],
+            parent,
+            OverwritePolicy::KeepBoth,
+            true,
+            move || {
+                if let Some(wake) = &wake {
+                    wake();
+                }
+            },
+        );
+    }
+
     /// Copy/Move may queue behind an active transfer, but must never replace an
     /// operation that is already waiting for confirmation.
     pub const fn can_request_transfer(&self) -> bool {
@@ -1827,9 +1879,27 @@ impl Workspace {
         auto_start: bool,
         notify: impl Fn() + Send + 'static,
     ) {
+        self.stage_transfer_with_policy(
+            kind,
+            entries,
+            target,
+            OverwritePolicy::from(self.name_policy.collision),
+            auto_start,
+            notify,
+        );
+    }
+
+    fn stage_transfer_with_policy(
+        &mut self,
+        kind: TransferKind,
+        entries: Vec<FileEntry>,
+        target: PathBuf,
+        policy: OverwritePolicy,
+        auto_start: bool,
+        notify: impl Fn() + Send + 'static,
+    ) {
         let conflicts = scan::find_conflicts(&entries, &target);
         let flat = scan::pending_flat_list();
-        let policy = OverwritePolicy::from(self.name_policy.collision);
         let asks = !conflicts.is_empty() && policy == OverwritePolicy::Ask;
         let generation = self.start_space_probe(
             entries.clone(),

@@ -157,6 +157,41 @@ fn workspace(left: &TempDir, right: &TempDir) -> Workspace {
 }
 
 #[test]
+fn context_duplicate_stages_keep_both_in_the_same_folder() {
+    let left = TempDir::new();
+    let right = TempDir::new();
+    let file = left.file("note.txt", "original");
+    let mut ws = workspace(&left, &right);
+    let entry = ws
+        .left
+        .entries()
+        .iter()
+        .find(|entry| entry.path == file)
+        .cloned()
+        .expect("listed file");
+    let crate::panel::ListingIdentity::Captured(expected) = entry.identity else {
+        panic!("listing captured the identity");
+    };
+
+    ws.request_context_duplicate(
+        ActivePanel::Left,
+        &crate::ports::ContextMenuTarget {
+            path: file,
+            expected,
+        },
+    );
+
+    let Some(PendingOp::Transfer(transfer)) = &ws.pending_op else {
+        panic!("duplicate transfer staged");
+    };
+    assert_eq!(transfer.kind, TransferKind::Copy);
+    assert_eq!(transfer.policy, OverwritePolicy::KeepBoth);
+    assert_eq!(transfer.target, left.path());
+    assert!(transfer.start_when_ready);
+    assert_eq!(transfer.entries.len(), 1);
+}
+
+#[test]
 fn workspace_uses_the_injected_persistence_for_bookmark_load_and_save() {
     let left = TempDir::new();
     let right = TempDir::new();

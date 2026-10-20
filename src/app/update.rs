@@ -1780,6 +1780,12 @@ impl App {
             return;
         };
         let effect = match effect {
+            crate::provider_runtime::ContextMenuUiEffect::Perform(
+                crate::ports::ContextMenuAction::Duplicate(target),
+            ) => {
+                self.ws.request_context_duplicate(panel, &target);
+                None
+            }
             crate::provider_runtime::ContextMenuUiEffect::Perform(action) => {
                 let path = action.path().to_path_buf();
                 let result = self.context_menu.perform_deferred_action(&action);

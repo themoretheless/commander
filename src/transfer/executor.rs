@@ -648,19 +648,28 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     }
                 };
 
-                // Reject destructive self-referential transfers (a directory into
-                // itself or its own subtree, a file onto itself) before touching
-                // anything, so neither source nor destination is harmed.
-                // A preserved symlink is copied as the link itself, so only
-                // its own pathname matters, not where it points: a dangling
-                // link has no target, and a link into the destination is fine.
+                // Check the destination LIVE, not the scan-time conflict list: the
+                // confirmation dialog can sit open while the filesystem changes.
+                // `path_is_taken` (not `exists`) so a broken symlink occupying the
+                // name is honoured as a conflict, matching `find_conflicts`.
+                let dest_present = fs_util::path_is_taken(&dest);
+                // Select the real landing before both conflict handling and
+                // self-copy validation. Keep Both may turn an apparent copy
+                // onto itself into a safe sibling copy.
+                let landing = work_item.expectation.landing.clone().unwrap_or_else(|| {
+                    if dest_present && spec.policy == OverwritePolicy::KeepBoth {
+                        fs_util::available_copy_name(&dest)
+                    } else {
+                        dest.clone()
+                    }
+                });
                 let into_itself = if spec.symlink_policy
                     == crate::filesystem_policy::SymlinkPolicy::Preserve
                     && source_before.lexical.kind == Some(crate::path_identity::PathKind::Symlink)
                 {
-                    link_onto_itself(&dest, &entry.path)
+                    link_onto_itself(&landing, &entry.path)
                 } else {
-                    fs_util::is_within_or_equal(&dest, &entry.path)
+                    fs_util::is_within_or_equal(&landing, &entry.path)
                 };
                 if into_itself {
                     complete_without_copy(
@@ -678,12 +687,6 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     );
                     continue;
                 }
-
-                // Check the destination LIVE, not the scan-time conflict list: the
-                // confirmation dialog can sit open while the filesystem changes.
-                // `path_is_taken` (not `exists`) so a broken symlink occupying the
-                // name is honoured as a conflict, matching `find_conflicts`.
-                let dest_present = fs_util::path_is_taken(&dest);
                 if dest_present {
                     match spec.policy {
                         OverwritePolicy::SkipAll => {
@@ -730,13 +733,6 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 // Every entry is staged beside its final landing. This gives new
                 // directories the same no-merge guarantee as files and leaves one
                 // commit point where destination identity can be revalidated.
-                let landing = work_item.expectation.landing.clone().unwrap_or_else(|| {
-                    if dest_present && spec.policy == OverwritePolicy::KeepBoth {
-                        fs_util::available_copy_name(&dest)
-                    } else {
-                        dest.clone()
-                    }
-                });
                 let expected_landing =
                     work_item
                         .expectation
@@ -2525,6 +2521,23 @@ mod tests {
             state.errors
         );
         assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("anywhere"));
+    }
+
+    #[test]
+    fn keep_both_can_copy_a_file_beside_itself() {
+        let root = TempDir::new();
+        let source = root.file("note.txt", "original");
+        let mut transfer = spec(TransferKind::Copy, vec![entry_for(&source)], root.path());
+        transfer.policy = OverwritePolicy::KeepBoth;
+
+        let state = run(transfer);
+
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("note copy.txt")).unwrap(),
+            "original"
+        );
     }
 
     #[test]
