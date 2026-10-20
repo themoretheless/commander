@@ -1458,11 +1458,12 @@ designed and reviewed on its own. Each lists the recommended direction.
 Resolved after the closeout review: I-0169 and I-0172 were implemented
 together in `1ad3639`. `NameFolding` is captured from the volume profile,
 unknown semantics remain conservatively folded, and the same policy now drives
-preview, execution, and undo/redo replay.
+preview, execution, and undo/redo replay. I-0195 was implemented in `2ecf3d6`:
+Gather redo may reuse a surviving directory, records it as pre-existing rather
+than rollback-owned, and treats a non-empty post-action folder as preserved.
 
 | ID | Loc | Proposal |
 | --- | --- | --- |
-| I-0195 | `src/undo.rs` preview | Redo of Gather onto a folder that already exists needs a product and crash-consistency decision. The replay journals the folder as a container this operation created, so a rollback could delete a folder it did not create. Recommendation: let Gather replay accept an existing directory only when it is journalled as pre-existing (not operation-created), so rollback never removes it. That needs a journal/replay change in workspace.rs and undo::preview, reviewed together. |
 | I-0202 | `src/version_dedup.rs` usage_of | Still applies: version_store::store_usage → version_dedup::usage_of counts only manifest.blobs, so legacy records without payload_files are left out. The proposed backfill is a migration of the durable manifest (hash payloads, re-hardlink, persist under manifest_transaction), which is too risky to guess. Recommendation: a one-time, idempotent backfill on load inside the manifest transaction, with pinning tests first. Or, as a lower-risk interim, have store_usage stat legacy record payload dirs read-only. |
 | I-0233 | `src/encrypted_bundle.rs` derive_key | Still applies: derive_key is a single BLAKE3 derive_key over salt and secret (src/encrypted_bundle.rs:196), and the default secret equals the recipient id. This needs a bundle-format v2 decision and a new dependency (argon2). Recommended: a v2 format using argon2id, and refusing secret == recipient_id once the developer-panel export asks for a real secret. |
 | I-0256 | `src/app/tree.rs` render_tree_node_recursive | Loading tree children asynchronously needs a redesign: a worker-backed child loader, placeholder rows/counts and repaint wiring. The cost is already much lower, because offscreen collapsed rows no longer read their folder and the cache is now invalidated per folder (see I-0308). Recommended direction: a workload-worker request keyed by (path, show_hidden) that fills tree::ChildCache, with the row showing a spinner or '…' count until the result arrives. |
