@@ -61,11 +61,18 @@ fn strip_leading_zeros(run: &[u8]) -> &[u8] {
 /// ascending whatever the sort direction, so equal keys read alphabetically
 /// ("alpha" before "Zeta") instead of in byte path order.
 fn name_cmp(a: &FileEntry, b: &FileEntry, config: ViewConfig) -> Ordering {
-    if config.natural_name_sort() {
-        natural_cmp(&a.name_lower, &b.name_lower)
+    let folded = if config.natural_name_sort() {
+        natural_cmp(&a.sort_key, &b.sort_key)
     } else {
-        a.name_lower.cmp(&b.name_lower)
-    }
+        a.sort_key.cmp(&b.sort_key)
+    };
+    folded.then_with(|| {
+        if config.natural_name_sort() {
+            natural_cmp(&a.name_lower, &b.name_lower)
+        } else {
+            a.name_lower.cmp(&b.name_lower)
+        }
+    })
 }
 
 pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
@@ -108,6 +115,7 @@ mod tests {
             permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
+            sort_key: super::super::diacritic_sort_key(&name.to_lowercase()),
             path: std::path::PathBuf::from(format!("/t/{name}")),
             identity: super::super::ListingIdentity::Unavailable,
             is_dir,
@@ -170,6 +178,23 @@ mod tests {
         assert_eq!(sorted(entries(), natural), ["f2.txt", "f10.txt"]);
         let plain = natural.with_natural_name_sort(false);
         assert_eq!(sorted(entries(), plain), ["f10.txt", "f2.txt"]);
+    }
+
+    #[test]
+    fn name_sort_folds_diacritics_before_codepoint_tiebreaks() {
+        let entries = || {
+            vec![
+                named("zebra", false, 1),
+                named("École", false, 1),
+                named("Ärger", false, 1),
+            ]
+        };
+        let natural = ViewConfig::default().with_sort(SortColumn::Name, SortOrder::Asc);
+        assert_eq!(sorted(entries(), natural), ["Ärger", "École", "zebra"]);
+        assert_eq!(
+            sorted(entries(), natural.with_natural_name_sort(false)),
+            ["Ärger", "École", "zebra"]
+        );
     }
 
     #[test]

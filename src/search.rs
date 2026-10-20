@@ -1251,6 +1251,7 @@ pub fn synthetic_entry(
     Some(FileEntry {
         permissions: None,
         name_lower: name.to_lowercase(),
+        sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
         name,
         path,
         identity: crate::panel::ListingIdentity::Unavailable,
@@ -1343,6 +1344,9 @@ mod tests {
             permissions: None,
             name: path.file_name().unwrap().to_string_lossy().to_string(),
             name_lower: path.file_name().unwrap().to_string_lossy().to_lowercase(),
+            sort_key: crate::panel::diacritic_sort_key(
+                &path.file_name().unwrap().to_string_lossy().to_lowercase(),
+            ),
             extension: path
                 .extension()
                 .map(|extension| extension.to_string_lossy().to_lowercase())

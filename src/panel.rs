@@ -136,6 +136,8 @@ pub enum ListingIdentity {
 pub struct FileEntry {
     pub name: String,
     pub name_lower: String,
+    /// Lowercase NFD name without combining marks, computed once at listing.
+    pub sort_key: String,
     pub path: PathBuf,
     /// Lexical filesystem binding captured with the listing the user sees.
     /// Operations must not re-observe it synchronously on the UI thread.
@@ -174,9 +176,11 @@ impl FileEntry {
             format_size(size)
         };
         let name_lower = name.to_lowercase();
+        let sort_key = diacritic_sort_key(&name_lower);
         Some(Self {
             name,
             name_lower,
+            sort_key,
             identity: ListingIdentity::Captured(crate::path_identity::PathIdentity::from_metadata(
                 path.clone(),
                 meta,
@@ -268,6 +272,14 @@ impl FileEntry {
     pub fn modified_display(&self) -> &str {
         &self.modified_str
     }
+}
+
+pub fn diacritic_sort_key(name_lower: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name_lower
+        .nfd()
+        .filter(|character| !unicode_normalization::char::is_combining_mark(*character))
+        .collect()
 }
 
 /// Listing date for a modification time, or `None` when chrono cannot
@@ -1791,6 +1803,7 @@ mod tests {
             permissions: None,
             name: name.to_string(),
             name_lower: name.to_lowercase(),
+            sort_key: diacritic_sort_key(&name.to_lowercase()),
             path: PathBuf::from(format!("/test/{name}")),
             identity: ListingIdentity::Unavailable,
             is_dir,

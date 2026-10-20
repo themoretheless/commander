@@ -671,6 +671,7 @@ mod tests {
         crate::panel::FileEntry {
             permissions: None,
             name_lower: name.to_lowercase(),
+            sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
             name,
             path,
             identity: crate::panel::ListingIdentity::Unavailable,
