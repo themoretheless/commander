@@ -227,9 +227,12 @@ fn resume_block_reason(
     record: &crate::operation_journal::OperationRecord,
     scanning: bool,
     transfer_busy: bool,
+    preparing: bool,
 ) -> Option<&'static str> {
     if scanning {
         Some("Wait for the recovery scan to finish")
+    } else if preparing {
+        Some("Wait for recovery preparation to finish")
     } else if !record.status.recoverable() {
         Some("Nothing left to resume")
     } else if transfer_busy {
@@ -677,6 +680,57 @@ impl App {
     pub(crate) fn poll_recovery(&mut self, ctx: &egui::Context) {
         self.recovery.poll_scan();
         self.recovery.poll_repair();
+        let resume_result =
+            self.recovery
+                .resume_rx
+                .as_ref()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(Ok(result)),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(())),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                });
+        if let Some(result) = resume_result {
+            self.recovery.resume_rx = None;
+            let operation_id = self.recovery.preparing_resume.take();
+            match (result, operation_id) {
+                (Ok(result), Some(operation_id)) if result.operation_id == operation_id => {
+                    let repaint = ctx.clone();
+                    match self
+                        .ws
+                        .finish_resume_recovery(&operation_id, result.spec, move || {
+                            repaint.request_repaint()
+                        }) {
+                        Ok(count) => {
+                            let message = resume_message(count);
+                            self.recovery.rescan_after_resume = true;
+                            self.assistive_timeline.note_recovery(
+                                Some(operation_id),
+                                message.clone(),
+                                super::frame_millis(ctx),
+                            );
+                            self.push_recovery_toast(ctx, message, false);
+                        }
+                        Err(error) => {
+                            self.recovery.outcome = None;
+                            self.recovery.error = Some(error);
+                        }
+                    }
+                }
+                (_, Some(operation_id)) => {
+                    self.ws.cancel_resume_recovery(&operation_id);
+                    self.recovery.outcome = None;
+                    self.recovery.error = Some(
+                        "Recovery preparation stopped before returning a matching result"
+                            .to_string(),
+                    );
+                }
+                _ => {
+                    self.recovery.outcome = None;
+                    self.recovery.error =
+                        Some("Recovery preparation stopped unexpectedly".to_string());
+                }
+            }
+        }
         if self.recovery.rescan_after_resume
             && !self.recovery.scanning
             && !self.ws.has_unfinished_transfer_work()
@@ -684,7 +738,10 @@ impl App {
             self.recovery.rescan_after_resume = false;
             self.recovery.start_scan(&self.ws);
         }
-        if self.recovery.scanning || self.recovery.repair_rx.is_some() {
+        if self.recovery.scanning
+            || self.recovery.repair_rx.is_some()
+            || self.recovery.resume_rx.is_some()
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
@@ -718,6 +775,7 @@ impl App {
             },
         );
         let transfer_busy = self.ws.has_unfinished_transfer_work();
+        let preparing_resume = state.resume_rx.is_some();
         let selected_record = state
             .selected
             .as_ref()
@@ -749,6 +807,12 @@ impl App {
                         if state.scanning {
                             ui.label(
                                 egui::RichText::new("Scanning recovery paths")
+                                    .size(9.0)
+                                    .color(t.text_secondary),
+                            );
+                        } else if preparing_resume {
+                            ui.label(
+                                egui::RichText::new("Preparing recovery in background")
                                     .size(9.0)
                                     .color(t.text_secondary),
                             );
@@ -845,6 +909,7 @@ impl App {
                                                     record,
                                                     state.scanning,
                                                     transfer_busy,
+                                                    preparing_resume,
                                                 );
                                                 if ui
                                                     .add_enabled(
@@ -1041,21 +1106,20 @@ impl App {
             }
         }
         if let Some(operation_id) = resume {
-            let repaint = ctx.clone();
-            match self
-                .ws
-                .resume_recovery(&operation_id, move || repaint.request_repaint())
-            {
-                Ok(count) => {
-                    let message = resume_message(count);
-                    state.rescan_after_resume = true;
-                    let now_millis = super::frame_millis(ctx);
-                    self.assistive_timeline.note_recovery(
-                        Some(operation_id.clone()),
-                        message.clone(),
-                        now_millis,
-                    );
-                    self.push_recovery_toast(ctx, message, false);
+            match self.ws.begin_resume_recovery(&operation_id) {
+                Ok(()) => {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let worker_id = operation_id.clone();
+                    std::thread::spawn(move || {
+                        let spec = crate::operation_journal::build_resume_spec(&worker_id);
+                        let _ = sender.send(ResumePreparationResult {
+                            operation_id: worker_id,
+                            spec,
+                        });
+                    });
+                    state.preparing_resume = Some(operation_id);
+                    state.resume_rx = Some(receiver);
+                    state.error = None;
                 }
                 Err(error) => {
                     state.outcome = None;
@@ -1323,17 +1387,21 @@ mod tests {
     fn resume_is_blocked_for_settled_operations_and_a_busy_queue() {
         use crate::operation_journal::OperationStatus;
         let failed = record("op-a");
-        assert_eq!(resume_block_reason(&failed, false, false), None);
-        assert!(resume_block_reason(&failed, true, false).is_some());
+        assert_eq!(resume_block_reason(&failed, false, false, false), None);
+        assert!(resume_block_reason(&failed, true, false, false).is_some());
         assert_eq!(
-            resume_block_reason(&failed, false, true),
+            resume_block_reason(&failed, false, true, false),
             Some("Wait for the transfer queue to finish")
+        );
+        assert_eq!(
+            resume_block_reason(&failed, false, false, true),
+            Some("Wait for recovery preparation to finish")
         );
         for status in [OperationStatus::Completed, OperationStatus::RolledBack] {
             let mut settled = record("op-b");
             settled.status = status;
             assert_eq!(
-                resume_block_reason(&settled, false, false),
+                resume_block_reason(&settled, false, false, false),
                 Some("Nothing left to resume")
             );
         }

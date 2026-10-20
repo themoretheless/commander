@@ -4005,6 +4005,33 @@ fn journal_resume_keeps_the_original_replay_reservation_until_clean_completion()
 }
 
 #[test]
+fn background_recovery_preparation_blocks_mutations_and_releases_on_error() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let mut workspace = workspace(&left, &right);
+    let operation_id = crate::operation::OperationId("background-resume".to_string());
+
+    workspace.begin_resume_recovery(&operation_id).unwrap();
+    assert!(workspace.mutations_blocked());
+    assert!(!workspace.can_request_delete());
+    assert_eq!(
+        workspace.mutation_block_reason("copying files").as_deref(),
+        Some("Wait for recovery preparation before copying files")
+    );
+    assert!(
+        workspace
+            .rollback_recovery(&operation_id)
+            .unwrap_err()
+            .contains("Wait for recovery preparation")
+    );
+
+    let error = workspace
+        .finish_resume_recovery(&operation_id, Err("reconcile failed".to_string()), || {})
+        .unwrap_err();
+    assert_eq!(error, "reconcile failed");
+    assert!(!workspace.mutations_blocked());
+}
+
+#[test]
 fn journal_rollback_aborts_interrupted_replay_without_advancing_the_cursor() {
     let journal = TempDir::new();
     let _journal = crate::operation_journal::use_test_journal(journal.path().join("journal.json"));

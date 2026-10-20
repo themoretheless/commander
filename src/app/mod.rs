@@ -729,6 +729,10 @@ pub struct RecoveryState {
     pub scanning: bool,
     pub repair_loaded: bool,
     pub scan_rx: Option<std::sync::mpsc::Receiver<RecoveryScanResult>>,
+    /// Background reconcile/build started by Resume. The workspace holds a
+    /// mutation gate until this result is consumed.
+    pub resume_rx: Option<std::sync::mpsc::Receiver<ResumePreparationResult>>,
+    pub preparing_resume: Option<crate::operation::OperationId>,
     /// Pending background load of the selected operation's repair plan.
     pub repair_rx: Option<std::sync::mpsc::Receiver<RepairLoadResult>>,
     /// Version-store usage line and when it was read from the on-disk
@@ -748,6 +752,11 @@ pub struct RecoveryOutcome {
 
 pub struct RecoveryScanResult {
     pub inventory: Result<crate::operation_journal::RecoveryInventory, String>,
+}
+
+pub struct ResumePreparationResult {
+    pub operation_id: crate::operation::OperationId,
+    pub spec: Result<crate::transfer::TransferSpec, String>,
 }
 
 pub struct RepairLoadResult {

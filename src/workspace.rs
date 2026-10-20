@@ -363,6 +363,10 @@ pub struct Workspace {
     /// folder, or an image the provider declines), so `sync_preview` does
     /// not retry `make_preview` on every frame while the cursor rests there.
     preview_declined: Option<panel::PreviewIdentity>,
+    /// Operation whose recovery contract is being reconciled off the UI
+    /// thread. Filesystem mutations stay blocked until that contract is
+    /// either queued or rejected.
+    recovery_preparing: Option<crate::operation::OperationId>,
 }
 
 /// `(from, to)` pairs for a Move: each entry goes from its current path to
@@ -718,6 +722,7 @@ impl Workspace {
             nav_lock: false,
             last_command: None,
             preview_declined: None,
+            recovery_preparing: None,
         }
     }
 
@@ -1694,7 +1699,10 @@ impl Workspace {
     /// Callers that present a reason should use [`Self::mutation_block_reason`]
     /// so recovery review and ordinary background activity remain distinct.
     pub const fn mutations_blocked(&self) -> bool {
-        self.safe_state.is_some() || self.deletes.is_active() || self.undo.has_pending_replay()
+        self.safe_state.is_some()
+            || self.deletes.is_active()
+            || self.undo.has_pending_replay()
+            || self.recovery_preparing.is_some()
     }
 
     pub const fn delete_active(&self) -> bool {
@@ -1730,6 +1738,8 @@ impl Workspace {
             Some(format!(
                 "Wait for the current history replay before {action}"
             ))
+        } else if self.recovery_preparing.is_some() {
+            Some(format!("Wait for recovery preparation before {action}"))
         } else {
             None
         }
@@ -1760,12 +1770,25 @@ impl Workspace {
         ]
     }
 
+    #[cfg(test)]
     pub fn resume_recovery(
         &mut self,
         operation_id: &crate::operation::OperationId,
         notify: impl Fn() + Send + 'static,
     ) -> Result<usize, String> {
+        self.begin_resume_recovery(operation_id)?;
+        let spec = crate::operation_journal::build_resume_spec(operation_id);
+        self.finish_resume_recovery(operation_id, spec, notify)
+    }
+
+    pub fn begin_resume_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+    ) -> Result<(), String> {
         self.ensure_matching_recovery_review(operation_id)?;
+        if self.recovery_preparing.is_some() {
+            return Err("Another recovery operation is already being prepared".to_string());
+        }
         if self.deletes.is_active() {
             return Err(
                 "Wait for the current Trash operation before resuming recovery".to_string(),
@@ -1774,11 +1797,28 @@ impl Workspace {
         if self.has_unfinished_transfer_work() {
             return Err("Wait for the transfer queue before resuming recovery".to_string());
         }
+        self.recovery_preparing = Some(operation_id.clone());
+        Ok(())
+    }
+
+    pub fn finish_resume_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+        spec: Result<crate::transfer::TransferSpec, String>,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<usize, String> {
+        if self.recovery_preparing.as_ref() != Some(operation_id) {
+            return Err(
+                "Recovery preparation result no longer matches the active operation".to_string(),
+            );
+        }
+        self.recovery_preparing = None;
+        let spec = spec?;
+        self.ensure_matching_recovery_review(operation_id)?;
         let replay = self
             .undo
             .interrupted_reservation_for(operation_id)
             .map_err(|error| error.to_string())?;
-        let spec = crate::operation_journal::build_resume_spec(operation_id)?;
         let count = spec.entries.len();
         self.acknowledge_safe_state();
         if let Some(reservation) = replay {
@@ -1790,11 +1830,22 @@ impl Workspace {
         Ok(count)
     }
 
+    pub fn cancel_resume_recovery(&mut self, operation_id: &crate::operation::OperationId) {
+        if self.recovery_preparing.as_ref() == Some(operation_id) {
+            self.recovery_preparing = None;
+        }
+    }
+
     pub fn rollback_recovery(
         &mut self,
         operation_id: &crate::operation::OperationId,
     ) -> Result<crate::operation_journal::RepairPlan, String> {
         self.ensure_matching_recovery_review(operation_id)?;
+        if self.recovery_preparing.is_some() {
+            return Err(
+                "Wait for recovery preparation before rolling back another operation".to_string(),
+            );
+        }
         if self.deletes.is_active() {
             return Err(
                 "Wait for the current Trash operation before rolling back recovery".to_string(),
