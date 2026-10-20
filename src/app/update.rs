@@ -1240,6 +1240,12 @@ impl App {
         if right_listing || right_fs {
             invalidate_tree_children(&mut self.tree_children_cache, &self.ws.right.current_path);
         }
+        if let Some(outcome) = self.ws.left.take_view_apply_outcome() {
+            self.apply_hidden_files_outcome(outcome, ctx);
+        }
+        if let Some(outcome) = self.ws.right.take_view_apply_outcome() {
+            self.apply_hidden_files_outcome(outcome, ctx);
+        }
         if !self.ws.left.watcher_active() || !self.ws.right.watcher_active() {
             ctx.request_repaint_after(crate::panel::WATCHER_RETRY_BACKOFF);
         }
@@ -1448,6 +1454,7 @@ impl App {
         ctx: &egui::Context,
     ) {
         match outcome {
+            crate::panel::ViewApplyOutcome::Pending => {}
             crate::panel::ViewApplyOutcome::Applied => {
                 self.tree_children_cache.clear();
             }

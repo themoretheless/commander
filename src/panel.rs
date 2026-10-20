@@ -91,6 +91,7 @@ pub enum DirStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum ViewApplyOutcome {
+    Pending,
     Applied,
     ReadRejected(DirStatus),
 }
@@ -533,6 +534,8 @@ pub struct PanelState {
     watcher: DirectoryWatcherState,
     pub drag: DragState,
     listing_job: ListingJobController,
+    pending_view_config: Option<ViewConfig>,
+    view_apply_outcome: Option<ViewApplyOutcome>,
     workload: Option<crate::workload::WorkloadHandle>,
     /// Why the most recent listing refresh landed (path-free, research J007).
     pub change_provenance: crate::change_provenance::RowProvenance,
@@ -569,6 +572,8 @@ impl PanelState {
             watcher: DirectoryWatcherState::default(),
             drag: DragState::new(),
             listing_job: ListingJobController::default(),
+            pending_view_config: None,
+            view_apply_outcome: None,
             workload: None,
             change_provenance: crate::change_provenance::RowProvenance::default(),
             pending_visit: None,
@@ -805,6 +810,20 @@ impl PanelState {
             .config()
             .with_show_hidden(!self.view.show_hidden());
         let path = self.current_path.clone();
+        if self.can_async_list() {
+            self.sizes.bind(&path);
+            self.watcher.ensure_binding(&path);
+            let ticket = self.watcher.snapshot_ticket();
+            self.pending_view_config = Some(candidate);
+            self.view_apply_outcome = None;
+            self.listing_job
+                .request(path, candidate.show_hidden(), ticket, PendingFocus::None);
+            let _ = self.poll_listing_results();
+            return self
+                .view_apply_outcome
+                .take()
+                .unwrap_or(ViewApplyOutcome::Pending);
+        }
         let ticket = self.watcher.snapshot_ticket_for(&path);
         let (entries, hidden) = match Self::read_dir(&path, candidate.show_hidden()) {
             DirectoryRead::Complete(entries) => (entries, 0),
@@ -869,6 +888,8 @@ impl PanelState {
     }
 
     fn schedule_listing(&mut self, focus: PendingFocus) {
+        self.pending_view_config = None;
+        self.view_apply_outcome = None;
         let path = self.current_path.clone();
         let show_hidden = self.view.show_hidden();
         let binding_changed = self.listing.binding() != path;
@@ -903,8 +924,11 @@ impl PanelState {
         let Some(ready) = self.listing_job.take_ready() else {
             return false;
         };
+        let intended_config = self
+            .pending_view_config
+            .unwrap_or_else(|| self.view.config());
         if ready.binding.path != self.current_path
-            || ready.binding.show_hidden != self.view.show_hidden()
+            || ready.binding.show_hidden != intended_config.show_hidden()
             || self
                 .listing_job
                 .desired_binding()
@@ -912,6 +936,31 @@ impl PanelState {
         {
             // Stale relative to panel intent; keep waiting for the current job.
             return false;
+        }
+        if let Some(candidate) = self.pending_view_config.take() {
+            match ready.read {
+                DirectoryRead::Complete(entries) => {
+                    self.view.commit_config(candidate);
+                    self.publish_complete_listing(entries, 0, candidate);
+                    self.commit_snapshot(ready.ticket, ready.forced_sizes);
+                    self.apply_pending_focus(ready.focus);
+                    self.view_apply_outcome = Some(ViewApplyOutcome::Applied);
+                    return true;
+                }
+                DirectoryRead::OnlyHidden(hidden) => {
+                    self.view.commit_config(candidate);
+                    self.publish_complete_listing(Vec::new(), hidden, candidate);
+                    self.commit_snapshot(ready.ticket, ready.forced_sizes);
+                    self.apply_pending_focus(ready.focus);
+                    self.view_apply_outcome = Some(ViewApplyOutcome::Applied);
+                    return true;
+                }
+                DirectoryRead::Incomplete(status) => {
+                    self.watcher.defer_snapshot(ready.ticket.as_ref());
+                    self.view_apply_outcome = Some(ViewApplyOutcome::ReadRejected(status));
+                    return false;
+                }
+            }
         }
         let applied = self.apply_directory_read(ready.read);
         if applied {
@@ -929,6 +978,10 @@ impl PanelState {
             let _ = ready.focus;
         }
         applied
+    }
+
+    pub fn take_view_apply_outcome(&mut self) -> Option<ViewApplyOutcome> {
+        self.view_apply_outcome.take()
     }
 
     /// A complete listing was published: acknowledge the watcher snapshot it
@@ -2588,6 +2641,29 @@ mod tests {
         assert_eq!(panel.entries().len(), 2);
         assert_eq!(panel.entries_gen(), before_revision + 1);
         assert_eq!(panel.cursor_entry().unwrap().path, focused);
+    }
+
+    #[test]
+    fn async_hidden_toggle_keeps_the_old_view_until_the_listing_lands() {
+        let root = TempDir::new();
+        root.file("visible.txt", "v");
+        root.file(".hidden.txt", "h");
+        let mut panel = PanelState::new(root.path().to_path_buf());
+        panel.refresh();
+        let workload = deterministic_listings(&mut panel);
+
+        assert_eq!(panel.toggle_hidden(), ViewApplyOutcome::Pending);
+        assert!(!panel.show_hidden());
+        assert_eq!(panel.entries().len(), 1);
+
+        assert!(workload.run_next());
+        assert!(panel.poll_listing());
+        assert!(panel.show_hidden());
+        assert_eq!(panel.entries().len(), 2);
+        assert_eq!(
+            panel.take_view_apply_outcome(),
+            Some(ViewApplyOutcome::Applied)
+        );
     }
 
     #[test]
@@ -4815,16 +4891,20 @@ mod tests {
         let workload = deterministic_listings(&mut p);
 
         // A background re-read starts with hidden files off, then the user
-        // shows them before it lands.
+        // requests hidden files before it lands. Neither result may publish
+        // under the other's view configuration.
         p.refresh();
-        assert_eq!(p.toggle_hidden(), ViewApplyOutcome::Applied);
-        assert!(p.entries().iter().any(|entry| entry.path == hidden));
+        assert_eq!(p.toggle_hidden(), ViewApplyOutcome::Pending);
+        assert!(!p.entries().iter().any(|entry| entry.path == hidden));
         let revision = p.entries_gen();
 
         assert!(workload.run_next());
-        assert!(!p.poll_listing(), "the stale read is dropped");
+        assert!(
+            p.poll_listing(),
+            "the cancelled stale read is skipped and the current hidden read is applied"
+        );
         assert!(p.entries().iter().any(|entry| entry.path == hidden));
-        assert_eq!(p.entries_gen(), revision);
+        assert_eq!(p.entries_gen(), revision + 1);
     }
 
     #[test]
