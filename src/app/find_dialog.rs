@@ -51,6 +51,17 @@ fn pivot_order(
     indices
 }
 
+fn move_result_highlight(current: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(if down {
+        current.map_or(0, |row| (row + 1).min(len - 1))
+    } else {
+        current.map_or(len - 1, |row| row.saturating_sub(1))
+    })
+}
+
 const fn index_phase_label(phase: crate::content_index::IndexPhase) -> &'static str {
     match phase {
         crate::content_index::IndexPhase::Disabled => "Off",
@@ -381,6 +392,8 @@ impl App {
             state.error = index_refusal;
             state.pending_rerun = false;
             state.explanation_open = None;
+            state.highlighted_result = None;
+            state.highlight_scroll_pending = false;
         }
     }
 
@@ -391,6 +404,8 @@ impl App {
             state.pending_rerun = true;
             state.last_edit_at = ctx.input(|input| input.time);
             state.error = None;
+            state.highlighted_result = None;
+            state.highlight_scroll_pending = false;
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
@@ -540,11 +555,49 @@ impl App {
                     if Self::take_modal_opened(ui.ctx(), UiModal::Find) {
                         response.request_focus();
                     }
-                    edited |= response.changed();
+                    if response.changed() {
+                        state.highlighted_result = None;
+                        edited = true;
+                    }
+                    if response.has_focus()
+                        && ui.input_mut(|input| {
+                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                        })
+                        && !state.results.is_empty()
+                    {
+                        state.highlighted_result = move_result_highlight(
+                            state.highlighted_result,
+                            state.results.len(),
+                            true,
+                        );
+                        state.highlight_scroll_pending = true;
+                    }
+                    if response.has_focus()
+                        && ui.input_mut(|input| {
+                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                        })
+                        && !state.results.is_empty()
+                    {
+                        state.highlighted_result = move_result_highlight(
+                            state.highlighted_result,
+                            state.results.len(),
+                            false,
+                        );
+                        state.highlight_scroll_pending = true;
+                    }
                     if response.lost_focus()
                         && ui.input(|input| input.key_pressed(egui::Key::Enter))
                     {
-                        run_now = true;
+                        if let Some(row) = state.highlighted_result {
+                            let order =
+                                pivot_order(&state.results, state.time_pivot, SystemTime::now());
+                            reveal = order
+                                .get(row)
+                                .and_then(|&index| state.results.get(index))
+                                .map(|hit| hit.reveal_path().to_path_buf());
+                        } else {
+                            run_now = true;
+                        }
                         // A single-line field gives up focus on Enter; keep
                         // it so the query can be refined right away.
                         response.request_focus();
@@ -858,110 +911,119 @@ impl App {
                     let row_height = result_row_height(pivot != crate::search::TimePivot::None);
                     let root = state.root.clone();
                     let open_explanation = state.explanation_open.clone();
-                    egui::ScrollArea::vertical()
+                    state.highlighted_result =
+                        state.highlighted_result.filter(|&row| row < indices.len());
+                    let mut results_scroll = egui::ScrollArea::vertical()
                         .id_salt("search-results")
                         .auto_shrink([false, false])
-                        .max_height((ui.available_height() - 90.0).max(140.0))
-                        .show_rows(ui, row_height, indices.len(), |ui, rows| {
-                            for row in rows {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(ui.available_width(), row_height),
-                                    Layout::top_down(Align::Min),
-                                    |ui| {
-                                        ui.set_min_height(row_height);
-                                        let index = indices[row];
-                                        let hit = &state.results[index];
-                                        let key = explain_key(hit);
-                                        let path = hit.reveal_path().to_path_buf();
-                                        let relative = hit.relative_to(&root).display().to_string();
-                                        let size = if hit.entry.is_dir {
-                                            String::new()
-                                        } else {
-                                            format_size(hit.entry.size)
-                                        };
-                                        let explanation = hit.explanation.summary();
-                                        if pivot != crate::search::TimePivot::None {
-                                            let bucket =
-                                                crate::search::time_bucket(hit, pivot, clock);
-                                            let previous = row.checked_sub(1).map(|prior_row| {
-                                                crate::search::time_bucket(
-                                                    &state.results[indices[prior_row]],
-                                                    pivot,
-                                                    clock,
-                                                )
-                                            });
-                                            if previous != Some(bucket) {
-                                                ui.label(
-                                                    egui::RichText::new(bucket.label())
-                                                        .size(10.0)
-                                                        .strong()
-                                                        .color(t.text_muted),
-                                                );
-                                            } else {
-                                                ui.add_space(12.0);
-                                            }
-                                        } else {
-                                            ui.add_space(4.0);
-                                        }
-                                        ui.horizontal(|ui| {
-                                            let response = ui
-                                                .add_sized(
-                                                    [ui.available_width() - 92.0, 22.0],
-                                                    egui::Label::new(
-                                                        egui::RichText::new(&relative)
-                                                            .size(12.0)
-                                                            .color(t.text_secondary),
-                                                    )
-                                                    .truncate()
-                                                    .sense(Sense::click()),
-                                                )
-                                                .on_hover_text(
-                                                    "Click to show in the panel, double-click \
-                                                     to open",
-                                                );
-                                            response.widget_info(|| {
-                                                egui::WidgetInfo::labeled(
-                                                    egui::WidgetType::Button,
-                                                    true,
-                                                    format!("Reveal {relative}"),
-                                                )
-                                            });
-                                            if response.double_clicked() && !hit.entry.is_dir {
-                                                open_path = Some(path.clone());
-                                            }
-                                            if response.clicked() {
-                                                reveal = Some(path);
-                                            }
+                        .max_height((ui.available_height() - 90.0).max(140.0));
+                    if state.highlight_scroll_pending {
+                        let offset = state.highlighted_result.unwrap_or(0) as f32 * row_height;
+                        results_scroll = results_scroll.vertical_scroll_offset(offset);
+                        state.highlight_scroll_pending = false;
+                    }
+                    results_scroll.show_rows(ui, row_height, indices.len(), |ui, rows| {
+                        for row in rows {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), row_height),
+                                Layout::top_down(Align::Min),
+                                |ui| {
+                                    ui.set_min_height(row_height);
+                                    let index = indices[row];
+                                    let hit = &state.results[index];
+                                    let key = explain_key(hit);
+                                    let path = hit.reveal_path().to_path_buf();
+                                    let relative = hit.relative_to(&root).display().to_string();
+                                    let size = if hit.entry.is_dir {
+                                        String::new()
+                                    } else {
+                                        format_size(hit.entry.size)
+                                    };
+                                    let explanation = hit.explanation.summary();
+                                    if pivot != crate::search::TimePivot::None {
+                                        let bucket = crate::search::time_bucket(hit, pivot, clock);
+                                        let previous = row.checked_sub(1).map(|prior_row| {
+                                            crate::search::time_bucket(
+                                                &state.results[indices[prior_row]],
+                                                pivot,
+                                                clock,
+                                            )
+                                        });
+                                        if previous != Some(bucket) {
                                             ui.label(
-                                                egui::RichText::new(size)
+                                                egui::RichText::new(bucket.label())
                                                     .size(10.0)
+                                                    .strong()
                                                     .color(t.text_muted),
                                             );
-                                            let explaining =
-                                                open_explanation.as_ref() == Some(&key);
-                                            let why = ui
-                                                .add(
-                                                    egui::Button::selectable(explaining, "?")
-                                                        .small(),
+                                        } else {
+                                            ui.add_space(12.0);
+                                        }
+                                    } else {
+                                        ui.add_space(4.0);
+                                    }
+                                    ui.horizontal(|ui| {
+                                        let response = ui
+                                            .add_sized(
+                                                [ui.available_width() - 92.0, 22.0],
+                                                egui::Label::new(
+                                                    egui::RichText::new(&relative)
+                                                        .size(12.0)
+                                                        .color(t.text_secondary)
+                                                        .background_color(
+                                                            if state.highlighted_result == Some(row)
+                                                            {
+                                                                ui.visuals().selection.bg_fill
+                                                            } else {
+                                                                egui::Color32::TRANSPARENT
+                                                            },
+                                                        ),
                                                 )
-                                                .on_hover_text(&explanation);
-                                            why.widget_info(|| {
-                                                egui::WidgetInfo::selected(
-                                                    egui::WidgetType::Button,
-                                                    true,
-                                                    explaining,
-                                                    format!("Why matched: {relative}"),
-                                                )
-                                            });
-                                            if why.clicked() {
-                                                explanation_change =
-                                                    Some((!explaining).then_some(key));
-                                            }
+                                                .truncate()
+                                                .sense(Sense::click()),
+                                            )
+                                            .on_hover_text(
+                                                "Click to show in the panel, double-click \
+                                                     to open",
+                                            );
+                                        response.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::WidgetType::Button,
+                                                true,
+                                                format!("Reveal {relative}"),
+                                            )
                                         });
-                                    },
-                                );
-                            }
-                        });
+                                        if response.double_clicked() && !hit.entry.is_dir {
+                                            open_path = Some(path.clone());
+                                        }
+                                        if response.clicked() {
+                                            reveal = Some(path);
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(size)
+                                                .size(10.0)
+                                                .color(t.text_muted),
+                                        );
+                                        let explaining = open_explanation.as_ref() == Some(&key);
+                                        let why = ui
+                                            .add(egui::Button::selectable(explaining, "?").small())
+                                            .on_hover_text(&explanation);
+                                        why.widget_info(|| {
+                                            egui::WidgetInfo::selected(
+                                                egui::WidgetType::Button,
+                                                true,
+                                                explaining,
+                                                format!("Why matched: {relative}"),
+                                            )
+                                        });
+                                        if why.clicked() {
+                                            explanation_change = Some((!explaining).then_some(key));
+                                        }
+                                    });
+                                },
+                            );
+                        }
+                    });
 
                     if state.ran
                         && !state.searching()
@@ -1231,7 +1293,8 @@ mod tests {
     use super::FindState;
     use super::{
         add_smart_folder, explain_key, explained_hit, history_row_label, index_build_refusal,
-        index_skipped_summary, pivot_order, result_row_height, search_root_error,
+        index_skipped_summary, move_result_highlight, pivot_order, result_row_height,
+        search_root_error,
     };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -1370,6 +1433,16 @@ mod tests {
         // 4px gap + 22px row is exactly the plain height.
         assert!(result_row_height(true) >= 12.0 + 22.0);
         assert_eq!(result_row_height(false), 4.0 + 22.0);
+    }
+
+    #[test]
+    fn result_highlight_starts_at_an_edge_and_stays_in_bounds() {
+        assert_eq!(move_result_highlight(None, 0, true), None);
+        assert_eq!(move_result_highlight(None, 3, true), Some(0));
+        assert_eq!(move_result_highlight(None, 3, false), Some(2));
+        assert_eq!(move_result_highlight(Some(2), 3, true), Some(2));
+        assert_eq!(move_result_highlight(Some(0), 3, false), Some(0));
+        assert_eq!(move_result_highlight(Some(1), 3, true), Some(2));
     }
 
     #[test]

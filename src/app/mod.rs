@@ -459,6 +459,9 @@ pub struct FindState {
     /// location: hard links share an identity, so identity alone would open
     /// the first link's explanation for every link.
     pub explanation_open: Option<find_dialog::ExplainKey>,
+    /// Display-order row selected with Up/Down while the query field owns focus.
+    pub highlighted_result: Option<usize>,
+    pub highlight_scroll_pending: bool,
     pub pending_rerun: bool,
     pub last_edit_at: f64,
     pub search_source: String,
@@ -521,6 +524,8 @@ impl Default for FindState {
             time_pivot: crate::search::TimePivot::None,
             history_open: false,
             explanation_open: None,
+            highlighted_result: None,
+            highlight_scroll_pending: false,
             pending_rerun: false,
             last_edit_at: 0.0,
             search_source: "Live".to_string(),
