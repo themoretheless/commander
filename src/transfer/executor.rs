@@ -1211,7 +1211,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                         FailureClass::IntegrityUncertain,
                                         Some(landing.clone()),
                                         message,
-                                    ),
+                                    )
+                                    .with_residual_effect(),
                                 );
                             }
                             true
@@ -1229,7 +1230,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                         format!(
                                             "failed placement left an uncommitted version record: {error}"
                                         ),
-                                    ),
+                                    )
+                                    .with_residual_effect(),
                                 );
                             }
                             // The swap left the staged data at `copy_target`. For a
@@ -1285,7 +1287,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                                 format!(
                                     "destination is complete but source cleanup failed: {error}"
                                 ),
-                            ),
+                            )
+                            .with_residual_effect(),
                         );
                     }
                 }
@@ -1302,7 +1305,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                             format!(
                                 "destination is placed but source namespace could not be synced: {error}"
                             ),
-                        ),
+                        )
+                        .with_residual_effect(),
                     );
                 }
 
@@ -1409,24 +1413,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
             let post_success = run_post_success(spec.post_success.as_ref(), &progress);
             let finalization = FinalizationOutcome::Reached(post_success);
             prepare_terminal_progress(&progress, finalization);
-            let status = {
-                let state = crate::lock_util::recover(&progress);
-                if failure_rollback == FailureRollback::Complete {
-                    crate::operation_journal::OperationStatus::RolledBack
-                } else if state
-                    .failures
-                    .iter()
-                    .any(|failure| failure.class == FailureClass::IntegrityUncertain)
-                {
-                    crate::operation_journal::OperationStatus::NeedsReview
-                } else if state.cancelled || state.stopped {
-                    crate::operation_journal::OperationStatus::Stopped
-                } else if !state.errors.is_empty() {
-                    crate::operation_journal::OperationStatus::Failed
-                } else {
-                    crate::operation_journal::OperationStatus::Completed
-                }
-            };
+            let status =
+                terminal_operation_status(&crate::lock_util::recover(&progress), failure_rollback);
             finalize_and_publish(&terminal, &progress, journal_enabled, status);
             terminal_guard.disarm();
             notify();
@@ -1628,6 +1616,29 @@ pub(super) enum FailureRollback {
     NotRequested,
     Complete,
     Incomplete,
+}
+
+fn terminal_operation_status(
+    state: &super::TransferProgress,
+    failure_rollback: FailureRollback,
+) -> crate::operation_journal::OperationStatus {
+    if state.failures.iter().any(|failure| failure.residual_effect) {
+        crate::operation_journal::OperationStatus::NeedsReview
+    } else if failure_rollback == FailureRollback::Complete {
+        crate::operation_journal::OperationStatus::RolledBack
+    } else if state
+        .failures
+        .iter()
+        .any(|failure| failure.class == FailureClass::IntegrityUncertain)
+    {
+        crate::operation_journal::OperationStatus::NeedsReview
+    } else if state.cancelled || state.stopped {
+        crate::operation_journal::OperationStatus::Stopped
+    } else if !state.errors.is_empty() {
+        crate::operation_journal::OperationStatus::Failed
+    } else {
+        crate::operation_journal::OperationStatus::Completed
+    }
 }
 
 pub(super) fn run_failure_rollback(
@@ -1981,7 +1992,8 @@ fn report_undo_residue(progress: &TransferState, entry_name: &str, staged: &Path
             FailureClass::IntegrityUncertain,
             Some(staged.to_path_buf()),
             message,
-        ),
+        )
+        .with_residual_effect(),
     );
 }
 
@@ -2997,6 +3009,34 @@ mod tests {
                 && failure.path.as_deref() == Some(landing.as_path())
                 && failure.message.contains("outside its operation container")
         }));
+    }
+
+    #[test]
+    fn complete_failure_rollback_distinguishes_refusals_from_residual_effects() {
+        let mut clean = super::super::TransferProgress::new(0, 0);
+        clean.failures.push(ClassifiedFailure::message(
+            FailureClass::IntegrityUncertain,
+            None,
+            "preflight could not prove an untouched source",
+        ));
+        assert_eq!(
+            terminal_operation_status(&clean, FailureRollback::Complete),
+            crate::operation_journal::OperationStatus::RolledBack
+        );
+
+        let mut residual = clean;
+        residual.failures.push(
+            ClassifiedFailure::message(
+                FailureClass::IntegrityUncertain,
+                Some(PathBuf::from("leftover")),
+                "staging could not be restored",
+            )
+            .with_residual_effect(),
+        );
+        assert_eq!(
+            terminal_operation_status(&residual, FailureRollback::Complete),
+            crate::operation_journal::OperationStatus::NeedsReview
+        );
     }
 
     #[test]

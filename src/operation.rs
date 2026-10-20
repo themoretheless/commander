@@ -129,6 +129,8 @@ pub struct ClassifiedFailure {
     pub class: FailureClass,
     pub message: String,
     pub path: Option<PathBuf>,
+    #[serde(default)]
+    pub residual_effect: bool,
 }
 
 impl ClassifiedFailure {
@@ -160,6 +162,7 @@ impl ClassifiedFailure {
             class,
             message: format!("{context}: {error}"),
             path,
+            residual_effect: false,
         }
     }
 
@@ -168,7 +171,13 @@ impl ClassifiedFailure {
             class,
             message: message.into(),
             path,
+            residual_effect: false,
         }
+    }
+
+    pub const fn with_residual_effect(mut self) -> Self {
+        self.residual_effect = true;
+        self
     }
 }
 
