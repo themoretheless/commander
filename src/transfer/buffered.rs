@@ -238,10 +238,13 @@ fn persist_checkpoint(
     checkpoints: &mut Option<&mut dyn CheckpointSink>,
 ) -> std::io::Result<()> {
     writer.flush()?;
-    writer.get_ref().sync_data()?;
     let Some(checkpoints) = checkpoints.as_deref_mut() else {
         return Ok(());
     };
+    // A durable checkpoint must never name bytes that are still only in the
+    // OS cache. Tree children pass no sink and cannot be resumed separately;
+    // their enclosing Verified/Versioned receipt syncs the staged tree once.
+    writer.get_ref().sync_data()?;
     checkpoints.publish(ResumeCheckpoint::observe(
         src,
         dst,
