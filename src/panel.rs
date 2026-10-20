@@ -43,6 +43,7 @@ pub use size_index::SizeSnapshot;
 use size_index::{SizeIndex, SizeScanInput};
 use sort::natural_cmp;
 use sort::sort_entries;
+use sort::sort_entries_with_sizes;
 pub use view::ViewConfig;
 use view::{ViewSettings, ViewState};
 #[allow(unused_imports)]
@@ -554,6 +555,7 @@ pub struct PanelState {
     /// A navigation target whose Recent entry waits for its listing: it is
     /// recorded when the read resolves, and dropped when the folder is gone.
     pending_visit: Option<PathBuf>,
+    last_size_sort_revision: u64,
 }
 
 impl PanelState {
@@ -589,6 +591,7 @@ impl PanelState {
             workload: None,
             change_provenance: crate::change_provenance::RowProvenance::default(),
             pending_visit: None,
+            last_size_sort_revision: 0,
         }
     }
 
@@ -1187,6 +1190,7 @@ impl PanelState {
             show_hidden: self.view.show_hidden(),
         };
         self.sizes.poll(input);
+        self.resort_when_directory_sizes_settle();
     }
     pub(super) fn read_dir(path: &Path, show_hidden: bool) -> DirectoryRead {
         let entries = match fs::read_dir(path) {
@@ -1273,11 +1277,36 @@ impl PanelState {
     }
 
     fn sort_entries(&mut self) {
+        let sizes = self.sizes.snapshot();
         self.preserving_focus(|panel| {
             let config = panel.view.config();
             panel
                 .listing
-                .resort(|entries| sort_entries(entries, config));
+                .resort(|entries| sort_entries_with_sizes(entries, config, Some(sizes.as_ref())));
+        });
+    }
+
+    fn resort_when_directory_sizes_settle(&mut self) {
+        if self.view.sort_col() != SortColumn::Size {
+            return;
+        }
+        let sizes = self.sizes.snapshot();
+        if sizes.revision() == self.last_size_sort_revision
+            || self
+                .listing
+                .entries()
+                .iter()
+                .filter(|entry| entry.is_dir)
+                .any(|entry| sizes.size_of(&entry.path).is_none())
+        {
+            return;
+        }
+        self.last_size_sort_revision = sizes.revision();
+        self.preserving_focus(|panel| {
+            let config = panel.view.config();
+            panel
+                .listing
+                .resort(|entries| sort_entries_with_sizes(entries, config, Some(sizes.as_ref())));
         });
     }
 

@@ -54,6 +54,15 @@ impl SizeSnapshot {
             entry.size
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn from_sizes(sizes: impl IntoIterator<Item = (PathBuf, u64)>) -> Self {
+        Self {
+            revision: 1,
+            sizes: sizes.into_iter().collect(),
+            counts: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Clone)]

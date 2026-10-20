@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use super::{FileEntry, SortColumn, SortOrder, ViewConfig};
+use super::{FileEntry, SizeSnapshot, SortColumn, SortOrder, ViewConfig};
 
 /// Natural ("human") ordering: runs of digits compare by numeric value, so
 /// "file2" sorts before "file10". Inputs are expected pre-lowercased.
@@ -76,6 +76,14 @@ fn name_cmp(a: &FileEntry, b: &FileEntry, config: ViewConfig) -> Ordering {
 }
 
 pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
+    sort_entries_with_sizes(entries, config, None);
+}
+
+pub(super) fn sort_entries_with_sizes(
+    entries: &mut [FileEntry],
+    config: ViewConfig,
+    sizes: Option<&SizeSnapshot>,
+) {
     entries.sort_by(|a, b| {
         if config.folders_first() {
             match (a.is_dir, b.is_dir) {
@@ -87,7 +95,9 @@ pub(super) fn sort_entries(entries: &mut [FileEntry], config: ViewConfig) {
 
         let primary = match config.sort_column() {
             SortColumn::Name => name_cmp(a, b, config),
-            SortColumn::Size => a.size.cmp(&b.size),
+            SortColumn::Size => sizes
+                .map_or(a.size, |sizes| sizes.display_size(a))
+                .cmp(&sizes.map_or(b.size, |sizes| sizes.display_size(b))),
             SortColumn::Modified => a.modified.cmp(&b.modified),
             SortColumn::Extension => a.extension.cmp(&b.extension),
             SortColumn::Kind => {
@@ -194,6 +204,27 @@ mod tests {
         assert_eq!(
             sorted(entries(), natural.with_natural_name_sort(false)),
             ["Ärger", "École", "zebra"]
+        );
+    }
+
+    #[test]
+    fn size_sort_uses_measured_directory_sizes() {
+        let entries = vec![named("small", true, 0), named("large", true, 0)];
+        let sizes = SizeSnapshot::from_sizes([
+            (std::path::PathBuf::from("/t/small"), 10),
+            (std::path::PathBuf::from("/t/large"), 100),
+        ]);
+        let config = ViewConfig::default().with_sort(SortColumn::Size, SortOrder::Desc);
+        let mut entries = entries;
+
+        sort_entries_with_sizes(&mut entries, config, Some(&sizes));
+
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            ["large", "small"]
         );
     }
 
