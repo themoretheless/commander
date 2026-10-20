@@ -1596,7 +1596,17 @@ fn run_post_success(
     let PostTransferAction::RemoveEmptyDir(path) = action;
     let result = match std::fs::remove_dir(path) {
         Ok(()) => fs_util::sync_parent_namespace(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            // Missing is already clean. Non-empty means the folder gained
+            // content outside this transfer and is intentionally preserved;
+            // the file moves themselves still completed successfully.
+            Ok(())
+        }
         Err(error) => Err(error),
     };
     match result {

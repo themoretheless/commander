@@ -213,7 +213,21 @@ pub fn preview(action: &Action) -> ReplayPreview {
         Action::Gather { folder, .. } => Some(folder.as_path()),
         _ => None,
     };
-    let gather_folder = created_parent.map(path_is_taken).unwrap_or(Ok(false));
+    let gather_folder = created_parent
+        .map(|folder| match std::fs::symlink_metadata(folder) {
+            Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+            Ok(_) => Err("Gather destination is not a directory".to_string()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(format!("Destination cannot be inspected: {error}")),
+        })
+        .unwrap_or(Ok(false));
     // A Move or Ungather replays as one transfer into one folder, so every
     // pair must share it (an Ungather of a cross-folder Gather does not).
     let move_parent = match action {
@@ -237,8 +251,7 @@ pub fn preview(action: &Action) -> ReplayPreview {
                     return Some("Multiple entries target the same path".to_string());
                 }
                 match &gather_folder {
-                    Ok(false) => {}
-                    Ok(true) => return Some("Gather folder already exists".to_string()),
+                    Ok(_) => {}
                     Err(reason) => return Some(reason.clone()),
                 }
                 if matches!(action, Action::Move { .. } | Action::Ungather { .. }) {
@@ -900,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn gather_preview_allows_a_missing_folder_and_blocks_an_existing_one() {
+    fn gather_preview_allows_a_missing_or_existing_directory() {
         let temp = TempDir::new();
         let a = temp.file("a.txt", "a");
         let b = temp.file("b.txt", "b");
@@ -915,12 +928,27 @@ mod tests {
 
         temp.dir("Photos");
         let preview = preview(&action);
-        assert_eq!(preview.blocked_count(), 2);
+        assert!(preview.can_execute(), "{preview:?}");
+        assert!(a.exists());
+    }
+
+    #[test]
+    fn gather_preview_rejects_a_non_directory_destination() {
+        let temp = TempDir::new();
+        let source = temp.file("a.txt", "a");
+        let folder = temp.file("Photos", "occupied");
+        let action = Action::Gather {
+            folder: folder.clone(),
+            pairs: vec![(source, folder.join("a.txt"))],
+        };
+
+        let preview = preview(&action);
+
+        assert_eq!(preview.blocked_count(), 1);
         assert_eq!(
             preview.paths[0].eligibility,
-            blocked("Gather folder already exists")
+            blocked("Gather destination is not a directory")
         );
-        assert!(a.exists());
     }
 
     #[test]

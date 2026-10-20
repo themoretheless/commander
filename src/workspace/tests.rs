@@ -2155,6 +2155,36 @@ fn gather_into_folder_moves_selection_and_undoes() {
 }
 
 #[test]
+fn gather_redo_reuses_but_never_owns_a_surviving_folder() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("IMG_1.jpg", "a");
+    let mut workspace = workspace(&left, &right);
+    workspace.left.select_path(left.path().join("IMG_1.jpg"));
+
+    workspace.gather_into_folder(|| {});
+    drain_transfers(&mut workspace);
+    let folder = left.path().join("IMG");
+    std::fs::write(folder.join("foreign.txt"), "keep").unwrap();
+
+    workspace.perform_undo(|| {}).unwrap();
+    drain_transfers(&mut workspace);
+    assert!(left.path().join("IMG_1.jpg").is_file());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("foreign.txt")).unwrap(),
+        "keep"
+    );
+
+    workspace.perform_redo(|| {}).unwrap();
+    drain_transfers(&mut workspace);
+
+    assert!(folder.join("IMG_1.jpg").is_file());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("foreign.txt")).unwrap(),
+        "keep"
+    );
+}
+
+#[test]
 fn second_transfer_queues_and_runs_after_the_first() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let a = l.file("a.txt", "AAA");

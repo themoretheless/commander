@@ -1832,8 +1832,8 @@ mod tests {
 
         assert!(root.path().join("a.txt").is_file());
         assert!(folder.join("foreign.txt").is_file());
-        assert_eq!(state.errors.len(), 1);
-        assert!(state.errors[0].contains("Post-transfer cleanup failed"));
+        assert!(state.errors.is_empty(), "{:?}", state.errors);
+        assert!(state.finished);
     }
 
     // The engine no longer consults a conflict list (it checks the

@@ -2434,19 +2434,39 @@ impl Workspace {
                 if entries.is_empty() {
                     return Ok(ActionExecution::Completed);
                 }
-                std::fs::create_dir(&folder)
-                    .map_err(|error| format!("Could not recreate {}: {error}", folder.display()))?;
+                let created_for_replay = match std::fs::create_dir(&folder) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = std::fs::symlink_metadata(&folder).map_err(|inspect| {
+                            format!("Could not inspect {}: {inspect}", folder.display())
+                        })?;
+                        if !metadata.file_type().is_dir() {
+                            return Err(format!(
+                                "Could not gather into {}: destination is not a directory",
+                                folder.display()
+                            ));
+                        }
+                        false
+                    }
+                    Err(error) => {
+                        return Err(format!("Could not recreate {}: {error}", folder.display()));
+                    }
+                };
+                let rollback_cleanup = created_for_replay.then(|| folder.clone());
                 if let Err(error) = self.enqueue_silent_move(
                     entries,
                     folder.clone(),
                     None,
-                    Some(folder.clone()),
+                    rollback_cleanup,
                     transfer_queue::HistoryIntent::replay(reservation),
                     notify,
                 ) {
-                    // Nothing was queued: do not leave the fresh, still empty
-                    // folder behind (`remove_dir` refuses a non-empty one).
-                    let _ = std::fs::remove_dir(&folder);
+                    // Nothing was queued: remove only the folder this replay
+                    // created. A pre-existing directory is never owned by the
+                    // journal and must survive both failure and rollback.
+                    if created_for_replay {
+                        let _ = std::fs::remove_dir(&folder);
+                    }
                     return Err(error);
                 }
                 Ok(ActionExecution::Started)
