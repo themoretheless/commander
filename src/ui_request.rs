@@ -62,7 +62,7 @@ pub enum UiRequest {
         message: String,
         error: bool,
     },
-    ChecksumReport(crate::checksum::ChecksumReport),
+    VerifyChecksum(Vec<PathBuf>),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
 }
@@ -99,7 +99,7 @@ impl UiRequest {
             | Self::CopyPaths(_)
             | Self::CopyText { .. }
             | Self::Notice { .. }
-            | Self::ChecksumReport(_)
+            | Self::VerifyChecksum(_)
             | Self::HiddenFilesOutcome(_)
             | Self::FocusFilter => None,
         }

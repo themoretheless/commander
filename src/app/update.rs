@@ -816,6 +816,8 @@ impl eframe::App for App {
         self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
         self.poll_recovery(&ctx);
+        self.poll_checksum(&ctx);
+        self.show_checksum_dialog(&ctx);
         self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
@@ -1423,10 +1425,71 @@ impl App {
                     false,
                 );
             }
-            UiRequest::ChecksumReport(report) => {
+            UiRequest::VerifyChecksum(paths) => self.start_checksum(paths, ctx),
+            UiRequest::HiddenFilesOutcome(outcome) => {
+                self.apply_hidden_files_outcome(outcome, ctx);
+            }
+            UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
+        }
+    }
+
+    fn start_checksum(&mut self, paths: Vec<std::path::PathBuf>, ctx: &egui::Context) {
+        if paths.is_empty() || self.checksum_task.is_some() {
+            return;
+        }
+        self.checksum_generation = self.checksum_generation.wrapping_add(1).max(1);
+        let generation = self.checksum_generation;
+        let total = paths.len();
+        let root = paths
+            .first()
+            .and_then(|path| path.parent())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        let completed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_completed = std::sync::Arc::clone(&completed);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let repaint = ctx.clone();
+        match self.workload.submit(
+            crate::workload::TaskSpec::new(crate::workload::TaskKind::Hash, root, generation)
+                .priority(crate::workload::Priority::Interactive),
+            move |cancelled| {
+                let report = crate::checksum::verify_paths_cancellable(
+                    paths,
+                    &cancelled,
+                    worker_completed.as_ref(),
+                );
+                let _ = sender.send(report);
+                repaint.request_repaint();
+            },
+        ) {
+            Ok(task) => {
+                self.checksum_report = None;
+                self.checksum_task = Some(super::ChecksumTask {
+                    receiver,
+                    task,
+                    completed,
+                    total,
+                });
+            }
+            Err(error) => self.toast(
+                ctx,
+                crate::toasts::ToastKind::Error,
+                format!("Could not start checksum verification: {error}"),
+                false,
+            ),
+        }
+    }
+
+    fn poll_checksum(&mut self, ctx: &egui::Context) {
+        let Some(task) = self.checksum_task.as_ref() else {
+            return;
+        };
+        match task.receiver.try_recv() {
+            Ok(report) => {
                 let summary = report.summary_line();
-                let detail = report.detailed_text();
                 let failed = report.rows.iter().any(|row| row.error.is_some());
+                self.checksum_task = None;
+                self.checksum_report = Some(report);
                 self.toast(
                     ctx,
                     if failed {
@@ -1437,14 +1500,63 @@ impl App {
                     summary,
                     false,
                 );
-                if !detail.is_empty() {
-                    self.write_clipboard(&detail, "checksum report", ctx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.checksum_task = None;
+                self.toast(
+                    ctx,
+                    crate::toasts::ToastKind::Error,
+                    "Checksum verification stopped before returning a result",
+                    false,
+                );
+            }
+        }
+    }
+
+    fn show_checksum_dialog(&mut self, ctx: &egui::Context) {
+        if self.checksum_task.is_none() && self.checksum_report.is_none() {
+            return;
+        }
+        let mut open = true;
+        let mut copy = None;
+        let mut cancel = false;
+        egui::Window::new("Checksum verification")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .show(ctx, |ui| {
+                if let Some(task) = &self.checksum_task {
+                    let completed = task.completed.load(std::sync::atomic::Ordering::Acquire);
+                    ui.label(format!("Hashing {completed} of {} files…", task.total));
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
+                if let Some(report) = &self.checksum_report {
+                    ui.label(report.summary_line());
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            ui.monospace(report.detailed_text());
+                        });
+                    if ui.button("Copy report").clicked() {
+                        copy = Some(report.detailed_text());
+                    }
+                }
+            });
+        if let Some(text) = copy {
+            self.write_clipboard(&text, "checksum report", ctx);
+        }
+        if cancel && let Some(task) = self.checksum_task.take() {
+            task.task.cancel();
+        }
+        if !open {
+            if let Some(task) = self.checksum_task.take() {
+                task.task.cancel();
             }
-            UiRequest::HiddenFilesOutcome(outcome) => {
-                self.apply_hidden_files_outcome(outcome, ctx);
-            }
-            UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
+            self.checksum_report = None;
         }
     }
 

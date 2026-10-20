@@ -1576,8 +1576,7 @@ impl Workspace {
             .into_iter()
             .map(|entry| entry.path)
             .collect::<Vec<_>>();
-        let report = crate::checksum::verify_paths(paths);
-        self.emit_ui_request(UiRequest::ChecksumReport(report));
+        self.emit_ui_request(UiRequest::VerifyChecksum(paths));
     }
 
     fn create_symlinks(&mut self) {

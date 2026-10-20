@@ -152,6 +152,16 @@ pub struct App {
     pub(crate) persistence_issue_seen: u64,
     /// Last background-helper failure generation already shown as a toast.
     pub(crate) helper_failure_seen: u64,
+    checksum_task: Option<ChecksumTask>,
+    checksum_report: Option<crate::checksum::ChecksumReport>,
+    checksum_generation: u64,
+}
+
+struct ChecksumTask {
+    receiver: std::sync::mpsc::Receiver<crate::checksum::ChecksumReport>,
+    task: crate::workload::TaskHandle,
+    completed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    total: usize,
 }
 
 #[cfg(feature = "visual-qa")]
@@ -1073,6 +1083,9 @@ impl App {
             developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: 0,
             helper_failure_seen: crate::native_effect::helper_failure_generation(),
+            checksum_task: None,
+            checksum_report: None,
+            checksum_generation: 0,
         }
     }
 

@@ -61,10 +61,28 @@ impl ChecksumReport {
     }
 }
 
+#[cfg(test)]
 pub fn verify_paths(paths: impl IntoIterator<Item = PathBuf>) -> ChecksumReport {
     let mut report = ChecksumReport::default();
     for path in paths {
         report.rows.push(verify_one(&path));
+    }
+    report
+}
+
+pub fn verify_paths_cancellable(
+    paths: Vec<PathBuf>,
+    cancelled: &crate::workload::CancellationToken,
+    completed: &std::sync::atomic::AtomicUsize,
+) -> ChecksumReport {
+    use std::sync::atomic::Ordering;
+    let mut report = ChecksumReport::default();
+    for path in paths {
+        if cancelled.is_cancelled() {
+            break;
+        }
+        report.rows.push(verify_one(&path));
+        completed.fetch_add(1, Ordering::Release);
     }
     report
 }
