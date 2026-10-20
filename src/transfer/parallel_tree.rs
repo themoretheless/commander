@@ -13,7 +13,8 @@ use std::thread;
 
 use super::TransferState;
 use super::buffered::{
-    copy_file_buffered_with_limiter, restore_dir_permissions, special_file_error, with_path,
+    copy_file_buffered_aggregate_with_limiter, restore_dir_permissions, special_file_error,
+    with_path,
 };
 use crate::fs_util::copy_symlink;
 
@@ -96,13 +97,11 @@ pub(super) fn copy_dir_buffered_parallel(
             ));
         }
         let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
-        let bytes = copy_file_buffered_with_limiter(
+        let bytes = copy_file_buffered_aggregate_with_limiter(
             source,
             destination,
             state,
             &mut limiter,
-            None,
-            None,
             preserve_sparse,
         )
         .map_err(|e| with_path(e, source))?;
@@ -267,6 +266,33 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn parallel_tree_copy_keeps_per_file_progress_owned_by_the_outer_entry() {
+        let tmp = TempDir::new();
+        let src = tmp.dir("src");
+        tmp.file("src/a.txt", "abc");
+        tmp.file("src/b.txt", "defgh");
+        let dst = tmp.path().join("dst");
+        let state = progress();
+        {
+            let mut progress = crate::lock_util::recover(&state);
+            progress.current_file = "src".to_string();
+            progress.current_file_size = 8;
+            progress.current_file_copied = 0;
+        }
+
+        assert_eq!(
+            copy_dir_buffered_parallel(&src, &dst, &state, 2, false).unwrap(),
+            8
+        );
+
+        let progress = crate::lock_util::recover(&state);
+        assert_eq!(progress.current_file, "src");
+        assert_eq!(progress.current_file_size, 8);
+        assert_eq!(progress.current_file_copied, 0);
+        assert_eq!(progress.copied_bytes, 8);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::TransferState;
-use super::buffered::COPY_BUF_SIZE;
+use super::buffered::{COPY_BUF_SIZE, FileProgressMode};
 
 #[cfg(unix)]
 pub(super) fn is_sparse_file(path: &Path) -> bool {
@@ -43,6 +43,17 @@ pub(super) fn copy_file_sparse(
     state: &TransferState,
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
 ) -> std::io::Result<u64> {
+    copy_file_sparse_with_progress(src, dst, state, limiter, FileProgressMode::Detailed)
+}
+
+#[cfg(unix)]
+pub(super) fn copy_file_sparse_with_progress(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    progress_mode: FileProgressMode,
+) -> std::io::Result<u64> {
     let mut reader = std::fs::File::open(src)?;
     let file_size = reader.metadata()?.len();
     let mut writer = std::fs::OpenOptions::new()
@@ -50,7 +61,7 @@ pub(super) fn copy_file_sparse(
         .create_new(true)
         .open(dst)?;
     writer.set_len(file_size)?;
-    {
+    if progress_mode == FileProgressMode::Detailed {
         crate::lock_util::recover(state).begin_file(src, file_size);
     }
     let mut offset = 0_u64;
@@ -84,7 +95,9 @@ pub(super) fn copy_file_sparse(
         limiter.consume(read, || crate::lock_util::recover(state).cancelled)?;
         offset = offset.saturating_add(read as u64);
         let mut progress = crate::lock_util::recover(state);
-        progress.current_file_copied = offset;
+        if progress_mode == FileProgressMode::Detailed {
+            progress.current_file_copied = offset;
+        }
         progress.copied_bytes = progress.copied_bytes.saturating_add(read as u64);
         progress.maybe_sample();
     }
@@ -115,6 +128,17 @@ pub(super) fn copy_file_sparse(
     _dst: &Path,
     _state: &TransferState,
     _limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+) -> std::io::Result<u64> {
+    copy_file_sparse_with_progress(_src, _dst, _state, _limiter, FileProgressMode::Detailed)
+}
+
+#[cfg(not(unix))]
+pub(super) fn copy_file_sparse_with_progress(
+    _src: &Path,
+    _dst: &Path,
+    _state: &TransferState,
+    _limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    _progress_mode: FileProgressMode,
 ) -> std::io::Result<u64> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -178,5 +202,40 @@ mod tests {
                 "{dst_blocks} > {src_blocks}"
             );
         }
+    }
+
+    #[test]
+    fn aggregate_sparse_copy_does_not_claim_the_shared_file_fields() {
+        let tmp = TempDir::new();
+        let src = tmp.path().join("sparse.bin");
+        let file = std::fs::File::create(&src).unwrap();
+        file.set_len((COPY_BUF_SIZE * 2) as u64).unwrap();
+        let dst = tmp.path().join("copy.bin");
+        let state = Arc::new(Mutex::new(TransferProgress::new(
+            (COPY_BUF_SIZE * 2) as u64,
+            1,
+        )));
+        {
+            let mut progress = crate::lock_util::recover(&state);
+            progress.current_file = "outer-folder".to_string();
+            progress.current_file_size = 17;
+            progress.current_file_copied = 9;
+        }
+        let mut limiter = crate::transfer_tuning::BandwidthLimiter::new(Default::default());
+
+        copy_file_sparse_with_progress(
+            &src,
+            &dst,
+            &state,
+            &mut limiter,
+            FileProgressMode::AggregateOnly,
+        )
+        .unwrap();
+
+        let progress = crate::lock_util::recover(&state);
+        assert_eq!(progress.current_file, "outer-folder");
+        assert_eq!(progress.current_file_size, 17);
+        assert_eq!(progress.current_file_copied, 9);
+        assert_eq!(progress.copied_bytes, (COPY_BUF_SIZE * 2) as u64);
     }
 }

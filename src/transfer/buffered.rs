@@ -15,6 +15,18 @@ pub(super) const COPY_BUF_SIZE: usize = 1024 * 1024; // 1 MB buffer
 const MIN_COPY_BUF_SIZE: usize = 64 * 1024;
 const CHECKPOINT_INTERVAL: u64 = 16 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FileProgressMode {
+    Detailed,
+    AggregateOnly,
+}
+
+#[derive(Clone, Copy)]
+struct BufferedCopyMode {
+    preserve_sparse: bool,
+    progress: FileProgressMode,
+}
+
 /// Copy a single file with progress reporting (buffered strategy).
 /// Removes the partial destination file on any failure.
 /// Returns the bytes now in the destination (resume offset included).
@@ -27,13 +39,57 @@ pub(super) fn copy_file_buffered_with_limiter(
     checkpoints: Option<&mut dyn CheckpointSink>,
     preserve_sparse: bool,
 ) -> std::io::Result<u64> {
+    copy_file_buffered_with_progress(
+        src,
+        dst,
+        state,
+        limiter,
+        resume,
+        checkpoints,
+        BufferedCopyMode {
+            preserve_sparse,
+            progress: FileProgressMode::Detailed,
+        },
+    )
+}
+
+pub(super) fn copy_file_buffered_aggregate_with_limiter(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    preserve_sparse: bool,
+) -> std::io::Result<u64> {
+    copy_file_buffered_with_progress(
+        src,
+        dst,
+        state,
+        limiter,
+        None,
+        None,
+        BufferedCopyMode {
+            preserve_sparse,
+            progress: FileProgressMode::AggregateOnly,
+        },
+    )
+}
+
+fn copy_file_buffered_with_progress(
+    src: &Path,
+    dst: &Path,
+    state: &TransferState,
+    limiter: &mut crate::transfer_tuning::BandwidthLimiter,
+    resume: Option<&ResumeCheckpoint>,
+    checkpoints: Option<&mut dyn CheckpointSink>,
+    mode: BufferedCopyMode,
+) -> std::io::Result<u64> {
     let retain_partial = checkpoints.is_some();
-    let result = if preserve_sparse && resume.is_none() && super::sparse::is_sparse_file(src) {
+    let result = if mode.preserve_sparse && resume.is_none() && super::sparse::is_sparse_file(src) {
         // Sparse copies publish no checkpoints, so their full-length,
         // hole-filled partial is never resumable and is cleaned up below.
-        super::sparse::copy_file_sparse(src, dst, state, limiter)
+        super::sparse::copy_file_sparse_with_progress(src, dst, state, limiter, mode.progress)
     } else {
-        copy_file_buffered_inner(src, dst, state, limiter, resume, checkpoints)
+        copy_file_buffered_inner(src, dst, state, limiter, resume, checkpoints, mode.progress)
     };
     if let Err(ref e) = result {
         // Clean up our own partial write, but never delete a destination that
@@ -95,6 +151,7 @@ fn copy_file_buffered_inner(
     limiter: &mut crate::transfer_tuning::BandwidthLimiter,
     resume: Option<&ResumeCheckpoint>,
     mut checkpoints: Option<&mut dyn CheckpointSink>,
+    progress_mode: FileProgressMode,
 ) -> std::io::Result<u64> {
     // A missing or unreadable source reports its own error, not a bogus
     // "invalid checkpoint" from comparing the offset against size 0.
@@ -103,8 +160,10 @@ fn copy_file_buffered_inner(
 
     {
         let mut s = crate::lock_util::recover(state);
-        s.begin_file(src, file_size);
-        s.current_file_copied = offset;
+        if progress_mode == FileProgressMode::Detailed {
+            s.begin_file(src, file_size);
+            s.current_file_copied = offset;
+        }
         s.copied_bytes = s.copied_bytes.saturating_add(offset);
     }
 
@@ -191,7 +250,9 @@ fn copy_file_buffered_inner(
         {
             let mut s = crate::lock_util::recover(state);
             s.copied_bytes = s.copied_bytes.saturating_add(n as u64);
-            s.current_file_copied = s.current_file_copied.saturating_add(n as u64);
+            if progress_mode == FileProgressMode::Detailed {
+                s.current_file_copied = s.current_file_copied.saturating_add(n as u64);
+            }
             s.maybe_sample();
         }
         if copied >= next_checkpoint {
