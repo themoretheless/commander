@@ -55,31 +55,19 @@ fn store_usage_label() -> String {
     }
 }
 
-/// Key material for the encrypted support bundle. Without
-/// `COMMANDER_SUPPORT_BUNDLE_SECRET` the secret falls back to the recipient
-/// id, which the bundle manifest carries in plaintext: such a bundle is only
-/// obfuscated, and the UI must not present it as confidential.
+/// Key material for the encrypted support bundle. Export stays disabled until
+/// `COMMANDER_SUPPORT_BUNDLE_SECRET` supplies a secret distinct from the
+/// cleartext recipient id.
 #[derive(Debug, PartialEq, Eq)]
 struct BundleKey {
     recipient: String,
-    secret: String,
-    confidential: bool,
+    secret: Option<String>,
 }
 
 fn bundle_key(recipient: Option<String>, secret: Option<String>) -> BundleKey {
     let recipient = recipient.unwrap_or_else(|| "local-dev".to_string());
-    match secret.filter(|secret| !secret.is_empty()) {
-        Some(secret) => BundleKey {
-            recipient,
-            secret,
-            confidential: true,
-        },
-        None => BundleKey {
-            secret: recipient.clone(),
-            recipient,
-            confidential: false,
-        },
-    }
+    let secret = secret.filter(|secret| !secret.is_empty() && secret != &recipient);
+    BundleKey { recipient, secret }
 }
 
 fn bundle_key_from_env() -> BundleKey {
@@ -521,37 +509,32 @@ impl App {
                                     Err(error) => DeveloperNotice::error(error),
                                 });
                         }
-                        let (button_label, created_label) = if bundle_key.confidential {
-                            (
-                                "Create encrypted support bundle",
-                                "Encrypted support bundle created",
+                        let bundle_button = ui
+                            .add_enabled(
+                                bundle_key.secret.is_some(),
+                                egui::Button::new("Create encrypted support bundle"),
                             )
-                        } else {
-                            (
-                                "Create support bundle (dev key only)",
-                                "Dev-key support bundle created, not confidential",
-                            )
-                        };
-                        let bundle_button = ui.button(button_label);
-                        let bundle_button = if bundle_key.confidential {
-                            bundle_button
-                        } else {
-                            bundle_button.on_hover_text(
-                                "COMMANDER_SUPPORT_BUNDLE_SECRET is not set: the key is the \
-                                 recipient id stored in the bundle, so anyone can decrypt it",
-                            )
-                        };
+                            .on_disabled_hover_text(
+                                "Set COMMANDER_SUPPORT_BUNDLE_SECRET to a value different from \
+                                 COMMANDER_SUPPORT_BUNDLE_RECIPIENT",
+                            );
                         if bundle_button.clicked() {
+                            let Some(secret) = bundle_key.secret.as_deref() else {
+                                return;
+                            };
                             let paths = self.diagnostic_paths();
                             self.developer_notice = Some(
                                 match crate::support_bundle::export_encrypted(
                                     &paths,
                                     &bundle_key.recipient,
-                                    &bundle_key.secret,
+                                    secret,
                                     crate::support_encrypt::default_ttl_secs(),
                                 ) {
                                     Ok((path, manifest)) => DeveloperNotice::success(
-                                        format!("{created_label} ({})", manifest.preview_line()),
+                                        format!(
+                                            "Encrypted support bundle created ({})",
+                                            manifest.preview_line()
+                                        ),
                                         path,
                                     ),
                                     Err(error) => DeveloperNotice::error(error),
@@ -664,16 +647,20 @@ mod tests {
     fn bundle_without_secret_is_not_presented_as_confidential() {
         let dev = bundle_key(None, None);
         assert_eq!(dev.recipient, "local-dev");
-        assert_eq!(dev.secret, "local-dev");
-        assert!(!dev.confidential);
+        assert_eq!(dev.secret, None);
         // A recipient alone is still public: it is in the manifest.
         let named = bundle_key(Some("ops".into()), None);
-        assert_eq!(named.secret, "ops");
-        assert!(!named.confidential);
-        assert!(!bundle_key(Some("ops".into()), Some(String::new())).confidential);
+        assert_eq!(named.secret, None);
+        assert_eq!(
+            bundle_key(Some("ops".into()), Some(String::new())).secret,
+            None
+        );
+        assert_eq!(
+            bundle_key(Some("ops".into()), Some("ops".into())).secret,
+            None
+        );
         let real = bundle_key(Some("ops".into()), Some("s3cret".into()));
-        assert_eq!(real.secret, "s3cret");
-        assert!(real.confidential);
+        assert_eq!(real.secret.as_deref(), Some("s3cret"));
     }
 
     #[test]

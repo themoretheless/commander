@@ -1,27 +1,34 @@
 //! Recipient-encrypted support-bundle envelope (research **J005**).
 //!
-//! # Format `commander-encrypted-bundle-v2`
+//! # Format `commander-encrypted-bundle-v3`
 //!
 //! Cleartext fields (inspectable without decrypting): recipient id, created /
 //! expires timestamps, and a redacted plaintext preview. In v2 these fields
 //! are bound as AEAD associated data, so editing any of them makes decryption
-//! fail. Legacy v1 envelopes (no associated data) still decrypt.
+//! fail. Legacy v1 envelopes (no associated data) and v2 envelopes still
+//! decrypt.
 //!
 //! Ciphertext uses **XChaCha20-Poly1305**. The payload key is
-//! `BLAKE3::derive_key("commander encrypted support bundle v1", salt || secret)`
-//! where `secret` is the recipient shared secret / passphrase supplied at export.
+//! derived from the recipient passphrase with Argon2id. Legacy envelopes use
+//! their original BLAKE3-based derivation only while decrypting.
 
+use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "commander-encrypted-bundle-v2";
+pub const FORMAT: &str = "commander-encrypted-bundle-v3";
+/// Pre-Argon2id format with associated data; accepted for existing exports.
+const LEGACY_FORMAT_V2: &str = "commander-encrypted-bundle-v2";
 /// Pre-AAD format; still accepted by [`decrypt`] for bundles already exported.
 const LEGACY_FORMAT_V1: &str = "commander-encrypted-bundle-v1";
 pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 const DERIVE_CONTEXT: &str = "commander encrypted support bundle v1";
+const ARGON2_MEMORY_KIB: u32 = 19 * 1024;
+const ARGON2_ITERATIONS: u32 = 2;
+const ARGON2_LANES: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncryptedBundleManifest {
@@ -66,11 +73,14 @@ pub fn encrypt(request: EncryptRequest<'_>) -> Result<EncryptedBundleManifest, S
     if request.recipient_secret.is_empty() {
         return Err("encrypted support bundle requires a recipient secret".into());
     }
+    if request.recipient_secret == request.recipient_id {
+        return Err("encrypted support bundle secret must differ from the recipient id".into());
+    }
     let mut salt = [0_u8; 32];
     let mut nonce_bytes = [0_u8; 24];
     rand::thread_rng().fill_bytes(&mut salt);
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let key = derive_key(request.recipient_secret.as_bytes(), &salt);
+    let key = derive_key_argon2id(request.recipient_secret.as_bytes(), &salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|_| "could not initialize XChaCha20-Poly1305".to_string())?;
     let nonce = XNonce::from_slice(&nonce_bytes);
@@ -123,7 +133,7 @@ pub fn decrypt(
     now_secs: u64,
 ) -> Result<Vec<u8>, String> {
     let aad = match manifest.format.as_str() {
-        FORMAT => associated_data(manifest),
+        FORMAT | LEGACY_FORMAT_V2 => associated_data(manifest),
         LEGACY_FORMAT_V1 => Vec::new(),
         _ => {
             return Err(format!(
@@ -143,7 +153,13 @@ pub fn decrypt(
     }
     let mut salt_arr = [0_u8; 32];
     salt_arr.copy_from_slice(&salt);
-    let key = derive_key(recipient_secret.as_bytes(), &salt_arr);
+    let key = match manifest.format.as_str() {
+        FORMAT => derive_key_argon2id(recipient_secret.as_bytes(), &salt_arr)?,
+        LEGACY_FORMAT_V1 | LEGACY_FORMAT_V2 => {
+            derive_key_legacy(recipient_secret.as_bytes(), &salt_arr)
+        }
+        _ => unreachable!("format was validated above"),
+    };
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|_| "could not initialize XChaCha20-Poly1305".to_string())?;
     let nonce = XNonce::from_slice(&nonce_bytes);
@@ -193,7 +209,18 @@ pub fn default_export_path(config_dir: &Path, stamp_millis: u128) -> PathBuf {
         .join(format!("commander-support-{stamp_millis}.cmeb.json"))
 }
 
-fn derive_key(secret: &[u8], salt: &[u8; 32]) -> [u8; 32] {
+fn derive_key_argon2id(secret: &[u8], salt: &[u8; 32]) -> Result<[u8; 32], String> {
+    let params = Params::new(ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_LANES, Some(32))
+        .map_err(|error| format!("invalid Argon2id parameters: {error}"))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0_u8; 32];
+    argon2
+        .hash_password_into(secret, salt, &mut key)
+        .map_err(|error| format!("support bundle key derivation failed: {error}"))?;
+    Ok(key)
+}
+
+fn derive_key_legacy(secret: &[u8], salt: &[u8; 32]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new_derive_key(DERIVE_CONTEXT);
     hasher.update(salt);
     hasher.update(secret);
@@ -384,6 +411,12 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.contains("recipient secret"), "{error}");
+        let error = encrypt(EncryptRequest {
+            recipient_secret: "ops",
+            ..request.clone()
+        })
+        .unwrap_err();
+        assert!(error.contains("must differ"), "{error}");
 
         // Counted in characters, not bytes, so multi-byte text is not split.
         let long = "é".repeat(300);
@@ -407,7 +440,7 @@ mod tests {
     fn legacy_v1_envelope_without_aad_still_decrypts() {
         let salt = [7_u8; 32];
         let nonce_bytes = [9_u8; 24];
-        let key = derive_key(b"secret", &salt);
+        let key = derive_key_legacy(b"secret", &salt);
         let cipher = XChaCha20Poly1305::new_from_slice(&key).unwrap();
         let ciphertext = cipher
             .encrypt(XNonce::from_slice(&nonce_bytes), b"old".as_ref())
@@ -424,6 +457,37 @@ mod tests {
             ciphertext_hex: hex_encode(&ciphertext),
         };
         assert_eq!(decrypt(&manifest, "secret", 10).unwrap(), b"old");
+    }
+
+    #[test]
+    fn legacy_v2_envelope_with_aad_still_decrypts() {
+        let salt = [7_u8; 32];
+        let nonce_bytes = [9_u8; 24];
+        let key = derive_key_legacy(b"secret", &salt);
+        let cipher = XChaCha20Poly1305::new_from_slice(&key).unwrap();
+        let mut manifest = EncryptedBundleManifest {
+            format: LEGACY_FORMAT_V2.into(),
+            recipient_id: "ops".into(),
+            created_at_secs: 0,
+            expires_at_secs: 100,
+            plaintext_preview: "preview".into(),
+            ciphertext_bytes: 0,
+            salt_hex: hex_encode(&salt),
+            nonce_hex: hex_encode(&nonce_bytes),
+            ciphertext_hex: String::new(),
+        };
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: b"old-v2",
+                    aad: &associated_data(&manifest),
+                },
+            )
+            .unwrap();
+        manifest.ciphertext_bytes = ciphertext.len() as u64;
+        manifest.ciphertext_hex = hex_encode(&ciphertext);
+        assert_eq!(decrypt(&manifest, "secret", 10).unwrap(), b"old-v2");
     }
 
     #[test]
