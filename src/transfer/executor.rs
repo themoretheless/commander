@@ -2,6 +2,10 @@ use super::*;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Whole-copy duration is a useful latency proxy only for small operations;
+/// larger entries measure throughput and would collapse adaptive concurrency.
+const LATENCY_SAMPLE_MAX_BYTES: u64 = 64 * 1024;
+
 #[derive(Clone)]
 struct TerminalContext {
     operation_id: OperationId,
@@ -839,7 +843,7 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                 };
                 crate::transfer_tuning::record(
                     &target_profile,
-                    attempt_started.elapsed(),
+                    (this_size <= LATENCY_SAMPLE_MAX_BYTES).then(|| attempt_started.elapsed()),
                     result.is_ok(),
                 );
                 // Whether the stage itself failed, before the commit checks

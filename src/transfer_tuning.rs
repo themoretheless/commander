@@ -62,12 +62,14 @@ struct Sample {
 
 static SAMPLES: OnceLock<Mutex<HashMap<u64, VecDeque<Sample>>>> = OnceLock::new();
 
-pub fn record(profile: &VolumeProfile, elapsed: Duration, success: bool) {
+pub fn record(profile: &VolumeProfile, elapsed: Option<Duration>, success: bool) {
     let samples = SAMPLES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut samples = crate::lock_util::recover(samples);
     let volume = samples.entry(profile.volume_id).or_default();
     volume.push_back(Sample {
-        latency_ms: elapsed.as_secs_f64() * 1_000.0,
+        latency_ms: elapsed
+            .map(|elapsed| elapsed.as_secs_f64() * 1_000.0)
+            .unwrap_or(f64::NAN),
         success,
     });
     while volume.len() > MAX_SAMPLES {
@@ -91,7 +93,7 @@ pub fn snapshot(profile: &VolumeProfile) -> TuningSnapshot {
 fn snapshot_from(profile: &VolumeProfile, samples: Vec<Sample>) -> TuningSnapshot {
     let latencies = samples
         .iter()
-        .map(|sample| sample.latency_ms)
+        .filter_map(|sample| sample.latency_ms.is_finite().then_some(sample.latency_ms))
         .collect::<Vec<_>>();
     let latency = if latencies.is_empty() {
         let assumed = assumed_latency(profile.backend);
@@ -478,6 +480,29 @@ mod tests {
         assert_eq!(at_limit.error_rate, 0.10);
         assert_eq!(at_limit.concurrency, 1);
         assert_eq!(concurrency(2.0, 1, 11).concurrency, 4);
+    }
+
+    #[test]
+    fn outcome_without_latency_affects_errors_but_not_percentiles() {
+        let snapshot = snapshot_from(
+            &profile(BackendKind::LocalFast, 4),
+            vec![
+                Sample {
+                    latency_ms: 2.0,
+                    success: true,
+                },
+                Sample {
+                    latency_ms: f64::NAN,
+                    success: false,
+                },
+            ],
+        );
+
+        assert_eq!(snapshot.p50_latency_ms, 2.0);
+        assert_eq!(snapshot.p95_latency_ms, 2.0);
+        assert_eq!(snapshot.error_rate, 0.5);
+        assert_eq!(snapshot.samples, 2);
+        assert_eq!(snapshot.concurrency, 1);
     }
 
     #[test]
