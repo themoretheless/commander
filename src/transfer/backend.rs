@@ -263,6 +263,29 @@ impl BackendPorts {
         request: StageRequest<'_>,
         checkpoints: &mut dyn CheckpointSink,
     ) -> std::io::Result<StageReceipt> {
+        let metadata = std::fs::symlink_metadata(request.source)?;
+        if metadata.file_type().is_symlink() && request.symlink_policy == SymlinkPolicy::Follow {
+            let followed = std::fs::canonicalize(request.source)?;
+            let followed_metadata = std::fs::symlink_metadata(&followed)?;
+            return self.stage_resolved(
+                method,
+                StageRequest {
+                    source: &followed,
+                    is_dir: followed_metadata.is_dir(),
+                    ..request
+                },
+                checkpoints,
+            );
+        }
+        self.stage_resolved(method, request, checkpoints)
+    }
+
+    fn stage_resolved(
+        &self,
+        method: CopyMethod,
+        request: StageRequest<'_>,
+        checkpoints: &mut dyn CheckpointSink,
+    ) -> std::io::Result<StageReceipt> {
         match self.plan(&request, method)? {
             BackendPlan::NativeClone => self.native_clone.stage(request),
             BackendPlan::Delta(mode) => self.delta.stage(mode, request, checkpoints),
@@ -839,6 +862,53 @@ mod tests {
 
         assert_eq!(crate::lock_util::recover(&state).peak_workers, requested);
         assert_eq!(std::fs::read_to_string(staging.join("3.txt")).unwrap(), "x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn followed_sparse_file_is_replanned_to_the_sparse_backend() {
+        let tmp = crate::testutil::TempDir::new();
+        let source = tmp.path().join("sparse.bin");
+        std::fs::File::create(&source)
+            .unwrap()
+            .set_len(1024 * 1024)
+            .unwrap();
+        assert!(super::super::sparse::is_sparse_file(&source));
+        let link = tmp.path().join("sparse-link");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+        let staging = tmp.path().join("staging.bin");
+        let mut profile = crate::volume_profile::profile(tmp.path());
+        profile.capabilities.clone = false;
+        profile.capabilities.delta = false;
+        profile.capabilities.sparse = true;
+        profile.capabilities.resumable = false;
+        let progress = BackendProgress::new(Arc::new(std::sync::Mutex::new(
+            super::super::TransferProgress::new(1024 * 1024, 1),
+        )));
+
+        let receipt = BackendPorts::production()
+            .stage(
+                CopyMethod::Buffered,
+                StageRequest {
+                    source: &link,
+                    is_dir: false,
+                    staging: &staging,
+                    progress: &progress,
+                    base_bytes: 0,
+                    profile: &profile,
+                    rule: VolumeRule::default(),
+                    tuning: TuningSnapshot::default(),
+                    basis: None,
+                    resume: None,
+                    symlink_policy: SymlinkPolicy::Follow,
+                    durability: DurabilityProfile::Fast,
+                },
+                &mut NoCheckpoints,
+            )
+            .unwrap();
+
+        assert_eq!(receipt.fast_path, FastPath::Sparse);
+        assert_eq!(std::fs::metadata(&staging).unwrap().len(), 1024 * 1024);
     }
 
     #[test]
