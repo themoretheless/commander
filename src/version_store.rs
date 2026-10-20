@@ -104,11 +104,50 @@ pub fn store_usage() -> crate::version_dedup::VersionStoreUsage {
             ..Default::default()
         };
     }
-    crate::version_dedup::usage_of(
+    let mut usage = crate::version_dedup::usage_of(
         &loaded.manifest.blobs,
         loaded.manifest.records.len(),
         store_quota(),
-    )
+    );
+    let Some((legacy_bytes, legacy_files)) = legacy_payload_usage(&loaded.manifest) else {
+        usage.blocked = true;
+        return usage;
+    };
+    usage.bytes_used = usage.bytes_used.saturating_add(legacy_bytes);
+    usage.unique_blobs = usage.unique_blobs.saturating_add(legacy_files);
+    usage
+}
+
+/// Read-only accounting for records written before `payload_files` and blob
+/// dedup metadata existed. Each such record owns its stored copy, so regular
+/// file lengths are physical store debt until an explicit migration rewrites
+/// the manifest. Symlinks are not followed, matching dedup registration.
+fn legacy_payload_usage(manifest: &VersionManifest) -> Option<(u64, usize)> {
+    let mut bytes = 0_u64;
+    let mut files = 0_usize;
+    for record in &manifest.records {
+        if manifest.payload_files.contains_key(&record.key.0) {
+            continue;
+        }
+        let mut pending = vec![record.stored.clone()];
+        while let Some(path) = pending.pop() {
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_file() {
+                bytes = bytes.saturating_add(metadata.len());
+                files = files.saturating_add(1);
+                continue;
+            }
+            if metadata.is_dir() {
+                for entry in std::fs::read_dir(path).ok()? {
+                    pending.push(entry.ok()?.path());
+                }
+            }
+        }
+    }
+    Some((bytes, files))
 }
 
 fn manifest_persist() -> &'static crate::persistence::FsPersist {
@@ -1694,6 +1733,7 @@ mod tests {
     fn legacy_manifest_recovers_identity_receipts_without_write_on_load() {
         let temp = TempDir::new();
         let versions = temp.path().join("versions");
+        let _guard = use_test_versions_dir(versions.clone());
         let original = temp.file("original.txt", "authoritative");
         let operation = OperationId("legacy-receipt".to_string());
         let record = preserve_at(
@@ -1721,6 +1761,11 @@ mod tests {
         );
         assert_eq!(loaded.manifest.identities.len(), 1);
         assert_eq!(std::fs::read(manifest_path(&versions)).unwrap(), legacy);
+        let usage = store_usage();
+        assert!(!usage.blocked);
+        assert_eq!(usage.bytes_used, "authoritative".len() as u64);
+        assert_eq!(usage.unique_blobs, 1);
+        assert_eq!(usage.records, 1);
     }
 
     #[test]
