@@ -64,6 +64,8 @@ pub(super) struct PersistedCacheEntry {
     pub(super) mtime_secs: u64,
     pub(super) mtime_nanos: u32,
     pub(super) size: u64,
+    #[serde(default)]
+    pub(super) measured_at_millis: u64,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -107,10 +109,28 @@ pub(super) fn first_cache_warning(warned: &AtomicBool) -> bool {
     !warned.swap(true, AtomicOrdering::Relaxed)
 }
 
-/// Global cache: volume generation + path -> (mtime, size).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CachedDirSize {
+    pub(super) modified: SystemTime,
+    pub(super) size: u64,
+    pub(super) measured_at_millis: u64,
+}
+
+impl CachedDirSize {
+    #[cfg(test)]
+    pub(super) const fn new(modified: SystemTime, size: u64, measured_at_millis: u64) -> Self {
+        Self {
+            modified,
+            size,
+            measured_at_millis,
+        }
+    }
+}
+
+/// Global cache: volume generation + path -> validated size and measurement age.
 /// Loaded from disk on first access, saved on every update.
-pub(super) fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (SystemTime, u64)>> {
-    static CACHE: OnceLock<Mutex<HashMap<VolumePathKey, (SystemTime, u64)>>> = OnceLock::new();
+pub(super) fn dir_size_cache() -> &'static Mutex<HashMap<VolumePathKey, CachedDirSize>> {
+    static CACHE: OnceLock<Mutex<HashMap<VolumePathKey, CachedDirSize>>> = OnceLock::new();
     CACHE.get_or_init(|| {
         let map = load_cache_from_disk();
         Mutex::new(map)
@@ -129,7 +149,7 @@ pub(super) fn partial_size_cache() -> &'static Mutex<HashMap<VolumePathKey, (Sys
 
 const PARTIAL_SIZE_LIMIT: usize = 4_096;
 
-fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
+fn load_cache_from_disk() -> HashMap<VolumePathKey, CachedDirSize> {
     let Some(path) = cache_path() else {
         return HashMap::new();
     };
@@ -153,7 +173,7 @@ fn load_cache_from_disk() -> HashMap<VolumePathKey, (SystemTime, u64)> {
 }
 
 struct BoundedCacheAccumulator {
-    pub(super) candidates: BoundedUniqueMap<VolumePathKey, (SystemTime, u64)>,
+    pub(super) candidates: BoundedUniqueMap<VolumePathKey, CachedDirSize>,
 }
 
 impl BoundedCacheAccumulator {
@@ -176,26 +196,34 @@ impl BoundedCacheAccumulator {
         )) else {
             return;
         };
-        self.candidates
-            .insert_by(entry.key, (mtime, entry.size), &mut compare_cache_entries);
+        self.candidates.insert_by(
+            entry.key,
+            CachedDirSize {
+                modified: mtime,
+                size: entry.size,
+                measured_at_millis: entry.measured_at_millis,
+            },
+            &mut compare_cache_entries,
+        );
     }
 
-    pub(super) fn finish(self) -> HashMap<VolumePathKey, (SystemTime, u64)> {
+    pub(super) fn finish(self) -> HashMap<VolumePathKey, CachedDirSize> {
         self.candidates.finish_by(&mut compare_cache_entries)
     }
 }
 
 pub(super) fn compare_cache_entries(
     key_a: &VolumePathKey,
-    value_a: &(SystemTime, u64),
+    value_a: &CachedDirSize,
     key_b: &VolumePathKey,
-    value_b: &(SystemTime, u64),
+    value_b: &CachedDirSize,
 ) -> Ordering {
     value_a
-        .0
-        .cmp(&value_b.0)
+        .measured_at_millis
+        .cmp(&value_b.measured_at_millis)
         .then_with(|| compare_volume_path_keys(key_a, key_b))
-        .then(value_a.1.cmp(&value_b.1))
+        .then(value_a.modified.cmp(&value_b.modified))
+        .then(value_a.size.cmp(&value_b.size))
 }
 
 struct PersistedEntriesSeed<'a> {
@@ -243,7 +271,7 @@ struct PersistedCacheVisitor {
 }
 
 impl<'de> serde::de::Visitor<'de> for PersistedCacheVisitor {
-    type Value = HashMap<VolumePathKey, (SystemTime, u64)>;
+    type Value = HashMap<VolumePathKey, CachedDirSize>;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("a Commander directory-size cache object")
@@ -280,7 +308,7 @@ impl<'de> serde::de::Visitor<'de> for PersistedCacheVisitor {
             }
         }
 
-        Ok(if schema == Some(1) {
+        Ok(if matches!(schema, Some(1 | 2)) {
             accumulator.finish()
         } else {
             HashMap::new()
@@ -292,7 +320,7 @@ pub(super) fn load_cache_from_reader_with_bounds(
     reader: impl Read,
     limit: usize,
     retain: usize,
-) -> Result<HashMap<VolumePathKey, (SystemTime, u64)>, serde_json::Error> {
+) -> Result<HashMap<VolumePathKey, CachedDirSize>, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let cache = serde::Deserializer::deserialize_map(
         &mut deserializer,
@@ -588,7 +616,7 @@ pub(super) fn prune_walk_log_to(
 }
 
 pub(super) fn prune_dir_size_cache_to(
-    cache: &mut HashMap<VolumePathKey, (SystemTime, u64)>,
+    cache: &mut HashMap<VolumePathKey, CachedDirSize>,
     limit: usize,
     retain: usize,
 ) {
@@ -632,9 +660,15 @@ pub(super) fn publish_cached_size_if_current(
     if !scan_is_current(current, epoch) {
         return false;
     }
-    let cached = lock_recover(dir_size_cache()).get(key).copied();
-    let cached = cached.or_else(|| lock_recover(partial_size_cache()).get(key).copied());
-    let Some((cached_mtime, cached_size)) = cached else {
+    let exact = lock_recover(dir_size_cache()).get(key).copied();
+    let partial = exact
+        .is_none()
+        .then(|| lock_recover(partial_size_cache()).get(key).copied())
+        .flatten();
+    let Some((cached_mtime, cached_size)) = exact
+        .map(|cached| (cached.modified, cached.size))
+        .or(partial)
+    else {
         return false;
     };
     if expected_mtime.is_some_and(|expected| cached_mtime != expected) {
@@ -886,6 +920,7 @@ pub(super) struct DirMeasurement {
 pub(super) struct RankedDirSize {
     pub(super) modified: SystemTime,
     pub(super) completed_at: Option<std::time::Instant>,
+    pub(super) measured_at_millis: u64,
     pub(super) size: u64,
 }
 
@@ -899,16 +934,24 @@ pub(super) fn compare_ranked_dir_sizes(
         return value_a
             .completed_at
             .cmp(&value_b.completed_at)
+            .then(value_a.measured_at_millis.cmp(&value_b.measured_at_millis))
             .then(value_a.modified.cmp(&value_b.modified))
             .then(value_a.size.cmp(&value_b.size));
     }
 
     value_a
-        .modified
-        .cmp(&value_b.modified)
+        .measured_at_millis
+        .cmp(&value_b.measured_at_millis)
         .then(value_a.completed_at.cmp(&value_b.completed_at))
         .then_with(|| compare_volume_path_keys(key_a, key_b))
+        .then(value_a.modified.cmp(&value_b.modified))
         .then(value_a.size.cmp(&value_b.size))
+}
+
+fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1032,24 +1075,25 @@ pub(super) fn publish_dir_measurements_if_current(
 /// Measurements without a known mtime are skipped; they cannot be checked
 /// for staleness on reuse.
 pub(super) fn merge_measurements_into_cache(
-    previous: HashMap<VolumePathKey, (SystemTime, u64)>,
+    previous: HashMap<VolumePathKey, CachedDirSize>,
     measured: &[&DirMeasurement],
     limit: usize,
     retain: usize,
-) -> HashMap<VolumePathKey, (SystemTime, u64)> {
+) -> HashMap<VolumePathKey, CachedDirSize> {
     let measured_paths: HashSet<&Path> = measured
         .iter()
         .map(|result| result.path.as_path())
         .collect();
     let measured_keys: HashSet<&VolumePathKey> =
         measured.iter().map(|result| &result.cache_key).collect();
-    let previous = previous.into_iter().filter_map(|(key, (modified, size))| {
+    let previous = previous.into_iter().filter_map(|(key, cached)| {
         (!measured_paths.contains(key.path.as_path()) || measured_keys.contains(&key)).then_some((
             key,
             RankedDirSize {
-                modified,
+                modified: cached.modified,
                 completed_at: None,
-                size,
+                measured_at_millis: cached.measured_at_millis,
+                size: cached.size,
             },
         ))
     });
@@ -1060,6 +1104,7 @@ pub(super) fn merge_measurements_into_cache(
                 RankedDirSize {
                     modified,
                     completed_at: Some(result.completed_at),
+                    measured_at_millis: current_time_millis(),
                     size: result.size,
                 },
             )
@@ -1075,7 +1120,16 @@ pub(super) fn merge_measurements_into_cache(
     );
     let mut cache: HashMap<_, _> = ranked
         .into_iter()
-        .map(|(key, value)| (key, (value.modified, value.size)))
+        .map(|(key, value)| {
+            (
+                key,
+                CachedDirSize {
+                    modified: value.modified,
+                    size: value.size,
+                    measured_at_millis: value.measured_at_millis,
+                },
+            )
+        })
         .collect();
     shrink_bounded_map(&mut cache, limit);
     cache
@@ -1166,26 +1220,23 @@ pub fn flush_cache() {
 /// The on-disk form of `cache`, entries in key order. An mtime before the
 /// Unix epoch cannot be stored and its entry is left out.
 #[cfg(test)]
-pub(super) fn persisted_snapshot(
-    cache: &HashMap<VolumePathKey, (SystemTime, u64)>,
-) -> PersistedCache {
+pub(super) fn persisted_snapshot(cache: &HashMap<VolumePathKey, CachedDirSize>) -> PersistedCache {
     finish_persisted_snapshot(persisted_entries(cache))
 }
 
 /// The cheap half of `persisted_snapshot`, run while the cache lock is held:
 /// convert the entries without ordering them.
-fn persisted_entries(
-    cache: &HashMap<VolumePathKey, (SystemTime, u64)>,
-) -> Vec<PersistedCacheEntry> {
+fn persisted_entries(cache: &HashMap<VolumePathKey, CachedDirSize>) -> Vec<PersistedCacheEntry> {
     cache
         .iter()
-        .filter_map(|(key, (mtime, size))| {
-            let since_epoch = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
+        .filter_map(|(key, cached)| {
+            let since_epoch = cached.modified.duration_since(std::time::UNIX_EPOCH).ok()?;
             Some(PersistedCacheEntry {
                 key: key.clone(),
                 mtime_secs: since_epoch.as_secs(),
                 mtime_nanos: since_epoch.subsec_nanos(),
-                size: *size,
+                size: cached.size,
+                measured_at_millis: cached.measured_at_millis,
             })
         })
         .collect()
@@ -1194,5 +1245,5 @@ fn persisted_entries(
 /// Sort the entries into key order (outside any lock) and wrap them.
 fn finish_persisted_snapshot(mut entries: Vec<PersistedCacheEntry>) -> PersistedCache {
     entries.sort_by(|a, b| compare_volume_path_keys(&a.key, &b.key));
-    PersistedCache { schema: 1, entries }
+    PersistedCache { schema: 2, entries }
 }

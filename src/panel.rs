@@ -3637,8 +3637,8 @@ mod tests {
         {
             let _boundary = lock_recover(scan_commit_boundary());
             let mut cache = lock_recover(dir_size_cache());
-            cache.insert(a_key.clone(), (now, 100));
-            cache.insert(other_key.clone(), (now, 5));
+            cache.insert(a_key.clone(), CachedDirSize::new(now, 100, 1));
+            cache.insert(other_key.clone(), CachedDirSize::new(now, 5, 1));
         }
 
         invalidate_size_cache(&a.join("b/c/file.txt"));
@@ -3646,7 +3646,7 @@ mod tests {
         assert!(active_epoch.is_cancelled());
         let cache = lock_recover(dir_size_cache());
         assert!(!cache.contains_key(&a_key));
-        assert_eq!(cache[&other_key].0, now, "unrelated dirs stay valid");
+        assert_eq!(cache[&other_key].modified, now, "unrelated dirs stay valid");
     }
 
     #[test]
@@ -3661,7 +3661,7 @@ mod tests {
             let _boundary = lock_recover(scan_commit_boundary());
             let mut cache = lock_recover(dir_size_cache());
             for key in &keys {
-                cache.insert(key.clone(), (now, 1));
+                cache.insert(key.clone(), CachedDirSize::new(now, 1, 1));
             }
         }
 
@@ -3990,6 +3990,7 @@ mod tests {
                 RankedDirSize {
                     modified: modified(1),
                     completed_at: Some(completed(100)),
+                    measured_at_millis: 100,
                     size: 100,
                 },
             ),
@@ -3998,6 +3999,7 @@ mod tests {
                 RankedDirSize {
                     modified: modified(200),
                     completed_at: Some(completed(99)),
+                    measured_at_millis: 99,
                     size: 99,
                 },
             ),
@@ -4006,6 +4008,7 @@ mod tests {
                 RankedDirSize {
                     modified: modified(98),
                     completed_at: Some(completed(98)),
+                    measured_at_millis: 98,
                     size: 98,
                 },
             ),
@@ -4066,11 +4069,11 @@ mod tests {
         };
         let oldest = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
         let mut cache = HashMap::from([
-            (key("a"), (oldest, 1)),
-            (key("b"), (oldest, 2)),
-            (key("c"), (oldest + std::time::Duration::from_secs(1), 3)),
-            (key("d"), (oldest + std::time::Duration::from_secs(2), 4)),
-            (key("e"), (oldest + std::time::Duration::from_secs(3), 5)),
+            (key("a"), CachedDirSize::new(oldest, 1, 1)),
+            (key("b"), CachedDirSize::new(oldest, 2, 1)),
+            (key("c"), CachedDirSize::new(oldest, 3, 2)),
+            (key("d"), CachedDirSize::new(oldest, 4, 3)),
+            (key("e"), CachedDirSize::new(oldest, 5, 4)),
         ]);
 
         prune_dir_size_cache_to(&mut cache, 4, 3);
@@ -4124,15 +4127,17 @@ mod tests {
         };
         let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
         let mut cache = HashMap::with_capacity(1_024);
-        cache.extend((0..4).map(|index| (key("old", index), (base, index as u64))));
+        cache.extend((0..4).map(|index| {
+            (
+                key("old", index),
+                CachedDirSize::new(base, index as u64, index as u64),
+            )
+        }));
         let incoming: Vec<_> = (0..100)
             .map(|index| {
                 (
                     key("incoming", index),
-                    (
-                        base + std::time::Duration::from_secs(index as u64 + 1),
-                        index as u64,
-                    ),
+                    CachedDirSize::new(base, index as u64, index as u64 + 4),
                 )
             })
             .collect();
@@ -4161,6 +4166,7 @@ mod tests {
             mtime_secs,
             mtime_nanos,
             size: 7,
+            measured_at_millis: 0,
         };
         let persisted = PersistedCache {
             schema: 1,
@@ -4195,6 +4201,7 @@ mod tests {
                     mtime_secs: index as u64 + 1,
                     mtime_nanos: 0,
                     size: index as u64,
+                    measured_at_millis: index as u64,
                 })
                 .collect(),
         };
@@ -4230,18 +4237,21 @@ mod tests {
                 mtime_secs: 100,
                 mtime_nanos: 0,
                 size: 100,
+                measured_at_millis: 100,
             },
             PersistedCacheEntry {
                 key: a.clone(),
                 mtime_secs: 99,
                 mtime_nanos: 0,
                 size: 99,
+                measured_at_millis: 99,
             },
             PersistedCacheEntry {
                 key: b.clone(),
                 mtime_secs: 98,
                 mtime_nanos: 0,
                 size: 98,
+                measured_at_millis: 98,
             },
         ];
         let permutations = [
@@ -4263,6 +4273,7 @@ mod tests {
                         mtime_secs: entries[index].mtime_secs,
                         mtime_nanos: entries[index].mtime_nanos,
                         size: entries[index].size,
+                        measured_at_millis: entries[index].measured_at_millis,
                     })
                     .collect(),
             };
@@ -4274,16 +4285,18 @@ mod tests {
             assert!(cache.capacity() <= hash_map_capacity_upper_bound(2));
             assert_eq!(
                 cache[&a],
-                (
+                CachedDirSize::new(
                     std::time::UNIX_EPOCH + std::time::Duration::from_secs(100),
+                    100,
                     100,
                 ),
                 "order {order:?}"
             );
             assert_eq!(
                 cache[&b],
-                (
+                CachedDirSize::new(
                     std::time::UNIX_EPOCH + std::time::Duration::from_secs(98),
+                    98,
                     98,
                 ),
                 "order {order:?}"
@@ -4301,10 +4314,7 @@ mod tests {
                     volume_id: 1,
                     generation: 1,
                 },
-                (
-                    base + std::time::Duration::from_secs(index as u64),
-                    index as u64,
-                ),
+                CachedDirSize::new(base, index as u64, index as u64),
             )
         });
         let mut cache = HashMap::new();
@@ -4335,6 +4345,7 @@ mod tests {
                     mtime_secs: index as u64 + 1,
                     mtime_nanos: 0,
                     size: index as u64,
+                    measured_at_millis: index as u64,
                 })
                 .collect(),
         };
@@ -4959,16 +4970,18 @@ mod tests {
     fn cache_files_from_another_schema_load_empty() {
         let entry = r#"{"key":{"path":"/s","volume_id":1,"generation":1},"mtime_secs":5,"mtime_nanos":0,"size":7}"#;
         for json in [
-            format!(r#"{{"schema":2,"entries":[{entry}]}}"#),
+            format!(r#"{{"schema":3,"entries":[{entry}]}}"#),
             format!(r#"{{"entries":[{entry}]}}"#),
             format!(r#"{{"schema":0,"entries":[{entry}]}}"#),
         ] {
             let cache = load_cache_from_reader_with_bounds(json.as_bytes(), 8, 6).unwrap();
             assert!(cache.is_empty(), "{json}");
         }
-        let current = format!(r#"{{"schema":1,"entries":[{entry}]}}"#);
-        let cache = load_cache_from_reader_with_bounds(current.as_bytes(), 8, 6).unwrap();
-        assert_eq!(cache.len(), 1);
+        for schema in [1, 2] {
+            let current = format!(r#"{{"schema":{schema},"entries":[{entry}]}}"#);
+            let cache = load_cache_from_reader_with_bounds(current.as_bytes(), 8, 6).unwrap();
+            assert_eq!(cache.len(), 1);
+        }
     }
 
     #[test]
@@ -4981,19 +4994,20 @@ mod tests {
         let at =
             |secs: u64, nanos: u32| SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos);
         let cache = HashMap::from([
-            (key("b"), (at(200, 5), 20)),
-            (key("a"), (at(100, 999_999_999), 10)),
+            (key("b"), CachedDirSize::new(at(200, 5), 20, 2)),
+            (key("a"), CachedDirSize::new(at(100, 999_999_999), 10, 1)),
             (
                 key("ancient"),
-                (
+                CachedDirSize::new(
                     SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1),
                     30,
+                    0,
                 ),
             ),
         ]);
 
         let persisted = persisted_snapshot(&cache);
-        assert_eq!(persisted.schema, 1);
+        assert_eq!(persisted.schema, 2);
         let order: Vec<_> = persisted.entries.iter().map(|e| e.key.clone()).collect();
         assert_eq!(order, [key("a"), key("b")], "sorted, pre-1970 dropped");
 
@@ -5028,15 +5042,19 @@ mod tests {
         {
             let _boundary = lock_recover(scan_commit_boundary());
             let mut cache = lock_recover(dir_size_cache());
-            cache.insert(b.clone(), (now, 1));
-            cache.insert(bc.clone(), (now, 2));
+            cache.insert(b.clone(), CachedDirSize::new(now, 1, 1));
+            cache.insert(bc.clone(), CachedDirSize::new(now, 2, 1));
         }
 
         invalidate_size_cache(&tmp.path().join("bc/file.txt"));
 
         let cache = lock_recover(dir_size_cache());
         assert!(!cache.contains_key(&bc));
-        assert_eq!(cache.get(&b), Some(&(now, 1)), "b is not an ancestor of bc");
+        assert_eq!(
+            cache.get(&b),
+            Some(&CachedDirSize::new(now, 1, 1)),
+            "b is not an ancestor of bc"
+        );
     }
 
     /// A fresh panel scan over one folder, with its own size map.
@@ -5074,7 +5092,7 @@ mod tests {
         let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5_000);
         {
             let _boundary = lock_recover(scan_commit_boundary());
-            lock_recover(dir_size_cache()).insert(key.clone(), (mtime, 77));
+            lock_recover(dir_size_cache()).insert(key.clone(), CachedDirSize::new(mtime, 77, 1));
         }
         let scan = scan_for(&directory);
         let sizes = &scan.sizes;
@@ -5154,13 +5172,22 @@ mod tests {
             completed_at: std::time::Instant::now(),
             elapsed: std::time::Duration::from_millis(1),
         };
-        let previous = HashMap::from([(key("a", 1), (at(40), 1)), (key("other", 1), (at(30), 3))]);
+        let previous = HashMap::from([
+            (key("a", 1), CachedDirSize::new(at(40), 1, 1)),
+            (key("other", 1), CachedDirSize::new(at(30), 3, 2)),
+        ]);
 
         let merged = merge_measurements_into_cache(previous, &[&measured], 8, 6);
 
         assert_eq!(
             merged,
-            HashMap::from([(key("a", 2), (at(50), 42)), (key("other", 1), (at(30), 3))])
+            HashMap::from([
+                (
+                    key("a", 2),
+                    CachedDirSize::new(at(50), 42, merged[&key("a", 2)].measured_at_millis)
+                ),
+                (key("other", 1), CachedDirSize::new(at(30), 3, 2)),
+            ])
         );
     }
 
@@ -5172,7 +5199,9 @@ mod tests {
             generation: 1,
         };
         let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
-        let previous: HashMap<_, _> = (0..4).map(|i| (key(i), (at(10 + i), i))).collect();
+        let previous: HashMap<_, _> = (0..4)
+            .map(|i| (key(i), CachedDirSize::new(at(10 + i), i, i)))
+            .collect();
         let measured = DirMeasurement {
             path: key(9).path,
             modified: Some(at(5)),
@@ -5186,11 +5215,11 @@ mod tests {
 
         let merged = merge_measurements_into_cache(previous, &[&measured], 4, 3);
 
-        // Five entries pass the limit of four; the three newest mtimes stay,
-        // which drops the fresh measurement of an old folder too.
+        // Five entries pass the limit of four; the freshly measured folder
+        // outranks older cache rows even though its directory mtime is old.
         let mut kept: Vec<_> = merged.keys().map(|key| key.path.clone()).collect();
         kept.sort();
-        assert_eq!(kept, [key(1).path, key(2).path, key(3).path]);
+        assert_eq!(kept, [key(2).path, key(3).path, key(9).path]);
         assert!(merged.capacity() <= hash_map_capacity_upper_bound(4));
     }
 
