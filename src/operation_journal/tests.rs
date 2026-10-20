@@ -591,6 +591,7 @@ fn retention_never_discards_recoverable_operations() {
     for index in 0..=MAX_OPERATIONS {
         let mut record = incomplete_record(&source, &destination, StepStatus::Failed);
         record.id = OperationId(format!("recoverable-{index}"));
+        record.steps[0].staging = Some(temp.path().join(format!("staging-{index}")));
         journal.operations.push(record);
     }
 
@@ -607,6 +608,33 @@ fn retention_never_discards_recoverable_operations() {
             .iter()
             .all(|operation| operation.status.recoverable())
     );
+}
+
+#[test]
+fn retention_retires_only_effect_free_failed_or_stopped_operations() {
+    let temp = TempDir::new();
+    let source = temp.file("source.txt", "source");
+    let destination = temp.path().join("destination.txt");
+    let mut journal = Journal::default();
+    for index in 0..=MAX_OPERATIONS {
+        let mut record = incomplete_record(&source, &destination, StepStatus::Failed);
+        record.id = OperationId(format!("effect-free-{index}"));
+        record.status = if index % 2 == 0 {
+            OperationStatus::Failed
+        } else {
+            OperationStatus::Stopped
+        };
+        journal.operations.push(record);
+    }
+
+    prune_terminal_history(&mut journal).unwrap();
+
+    assert_eq!(journal.operations.len(), MAX_OPERATIONS);
+    assert_eq!(journal.operations[0].id.0, "effect-free-1");
+    assert!(journal.operations.iter().all(|operation| matches!(
+        operation.status,
+        OperationStatus::Failed | OperationStatus::Stopped
+    )));
 }
 
 #[test]

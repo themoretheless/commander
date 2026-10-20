@@ -814,11 +814,22 @@ fn prune_terminal_history(journal: &mut Journal) -> Result<(), String> {
     if remove_count == 0 {
         return Ok(());
     }
-    let removable = journal
+    let mut removable = journal
         .operations
         .iter()
         .filter(|operation| !operation.status.recoverable())
         .count();
+    if removable < remove_count {
+        for operation in &mut journal.operations {
+            if removable >= remove_count {
+                break;
+            }
+            if recoverable_operation_is_effect_free(operation) {
+                operation.status = OperationStatus::RolledBack;
+                removable += 1;
+            }
+        }
+    }
     if removable < remove_count {
         return Err(format!(
             "Operation journal is full with recoverable work; refusing to discard recovery records (limit {MAX_OPERATIONS})"
@@ -834,6 +845,24 @@ fn prune_terminal_history(journal: &mut Journal) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+fn recoverable_operation_is_effect_free(operation: &OperationRecord) -> bool {
+    matches!(
+        operation.status,
+        OperationStatus::Failed | OperationStatus::Stopped
+    ) && operation.rollback_cleanup.is_none()
+        && operation.rollback_cleanup_quarantine.is_none()
+        && operation.steps.iter().all(|step| {
+            !matches!(step.status, StepStatus::Running | StepStatus::Completed)
+                && step.staging.is_none()
+                && step.checkpoint.is_none()
+                && step.placement.is_none()
+                && step.replacement.is_none()
+                && step.rollback.is_none()
+                && step.rollback_quarantine.is_none()
+                && step.destination_after.is_none()
+        })
 }
 
 struct LoadedJournal {
