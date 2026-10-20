@@ -152,17 +152,34 @@ fn exceeds_component_limit(name: &str) -> bool {
 /// the counter); `existing` is every name currently in the directory
 /// (including the ones being renamed) so collisions with untouched siblings
 /// are caught. `dirs` names the targets that are folders, whose whole name
-/// is the stem (no extension split). Comparison is case- and Unicode-normalization-insensitive
-/// ([`crate::rename_order::name_key`]), matching the default macOS FS.
+/// is the stem (no extension split). This compatibility entry point uses the
+/// conservative case-folded policy; production callers use
+/// [`plan_batch_rename_with`] with the directory's captured policy.
+#[cfg(test)]
 pub fn plan_batch_rename(
     names: &[String],
     existing: &HashSet<String>,
     rule: &RenameRule,
     dirs: &HashSet<String>,
 ) -> Vec<RenamePlan> {
-    use crate::rename_order::name_key;
-    let batch_lower: HashSet<String> = names.iter().map(|n| name_key(n)).collect();
-    let existing_lower: HashSet<String> = existing.iter().map(|n| name_key(n)).collect();
+    plan_batch_rename_with(
+        names,
+        existing,
+        rule,
+        dirs,
+        crate::rename_order::NameFolding::CaseFolded,
+    )
+}
+
+pub fn plan_batch_rename_with(
+    names: &[String],
+    existing: &HashSet<String>,
+    rule: &RenameRule,
+    dirs: &HashSet<String>,
+    folding: crate::rename_order::NameFolding,
+) -> Vec<RenamePlan> {
+    let batch_lower: HashSet<String> = names.iter().map(|name| folding.key(name)).collect();
+    let existing_lower: HashSet<String> = existing.iter().map(|name| folding.key(name)).collect();
 
     // Compiled once for the whole batch, not per name.
     let compiled = (rule.regex && !rule.find.is_empty())
@@ -177,14 +194,14 @@ pub fn plan_batch_rename(
     // How many targets share each lowercased name (intra-batch clashes).
     let mut counts: HashMap<String, usize> = HashMap::new();
     for t in &targets {
-        *counts.entry(name_key(t)).or_insert(0) += 1;
+        *counts.entry(folding.key(t)).or_insert(0) += 1;
     }
 
     names
         .iter()
         .zip(targets.iter())
         .map(|(from, to)| {
-            let to_lower = name_key(to);
+            let to_lower = folding.key(to);
             let status = if !is_valid_name(to) {
                 PlanStatus::Invalid
             } else if to == from {
@@ -249,6 +266,35 @@ mod tests {
         let plans = plan_batch_rename(&n, &ex, &rule, &existing(&["v1.2"]));
         assert_eq!(plans[0].to, "V1.2_old");
         assert_eq!(plans[1].to, "NOTES_old.txt");
+    }
+
+    #[test]
+    fn collision_policy_distinguishes_case_sensitive_directories() {
+        let selected = names(&["bar"]);
+        let siblings = existing(&["Foo", "bar"]);
+        let rule = RenameRule {
+            find: "bar".into(),
+            replace: "foo".into(),
+            ..Default::default()
+        };
+
+        let folded = plan_batch_rename_with(
+            &selected,
+            &siblings,
+            &rule,
+            &HashSet::new(),
+            crate::rename_order::NameFolding::CaseFolded,
+        );
+        let exact = plan_batch_rename_with(
+            &selected,
+            &siblings,
+            &rule,
+            &HashSet::new(),
+            crate::rename_order::NameFolding::Exact,
+        );
+
+        assert_eq!(folded[0].status, PlanStatus::Collision);
+        assert_eq!(exact[0].status, PlanStatus::Ok);
     }
 
     #[test]

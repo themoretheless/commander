@@ -840,6 +840,7 @@ mod tests {
             Action::BatchRename {
                 dir: PathBuf::from("/a"),
                 pairs: vec![("x".into(), "y".into())],
+                folding: crate::rename_order::NameFolding::CaseFolded,
             },
             Action::Rename {
                 from: pair.0.clone(),

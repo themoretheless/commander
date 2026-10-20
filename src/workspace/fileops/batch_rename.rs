@@ -37,24 +37,56 @@ fn dir_names_with_lossy(
 /// see [`crate::rename_order`]) and executing it, rolling back on an OS
 /// failure. Returns how many entries were renamed, or a user-facing error
 /// (an unresolvable conflict, or the first OS error).
+#[cfg(test)]
 pub fn apply_rename_order(
     dir: &Path,
     map: &[(String, String)],
     existing: &std::collections::HashSet<String>,
 ) -> Result<usize, RenameExecutionError> {
-    apply_rename_order_using(dir, map, existing, |from, to| {
+    apply_rename_order_with_folding(
+        dir,
+        map,
+        existing,
+        crate::rename_order::NameFolding::CaseFolded,
+    )
+}
+
+pub fn apply_rename_order_with_folding(
+    dir: &Path,
+    map: &[(String, String)],
+    existing: &std::collections::HashSet<String>,
+    folding: crate::rename_order::NameFolding,
+) -> Result<usize, RenameExecutionError> {
+    apply_rename_order_using_folding(dir, map, existing, folding, |from, to| {
         crate::fs_at::rename_noreplace(&dir.join(from), &dir.join(to))
     })
 }
 
+#[cfg(test)]
 pub fn apply_rename_order_using<E: std::fmt::Display>(
     dir: &Path,
     map: &[(String, String)],
     existing: &std::collections::HashSet<String>,
     rename: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<usize, RenameExecutionError> {
-    use crate::rename_order::{RenameOrder, apply_steps, safe_rename_order};
-    match safe_rename_order(map, existing) {
+    apply_rename_order_using_folding(
+        dir,
+        map,
+        existing,
+        crate::rename_order::NameFolding::CaseFolded,
+        rename,
+    )
+}
+
+pub fn apply_rename_order_using_folding<E: std::fmt::Display>(
+    dir: &Path,
+    map: &[(String, String)],
+    existing: &std::collections::HashSet<String>,
+    folding: crate::rename_order::NameFolding,
+    rename: impl FnMut(&str, &str) -> Result<(), E>,
+) -> Result<usize, RenameExecutionError> {
+    use crate::rename_order::{RenameOrder, apply_steps, safe_rename_order_with};
+    match safe_rename_order_with(map, existing, folding) {
         RenameOrder::Conflict(why) => Err(RenameExecutionError::unchanged(why)),
         RenameOrder::Steps(steps) => apply_steps(&steps, rename).map_err(|error| {
             let message = error.to_string();
@@ -89,6 +121,9 @@ pub fn batch_rename_context(workspace: &Workspace) -> Option<BatchRenameContext>
     Some(BatchRenameContext {
         panel: workspace.active,
         dir: panel.current_path.clone(),
+        folding: crate::rename_order::NameFolding::from_case_sensitive(
+            crate::volume_profile::profile(&panel.current_path).case_sensitive,
+        ),
         targets,
         dirs,
         existing: panel.entries().iter().map(|e| e.name.clone()).collect(),
@@ -120,7 +155,13 @@ pub fn apply_batch_rename_in(
             "\"{name}\" is not valid UTF-8 and cannot be batch renamed; rename it on its own first"
         ));
     }
-    let plans = crate::rename::plan_batch_rename(&context.targets, &existing, rule, &context.dirs);
+    let plans = crate::rename::plan_batch_rename_with(
+        &context.targets,
+        &existing,
+        rule,
+        &context.dirs,
+        context.folding,
+    );
     if plans
         .iter()
         .any(|p| p.status == crate::rename::PlanStatus::Invalid)
@@ -138,7 +179,7 @@ pub fn apply_batch_rename_in(
     }
     let dir = context.dir.clone();
 
-    let done = match apply_rename_order(&dir, &changes, &existing) {
+    let done = match apply_rename_order_with_folding(&dir, &changes, &existing, context.folding) {
         Ok(done) => done,
         Err(error) => {
             latch_rename_execution_error(workspace, &error);
@@ -153,6 +194,7 @@ pub fn apply_batch_rename_in(
             .record(crate::undo::Action::BatchRename {
                 dir,
                 pairs: changes,
+                folding: context.folding,
             })
             .map_err(|error| workspace.history_invariant_error(error))?;
     }

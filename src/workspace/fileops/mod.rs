@@ -11,11 +11,11 @@ mod mkdir;
 mod pending;
 mod rename;
 
-#[cfg(test)]
-pub use batch_rename::apply_rename_order_using;
 pub use batch_rename::{
-    apply_batch_rename_in, apply_rename_order, batch_rename_context, dir_names,
+    apply_batch_rename_in, apply_rename_order_with_folding, batch_rename_context, dir_names,
 };
+#[cfg(test)]
+pub use batch_rename::{apply_rename_order, apply_rename_order_using};
 #[cfg(test)]
 pub use drop::drop_dragged;
 pub use drop::{

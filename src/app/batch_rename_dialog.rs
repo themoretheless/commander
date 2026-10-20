@@ -3,8 +3,10 @@
 //! `crate::rename`; this file is only the egui shell.
 
 use super::*;
-use crate::rename::{PlanStatus, RenamePlan, RenameRule, plan_batch_rename, plan_is_applicable};
-use crate::rename_order::{RenameOrder, safe_rename_order};
+use crate::rename::{
+    PlanStatus, RenamePlan, RenameRule, plan_batch_rename_with, plan_is_applicable,
+};
+use crate::rename_order::{RenameOrder, safe_rename_order_with};
 use crate::workspace::BatchRenameContext;
 
 const PREVIEW_SCROLL_ID: &str = "batch_rename_preview";
@@ -52,7 +54,13 @@ pub struct ValidatedBatchRename {
 impl ValidatedBatchRename {
     fn build(context: &BatchRenameContext, rule: RenameRule) -> Self {
         let regex_err = crate::rename::regex_error(&rule);
-        let plans = plan_batch_rename(&context.targets, &context.existing, &rule, &context.dirs);
+        let plans = plan_batch_rename_with(
+            &context.targets,
+            &context.existing,
+            &rule,
+            &context.dirs,
+            context.folding,
+        );
         let changes: Vec<(String, String)> = plans
             .iter()
             .filter(|plan| plan.to != plan.from)
@@ -70,7 +78,7 @@ impl ValidatedBatchRename {
         } else if changes.is_empty() {
             (false, None)
         } else {
-            match safe_rename_order(&changes, &context.existing) {
+            match safe_rename_order_with(&changes, &context.existing, context.folding) {
                 RenameOrder::Steps(steps) => (!steps.is_empty(), None),
                 RenameOrder::Conflict(reason) => (false, Some(reason)),
             }
@@ -446,6 +454,7 @@ mod tests {
         let context = BatchRenameContext {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
+            folding: crate::rename_order::NameFolding::CaseFolded,
             targets: vec!["a.txt".to_string()],
             dirs: std::collections::HashSet::new(),
             existing: std::collections::HashSet::from(["a.txt".to_string()]),
@@ -470,6 +479,7 @@ mod tests {
         BatchRenameContext {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
+            folding: crate::rename_order::NameFolding::CaseFolded,
             targets: targets.iter().map(ToString::to_string).collect(),
             dirs: std::collections::HashSet::new(),
             existing: targets
@@ -573,6 +583,7 @@ mod tests {
         let context = BatchRenameContext {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
+            folding: crate::rename_order::NameFolding::CaseFolded,
             targets: vec!["a.txt".to_string(), "b.txt".to_string()],
             dirs: std::collections::HashSet::new(),
             existing: std::collections::HashSet::from(["a.txt".to_string(), "b.txt".to_string()]),
@@ -606,6 +617,7 @@ mod tests {
         let context = BatchRenameContext {
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
+            folding: crate::rename_order::NameFolding::CaseFolded,
             targets: vec!["report.txt".to_string()],
             dirs: std::collections::HashSet::new(),
             existing: std::collections::HashSet::from(["report.txt".to_string()]),

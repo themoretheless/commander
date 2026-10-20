@@ -3677,6 +3677,7 @@ fn batch_rename_undo_surfaces_a_failed_rename() {
     let action = crate::undo::Action::BatchRename {
         dir: dir.clone(),
         pairs: vec![("a.txt".to_string(), "b.txt".to_string())],
+        folding: crate::rename_order::NameFolding::CaseFolded,
     };
     ws.record_history_for_test(crate::undo::invert(&action).unwrap());
     let plan = ws.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
@@ -3728,6 +3729,7 @@ fn failed_batch_rename_rollback_enters_safe_state_without_advancing_history() {
     workspace.record_history_for_test(crate::undo::Action::BatchRename {
         dir: left.path().to_path_buf(),
         pairs: map,
+        folding: crate::rename_order::NameFolding::CaseFolded,
     });
     let replay = workspace.begin_history_replay_for_test(crate::undo::ReplayDirection::Undo);
     fileops::latch_rename_execution_error(&mut workspace, &error);

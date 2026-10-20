@@ -3208,6 +3208,7 @@ mod tests {
                 ("a.jpg".into(), "x-a.jpg".into()),
                 ("b.jpg".into(), "x-b.jpg".into()),
             ],
+            folding: crate::rename_order::NameFolding::CaseFolded,
         };
         let mut center = crate::undo::UndoCenter::default();
         center.record(rename.clone()).unwrap();

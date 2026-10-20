@@ -52,6 +52,7 @@ impl ActivePanel {
 pub struct BatchRenameContext {
     pub panel: ActivePanel,
     pub dir: PathBuf,
+    pub folding: crate::rename_order::NameFolding,
     pub targets: Vec<String>,
     /// The targets that are folders: their whole name is renamed as a stem.
     pub dirs: std::collections::HashSet<String>,
@@ -2410,12 +2411,17 @@ impl Workspace {
                     }
                 })
             }
-            crate::undo::Action::BatchRename { dir, pairs } => {
+            crate::undo::Action::BatchRename {
+                dir,
+                pairs,
+                folding,
+            } => {
                 // Undo/redo replays recorded pairs without re-planning, so order
                 // them against the live directory (the inverse of a swap or a
                 // case-only rename is itself a swap/case-only and needs staging).
                 let existing = fileops::dir_names(&dir);
-                let result = fileops::apply_rename_order(&dir, &pairs, &existing);
+                let result =
+                    fileops::apply_rename_order_with_folding(&dir, &pairs, &existing, folding);
                 self.settle_rename_replay(result)
             }
             crate::undo::Action::Rename { from, to } => {

@@ -14,6 +14,35 @@
 
 use std::collections::{HashMap, HashSet};
 
+/// How a directory compares names for occupancy and collision checks.
+/// Unknown filesystems deliberately use the conservative folded policy: a
+/// false positive only refuses a rename, while a false negative could target
+/// an occupied name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NameFolding {
+    Exact,
+    #[default]
+    CaseFolded,
+}
+
+impl NameFolding {
+    pub const fn from_case_sensitive(case_sensitive: Option<bool>) -> Self {
+        if matches!(case_sensitive, Some(true)) {
+            Self::Exact
+        } else {
+            Self::CaseFolded
+        }
+    }
+
+    pub fn key(self, name: &str) -> String {
+        use unicode_normalization::UnicodeNormalization;
+        match self {
+            Self::Exact => name.nfc().collect(),
+            Self::CaseFolded => name.to_lowercase().nfc().collect(),
+        }
+    }
+}
+
 /// One atomic rename. A cycle (a->b->a, longer rotations, or a case-only
 /// self-rename) is broken by staging one member aside with [`ToTemp`], draining
 /// the rest as [`Direct`]s, then moving the staged member into place with
@@ -136,11 +165,12 @@ pub enum RenameOrder {
 /// The occupancy key for a name: case-folded and NFC-normalized, so names a
 /// case-insensitive, normalization-insensitive volume (default APFS) treats
 /// as one (`Foo`/`foo`, precomposed/decomposed `café`) share a key.
+#[cfg(test)]
 pub fn name_key(s: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    s.to_lowercase().nfc().collect()
+    NameFolding::CaseFolded.key(s)
 }
 
+#[cfg(test)]
 fn key(s: &str) -> String {
     name_key(s)
 }
@@ -149,12 +179,21 @@ fn key(s: &str) -> String {
 /// report a [`RenameOrder::Conflict`]. `existing` is every name currently in the
 /// directory (so a target landing on an untouched sibling is caught).
 ///
-/// Occupancy is compared case- and normalization-insensitively ([`name_key`]),
-/// matching the default macOS volume,
-/// while the steps carry the exact cased names. Exact no-op pairs (`old == new`)
+/// The compatibility entry point uses conservative case folding. Production
+/// callers use [`safe_rename_order_with`] with a policy captured for the
+/// directory. The steps always carry the exact cased names. Exact no-op pairs (`old == new`)
 /// are dropped; a case-only change (`Foo` -> `foo`) is kept and routed through a
 /// temporary so the case actually changes.
+#[cfg(test)]
 pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -> RenameOrder {
+    safe_rename_order_with(map, existing, NameFolding::CaseFolded)
+}
+
+pub fn safe_rename_order_with(
+    map: &[(String, String)],
+    existing: &HashSet<String>,
+    folding: NameFolding,
+) -> RenameOrder {
     // Drop exact no-ops; keep case-only changes (they still need a temp).
     let pairs: Vec<(String, String)> = map.iter().filter(|(f, t)| f != t).cloned().collect();
     let n = pairs.len();
@@ -166,22 +205,22 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     // one directory, so treat it as malformed input.
     let mut source_idx: HashMap<String, usize> = HashMap::new();
     for (i, (f, _)) in pairs.iter().enumerate() {
-        if source_idx.insert(key(f), i).is_some() {
+        if source_idx.insert(folding.key(f), i).is_some() {
             return RenameOrder::Conflict(format!(
                 "two renames share the source \u{201c}{f}\u{201d}"
             ));
         }
     }
     let source_keys: HashSet<String> = source_idx.keys().cloned().collect();
-    let existing_keys: HashSet<String> = existing.iter().map(|s| key(s)).collect();
+    let existing_keys: HashSet<String> = existing.iter().map(|s| folding.key(s)).collect();
 
     // Conflict: two renames want the same target.
     let mut target_count: HashMap<String, usize> = HashMap::new();
     for (_, t) in &pairs {
-        *target_count.entry(key(t)).or_insert(0) += 1;
+        *target_count.entry(folding.key(t)).or_insert(0) += 1;
     }
     for (_, t) in &pairs {
-        if target_count[&key(t)] > 1 {
+        if target_count[&folding.key(t)] > 1 {
             return RenameOrder::Conflict(format!(
                 "two renames target the same name \u{201c}{t}\u{201d}"
             ));
@@ -190,7 +229,7 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     // Conflict: a target lands on a file that exists and is NOT being renamed
     // away. (A target whose name is also a source is fine: that source vacates.)
     for (_, t) in &pairs {
-        let tk = key(t);
+        let tk = folding.key(t);
         if existing_keys.contains(&tk) && !source_keys.contains(&tk) {
             return RenameOrder::Conflict(format!(
                 "\u{201c}{t}\u{201d} already exists and is not being renamed"
@@ -204,7 +243,7 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     // of simple paths and simple cycles.
     let blocker: Vec<Option<usize>> = pairs
         .iter()
-        .map(|(_, t)| source_idx.get(&key(t)).copied())
+        .map(|(_, t)| source_idx.get(&folding.key(t)).copied())
         .collect();
     // succ_of[j] = the unique pair blocked by j (reverse of `blocker`).
     let mut succ_of: HashMap<usize, usize> = HashMap::new();
@@ -239,15 +278,15 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
     // never mix original-case names into this set (that was the D8 mismatch).
     let mut reserved: HashSet<String> = existing_keys.clone();
     for (f, t) in &pairs {
-        reserved.insert(key(f));
-        reserved.insert(key(t));
+        reserved.insert(folding.key(f));
+        reserved.insert(folding.key(t));
     }
     let mut tmp_seq = 0;
     for start in 0..n {
         if emitted[start] {
             continue;
         }
-        let tmp = mint_temp_name(&mut tmp_seq, &mut reserved);
+        let tmp = mint_temp_name(&mut tmp_seq, &mut reserved, folding);
 
         steps.push(RenameStep::ToTemp {
             from: pairs[start].0.clone(),
@@ -279,11 +318,11 @@ pub fn safe_rename_order(map: &[(String, String)], existing: &HashSet<String>) -
 /// Next free `.cmdr-rename-N` scratch name against a case-folded reserved set.
 /// Increments `seq` past every collision so two cycles never share a temp, even
 /// when an existing sibling already occupies a mixed-case variant of the base.
-fn mint_temp_name(seq: &mut usize, reserved: &mut HashSet<String>) -> String {
+fn mint_temp_name(seq: &mut usize, reserved: &mut HashSet<String>, folding: NameFolding) -> String {
     loop {
         let candidate = format!(".cmdr-rename-{seq}");
         *seq += 1;
-        let folded = key(&candidate);
+        let folded = folding.key(&candidate);
         if reserved.insert(folded) {
             return candidate;
         }
@@ -675,10 +714,44 @@ mod tests {
     }
 
     #[test]
+    fn exact_policy_keeps_case_distinct_and_avoids_unneeded_staging() {
+        let pairs = map(&[("bar", "foo")]);
+        let present = HashSet::from(["Foo".to_string(), "bar".to_string()]);
+
+        assert!(matches!(
+            safe_rename_order_with(&pairs, &present, NameFolding::CaseFolded),
+            RenameOrder::Conflict(_)
+        ));
+        assert_eq!(
+            safe_rename_order_with(&pairs, &present, NameFolding::Exact),
+            RenameOrder::Steps(vec![RenameStep::Direct {
+                from: "bar".into(),
+                to: "foo".into(),
+            }])
+        );
+
+        let case_only = map(&[("Foo", "foo")]);
+        assert!(matches!(
+            safe_rename_order_with(&case_only, &present, NameFolding::CaseFolded),
+            RenameOrder::Steps(steps) if steps.iter().any(|step| matches!(step, RenameStep::ToTemp { .. }))
+        ));
+        assert_eq!(
+            safe_rename_order_with(&case_only, &present, NameFolding::Exact),
+            RenameOrder::Steps(vec![RenameStep::Direct {
+                from: "Foo".into(),
+                to: "foo".into(),
+            }])
+        );
+    }
+
+    #[test]
     fn mint_temp_name_skips_every_case_folded_collision() {
         let mut reserved = existing(&[".cmdr-rename-0", ".CMDR-RENAME-1"]);
         let mut seq = 0;
-        assert_eq!(mint_temp_name(&mut seq, &mut reserved), ".cmdr-rename-2");
+        assert_eq!(
+            mint_temp_name(&mut seq, &mut reserved, NameFolding::CaseFolded),
+            ".cmdr-rename-2"
+        );
         assert!(reserved.contains(&key(".cmdr-rename-2")));
     }
 }

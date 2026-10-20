@@ -21,6 +21,7 @@ pub enum Action {
     BatchRename {
         dir: PathBuf,
         pairs: Vec<(String, String)>,
+        folding: crate::rename_order::NameFolding,
     },
     /// One path renamed in place. Full paths keep the action independent from
     /// whichever panel is active when undo/redo is requested.
@@ -151,7 +152,7 @@ fn action_pairs(action: &Action) -> Vec<(PathBuf, PathBuf)> {
         Action::Move { pairs } | Action::Gather { pairs, .. } | Action::Ungather { pairs, .. } => {
             pairs.clone()
         }
-        Action::BatchRename { dir, pairs } => pairs
+        Action::BatchRename { dir, pairs, .. } => pairs
             .iter()
             .map(|(from, to)| (dir.join(from), dir.join(to)))
             .collect(),
@@ -365,9 +366,14 @@ pub fn invert(action: &Action) -> Option<Action> {
         Action::Move { pairs } => Some(Action::Move {
             pairs: pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect(),
         }),
-        Action::BatchRename { dir, pairs } => Some(Action::BatchRename {
+        Action::BatchRename {
+            dir,
+            pairs,
+            folding,
+        } => Some(Action::BatchRename {
             dir: dir.clone(),
             pairs: pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect(),
+            folding: *folding,
         }),
         Action::Rename { from, to } => Some(Action::Rename {
             from: to.clone(),
@@ -561,6 +567,7 @@ mod tests {
         let a = Action::BatchRename {
             dir: PathBuf::from("/d"),
             pairs: vec![("a.txt".into(), "b.txt".into())],
+            folding: crate::rename_order::NameFolding::CaseFolded,
         };
         assert_eq!(a.jump_to(), Some(PathBuf::from("/d")));
     }
@@ -592,6 +599,7 @@ mod tests {
         let a = Action::BatchRename {
             dir: PathBuf::from("/d"),
             pairs: vec![("a.txt".into(), "b.txt".into())],
+            folding: crate::rename_order::NameFolding::CaseFolded,
         };
         let inv = invert(&a).unwrap();
         assert_eq!(
@@ -599,6 +607,7 @@ mod tests {
             Action::BatchRename {
                 dir: PathBuf::from("/d"),
                 pairs: vec![("b.txt".into(), "a.txt".into())],
+                folding: crate::rename_order::NameFolding::CaseFolded,
             }
         );
     }
@@ -788,6 +797,7 @@ mod tests {
                 ("a.txt".into(), "b.txt".into()),
                 ("b.txt".into(), "a.txt".into()),
             ],
+            folding: crate::rename_order::NameFolding::CaseFolded,
         };
         let preview = preview(&action);
         assert!(preview.can_execute(), "{preview:?}");
@@ -877,6 +887,7 @@ mod tests {
                 ("a.txt".into(), "c.txt".into()),
                 ("b.txt".into(), "c.txt".into()),
             ],
+            folding: crate::rename_order::NameFolding::CaseFolded,
         };
         let preview = preview(&action);
         assert_eq!(preview.blocked_count(), 2);
