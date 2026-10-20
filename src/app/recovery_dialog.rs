@@ -651,7 +651,10 @@ fn show_repair(
     ui.add_space(7.0);
     if ui
         .add_enabled(
-            !state.scanning && (record.completed_steps() > 0 || record.rollback_cleanup.is_some()),
+            !state.scanning
+                && state.resume_rx.is_none()
+                && state.rollback_rx.is_none()
+                && (record.completed_steps() > 0 || record.rollback_cleanup.is_some()),
             super::dialog_button(
                 t,
                 super::ButtonRole::Danger,
@@ -719,7 +722,7 @@ impl App {
                     }
                 }
                 (_, Some(operation_id)) => {
-                    self.ws.cancel_resume_recovery(&operation_id);
+                    self.ws.cancel_recovery_work(&operation_id);
                     self.recovery.outcome = None;
                     self.recovery.error = Some(
                         "Recovery preparation stopped before returning a matching result"
@@ -733,6 +736,66 @@ impl App {
                 }
             }
         }
+        let rollback_result =
+            self.recovery
+                .rollback_rx
+                .as_ref()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(Ok(result)),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(())),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                });
+        if let Some(result) = rollback_result {
+            self.recovery.rollback_rx = None;
+            let operation_id = self.recovery.preparing_rollback.take();
+            match (result, operation_id) {
+                (Ok(result), Some(operation_id)) if result.operation_id == operation_id => {
+                    match self.ws.finish_rollback_recovery(&operation_id, result.plan) {
+                        Ok(plan) => {
+                            let message = format!(
+                                "Rollback completed {} step(s); {} remaining",
+                                plan.completed.len(),
+                                plan.remaining.len()
+                            );
+                            self.assistive_timeline.note_recovery(
+                                Some(operation_id),
+                                message,
+                                super::frame_millis(ctx),
+                            );
+                            self.ws
+                                .left
+                                .change_provenance
+                                .record(crate::change_provenance::ChangeProvenance::Recovery);
+                            self.ws
+                                .right
+                                .change_provenance
+                                .record(crate::change_provenance::ChangeProvenance::Recovery);
+                            self.recovery.outcome =
+                                Some(rollback_outcome(plan.completed.len(), plan.remaining.len()));
+                            self.recovery.repair_plan = Some(plan);
+                            self.recovery.repair_loaded = true;
+                            self.recovery.repair_rx = None;
+                            self.recovery.start_scan(&self.ws);
+                        }
+                        Err(error) => {
+                            self.recovery.outcome = None;
+                            self.recovery.error = Some(error);
+                        }
+                    }
+                }
+                (_, Some(operation_id)) => {
+                    self.ws.cancel_recovery_work(&operation_id);
+                    self.recovery.outcome = None;
+                    self.recovery.error =
+                        Some("Recovery rollback stopped before returning a matching result".into());
+                }
+                _ => {
+                    self.recovery.outcome = None;
+                    self.recovery.error =
+                        Some("Recovery rollback stopped unexpectedly".to_string());
+                }
+            }
+        }
         if self.recovery.rescan_after_resume
             && !self.recovery.scanning
             && !self.ws.has_unfinished_transfer_work()
@@ -743,6 +806,7 @@ impl App {
         if self.recovery.scanning
             || self.recovery.repair_rx.is_some()
             || self.recovery.resume_rx.is_some()
+            || self.recovery.rollback_rx.is_some()
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -751,8 +815,6 @@ impl App {
     /// The Recovery tab of the Operations panel: interrupted operations with
     /// inspect, repair plan, resume and rollback, plus staging cleanup.
     pub(crate) fn show_recovery_center(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        let ctx = &ctx;
         let mut state = std::mem::take(&mut self.recovery);
         let t = self.colors;
         let mut refresh = false;
@@ -777,7 +839,7 @@ impl App {
             },
         );
         let transfer_busy = self.ws.has_unfinished_transfer_work();
-        let preparing_resume = state.resume_rx.is_some();
+        let preparing_resume = state.resume_rx.is_some() || state.rollback_rx.is_some();
         let selected_record = state
             .selected
             .as_ref()
@@ -1101,33 +1163,20 @@ impl App {
             }
         }
         if let Some(operation_id) = rollback {
-            match self.ws.rollback_recovery(&operation_id) {
-                Ok(plan) => {
-                    let now_millis = super::frame_millis(ctx);
-                    self.assistive_timeline.note_recovery(
-                        Some(operation_id.clone()),
-                        format!(
-                            "Rollback completed {} step(s); {} remaining",
-                            plan.completed.len(),
-                            plan.remaining.len()
-                        ),
-                        now_millis,
-                    );
-                    self.ws
-                        .left
-                        .change_provenance
-                        .record(crate::change_provenance::ChangeProvenance::Recovery);
-                    self.ws
-                        .right
-                        .change_provenance
-                        .record(crate::change_provenance::ChangeProvenance::Recovery);
-                    state.outcome =
-                        Some(rollback_outcome(plan.completed.len(), plan.remaining.len()));
-                    state.repair_plan = Some(plan);
-                    state.repair_loaded = true;
-                    // A load still in flight predates the rollback.
-                    state.repair_rx = None;
-                    state.start_scan(&self.ws);
+            match self.ws.begin_rollback_recovery(&operation_id) {
+                Ok(()) => {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let worker_id = operation_id.clone();
+                    std::thread::spawn(move || {
+                        let plan = crate::operation_journal::rollback(&worker_id);
+                        let _ = sender.send(RollbackPreparationResult {
+                            operation_id: worker_id,
+                            plan,
+                        });
+                    });
+                    state.preparing_rollback = Some(operation_id);
+                    state.rollback_rx = Some(receiver);
+                    state.error = None;
                 }
                 Err(error) => {
                     state.outcome = None;

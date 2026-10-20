@@ -734,6 +734,8 @@ pub struct RecoveryState {
     /// mutation gate until this result is consumed.
     pub resume_rx: Option<std::sync::mpsc::Receiver<ResumePreparationResult>>,
     pub preparing_resume: Option<crate::operation::OperationId>,
+    pub rollback_rx: Option<std::sync::mpsc::Receiver<RollbackPreparationResult>>,
+    pub preparing_rollback: Option<crate::operation::OperationId>,
     /// Pending background load of the selected operation's repair plan.
     pub repair_rx: Option<std::sync::mpsc::Receiver<RepairLoadResult>>,
     /// Version-store usage line and when it was read from the on-disk
@@ -758,6 +760,11 @@ pub struct RecoveryScanResult {
 pub struct ResumePreparationResult {
     pub operation_id: crate::operation::OperationId,
     pub spec: Result<crate::transfer::TransferSpec, String>,
+}
+
+pub struct RollbackPreparationResult {
+    pub operation_id: crate::operation::OperationId,
+    pub plan: Result<crate::operation_journal::RepairPlan, String>,
 }
 
 pub struct RepairLoadResult {

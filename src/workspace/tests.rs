@@ -4021,13 +4021,21 @@ fn background_recovery_preparation_blocks_mutations_and_releases_on_error() {
         workspace
             .rollback_recovery(&operation_id)
             .unwrap_err()
-            .contains("Wait for recovery preparation")
+            .contains("already being prepared")
     );
 
     let error = workspace
         .finish_resume_recovery(&operation_id, Err("reconcile failed".to_string()), || {})
         .unwrap_err();
     assert_eq!(error, "reconcile failed");
+    assert!(!workspace.mutations_blocked());
+
+    workspace.begin_rollback_recovery(&operation_id).unwrap();
+    assert!(workspace.mutations_blocked());
+    let error = workspace
+        .finish_rollback_recovery(&operation_id, Err("rollback failed".to_string()))
+        .unwrap_err();
+    assert_eq!(error, "rollback failed");
     assert!(!workspace.mutations_blocked());
 }
 

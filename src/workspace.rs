@@ -1785,20 +1785,7 @@ impl Workspace {
         &mut self,
         operation_id: &crate::operation::OperationId,
     ) -> Result<(), String> {
-        self.ensure_matching_recovery_review(operation_id)?;
-        if self.recovery_preparing.is_some() {
-            return Err("Another recovery operation is already being prepared".to_string());
-        }
-        if self.deletes.is_active() {
-            return Err(
-                "Wait for the current Trash operation before resuming recovery".to_string(),
-            );
-        }
-        if self.has_unfinished_transfer_work() {
-            return Err("Wait for the transfer queue before resuming recovery".to_string());
-        }
-        self.recovery_preparing = Some(operation_id.clone());
-        Ok(())
+        self.begin_recovery_work(operation_id, "resuming recovery")
     }
 
     pub fn finish_resume_recovery(
@@ -1830,36 +1817,67 @@ impl Workspace {
         Ok(count)
     }
 
-    pub fn cancel_resume_recovery(&mut self, operation_id: &crate::operation::OperationId) {
+    pub fn cancel_recovery_work(&mut self, operation_id: &crate::operation::OperationId) {
         if self.recovery_preparing.as_ref() == Some(operation_id) {
             self.recovery_preparing = None;
         }
     }
 
+    #[cfg(test)]
     pub fn rollback_recovery(
         &mut self,
         operation_id: &crate::operation::OperationId,
     ) -> Result<crate::operation_journal::RepairPlan, String> {
+        self.begin_rollback_recovery(operation_id)?;
+        let plan = crate::operation_journal::rollback(operation_id);
+        self.finish_rollback_recovery(operation_id, plan)
+    }
+
+    pub fn begin_rollback_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+    ) -> Result<(), String> {
+        self.begin_recovery_work(operation_id, "rolling back recovery")
+    }
+
+    fn begin_recovery_work(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+        action: &str,
+    ) -> Result<(), String> {
         self.ensure_matching_recovery_review(operation_id)?;
         if self.recovery_preparing.is_some() {
-            return Err(
-                "Wait for recovery preparation before rolling back another operation".to_string(),
-            );
+            return Err("Another recovery operation is already being prepared".to_string());
         }
         if self.deletes.is_active() {
-            return Err(
-                "Wait for the current Trash operation before rolling back recovery".to_string(),
-            );
+            return Err(format!(
+                "Wait for the current Trash operation before {action}"
+            ));
         }
         if self.has_unfinished_transfer_work() {
-            return Err("Wait for the transfer queue before rolling back recovery".to_string());
+            return Err(format!("Wait for the transfer queue before {action}"));
         }
+        self.recovery_preparing = Some(operation_id.clone());
+        Ok(())
+    }
+
+    pub fn finish_rollback_recovery(
+        &mut self,
+        operation_id: &crate::operation::OperationId,
+        plan: Result<crate::operation_journal::RepairPlan, String>,
+    ) -> Result<crate::operation_journal::RepairPlan, String> {
+        if self.recovery_preparing.as_ref() != Some(operation_id) {
+            return Err(
+                "Recovery rollback result no longer matches the active operation".to_string(),
+            );
+        }
+        self.recovery_preparing = None;
+        let plan = plan?;
+        self.ensure_matching_recovery_review(operation_id)?;
         let replay = self
             .undo
             .interrupted_reservation_for(operation_id)
             .map_err(|error| error.to_string())?;
-        crate::operation_journal::repair_plan(operation_id)?;
-        let plan = crate::operation_journal::rollback(operation_id)?;
         if plan.remaining.is_empty() {
             if let Some(reservation) = replay {
                 self.undo
