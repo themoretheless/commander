@@ -1430,6 +1430,60 @@ pub fn mark_replacement_placed(
     })
 }
 
+/// Record that a failed replacement placement put the proven original back
+/// at its destination. The staged replacement remains available for a later
+/// retry, so the overwrite returns to its prepared phase.
+pub fn mark_replacement_restored(
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+) -> Result<(), String> {
+    let observed = step_snapshot(operation_id, key)?
+        .and_then(|step| step.replacement)
+        .filter(|replacement| replacement.phase == ReplacementPhase::OriginalBackedUp)
+        .map(|replacement| {
+            let destination =
+                PathIdentity::observe_deep(&replacement.original.path).map_err(|error| {
+                    format!("Could not prove restored overwrite destination: {error}")
+                });
+            let staging = PathIdentity::observe_deep(&replacement.replacement.path)
+                .map_err(|error| format!("Could not recheck staged replacement: {error}"));
+            let backup = PathIdentity::observe(&replacement.path)
+                .map_err(|error| format!("Could not prove vacated overwrite backup: {error}"));
+            (replacement, destination, staging, backup)
+        });
+    update_step(operation_id, key, &[OperationStatus::Running], |step| {
+        let replacement = step
+            .replacement
+            .as_mut()
+            .ok_or_else(|| "Overwrite restoration was not prepared".to_string())?;
+        if replacement.phase == ReplacementPhase::Prepared {
+            return Ok(());
+        }
+        if replacement.phase != ReplacementPhase::OriginalBackedUp {
+            return Err("Overwrite restoration callback arrived in a stale phase".to_string());
+        }
+        let Some((_, destination, staging, backup)) = observed
+            .as_ref()
+            .filter(|(proved, _, _, _)| proved == replacement)
+        else {
+            return Err(
+                "Overwrite proof changed while its restoration was being proven".to_string(),
+            );
+        };
+        if !replacement.original.same_version(destination.as_ref()?) {
+            return Err("Overwrite destination is not the proven restored original".to_string());
+        }
+        if !replacement.replacement.same_version(staging.as_ref()?) {
+            return Err("Staged overwrite changed while restoring the original".to_string());
+        }
+        if backup.as_ref()?.exists {
+            return Err("Overwrite backup still exists after restoration".to_string());
+        }
+        replacement.phase = ReplacementPhase::Prepared;
+        Ok(())
+    })
+}
+
 pub fn prepare_placement(
     operation_id: &OperationId,
     key: &IdempotencyKey,

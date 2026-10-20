@@ -2931,6 +2931,25 @@ fn replacement_placement_is_idempotent_and_rejects_a_stale_phase() {
 }
 
 #[test]
+fn replacement_restoration_reopens_the_prepared_overwrite() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("restored-phase-journal.json"));
+    let (operation_id, key, destination, staging, backup) =
+        overwrite_backed_up(&temp, "restored-phase");
+    crate::fs_at::rename_noreplace(&backup, &destination).unwrap();
+
+    mark_replacement_restored(&operation_id, &key).unwrap();
+    mark_replacement_restored(&operation_id, &key).unwrap();
+
+    let step = &operation(&operation_id).unwrap().steps[0];
+    let replacement = step.replacement.as_ref().unwrap();
+    assert_eq!(replacement.phase, ReplacementPhase::Prepared);
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "old bytes");
+    assert_eq!(std::fs::read_to_string(&staging).unwrap(), "new bytes");
+    assert!(!backup.exists());
+}
+
+#[test]
 fn non_overwrite_placement_requires_the_staged_object_and_is_idempotent() {
     let temp = TempDir::new();
     let _journal = use_test_journal(temp.path().join("place-proof-journal.json"));

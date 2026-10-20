@@ -2046,6 +2046,18 @@ fn swap_into_place(
     expected_dest: &PathIdentity,
     journal: JournalStep<'_>,
 ) -> std::io::Result<Option<String>> {
+    swap_into_place_with(staged, dest, expected_dest, journal, |staged, dest| {
+        crate::fs_at::rename_sibling(staged, dest, false)
+    })
+}
+
+fn swap_into_place_with(
+    staged: &Path,
+    dest: &Path,
+    expected_dest: &PathIdentity,
+    journal: JournalStep<'_>,
+    mut place: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<Option<String>> {
     let current = observe_like(expected_dest, dest)?;
     if !expected_dest.same_binding(&current) {
         return Err(std::io::Error::other(
@@ -2062,7 +2074,7 @@ fn swap_into_place(
             )
             .map_err(std::io::Error::other)?;
         }
-        crate::fs_at::rename_sibling(staged, dest, false)?;
+        place(staged, dest)?;
         fs_util::sync_parent_namespace(dest)?;
         if journal.enabled {
             crate::operation_journal::mark_placement_placed(journal.operation_id, journal.key)
@@ -2103,7 +2115,32 @@ fn swap_into_place(
             .and_then(|step| step.replacement)
             .ok_or_else(|| std::io::Error::other("overwrite proof disappeared"))?;
         if current.phase == crate::operation_journal::ReplacementPhase::OriginalBackedUp {
-            crate::fs_at::rename_sibling(staged, dest, false)?;
+            if let Err(place_error) = place(staged, dest) {
+                if let Err(restore_error) = crate::fs_at::rename_sibling(&current.path, dest, false)
+                {
+                    return Err(std::io::Error::other(format!(
+                        "{place_error}; restore failed: {restore_error}; original preserved at {}",
+                        current.path.display()
+                    )));
+                }
+                if let Err(sync_error) = fs_util::sync_parent_namespace(dest) {
+                    return Err(std::io::Error::other(format!(
+                        "{place_error}; original restored at {} but namespace sync failed: {sync_error}",
+                        dest.display()
+                    )));
+                }
+                crate::operation_journal::mark_replacement_restored(
+                    journal.operation_id,
+                    journal.key,
+                )
+                .map_err(|journal_error| {
+                    std::io::Error::other(format!(
+                        "{place_error}; original restored at {} but journal update failed: {journal_error}",
+                        dest.display()
+                    ))
+                })?;
+                return Err(place_error);
+            }
             fs_util::sync_parent_namespace(dest)?;
             crate::operation_journal::mark_replacement_placed(journal.operation_id, journal.key)
                 .map_err(std::io::Error::other)?;
@@ -2113,7 +2150,7 @@ fn swap_into_place(
 
     quarantine_expected_path(dest, &backup, &current)?;
     fs_util::sync_parent_namespace(dest)?;
-    match crate::fs_at::rename_sibling(staged, dest, false) {
+    match place(staged, dest) {
         Ok(()) => {
             fs_util::sync_parent_namespace(dest)?;
             Ok(cleanup_moved_source(
@@ -3163,6 +3200,60 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(leftovers, [std::ffi::OsString::from("report.txt")]);
+    }
+
+    #[test]
+    fn journaled_swap_restores_original_and_reopens_prepared_step_on_placement_failure() {
+        let root = TempDir::new();
+        let _journal = crate::operation_journal::use_test_journal(
+            root.path().join("placement-failure-journal.json"),
+        );
+        let target = root.dir("target");
+        let source = root.file("source.txt", "new bytes");
+        let dest = root.file("target/source.txt", "original bytes");
+        let staged = root.file("target/.source.txt.cmdr-tmp.staged", "new bytes");
+        let entry = entry_for(&source);
+        let spec = spec(TransferKind::Copy, vec![entry], &target);
+        crate::operation_journal::begin(&spec).unwrap();
+        let key = spec.operation_id.step_key(0, &dest);
+        let expected = PathIdentity::observe_deep(&dest).unwrap();
+        crate::operation_journal::mark_running(
+            &spec.operation_id,
+            &key,
+            &staged,
+            &dest,
+            expected.clone(),
+        )
+        .unwrap();
+
+        let error = swap_into_place_with(
+            &staged,
+            &dest,
+            &expected,
+            JournalStep {
+                operation_id: &spec.operation_id,
+                key: &key,
+                enabled: true,
+            },
+            |_, _| Err(std::io::Error::other("injected placement failure")),
+        )
+        .expect_err("the injected placement failure must be returned");
+
+        assert!(
+            error.to_string().contains("injected placement failure"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "original bytes");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "new bytes");
+        let step = &crate::operation_journal::operation(&spec.operation_id)
+            .unwrap()
+            .steps[0];
+        let replacement = step.replacement.as_ref().unwrap();
+        assert_eq!(
+            replacement.phase,
+            crate::operation_journal::ReplacementPhase::Prepared
+        );
+        assert!(!replacement.path.exists());
     }
 
     #[test]
