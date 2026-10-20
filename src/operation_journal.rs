@@ -3294,7 +3294,6 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
         .collect::<std::collections::HashSet<_>>();
     let mut referenced = std::collections::HashSet::new();
     for operation in &journal.operations {
-        roots.insert(operation.target.clone());
         if let Some(quarantine) = &operation.rollback_cleanup_quarantine {
             referenced.insert(quarantine.clone());
         }
@@ -3310,9 +3309,18 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
             {
                 referenced.insert(receipt.quarantine.clone());
             }
+        }
+        if !operation_needs_recovery(operation) {
+            continue;
+        }
+        roots.insert(operation.target.clone());
+        if let Some(quarantine) = &operation.rollback_cleanup_quarantine
+            && let Some(parent) = quarantine.parent()
+        {
+            roots.insert(parent.to_path_buf());
+        }
+        for step in &operation.steps {
             for path in [
-                Some(&step.source),
-                Some(&step.destination),
                 step.landing.as_ref(),
                 step.staging.as_ref(),
                 step.replacement
@@ -3337,23 +3345,25 @@ pub fn recovery_inventory(extra: &[PathBuf]) -> Result<RecoveryInventory, String
     let mut operations = journal
         .operations
         .into_iter()
-        .filter(|operation| {
-            operation.status.recoverable()
-                || operation.rollback_cleanup_quarantine.is_some()
-                || operation.steps.iter().any(|step| {
-                    step.replacement.is_some()
-                        || step
-                            .rollback
-                            .as_ref()
-                            .is_some_and(|receipt| receipt.phase != RollbackPhase::Complete)
-                })
-        })
+        .filter(operation_needs_recovery)
         .collect::<Vec<_>>();
     operations.sort_by_key(|operation| std::cmp::Reverse(operation.updated_at_secs));
     Ok(RecoveryInventory {
         operations,
         orphans: discover_orphan_staging_with(&roots, &referenced),
     })
+}
+
+fn operation_needs_recovery(operation: &OperationRecord) -> bool {
+    operation.status.recoverable()
+        || operation.rollback_cleanup_quarantine.is_some()
+        || operation.steps.iter().any(|step| {
+            step.replacement.is_some()
+                || step
+                    .rollback
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.phase != RollbackPhase::Complete)
+        })
 }
 
 fn discover_orphan_staging_with(

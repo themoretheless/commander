@@ -1903,6 +1903,46 @@ fn recovery_inventory_lists_unsettled_operations_newest_first_and_hides_referenc
 }
 
 #[test]
+fn recovery_inventory_skips_source_and_settled_history_roots() {
+    let temp = TempDir::new();
+    let _journal = use_test_journal(temp.path().join("bounded-inventory-journal.json"));
+    let source_root = temp.dir("offline-source");
+    let source = temp.file("offline-source/source.txt", "source");
+    let target = temp.dir("active-target");
+    let destination = target.join("source.txt");
+    let mut recoverable = incomplete_record(&source, &destination, StepStatus::Failed);
+    recoverable.id = OperationId("recoverable".to_string());
+    let source_orphan = temp.file("offline-source/.source-only.cmdr-tmp.0", "partial");
+    let target_orphan = temp.file("active-target/.target.cmdr-tmp.0", "partial");
+
+    let settled_target = temp.dir("settled-target");
+    let settled_destination = settled_target.join("source.txt");
+    let mut settled = incomplete_record(&source, &settled_destination, StepStatus::Failed);
+    settled.id = OperationId("settled".to_string());
+    settled.status = OperationStatus::RolledBack;
+    let settled_orphan = temp.file("settled-target/.settled.cmdr-tmp.0", "partial");
+    save_test_journal(vec![recoverable, settled]);
+
+    let inventory = recovery_inventory(&[]).unwrap();
+    let found = inventory
+        .orphans
+        .iter()
+        .map(|orphan| orphan.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(found, vec![target_orphan]);
+    assert!(!found.contains(&source_orphan));
+    assert!(!found.contains(&settled_orphan));
+
+    let with_explicit_source = recovery_inventory(&[source_root]).unwrap();
+    assert!(
+        with_explicit_source
+            .orphans
+            .iter()
+            .any(|orphan| orphan.path == source_orphan)
+    );
+}
+
+#[test]
 fn repair_plan_offers_automatic_removal_of_an_unchanged_created_copy() {
     let temp = TempDir::new();
     let _journal = use_test_journal(temp.path().join("plan-journal.json"));
