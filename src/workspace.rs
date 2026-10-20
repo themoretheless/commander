@@ -22,6 +22,8 @@ use crate::transfer::{
 };
 use crate::ui_request::{UiModal, UiRequest};
 
+const UI_DEEP_OBSERVATION_ENTRY_BUDGET: usize = 100_000;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ActivePanel {
     Left,
@@ -2650,7 +2652,12 @@ impl Workspace {
         let rollback_cleanup_identity = rollback_cleanup
             .as_ref()
             .map(|path| {
-                crate::path_identity::PathIdentity::observe_deep(path).map_err(|error| {
+                crate::path_identity::PathIdentity::observe_deep_bounded(
+                    path,
+                    UI_DEEP_OBSERVATION_ENTRY_BUDGET,
+                    &|| false,
+                )
+                .map_err(|error| {
                     format!(
                         "Could not prove replay-owned folder {}: {error}",
                         path.display()

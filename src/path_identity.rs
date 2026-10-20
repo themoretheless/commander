@@ -88,11 +88,30 @@ impl PathIdentity {
     /// Observe a path and, for a real directory, fingerprint every descendant's
     /// relative name and metadata. Symlinks are leaves and are never followed.
     pub fn observe_deep(path: &Path) -> std::io::Result<Self> {
+        Self::observe_deep_with(path, None, &|| false)
+    }
+
+    /// Deep observation with an entry budget and cooperative cancellation.
+    /// Exceeding either fails closed with `WouldBlock`; no partial fingerprint
+    /// is ever returned as an identity proof.
+    pub fn observe_deep_bounded(
+        path: &Path,
+        max_entries: usize,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> std::io::Result<Self> {
+        Self::observe_deep_with(path, Some(max_entries), is_cancelled)
+    }
+
+    fn observe_deep_with(
+        path: &Path,
+        max_entries: Option<usize>,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> std::io::Result<Self> {
         let before = Self::observe(path)?;
         if before.kind != Some(PathKind::Directory) {
             return Ok(before);
         }
-        let fingerprint = tree_fingerprint(path)?;
+        let fingerprint = tree_fingerprint(path, max_entries, is_cancelled)?;
         let mut after = Self::observe(path)?;
         if !before.same_metadata(&after) {
             return Err(std::io::Error::new(
@@ -277,10 +296,28 @@ impl TreeFingerprint {
     }
 }
 
-fn tree_fingerprint(root: &Path) -> std::io::Result<u64> {
+fn tree_fingerprint(
+    root: &Path,
+    max_entries: Option<usize>,
+    is_cancelled: &dyn Fn() -> bool,
+) -> std::io::Result<u64> {
     let mut fingerprint = TreeFingerprint::new();
     let mut stack = vec![(PathBuf::new(), root.to_path_buf())];
+    let mut visited = 0usize;
     while let Some((relative, path)) = stack.pop() {
+        if is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "deep path observation was cancelled",
+            ));
+        }
+        visited = visited.saturating_add(1);
+        if max_entries.is_some_and(|limit| visited > limit) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "deep path observation exceeded its entry budget",
+            ));
+        }
         let metadata = std::fs::symlink_metadata(&path)?;
         fingerprint.record(&relative, &metadata);
         let file_type = metadata.file_type();
@@ -394,5 +431,28 @@ mod tests {
         std::fs::write(nested, "a longer value").unwrap();
         let after = PathIdentity::observe_deep(&root).unwrap();
         assert!(!before.same_version(&after));
+    }
+
+    #[test]
+    fn bounded_deep_identity_fails_closed_when_budget_is_exhausted() {
+        let temp = TempDir::new();
+        let root = temp.dir("folder");
+        temp.file("folder/a.txt", "a");
+
+        let error = PathIdentity::observe_deep_bounded(&root, 1, &|| false).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("entry budget"));
+    }
+
+    #[test]
+    fn bounded_deep_identity_honours_cancellation_before_io_walk() {
+        let temp = TempDir::new();
+        let root = temp.dir("folder");
+
+        let error = PathIdentity::observe_deep_bounded(&root, 100, &|| true).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("cancelled"));
     }
 }
