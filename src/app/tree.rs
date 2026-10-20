@@ -6,30 +6,129 @@ fn child_cache_key(path: &std::path::Path, show_hidden: bool) -> (PathBuf, bool)
     (path.to_path_buf(), show_hidden)
 }
 
-fn cache_children(cache: &mut ChildCache, key: (PathBuf, bool), children: TreeChildren) {
+fn cache_children(cache: &mut ChildCache, key: (PathBuf, bool), entry: ChildCacheEntry) {
     if !cache.contains_key(&key) && cache.len() >= TREE_CHILD_CACHE_LIMIT {
         cache.clear();
     }
-    cache.insert(key, children);
+    cache.insert(key, entry);
 }
 
 /// Shared child list: rows clone the `Arc`, not every child path, per frame.
 pub(super) type TreeChildren = std::sync::Arc<[PathBuf]>;
-pub(super) type ChildCache = std::collections::HashMap<(PathBuf, bool), TreeChildren>;
+#[derive(Clone)]
+pub(super) enum ChildCacheEntry {
+    Loading(u64),
+    Ready(TreeChildren),
+}
+
+impl From<Vec<PathBuf>> for ChildCacheEntry {
+    fn from(children: Vec<PathBuf>) -> Self {
+        Self::Ready(TreeChildren::from(children))
+    }
+}
+
+pub(super) type ChildCache = std::collections::HashMap<(PathBuf, bool), ChildCacheEntry>;
+
+struct ChildLoadResult {
+    key: (PathBuf, bool),
+    ticket: u64,
+    children: TreeChildren,
+}
+
+struct ChildLoadJob {
+    key: (PathBuf, bool),
+    ticket: u64,
+    repaint: egui::Context,
+}
+
+pub(super) struct ChildLoader {
+    jobs: std::sync::mpsc::Sender<ChildLoadJob>,
+    receiver: std::sync::mpsc::Receiver<ChildLoadResult>,
+    next_ticket: u64,
+}
+
+impl Default for ChildLoader {
+    fn default() -> Self {
+        let (jobs, job_receiver) = std::sync::mpsc::channel::<ChildLoadJob>();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(job) = job_receiver.recv() {
+                let children = TreeChildren::from(PanelState::subdirs(&job.key.0, job.key.1));
+                let _ = sender.send(ChildLoadResult {
+                    key: job.key,
+                    ticket: job.ticket,
+                    children,
+                });
+                job.repaint.request_repaint();
+            }
+        });
+        Self {
+            jobs,
+            receiver,
+            next_ticket: 0,
+        }
+    }
+}
+
+impl ChildLoader {
+    fn poll(&mut self, cache: &mut ChildCache) {
+        while let Ok(result) = self.receiver.try_recv() {
+            apply_child_load(cache, result);
+        }
+    }
+
+    fn request(
+        &mut self,
+        cache: &mut ChildCache,
+        path: &std::path::Path,
+        show_hidden: bool,
+        ctx: &egui::Context,
+    ) {
+        let key = child_cache_key(path, show_hidden);
+        if cache.contains_key(&key) {
+            return;
+        }
+        self.next_ticket = self.next_ticket.wrapping_add(1);
+        let ticket = self.next_ticket;
+        cache_children(cache, key.clone(), ChildCacheEntry::Loading(ticket));
+        if self
+            .jobs
+            .send(ChildLoadJob {
+                key: key.clone(),
+                ticket,
+                repaint: ctx.clone(),
+            })
+            .is_err()
+        {
+            cache.remove(&key);
+        }
+    }
+}
+
+fn apply_child_load(cache: &mut ChildCache, result: ChildLoadResult) {
+    if matches!(cache.get(&result.key), Some(ChildCacheEntry::Loading(ticket)) if *ticket == result.ticket)
+    {
+        cache_children(cache, result.key, ChildCacheEntry::Ready(result.children));
+    }
+}
 
 /// Child folders of `path`, read from disk only on a cache miss.
 fn cached_children(
     cache: &mut ChildCache,
+    loader: &mut ChildLoader,
     path: &std::path::Path,
     show_hidden: bool,
-) -> TreeChildren {
+    ctx: &egui::Context,
+) -> Option<TreeChildren> {
     let key = child_cache_key(path, show_hidden);
-    if let Some(cached) = cache.get(&key) {
-        return cached.clone();
+    if let Some(entry) = cache.get(&key) {
+        return match entry {
+            ChildCacheEntry::Loading(_) => None,
+            ChildCacheEntry::Ready(children) => Some(children.clone()),
+        };
     }
-    let children = TreeChildren::from(PanelState::subdirs(path, show_hidden));
-    cache_children(cache, key, children.clone());
-    children
+    loader.request(cache, path, show_hidden, ctx);
+    None
 }
 
 /// A click on a tree row toggles its expansion and drops its cached child
@@ -182,6 +281,8 @@ struct TreeWalk<'a> {
     show_hidden: bool,
     expanded: &'a mut std::collections::HashSet<PathBuf>,
     cache: &'a mut ChildCache,
+    loader: &'a mut ChildLoader,
+    ctx: egui::Context,
     /// Per level below the root: whether that ancestor (and, last, the
     /// current row) has a later sibling, so its guide line continues.
     continues: Vec<bool>,
@@ -224,12 +325,15 @@ impl App {
         }
 
         let root = PathBuf::from("/");
+        self.tree_child_loader.poll(&mut self.tree_children_cache);
         let mut walk = TreeWalk {
             t,
             active_path: &active_path,
             show_hidden,
             expanded: &mut self.tree_expanded,
             cache: &mut self.tree_children_cache,
+            loader: &mut self.tree_child_loader,
+            ctx: ui.ctx().clone(),
             continues: Vec::new(),
             reveal_active,
         };
@@ -348,14 +452,18 @@ impl App {
             if !is_expanded {
                 return None;
             }
-            let subdirs = cached_children(walk.cache, path, walk.show_hidden);
+            let subdirs =
+                cached_children(walk.cache, walk.loader, path, walk.show_hidden, &walk.ctx)?;
             return Self::render_tree_children(ui, &subdirs, walk);
         }
 
         let mut nav = None;
         let t = walk.t;
-        let subdirs = cached_children(walk.cache, path, walk.show_hidden);
-        let has_children = !subdirs.is_empty();
+        let subdirs = cached_children(walk.cache, walk.loader, path, walk.show_hidden, &walk.ctx);
+        let loading = subdirs.is_none();
+        let has_children = subdirs
+            .as_ref()
+            .is_some_and(|children| !children.is_empty());
 
         let name = path
             .file_name()
@@ -470,12 +578,16 @@ impl App {
             );
             p.rect_stroke(body, CornerRadius::ZERO, s, egui::StrokeKind::Outside);
 
-            let child_count = subdirs.len();
-            if child_count > 0 {
+            let child_count = subdirs.as_ref().map_or(0, |children| children.len());
+            if loading || child_count > 0 {
                 p.text(
                     body.center(),
                     egui::Align2::CENTER_CENTER,
-                    folder_count_label(child_count),
+                    if loading {
+                        "…".to_string()
+                    } else {
+                        folder_count_label(child_count)
+                    },
                     egui::FontId::proportional(7.0),
                     count_color,
                 );
@@ -515,7 +627,7 @@ impl App {
         row_resp.on_hover_text(path.display().to_string());
 
         // Render children if expanded
-        if is_expanded {
+        if is_expanded && let Some(subdirs) = subdirs {
             nav = Self::render_tree_children(ui, &subdirs, walk).or(nav);
         }
 
@@ -583,7 +695,9 @@ mod tests {
         cache_children(
             &mut cache,
             child_cache_key(&path, false),
-            TreeChildren::from(vec![PathBuf::from("/outside/panes/stale")]),
+            ChildCacheEntry::Ready(TreeChildren::from(vec![PathBuf::from(
+                "/outside/panes/stale",
+            )])),
         );
         toggle_tree_node(&mut expanded, &mut cache, &path, false, false);
         assert!(!cache.contains_key(&child_cache_key(&path, false)));
@@ -595,13 +709,24 @@ mod tests {
         let temp = crate::testutil::TempDir::new();
         std::fs::create_dir(temp.path().join("sub")).expect("create sub");
         let mut cache = ChildCache::new();
-        let first = cached_children(&mut cache, temp.path(), false);
+        let mut loader = ChildLoader::default();
+        let ctx = egui::Context::default();
+        assert!(cached_children(&mut cache, &mut loader, temp.path(), false, &ctx).is_none());
+        let first = loop {
+            loader.poll(&mut cache);
+            if let Some(children) =
+                cached_children(&mut cache, &mut loader, temp.path(), false, &ctx)
+            {
+                break children;
+            }
+            std::thread::yield_now();
+        };
         assert_eq!(first.len(), 1);
         std::fs::create_dir(temp.path().join("later")).expect("create later");
-        let second = cached_children(&mut cache, temp.path(), false);
+        let second = cached_children(&mut cache, &mut loader, temp.path(), false, &ctx).unwrap();
         assert!(std::sync::Arc::ptr_eq(&first, &second), "served from cache");
         cache.clear();
-        assert_eq!(cached_children(&mut cache, temp.path(), false).len(), 2);
+        assert!(cached_children(&mut cache, &mut loader, temp.path(), false, &ctx).is_none());
     }
 
     #[test]
@@ -613,6 +738,12 @@ mod tests {
         }
         let mut expanded = std::collections::HashSet::from([root.clone()]);
         let mut cache = ChildCache::new();
+        cache_children(
+            &mut cache,
+            child_cache_key(&root, false),
+            ChildCacheEntry::Ready(TreeChildren::from(PanelState::subdirs(&root, false))),
+        );
+        let mut loader = ChildLoader::default();
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -633,6 +764,8 @@ mod tests {
                     show_hidden: false,
                     expanded: &mut expanded,
                     cache: &mut cache,
+                    loader: &mut loader,
+                    ctx: ui.ctx().clone(),
                     continues: Vec::new(),
                     reveal_active: false,
                 };
@@ -652,13 +785,29 @@ mod tests {
     }
 
     #[test]
+    fn invalidated_tree_load_cannot_repopulate_the_cache() {
+        let key = child_cache_key(std::path::Path::new("/stale"), false);
+        let mut cache = ChildCache::from([(key.clone(), ChildCacheEntry::Loading(8))]);
+        cache.remove(&key);
+        apply_child_load(
+            &mut cache,
+            ChildLoadResult {
+                key: key.clone(),
+                ticket: 8,
+                children: TreeChildren::from(vec![PathBuf::from("/stale/child")]),
+            },
+        );
+        assert!(!cache.contains_key(&key));
+    }
+
+    #[test]
     fn tree_child_cache_is_bounded_under_path_and_policy_churn() {
         let mut cache = std::collections::HashMap::new();
         for index in 0..=TREE_CHILD_CACHE_LIMIT {
             cache_children(
                 &mut cache,
                 (PathBuf::from(format!("/tmp/{index}")), index % 2 == 0),
-                TreeChildren::from(Vec::new()),
+                ChildCacheEntry::Ready(TreeChildren::from(Vec::new())),
             );
         }
 
@@ -775,6 +924,12 @@ mod tests {
         std::fs::create_dir(root.join("child")).expect("create child");
         let mut expanded = std::collections::HashSet::from([root.clone()]);
         let mut cache = ChildCache::new();
+        cache_children(
+            &mut cache,
+            child_cache_key(&root, false),
+            ChildCacheEntry::Ready(TreeChildren::from(vec![root.join("child")])),
+        );
+        let mut loader = ChildLoader::default();
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         let t = ThemeColors::dark();
@@ -786,6 +941,8 @@ mod tests {
                     show_hidden: false,
                     expanded: &mut expanded,
                     cache: &mut cache,
+                    loader: &mut loader,
+                    ctx: ui.ctx().clone(),
                     continues: Vec::new(),
                     reveal_active: false,
                 };

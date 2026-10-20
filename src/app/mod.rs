@@ -80,7 +80,8 @@ pub struct App {
     pub(crate) image_cache: crate::image_cache::ImageCache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
-    pub(crate) tree_children_cache: tree::ChildCache,
+    tree_children_cache: tree::ChildCache,
+    tree_child_loader: tree::ChildLoader,
     /// The selection HUD's text for the selection it last summarized.
     pub(crate) selection_hud_cache: Option<update::SelectionHudCache>,
     pub(crate) drag_announcement: update::DragAnnouncementMemo,
@@ -1035,6 +1036,7 @@ impl App {
             show_tree: false,
             tree_expanded: std::collections::HashSet::new(),
             tree_children_cache: std::collections::HashMap::new(),
+            tree_child_loader: tree::ChildLoader::default(),
             selection_hud_cache: None,
             drag_announcement: update::DragAnnouncementMemo::default(),
             tree_width: 200.0,
