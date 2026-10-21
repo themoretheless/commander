@@ -771,7 +771,8 @@ fn extract_tar_gz_members(
     // Windows) does not read `-T -` from stdin when extracting.
     let mut names = Vec::new();
     for member in &wanted {
-        names.extend_from_slice(member.as_bytes());
+        let operand = tar_extract_operand(member);
+        names.extend_from_slice(operand.as_bytes());
         names.push(0);
     }
     static LIST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -828,6 +829,26 @@ fn extract_tar_gz_members(
         ));
     }
     Ok(report)
+}
+
+/// bsdtar treats extraction operands as glob patterns even when they arrive
+/// through a NUL-delimited `-T` file. GNU tar makes `--null` verbatim, so only
+/// libarchive targets receive pattern escaping.
+fn tar_extract_operand(name: &str) -> std::borrow::Cow<'_, str> {
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        if name.contains(['\\', '*', '?', '[']) {
+            let mut escaped = String::with_capacity(name.len() + 4);
+            for ch in name.chars() {
+                if matches!(ch, '\\' | '*' | '?' | '[') {
+                    escaped.push('\\');
+                }
+                escaped.push(ch);
+            }
+            return std::borrow::Cow::Owned(escaped);
+        }
+    }
+    std::borrow::Cow::Borrowed(name)
 }
 
 /// Wait for `child`, killing it when `cancelled` is set: closing the dialog
@@ -1541,6 +1562,45 @@ mod tests {
         assert_eq!(report.extracted, 2);
         assert_eq!(fs::read(dest.join("-v")).unwrap(), b"dash");
         assert_eq!(fs::read(dest.join("--null")).unwrap(), b"double");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_extracts_glob_metacharacters_as_literal_member_names() {
+        let temp = TempDir::new();
+        let source = temp.path().join("src");
+        fs::create_dir(&source).unwrap();
+        for (name, content) in [
+            ("a*b", b"star".as_slice()),
+            ("axb", b"decoy".as_slice()),
+            ("q?.txt", b"question".as_slice()),
+            ("[x].txt", b"bracket".as_slice()),
+        ] {
+            fs::write(source.join(name), content).unwrap();
+        }
+        let archive = temp.path().join("patterns.tgz");
+        write_tar_gz(&source, &archive, &["a*b", "axb", "q?.txt", "[x].txt"]);
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(archive.clone(), &cancelled).unwrap();
+        let indexes: Vec<_> = listing
+            .members
+            .iter()
+            .filter(|member| matches!(member.path.to_str(), Some("a*b" | "q?.txt" | "[x].txt")))
+            .map(|member| member.index)
+            .collect();
+        let dest = temp.path().join("out");
+
+        let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.extracted, 3);
+        assert_eq!(fs::read(dest.join("a*b")).unwrap(), b"star");
+        assert_eq!(fs::read(dest.join("q?.txt")).unwrap(), b"question");
+        assert_eq!(fs::read(dest.join("[x].txt")).unwrap(), b"bracket");
+        assert!(
+            !dest.join("axb").exists(),
+            "glob matched an unrequested member"
+        );
     }
 
     #[cfg(unix)]
