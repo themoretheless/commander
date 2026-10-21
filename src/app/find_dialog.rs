@@ -158,6 +158,12 @@ fn index_skipped_summary(
     (!parts.is_empty()).then(|| format!("Skipped: {}", parts.join(", ")))
 }
 
+fn fail_find_search_start(state: &mut FindState, error: String) {
+    state.run = None;
+    state.error = Some(error);
+    state.pending_rerun = false;
+}
+
 /// One history row: what was searched, how, and where, so entries for
 /// different folders are told apart.
 fn history_row_label(entry: &crate::search::QueryHistoryEntry) -> String {
@@ -367,9 +373,11 @@ impl App {
         let run = match run_result {
             Ok(run) => run,
             Err(error) => {
+                // Refusal happens before SearchEngine publishes a new active
+                // generation, so explicitly invalidate the previous worker.
+                self.search_engine.cancel();
                 if let Some(state) = self.ui.modals.find.as_mut() {
-                    state.error = Some(error.to_string());
-                    state.pending_rerun = false;
+                    fail_find_search_start(state, error.to_string());
                 }
                 return;
             }
@@ -1292,9 +1300,9 @@ impl FindState {
 mod tests {
     use super::FindState;
     use super::{
-        add_smart_folder, explain_key, explained_hit, history_row_label, index_build_refusal,
-        index_skipped_summary, move_result_highlight, pivot_order, result_row_height,
-        search_root_error,
+        add_smart_folder, explain_key, explained_hit, fail_find_search_start, history_row_label,
+        index_build_refusal, index_skipped_summary, move_result_highlight, pivot_order,
+        result_row_height, search_root_error,
     };
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
@@ -1339,6 +1347,32 @@ mod tests {
         state.change_root(PathBuf::from("/other"), String::new());
         assert_eq!(state.root, PathBuf::from("/other"));
         assert!(!state.index_rerun_after_build);
+    }
+
+    #[test]
+    fn failed_restart_retires_the_previous_search_run() {
+        let root = crate::testutil::TempDir::new();
+        let engine = crate::search::SearchEngine::default();
+        let run = engine
+            .start(
+                root.path().to_path_buf(),
+                crate::query::Query::default(),
+                10,
+                std::sync::Arc::new(|| {}),
+            )
+            .unwrap();
+        let mut state = FindState {
+            run: Some(run),
+            pending_rerun: true,
+            ..FindState::default()
+        };
+
+        fail_find_search_start(&mut state, "provider refused".to_string());
+
+        assert!(!state.searching());
+        assert!(!state.pending_rerun);
+        assert_eq!(state.error.as_deref(), Some("provider refused"));
+        engine.cancel();
     }
 
     #[test]
