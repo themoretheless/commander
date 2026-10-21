@@ -195,6 +195,15 @@ pub fn evaluate(suite: &KlmSuite) -> Vec<KlmViolation> {
             .minimum_user_operators
             .saturating_add(workflow.allowed_avoidable_growth);
         let actual = workflow.user_operators();
+        if actual < workflow.minimum_user_operators {
+            violations.push(KlmViolation {
+                workflow: Some(workflow.id.clone()),
+                detail: format!(
+                    "{actual} user operators are below the reviewed minimum {}; update the reviewed baseline",
+                    workflow.minimum_user_operators
+                ),
+            });
+        }
         if actual > maximum {
             violations.push(KlmViolation {
                 workflow: Some(workflow.id.clone()),
@@ -264,6 +273,17 @@ mod tests {
         assert!(evaluate(&suite).iter().any(|violation| {
             violation.workflow.as_deref() == Some("switch-pane")
                 && violation.detail.contains("exceed")
+        }));
+    }
+
+    #[test]
+    fn removing_an_operator_without_reviewing_the_minimum_fails() {
+        let mut suite = ci_suite().unwrap();
+        let workflow = &mut suite.workflows[0];
+        workflow.minimum_user_operators = workflow.user_operators().saturating_add(1);
+        assert!(evaluate(&suite).iter().any(|violation| {
+            violation.workflow.as_deref() == Some("switch-pane")
+                && violation.detail.contains("below the reviewed minimum")
         }));
     }
 
