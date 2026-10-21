@@ -120,7 +120,7 @@ impl ConflictRuleBook {
     pub fn kind_for_name(name: &str) -> String {
         Path::new(name)
             .extension()
-            .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+            .map(|ext| ext.to_string_lossy().to_lowercase())
             .filter(|ext| !ext.is_empty())
             .unwrap_or_else(|| "other".into())
     }
@@ -268,6 +268,17 @@ mod tests {
                 .saved_rule_preview(Path::new("/b"), Path::new("/a"), "txt", &[], 3)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn file_kinds_fold_unicode_and_classify_extensionless_edges() {
+        assert_eq!(ConflictRuleBook::kind_for_name("фото.ФОТО"), "фото");
+        assert_eq!(
+            ConflictRuleBook::kind_for_name("фото.ФОТО"),
+            ConflictRuleBook::kind_for_name("фото.фото")
+        );
+        assert_eq!(ConflictRuleBook::kind_for_name(".bashrc"), "other");
+        assert_eq!(ConflictRuleBook::kind_for_name("file."), "other");
     }
 
     fn rule(file_kind: &str, policy: StoredRelationPolicy) -> ConflictRule {
