@@ -97,15 +97,29 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-/// Escape `|` so a cell can't break the Markdown table. Borrows unchanged when
-/// there is nothing to escape, so a large listing of plain names allocates
-/// nothing here.
+/// Escape Markdown syntax and controls so a file name is always literal cell
+/// text, never emphasis, a link, code, HTML, or another table cell. Borrows
+/// unchanged when possible so plain listings allocate nothing here.
 fn md_escape(s: &str) -> Cow<'_, str> {
-    let escaped = escape_controls(s);
-    if !escaped.contains('|') {
-        return escaped;
+    if !s.contains([
+        '\\', '\n', '\r', '\t', '|', '`', '*', '_', '[', ']', '<', '>',
+    ]) {
+        return Cow::Borrowed(s);
     }
-    Cow::Owned(escaped.replace('|', "\\|"))
+    let mut escaped = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\\' | '|' | '`' | '*' | '_' | '[' | ']' | '<' | '>' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    Cow::Owned(escaped)
 }
 
 /// Replace control characters that would break a line- or cell-oriented layout
@@ -210,6 +224,20 @@ mod tests {
         let out = format(&refs(&v), ListingFormat::Markdown);
         assert!(out.contains("| Name | Size | Modified |"));
         assert!(out.contains("| a\\|b.txt |"));
+    }
+
+    #[test]
+    fn markdown_names_cannot_become_formatting_links_or_html() {
+        let v = vec![
+            entry("*draft*.md", 1),
+            entry("[x](y).txt", 1),
+            entry("<tag>_`code`_.txt", 1),
+        ];
+        let out = format(&refs(&v), ListingFormat::Markdown);
+
+        assert!(out.contains("| \\*draft\\*.md |"), "{out}");
+        assert!(out.contains("| \\[x\\](y).txt |"), "{out}");
+        assert!(out.contains("| \\<tag\\>\\_\\`code\\`\\_.txt |"), "{out}");
     }
 
     #[test]
