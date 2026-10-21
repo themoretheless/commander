@@ -320,14 +320,44 @@ fn save_at(
     session: &Session,
     gate: &mut crate::persistence::StoreGate,
 ) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::JsonSaveError> {
+    let session = session_for_persistence(session);
     crate::persistence::save_enveloped(
         persist,
         path,
         STORE,
-        session,
+        &session,
         gate,
         crate::persistence::SaveIntent::Automatic,
     )
+}
+
+/// JSON cannot represent non-UTF-8 paths. Preserve the rest of the session:
+/// mandatory panel locations fall back to their nearest serializable ancestor,
+/// while optional history/tree rows are omitted together with their stats.
+fn session_for_persistence(session: &Session) -> Session {
+    let mut persisted = session.clone();
+    let serializable_ancestor = |path: &Path| {
+        path.ancestors()
+            .find(|ancestor| !ancestor.as_os_str().is_empty() && ancestor.to_str().is_some())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    };
+    persisted.left_path = serializable_ancestor(&persisted.left_path);
+    persisted.right_path = serializable_ancestor(&persisted.right_path);
+    persisted
+        .recent_paths
+        .retain(|path| path.to_str().is_some());
+    persisted
+        .recent_stats
+        .uses
+        .retain(|path, _| path.to_str().is_some());
+    persisted
+        .search_history
+        .entries
+        .retain(|entry| entry.root.to_str().is_some());
+    persisted
+        .tree_expanded
+        .retain(|path| path.to_str().is_some());
+    persisted
 }
 
 #[cfg(test)]
@@ -487,6 +517,45 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_paths_do_not_block_the_rest_of_the_session_save() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let raw = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/serializable-parent/raw\xff".to_vec(),
+        ));
+        let kept = PathBuf::from("/kept");
+        let mut session = sample(raw.clone(), kept.clone());
+        session.recent_paths = vec![raw.clone(), kept.clone()];
+        session.recent_stats.record(&raw);
+        session.recent_stats.record(&kept);
+        session
+            .search_history
+            .entries
+            .push(crate::search::QueryHistoryEntry {
+                expression: "name".to_string(),
+                mode: crate::query::MatchMode::Exact,
+                root: raw.clone(),
+                result_count: 0,
+                scanned: 0,
+                duration_ms: 0,
+                last_run: 1,
+            });
+        session.tree_expanded = vec![raw, kept.clone()];
+        assert!(serde_json::to_vec(&session).is_err());
+
+        let persisted = session_for_persistence(&session);
+
+        assert_eq!(persisted.left_path, PathBuf::from("/serializable-parent"));
+        assert_eq!(persisted.right_path, kept);
+        assert_eq!(persisted.recent_paths, vec![PathBuf::from("/kept")]);
+        assert_eq!(persisted.recent_stats.uses.len(), 1);
+        assert!(persisted.search_history.entries.is_empty());
+        assert_eq!(persisted.tree_expanded, vec![PathBuf::from("/kept")]);
+        assert!(serde_json::to_vec(&persisted).is_ok());
     }
 
     #[test]
