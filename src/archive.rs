@@ -1,6 +1,6 @@
 //! Bounded archive inspection and extraction shared by the archive browser and
-//! search. ZIP is in-process; `.tar.gz`/`.tgz` use system `tar`. Auto-inspect
-//! callers should consult `crate::trust` (J003 hooks).
+//! search. ZIP and tar.gz listing are in-process; selected tar extraction uses
+//! system `tar`. Auto-inspect callers should consult `crate::trust` (J003 hooks).
 
 use std::fs;
 use std::io::Read;
@@ -40,13 +40,12 @@ pub struct ArchiveMember {
     pub is_dir: bool,
     pub size: u64,
     pub compressed_size: u64,
-    /// The member name exactly as `tar` listed it (for example with a `./`
-    /// prefix). GNU tar matches extract names literally, so extraction must
-    /// pass this rather than the cleaned-up `path`. `None` for zip members.
-    pub tar_name: Option<String>,
+    /// The member name's original bytes. Tar extraction must pass this rather
+    /// than a display conversion of `path`. `None` for zip members.
+    pub tar_name: Option<std::ffi::OsString>,
     /// The member's own modification time when the archive records one
-    /// (ZIP); `None` for tar members and ZIP entries with no usable time,
-    /// where callers fall back to the archive file's mtime.
+    /// (ZIP or tar); `None` when no usable time was recorded, where callers
+    /// fall back to the archive file's mtime.
     pub modified: Option<std::time::SystemTime>,
 }
 
@@ -252,72 +251,15 @@ fn visit_tar_gz_list(
     mut emit: impl FnMut(ArchiveMember) -> bool,
 ) -> Result<VisitSummary, String> {
     budget.archives += 1;
-    // Verbose listing so member sizes are known; `LC_ALL=C` keeps bsdtar's
-    // date columns in a fixed shape for `parse_tar_verbose_line`. The output
-    // is read incrementally so cancellation and the member budget stop a
-    // multi-GB archive early instead of waiting for tar to finish.
-    let mut child = std::process::Command::new("tar")
-        .args(["-tvzf"])
-        .arg(archive_path)
-        .env("LC_ALL", "C")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+    let file = fs::File::open(archive_path)
+        .map_err(|error| format!("Could not open archive {}: {error}", archive_path.display()))?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
         .map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
-    // Drain stderr on a helper thread so a chatty tar cannot block on a
-    // full stderr pipe while stdout is still being read.
-    let stderr = child.stderr.take();
-    let stderr_reader = std::thread::spawn(move || {
-        let mut text = Vec::new();
-        if let Some(mut stderr) = stderr {
-            let _ = stderr.read_to_end(&mut text);
-        }
-        text
-    });
-    // One line beyond the remaining budget is enough to mark truncation.
-    let max_lines = MAX_MEMBERS_PER_RUN
-        .saturating_sub(budget.members)
-        .saturating_add(1);
-    let collected = match child.stdout.take() {
-        Some(stdout) => {
-            collect_listing_lines(std::io::BufReader::new(stdout), max_lines, &cancelled)
-        }
-        None => Ok(ListingLines::default()),
-    };
-    let stopped_early = collected
-        .as_ref()
-        .map_or(true, |lines| lines.cancelled || lines.limited);
-    if stopped_early {
-        // Stopped at the member budget or on cancel: tar is killed, so its
-        // exit status and stderr are deliberately ignored. A gzip or tar
-        // error past the cut-off is not reported for a truncated listing.
-        let _ = child.kill();
-    }
-    let status = child.wait();
-    let stderr = stderr_reader.join().unwrap_or_default();
-    let collected =
-        collected.map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
-    if collected.cancelled {
-        return Ok(VisitSummary {
-            cancelled: true,
-            ..Default::default()
-        });
-    }
-    if !stopped_early {
-        let status = status
-            .map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
-        if !status.success() {
-            let stderr = String::from_utf8_lossy(&stderr);
-            return Err(format!(
-                "Could not list {}: {}",
-                archive_path.display(),
-                stderr.trim()
-            ));
-        }
-    }
     let mut summary = VisitSummary::default();
-    for (index, line) in collected.lines.iter().map(String::as_str).enumerate() {
+    for (index, entry) in entries.enumerate() {
         if cancelled() {
             summary.cancelled = true;
             break;
@@ -328,35 +270,41 @@ fn visit_tar_gz_list(
         }
         budget.members += 1;
         summary.declared_members += 1;
-        let Some((name, size)) = parse_tar_verbose_line(line.strip_suffix('\r').unwrap_or(line))
-        else {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                summary.unreadable_members += 1;
+                continue;
+            }
+        };
+        let raw_name = entry.path_bytes();
+        let raw_name = raw_name.strip_prefix(b"./").unwrap_or(&raw_name);
+        if raw_name.is_empty() || raw_name == b"." {
+            continue;
+        }
+        let Some(path) = tar_path_from_bytes(raw_name) else {
             summary.unreadable_members += 1;
             continue;
         };
-        // Only the `./` prefix is stripped: leading/trailing spaces are part
-        // of the member name and `tar` needs them to find it on extract.
-        let trimmed = name.trim_start_matches("./");
-        if trimmed.is_empty() || trimmed == "." {
-            continue;
-        }
-        let path = PathBuf::from(trimmed);
         if !is_enclosed_tar_path(&path) {
             summary.unsafe_members += 1;
             continue;
         }
-        let is_dir = trimmed.ends_with('/');
+        let is_dir = entry.header().entry_type().is_dir();
+        let size = entry.header().size().unwrap_or(0);
+        let modified = entry
+            .header()
+            .mtime()
+            .ok()
+            .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds));
         let member = ArchiveMember {
             index,
-            path: if is_dir {
-                PathBuf::from(trimmed.trim_end_matches('/'))
-            } else {
-                path
-            },
+            path,
             is_dir,
             size: if is_dir { 0 } else { size },
             compressed_size: 0,
-            tar_name: Some(name.to_string()),
-            modified: None,
+            tar_name: Some(tar_name_from_bytes(raw_name)),
+            modified,
         };
         if !emit(member) {
             break;
@@ -366,7 +314,29 @@ fn visit_tar_gz_list(
     Ok(summary)
 }
 
+#[cfg(unix)]
+fn tar_name_from_bytes(bytes: &[u8]) -> std::ffi::OsString {
+    use std::os::unix::ffi::OsStringExt;
+    std::ffi::OsString::from_vec(bytes.to_vec())
+}
+
+#[cfg(not(unix))]
+fn tar_name_from_bytes(bytes: &[u8]) -> std::ffi::OsString {
+    String::from_utf8_lossy(bytes).into_owned().into()
+}
+
+#[cfg(unix)]
+fn tar_path_from_bytes(bytes: &[u8]) -> Option<PathBuf> {
+    Some(PathBuf::from(tar_name_from_bytes(bytes)))
+}
+
+#[cfg(not(unix))]
+fn tar_path_from_bytes(bytes: &[u8]) -> Option<PathBuf> {
+    String::from_utf8(bytes.to_vec()).ok().map(PathBuf::from)
+}
+
 /// Raw `tar -tv` output lines, read until EOF, cancellation or `max_lines`.
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct ListingLines {
     lines: Vec<String>,
@@ -375,6 +345,7 @@ struct ListingLines {
     limited: bool,
 }
 
+#[cfg(test)]
 fn collect_listing_lines(
     mut reader: impl std::io::BufRead,
     max_lines: usize,
@@ -415,6 +386,7 @@ fn is_enclosed_tar_path(path: &Path) -> bool {
 /// prints `mode links owner group size month day time-or-year name`. The
 /// name follows a single space, so leading spaces in it survive. Device
 /// entries show `major,minor` instead of a size and report 0.
+#[cfg(test)]
 fn parse_tar_verbose_line(line: &str) -> Option<(&str, u64)> {
     fn next_field(rest: &str) -> Option<(&str, &str)> {
         let rest = rest.trim_start_matches(' ');
@@ -842,7 +814,7 @@ fn extract_tar_gz_members(
             member
                 .tar_name
                 .clone()
-                .unwrap_or_else(|| member.path.to_string_lossy().into_owned()),
+                .unwrap_or_else(|| member.path.as_os_str().to_owned()),
         );
     }
     if wanted.is_empty() {
@@ -855,7 +827,7 @@ fn extract_tar_gz_members(
     let mut names = Vec::new();
     for member in &wanted {
         let operand = tar_extract_operand(member);
-        names.extend_from_slice(operand.as_bytes());
+        names.extend_from_slice(&operand);
         names.push(0);
     }
     static LIST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -917,21 +889,31 @@ fn extract_tar_gz_members(
 /// bsdtar treats extraction operands as glob patterns even when they arrive
 /// through a NUL-delimited `-T` file. GNU tar makes `--null` verbatim, so only
 /// libarchive targets receive pattern escaping.
-fn tar_extract_operand(name: &str) -> std::borrow::Cow<'_, str> {
+fn tar_extract_operand(name: &std::ffi::OsStr) -> Vec<u8> {
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        name.as_bytes().to_vec()
+    };
+    #[cfg(not(unix))]
+    let bytes = name.to_string_lossy().as_bytes().to_vec();
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
-        if name.contains(['\\', '*', '?', '[']) {
-            let mut escaped = String::with_capacity(name.len() + 4);
-            for ch in name.chars() {
-                if matches!(ch, '\\' | '*' | '?' | '[') {
-                    escaped.push('\\');
+        if bytes
+            .iter()
+            .any(|byte| matches!(byte, b'\\' | b'*' | b'?' | b'['))
+        {
+            let mut escaped = Vec::with_capacity(bytes.len() + 4);
+            for &byte in &bytes {
+                if matches!(byte, b'\\' | b'*' | b'?' | b'[') {
+                    escaped.push(b'\\');
                 }
-                escaped.push(ch);
+                escaped.push(byte);
             }
-            return std::borrow::Cow::Owned(escaped);
+            return escaped;
         }
     }
-    std::borrow::Cow::Borrowed(name)
+    bytes
 }
 
 /// Wait for `child`, killing it when `cancelled` is set: closing the dialog
@@ -1641,6 +1623,41 @@ mod tests {
         let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(fs::read(dest.join(" padded ")).unwrap(), b"pad");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_listing_preserves_non_utf8_member_names() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let temp = TempDir::new();
+        let archive_path = temp.path().join("raw-name.tgz");
+        let encoder = flate2::write::GzEncoder::new(
+            fs::File::create(&archive_path).unwrap(),
+            flate2::Compression::default(),
+        );
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let raw = std::ffi::OsString::from_vec(vec![b'f', 0xff]);
+        builder
+            .append_data(&mut header, Path::new(&raw), &b"x"[..])
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let listing = list_archive(archive_path, &AtomicBool::new(false)).unwrap();
+
+        assert_eq!(listing.members.len(), 1);
+        assert_eq!(
+            listing.members[0].path.as_os_str().as_bytes(),
+            &[b'f', 0xff]
+        );
+        assert_eq!(
+            listing.members[0].tar_name.as_deref().unwrap().as_bytes(),
+            &[b'f', 0xff]
+        );
     }
 
     #[cfg(unix)]
