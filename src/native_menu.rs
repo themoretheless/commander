@@ -91,6 +91,8 @@ struct HandlerState {
     invocation_id: u64,
     bound_target: PathBuf,
     item_ids: Vec<model::MenuItemId>,
+    dynamic_menus: Vec<(usize, model::MenuItemId)>,
+    dynamic_updates: Vec<(model::MenuItemId, bool, Vec<MenuNode>)>,
     selection: Option<MenuSelection>,
 }
 
@@ -100,6 +102,8 @@ impl HandlerState {
             invocation_id: invocation.id,
             bound_target: invocation.bound_target.path.clone(),
             item_ids: Vec::new(),
+            dynamic_menus: Vec::new(),
+            dynamic_updates: Vec::new(),
             selection: None,
         }
     }
@@ -116,6 +120,33 @@ impl HandlerState {
             bound_target: self.bound_target.clone(),
             item_id,
         });
+    }
+
+    fn register_dynamic_menu(&mut self, menu: *mut Object, id: &model::MenuItemId) {
+        if matches!(
+            id,
+            model::MenuItemId::OpenWith | model::MenuItemId::Tags | model::MenuItemId::Share
+        ) {
+            self.dynamic_menus.push((menu as usize, id.clone()));
+        }
+    }
+
+    fn dynamic_menu_id(&self, menu: *mut Object) -> Option<model::MenuItemId> {
+        self.dynamic_menus
+            .iter()
+            .find_map(|(pointer, id)| (*pointer == menu as usize).then(|| id.clone()))
+    }
+
+    fn update_dynamic_menu(&mut self, id: model::MenuItemId, enabled: bool, nodes: Vec<MenuNode>) {
+        if let Some(update) = self
+            .dynamic_updates
+            .iter_mut()
+            .find(|(existing, _, _)| existing == &id)
+        {
+            *update = (id, enabled, nodes);
+        } else {
+            self.dynamic_updates.push((id, enabled, nodes));
+        }
     }
 }
 
@@ -228,12 +259,31 @@ fn ensure_class() -> bool {
             }
         }
 
+        extern "C" fn menu_needs_update(this: &Object, _: Sel, menu: *mut Object) {
+            if menu.is_null() {
+                return;
+            }
+            unsafe {
+                let state_ptr = *this.get_ivar::<usize>("rustState");
+                if state_ptr == 0 {
+                    return;
+                }
+                let state = &mut *(state_ptr as *mut HandlerState);
+                let Some(id) = state.dynamic_menu_id(menu) else {
+                    return;
+                };
+                refresh_dynamic_submenu(menu, this as *const Object as *mut Object, state, &id);
+            }
+        }
+
         const extern "C" fn action_noop(_: &Object, _: Sel, _: *mut Object) {}
 
         unsafe {
             type Action = extern "C" fn(&Object, Sel, *mut Object);
             decl.add_method(sel!(actionSelect:), action_select as Action);
             decl.add_method(sel!(actionNoop:), action_noop as Action);
+            type MenuNeedsUpdate = extern "C" fn(&Object, Sel, *mut Object);
+            decl.add_method(sel!(menuNeedsUpdate:), menu_needs_update as MenuNeedsUpdate);
         }
         decl.register();
         true
@@ -322,13 +372,107 @@ unsafe fn render_menu(
                     let submenu = unsafe { render_menu(&item.children, handler, state) }?;
                     let submenu = unsafe { OwnedObject::new(submenu) }
                         .ok_or_else(|| "AppKit returned a null submenu".to_string())?;
+                    state.register_dynamic_menu(submenu.as_ptr(), &item.id);
+                    if matches!(
+                        item.id,
+                        model::MenuItemId::OpenWith
+                            | model::MenuItemId::Tags
+                            | model::MenuItemId::Share
+                    ) {
+                        let _: () = msg_send![submenu.as_ptr(), setDelegate: handler];
+                    }
                     let _: () = msg_send![menu_item.as_ptr(), setSubmenu: submenu.as_ptr()];
+                } else if matches!(
+                    item.id,
+                    model::MenuItemId::OpenWith
+                        | model::MenuItemId::Tags
+                        | model::MenuItemId::Share
+                ) {
+                    let submenu = unsafe { render_menu(&[], handler, state) }?;
+                    let submenu = unsafe { OwnedObject::new(submenu) }
+                        .ok_or_else(|| "AppKit returned a null submenu".to_string())?;
+                    state.register_dynamic_menu(submenu.as_ptr(), &item.id);
+                    let _: () = msg_send![submenu.as_ptr(), setDelegate: handler];
+                    let _: () = msg_send![menu_item.as_ptr(), setSubmenu: submenu.as_ptr()];
+                    // The provider decides the final enabled state when the
+                    // submenu opens. It must be reachable before that query.
+                    let _: () = msg_send![menu_item.as_ptr(), setEnabled: YES];
                 }
                 let _: () = msg_send![menu.as_ptr(), addItem: menu_item.as_ptr()];
             }
         }
     }
     Ok(menu.into_raw())
+}
+
+unsafe fn refresh_dynamic_submenu(
+    menu: *mut Object,
+    handler: *mut Object,
+    state: &mut HandlerState,
+    id: &model::MenuItemId,
+) {
+    let dynamic = match id {
+        model::MenuItemId::OpenWith => DynamicMenuEntries {
+            open_with: unsafe { open_with_entries(&state.bound_target) },
+            ..DynamicMenuEntries::default()
+        },
+        model::MenuItemId::Tags => {
+            let tags = unsafe { read_tags(&state.bound_target) };
+            DynamicMenuEntries {
+                applied_tags: tags.clone().unwrap_or_default(),
+                tags_available: tags.is_ok(),
+                color_tag_names: unsafe { color_tag_names() },
+                ..DynamicMenuEntries::default()
+            }
+        }
+        model::MenuItemId::Share => DynamicMenuEntries {
+            share_services: unsafe { share_services(&state.bound_target) },
+            ..DynamicMenuEntries::default()
+        },
+        _ => return,
+    };
+    let target = ContextMenuTarget {
+        path: state.bound_target.clone(),
+        expected: match crate::path_identity::PathIdentity::observe(&state.bound_target) {
+            Ok(expected) => expected,
+            Err(_) => crate::path_identity::PathIdentity::missing(&state.bound_target),
+        },
+    };
+    let generated = build_invocation(0, target, &display_name(&state.bound_target), dynamic);
+    let Some(item) = generated.tree.into_iter().find_map(|node| match node {
+        MenuNode::Item(item) if &item.id == id => Some(item),
+        _ => None,
+    }) else {
+        return;
+    };
+
+    let children = item.children;
+    let rendered = match unsafe { render_menu(&children, handler, state) } {
+        Ok(rendered) => rendered,
+        Err(_) => return,
+    };
+    let Some(rendered) = (unsafe { OwnedObject::new(rendered) }) else {
+        return;
+    };
+    let _: () = msg_send![menu, removeAllItems];
+    loop {
+        let count: isize = unsafe { msg_send![rendered.as_ptr(), numberOfItems] };
+        if count == 0 {
+            break;
+        }
+        let child: *mut Object = msg_send![rendered.as_ptr(), itemAtIndex: 0_isize];
+        let _: () = msg_send![rendered.as_ptr(), removeItemAtIndex: 0_isize];
+        let _: () = msg_send![menu, addItem: child];
+    }
+    let parent: *mut Object = msg_send![menu, supermenu];
+    if !parent.is_null() {
+        let parent_item: *mut Object = msg_send![parent, itemWithSubmenu: menu];
+        if !parent_item.is_null() {
+            let enabled = if item.enabled { YES } else { NO };
+            let _: () = msg_send![parent_item, setEnabled: enabled];
+        }
+    }
+    state.update_dynamic_menu(id.clone(), item.enabled, children);
 }
 
 fn key_equivalent_modifier_mask(equivalent: &model::KeyEquivalent) -> usize {
@@ -428,17 +572,6 @@ unsafe fn share_services(path: &Path) -> Vec<(String, String)> {
         }
     }
     entries
-}
-
-unsafe fn dynamic_entries(path: &Path) -> DynamicMenuEntries {
-    let tags = unsafe { read_tags(path) };
-    DynamicMenuEntries {
-        open_with: unsafe { open_with_entries(path) },
-        applied_tags: tags.clone().unwrap_or_default(),
-        tags_available: tags.is_ok(),
-        color_tag_names: unsafe { color_tag_names() },
-        share_services: unsafe { share_services(path) },
-    }
 }
 
 /// Finder's localized names for the standard color tags, read from
@@ -679,11 +812,11 @@ fn show_native(presentation: &ContextMenuPresentation) -> ContextMenuResult {
             return ContextMenuResult::Failed(failure);
         }
         let path = &presentation.target.path;
-        let invocation = build_invocation(
+        let mut invocation = build_invocation(
             next_invocation_id(),
             presentation.target.clone(),
             &display_name(path),
-            dynamic_entries(path),
+            DynamicMenuEntries::default(),
         );
         let mut state = Box::new(HandlerState::new(&invocation));
         let handler: *mut Object = msg_send![handler_class, new];
@@ -740,11 +873,27 @@ fn show_native(presentation: &ContextMenuPresentation) -> ContextMenuResult {
 
         (*handler).set_ivar("rustState", 0_usize);
         let selection = state.selection.take();
+        apply_dynamic_updates(&mut invocation, state.dynamic_updates.drain(..));
         let _: () = msg_send![menu, release];
         let _: () = msg_send![handler, release];
         let result = tracking_result(&invocation, appkit_reported_selection, selection);
         let _: () = msg_send![pool, drain];
         result
+    }
+}
+
+fn apply_dynamic_updates(
+    invocation: &mut MenuInvocation,
+    updates: impl IntoIterator<Item = (model::MenuItemId, bool, Vec<MenuNode>)>,
+) {
+    for (id, enabled, children) in updates {
+        if let Some(item) = invocation.tree.iter_mut().find_map(|node| match node {
+            MenuNode::Item(item) if item.id == id => Some(item),
+            _ => None,
+        }) {
+            item.enabled = enabled;
+            item.children = children;
+        }
     }
 }
 
@@ -968,5 +1117,63 @@ mod tests {
         .unwrap();
         assert_eq!(pointer.x, 20.0);
         assert_eq!(pointer.y, 960.0);
+    }
+
+    #[test]
+    fn lazy_submenu_updates_join_the_tracked_invocation_before_selection_reduction() {
+        let path = std::env::current_dir().unwrap();
+        let target = ContextMenuTarget {
+            expected: crate::path_identity::PathIdentity::observe(&path).unwrap(),
+            path,
+        };
+        let mut invocation = build_invocation(
+            72,
+            target.clone(),
+            "fixture.txt",
+            DynamicMenuEntries::default(),
+        );
+        let loaded = build_invocation(
+            0,
+            target,
+            "fixture.txt",
+            DynamicMenuEntries {
+                open_with: vec![(
+                    "Preview".to_string(),
+                    PathBuf::from("/Applications/Preview.app"),
+                )],
+                ..DynamicMenuEntries::default()
+            },
+        );
+        let open_with = loaded
+            .tree
+            .into_iter()
+            .find_map(|node| match node {
+                MenuNode::Item(item) if item.id == model::MenuItemId::OpenWith => Some(item),
+                _ => None,
+            })
+            .unwrap();
+        let selected = match &open_with.children[0] {
+            MenuNode::Item(item) => item.id.clone(),
+            MenuNode::Separator => unreachable!(),
+        };
+
+        apply_dynamic_updates(
+            &mut invocation,
+            [(model::MenuItemId::OpenWith, true, open_with.children)],
+        );
+
+        assert_eq!(
+            model::selection_result(
+                &invocation,
+                Some(MenuSelection {
+                    invocation_id: invocation.id,
+                    bound_target: invocation.bound_target.path.clone(),
+                    item_id: selected,
+                }),
+            ),
+            ContextMenuResult::OpenWithRequested {
+                application: PathBuf::from("/Applications/Preview.app"),
+            }
+        );
     }
 }
