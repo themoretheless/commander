@@ -25,9 +25,11 @@ impl ListingFormat {
 /// Render `entries` (Name / Size / Modified) in the chosen format. Text is
 /// tab-separated with the human size string; CSV is RFC-4180-escaped with a
 /// Kind column, raw byte sizes (empty for folders) and ISO 8601 UTC modified
-/// times (empty when unknown), so spreadsheets can parse them; Markdown is a pipe table with `|` escaped inside cells. Text and
-/// Markdown also escape embedded control characters (newline, tab, carriage
-/// return) so one entry can never span more than one line or cell.
+/// times (empty when unknown), so spreadsheets can parse them; Markdown is a
+/// pipe table with `|` escaped inside cells. Text and Markdown leave folder
+/// sizes empty because the listing placeholder is not a measured size, and
+/// escape embedded control characters (newline, tab, carriage return) so one
+/// entry can never span more than one line or cell.
 pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
     match fmt {
         ListingFormat::Text => entries
@@ -36,7 +38,7 @@ pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
                 format!(
                     "{}\t{}\t{}",
                     escape_controls(&e.name),
-                    escape_controls(&e.size_str),
+                    escape_controls(human_size_cell(e)),
                     escape_controls(&e.modified_str)
                 )
             })
@@ -65,13 +67,17 @@ pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
                 out.push_str(&format!(
                     "| {} | {} | {} |\n",
                     md_escape(&e.name),
-                    md_escape(&e.size_str),
+                    md_escape(human_size_cell(e)),
                     md_escape(&e.modified_str)
                 ));
             }
             out
         }
     }
+}
+
+fn human_size_cell(entry: &FileEntry) -> &str {
+    if entry.is_dir { "" } else { &entry.size_str }
 }
 
 /// `time` as an ISO 8601 / RFC 3339 UTC timestamp to the second.
@@ -195,6 +201,19 @@ mod tests {
              a.txt,file,5,2026-06-25T09:40:00Z\n\
              Photos,folder,,\n"
         );
+    }
+
+    #[test]
+    fn text_and_markdown_leave_unmeasured_folder_sizes_empty() {
+        let mut folder = entry("Photos", 4096);
+        folder.is_dir = true;
+        folder.size_str = "…".to_string();
+
+        assert_eq!(
+            format(&[&folder], ListingFormat::Text),
+            "Photos\t\t2026-06-25"
+        );
+        assert!(format(&[&folder], ListingFormat::Markdown).contains("| Photos |  | 2026-06-25 |"));
     }
 
     #[test]
