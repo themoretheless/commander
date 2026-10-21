@@ -110,7 +110,7 @@ pub fn set_store_quota(quota: VersionStoreQuota) {
 
 pub fn store_usage() -> crate::version_dedup::VersionStoreUsage {
     let root = versions_dir();
-    let loaded = load_manifest_with(manifest_persist(), &root);
+    let loaded = load_manifest_deep_with(manifest_persist(), &root);
     if loaded.blocked {
         return crate::version_dedup::VersionStoreUsage {
             bytes_quota: store_quota().max_bytes,
@@ -268,7 +268,7 @@ fn preserve_at_inner(
     // commit because another preservation can finish while this one copies.
     {
         let _manifest_guard = crate::lock_util::recover(manifest_transaction());
-        let loaded = load_manifest_with(persist, root);
+        let loaded = load_manifest_deep_with(persist, root);
         ensure_manifest_writable(&loaded)?;
         if let Some(existing) = replay_record(root, &loaded.manifest, path, operation_id, &key)? {
             return Ok(Some(existing));
@@ -356,7 +356,7 @@ fn preserve_at_inner(
     }
 
     let _manifest_guard = crate::lock_util::recover(manifest_transaction());
-    let mut loaded = load_manifest_with(persist, root);
+    let mut loaded = load_manifest_deep_with(persist, root);
     if let Err(failure) = ensure_manifest_writable(&loaded) {
         let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
         return Err(version_failure(format!("{}{cleanup}", failure.message)));
@@ -1112,20 +1112,22 @@ fn validate_manifest(root: &Path, manifest: &mut VersionManifest) -> Result<bool
         {
             return Err(());
         }
-        let current = PathIdentity::observe_deep(&record.stored).map_err(|_| ())?;
-        match manifest.identities.get(&record.key.0) {
-            Some(expected) if expected.same_binding(&current) => {}
-            Some(_) => return Err(()),
-            None => {
-                manifest.identities.insert(record.key.0.clone(), current);
-                recovered = true;
-            }
+        if !manifest.identities.contains_key(&record.key.0) {
+            let current = PathIdentity::observe_deep(&record.stored).map_err(|_| ())?;
+            manifest.identities.insert(record.key.0.clone(), current);
+            recovered = true;
         }
     }
     if manifest.identities.len() != manifest.records.len() {
         return Err(());
     }
     Ok(recovered)
+}
+
+fn validate_manifest_payloads(root: &Path, manifest: &VersionManifest) -> Result<(), ()> {
+    manifest.records.iter().try_for_each(|record| {
+        validate_record(root, record, manifest.identities.get(&record.key.0)).map_err(|_| ())
+    })
 }
 
 /// Remove data this module just created at `path` if it is still bound to
@@ -1154,6 +1156,21 @@ fn cleanup_note(path: &Path, result: std::io::Result<()>) -> String {
 }
 
 fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) -> LoadedManifest {
+    load_manifest_with_validation(persist, root, false)
+}
+
+fn load_manifest_deep_with(
+    persist: &dyn crate::persistence::Persist,
+    root: &Path,
+) -> LoadedManifest {
+    load_manifest_with_validation(persist, root, true)
+}
+
+fn load_manifest_with_validation(
+    persist: &dyn crate::persistence::Persist,
+    root: &Path,
+    validate_payloads: bool,
+) -> LoadedManifest {
     let loaded = crate::persistence::load_enveloped::<VersionManifest>(
         persist,
         &manifest_path(root),
@@ -1164,7 +1181,12 @@ fn load_manifest_with(persist: &dyn crate::persistence::Persist, root: &Path) ->
     let mut blocked = status.fails_closed();
     let mut manifest = loaded.value.unwrap_or_default();
     if !blocked && status != crate::persistence::LoadStatus::Missing {
-        match validate_manifest(root, &mut manifest) {
+        match validate_manifest(root, &mut manifest).and_then(|recovered| {
+            if validate_payloads {
+                validate_manifest_payloads(root, &manifest)?;
+            }
+            Ok(recovered)
+        }) {
             Ok(true) => gate.mark_recovered(),
             Ok(false) => {}
             Err(()) => {
@@ -1911,7 +1933,7 @@ mod tests {
     }
 
     #[test]
-    fn replaced_version_payload_blocks_restore_and_discard() {
+    fn replaced_version_payload_is_lazy_on_listing_but_blocked_on_use_and_accounting() {
         let temp = TempDir::new();
         let versions = temp.path().join("versions");
         let original = temp.file("original.txt", "authoritative");
@@ -1931,9 +1953,12 @@ mod tests {
 
         let loaded = load_manifest_with(manifest_persist(), &versions);
 
-        assert!(loaded.blocked);
+        assert!(!loaded.blocked, "ordinary listing is structural-only");
         assert!(restore_at(&versions, &record).is_err());
         assert!(discard_record_at(&versions, &record).is_err());
+        assert!(load_manifest_deep_with(manifest_persist(), &versions).blocked);
+        let _guard = use_test_versions_dir(versions.clone());
+        assert!(store_usage().blocked);
         assert!(record.stored.exists());
         assert!(!original.exists());
     }
