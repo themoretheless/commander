@@ -928,6 +928,10 @@ impl Workspace {
         self.transfers.has_unfinished()
     }
 
+    pub(crate) fn active_operation_count(&self) -> usize {
+        self.transfers.unfinished_count() + usize::from(self.deletes.is_active())
+    }
+
     pub fn cancel_transfer(&mut self) {
         self.transfers.request_cancel();
     }

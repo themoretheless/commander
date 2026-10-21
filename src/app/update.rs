@@ -207,6 +207,32 @@ fn selection_hud_bottom(area_bottom: f32, key_bar_top: Option<f32>) -> f32 {
 /// only a multiplication sign.
 const CLOSE_PANE_TOOL_LABEL: &str = "Close pane tool";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseGuardAction {
+    None,
+    Prompt,
+    Wait,
+    Close,
+}
+
+const fn close_guard_action(
+    close_requested: bool,
+    active_operations: usize,
+    quit_when_settled: bool,
+) -> CloseGuardAction {
+    if quit_when_settled {
+        if active_operations == 0 {
+            CloseGuardAction::Close
+        } else {
+            CloseGuardAction::Wait
+        }
+    } else if close_requested && active_operations > 0 {
+        CloseGuardAction::Prompt
+    } else {
+        CloseGuardAction::None
+    }
+}
+
 /// Temp-data key for the left pane's share of the two panes' width.
 const PANE_SPLIT_RATIO: &str = "pane_split_ratio";
 
@@ -809,6 +835,7 @@ impl eframe::App for App {
         let _frame_latency =
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FrameTime);
         let ctx = ui.ctx().clone();
+        self.handle_close_request(&ctx);
         #[cfg(feature = "visual-qa")]
         crate::visual_qa::begin_probe_frame(&ctx);
         let prior_modal_ownership = ModalOwnershipSnapshot::capture(self.has_modal_surface());
@@ -818,6 +845,7 @@ impl eframe::App for App {
         self.poll_recovery(&ctx);
         self.poll_checksum(&ctx);
         self.show_checksum_dialog(&ctx);
+        self.show_quit_confirmation(&ctx);
         self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
         self.show_rename_dialog(&ctx);
@@ -906,6 +934,69 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        let requested = ctx.input(|input| input.viewport().close_requested());
+        match close_guard_action(
+            requested,
+            self.ws.active_operation_count(),
+            self.quit_when_operations_settle,
+        ) {
+            CloseGuardAction::None => {}
+            CloseGuardAction::Prompt => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.quit_confirmation = true;
+            }
+            CloseGuardAction::Wait => {
+                if requested {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
+                ctx.request_repaint();
+            }
+            CloseGuardAction::Close => {
+                self.quit_when_operations_settle = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    fn show_quit_confirmation(&mut self, ctx: &egui::Context) {
+        if !self.quit_confirmation {
+            return;
+        }
+        let escape = self.take_modal_escape(crate::accessibility::ModalSurface::Quit);
+        let count = self.ws.active_operation_count();
+        let mut keep_running = escape;
+        let mut cancel_and_quit = false;
+        egui::Window::new("Operations are still running")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "{count} operation(s) are still running or queued. Closing now could leave work incomplete."
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Keep running").clicked() {
+                        keep_running = true;
+                    }
+                    if ui.button("Cancel and quit").clicked() {
+                        cancel_and_quit = true;
+                    }
+                });
+            });
+        if keep_running {
+            self.quit_confirmation = false;
+        } else if cancel_and_quit {
+            self.ws.cancel_pending_transfers();
+            self.ws.cancel_transfer();
+            self.ws.cancel_delete();
+            self.quit_confirmation = false;
+            self.quit_when_operations_settle = true;
+            ctx.request_repaint();
+        }
+    }
+
     /// Log a receipt for the action on top of the undo stack, which the
     /// operation that just finished pushed (see [`undo_receipt`]), and
     /// return that action.
@@ -1113,6 +1204,7 @@ impl App {
     fn has_modal_surface(&self) -> bool {
         any_modal_surface_open(self.ws.pending_op.is_some(), self.ui.modals.any_open())
             || self.ws.delete_active()
+            || self.quit_confirmation
     }
 
     pub(crate) fn is_modal_surface_open(
@@ -1120,6 +1212,7 @@ impl App {
         surface: crate::accessibility::ModalSurface,
     ) -> bool {
         match surface {
+            crate::accessibility::ModalSurface::Quit => self.quit_confirmation,
             crate::accessibility::ModalSurface::Confirmation => self.ws.pending_op.is_some(),
             _ => self.ui.modals.is_surface_open(surface),
         }
@@ -2675,11 +2768,12 @@ fn finish_drop(
 mod tests {
     use super::pane_tool_covers;
     use super::{
-        DragAnnouncementMemo, invalidate_tree_children, newest_undoable_toast, trash_undo_matches,
+        CloseGuardAction, FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus,
+        any_modal_surface_open, close_guard_action, hidden_files_rejection_message,
+        perform_clipboard_write, perform_open, type_ahead_label,
     };
     use super::{
-        FrameInputPolicy, ModalOwnershipSnapshot, NativeEffectStatus, any_modal_surface_open,
-        hidden_files_rejection_message, perform_clipboard_write, perform_open, type_ahead_label,
+        DragAnnouncementMemo, invalidate_tree_children, newest_undoable_toast, trash_undo_matches,
     };
     use super::{
         MenuFocusStep, fallback_menu_focus_step, fallback_menu_pos, fallback_menu_restores_focus,
@@ -2695,6 +2789,14 @@ mod tests {
     use super::{
         dragged_split_ratio, key_bar_modifier_held, selection_hud_bottom, split_left_width,
     };
+
+    #[test]
+    fn close_guard_prompts_then_waits_for_cancelled_operations_to_settle() {
+        assert_eq!(close_guard_action(true, 2, false), CloseGuardAction::Prompt);
+        assert_eq!(close_guard_action(false, 2, true), CloseGuardAction::Wait);
+        assert_eq!(close_guard_action(true, 0, true), CloseGuardAction::Close);
+        assert_eq!(close_guard_action(true, 0, false), CloseGuardAction::None);
+    }
     use super::{drop_busy_reason, smart_folder_saved_toast};
     use super::{pointer_over_toast, toast_live_region, toast_stack_offsets, toast_text};
     use std::cell::RefCell;

@@ -152,6 +152,9 @@ pub struct App {
     pub(crate) persistence_issue_seen: u64,
     /// Last background-helper failure generation already shown as a toast.
     pub(crate) helper_failure_seen: u64,
+    /// Close the native window once all user-cancelled mutations retire.
+    pub(crate) quit_when_operations_settle: bool,
+    pub(crate) quit_confirmation: bool,
     checksum_task: Option<ChecksumTask>,
     checksum_report: Option<crate::checksum::ChecksumReport>,
     checksum_generation: u64,
@@ -1038,6 +1041,8 @@ impl App {
             show_size_bars: true,
             persistence_issue_seen: crate::persistence::issue_generation(),
             helper_failure_seen: crate::native_effect::helper_failure_generation(),
+            quit_when_operations_settle: false,
+            quit_confirmation: false,
             ..Self::assemble(AppParts {
                 ws,
                 context_menu,
@@ -1138,6 +1143,8 @@ impl App {
             developer_store_usage: developer_panel::StoreUsageCache::default(),
             persistence_issue_seen: 0,
             helper_failure_seen: crate::native_effect::helper_failure_generation(),
+            quit_when_operations_settle: false,
+            quit_confirmation: false,
             checksum_task: None,
             checksum_report: None,
             checksum_generation: 0,

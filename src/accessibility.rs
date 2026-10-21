@@ -191,6 +191,7 @@ macro_rules! modal_registry {
 }
 
 modal_registry!(
+    Quit,
     Palette,
     RunCommand,
     Mask,
