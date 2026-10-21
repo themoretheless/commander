@@ -585,11 +585,18 @@ pub fn flatten_entries(entries: &[FileEntry]) -> Vec<FlatFileEntry> {
     let mut result = Vec::new();
     let mut truncated = false;
     for entry in entries {
+        let lexical = std::fs::symlink_metadata(&entry.path).ok();
+        let is_symlink = lexical
+            .as_ref()
+            .is_some_and(|metadata| metadata.file_type().is_symlink());
+        let is_dir = lexical
+            .as_ref()
+            .map_or(entry.is_dir, std::fs::Metadata::is_dir);
         flatten_entry(
             &entry.path,
             &entry.name,
-            entry.is_dir,
-            entry.size,
+            is_dir,
+            if is_symlink { 0 } else { entry.size },
             0,
             &mut result,
             &mut truncated,
@@ -829,6 +836,23 @@ mod tests {
         assert_eq!(link.size, 0);
         assert!(!link.is_dir);
         assert_eq!(flat.iter().find(|f| f.name == "data.txt").unwrap().size, 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn flatten_keeps_a_selected_folder_symlink_as_a_leaf() {
+        let tmp = TempDir::new();
+        tmp.dir("target");
+        tmp.file("target/inside.txt", "hidden from link preview");
+        let link = tmp.path().join("folder-link");
+        std::os::unix::fs::symlink("target", &link).unwrap();
+
+        let flat = flatten_entries(&[entry_for(&link)]);
+
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].name, "folder-link");
+        assert!(!flat[0].is_dir);
+        assert_eq!(flat[0].size, 0);
     }
 
     #[test]
