@@ -68,6 +68,7 @@ pub struct VolumeProfile {
 struct CachedProfile {
     profile: VolumeProfile,
     expires_at: Instant,
+    written_at: Instant,
 }
 
 static PROFILES: OnceLock<Mutex<HashMap<u64, CachedProfile>>> = OnceLock::new();
@@ -99,8 +100,24 @@ fn profile_with_refresh(path: &Path, force: bool) -> VolumeProfile {
         }
     }
 
-    let mut observed = probe(&probe_path, volume_id);
+    let probe_started = Instant::now();
+    let observed = probe(&probe_path, volume_id);
     let mut profiles = crate::lock_util::recover(cache);
+    cache_observed_profile(&mut profiles, observed, probe_started, Instant::now())
+}
+
+fn cache_observed_profile(
+    profiles: &mut HashMap<u64, CachedProfile>,
+    mut observed: VolumeProfile,
+    probe_started: Instant,
+    written_at: Instant,
+) -> VolumeProfile {
+    let volume_id = observed.volume_id;
+    if let Some(cached) = profiles.get(&volume_id)
+        && cached.written_at > probe_started
+    {
+        return cached.profile.clone();
+    }
     observed.generation = profiles.get(&volume_id).map_or_else(
         || NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
         |cached| {
@@ -115,7 +132,8 @@ fn profile_with_refresh(path: &Path, force: bool) -> VolumeProfile {
         volume_id,
         CachedProfile {
             profile: observed.clone(),
-            expires_at: Instant::now() + PROFILE_TTL,
+            expires_at: written_at + PROFILE_TTL,
+            written_at,
         },
     );
     observed
@@ -557,6 +575,38 @@ mod tests {
             }
         });
         assert_eq!(resolved, Path::new("/existing"));
+    }
+
+    #[test]
+    fn a_late_old_probe_cannot_replace_a_newer_cache_entry() {
+        let base = Instant::now();
+        let old_started = base;
+        let new_started = base + Duration::from_millis(1);
+        let new_written = base + Duration::from_millis(2);
+        let old_written = base + Duration::from_millis(3);
+        let mut profiles = HashMap::new();
+        let old = VolumeProfile {
+            volume_id: 42,
+            stable_id: Some("test-volume".to_string()),
+            generation: 0,
+            backend: BackendKind::LocalSlow,
+            filesystem: "old".to_string(),
+            mount_point: PathBuf::from("/test"),
+            read_only: false,
+            case_sensitive: Some(true),
+            capabilities: capabilities(BackendKind::LocalSlow, "old", false),
+            reason: "old observation".to_string(),
+        };
+        let mut new = old.clone();
+        new.filesystem = "new".to_string();
+
+        let current = cache_observed_profile(&mut profiles, new, new_started, new_written);
+        let stale_result = cache_observed_profile(&mut profiles, old, old_started, old_written);
+
+        assert_eq!(stale_result.filesystem, "new");
+        assert_eq!(stale_result.generation, current.generation);
+        assert_eq!(profiles[&42].profile.filesystem, "new");
+        assert_eq!(profiles[&42].written_at, new_written);
     }
 
     #[test]
