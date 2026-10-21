@@ -20,6 +20,7 @@ pub enum OmnibarMode<'a> {
 impl<'a> OmnibarMode<'a> {
     pub(crate) fn parse(input: &'a str) -> Self {
         let trimmed = input.trim_start();
+        let path_input = trimmed.trim_end();
         if let Some(rest) = trimmed.strip_prefix('>') {
             Self::Command(rest.trim())
         } else if let Some(rest) = trimmed.strip_prefix('?') {
@@ -28,9 +29,11 @@ impl<'a> OmnibarMode<'a> {
             Self::Shell(rest.trim())
         } else if trimmed.starts_with('/')
             || trimmed.starts_with('~')
-            || is_relative_path(trimmed.trim_end())
+            || std::path::Path::new(path_input).is_absolute()
+            || is_windows_absolute_path(path_input)
+            || is_relative_path(path_input)
         {
-            Self::Path(trimmed.trim_end())
+            Self::Path(path_input)
         } else {
             Self::Jump(trimmed.trim())
         }
@@ -45,6 +48,21 @@ impl<'a> OmnibarMode<'a> {
             Self::Shell(_) => "Shell",
         }
     }
+}
+
+/// Drive-rooted and UNC syntax, recognized independently of the host so the
+/// grammar remains testable and pasted Windows paths route consistently.
+fn is_windows_absolute_path(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let drive_rooted = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    let unc = input.strip_prefix("\\\\").is_some_and(|rest| {
+        let mut components = rest.split(['\\', '/']).filter(|part| !part.is_empty());
+        components.next().is_some() && components.next().is_some()
+    });
+    drive_rooted || unc
 }
 
 /// `.`, `..`, or anything starting `./` or `../`: a path from the active
@@ -124,6 +142,26 @@ mod tests {
         assert_eq!(
             OmnibarMode::parse("~/My Files "),
             OmnibarMode::Path("~/My Files")
+        );
+    }
+
+    #[test]
+    fn windows_absolute_paths_use_path_mode() {
+        assert_eq!(
+            OmnibarMode::parse(r"C:\Users\me"),
+            OmnibarMode::Path(r"C:\Users\me")
+        );
+        assert_eq!(
+            OmnibarMode::parse(r"\\server\share\folder"),
+            OmnibarMode::Path(r"\\server\share\folder")
+        );
+        assert_eq!(
+            OmnibarMode::parse(r"C:relative"),
+            OmnibarMode::Jump(r"C:relative")
+        );
+        assert_eq!(
+            OmnibarMode::parse(r"\\server"),
+            OmnibarMode::Jump(r"\\server")
         );
     }
 }
