@@ -956,6 +956,7 @@ const fn journal_enabled(_spec: &TransferSpec) -> bool {
 }
 
 /// Size of one entry: its byte length, or the recursive size of a directory.
+#[cfg(test)]
 fn entry_size(entry: &FileEntry) -> u64 {
     if let crate::panel::ListingIdentity::Captured(identity) = &entry.identity {
         return match identity.kind {
@@ -973,6 +974,19 @@ fn entry_size(entry: &FileEntry) -> u64 {
     } else {
         entry.size
     }
+}
+
+/// Progress credit for one work item. A successful preflight already owns the
+/// exact recursive logical size. If preflight failed, the item will be
+/// rejected without copying, so use its cheap listing size instead of walking
+/// a directory tree that cannot be transferred.
+fn execution_entry_size(
+    entry: &FileEntry,
+    source: &Result<crate::path_identity::TransferSourceIdentity, String>,
+) -> u64 {
+    source
+        .as_ref()
+        .map_or(entry.size, |source| source.logical_bytes)
 }
 
 #[cfg(test)]
@@ -2897,6 +2911,19 @@ mod tests {
 
         let entries = vec![entry_for(&f), entry_for(&d)];
         assert_eq!(total_bytes(&entries), 8);
+    }
+
+    #[test]
+    fn failed_preflight_does_not_rescan_a_directory_for_progress() {
+        let tmp = TempDir::new();
+        let directory = tmp.dir("folder");
+        tmp.file("folder/value.bin", "12345678");
+        let entry = entry_for(&directory);
+        let listing_size = entry.size;
+        let failed = Err("source could not be inspected".to_string());
+
+        assert_eq!(execution_entry_size(&entry, &failed), listing_size);
+        assert_ne!(listing_size, fs_util::dir_size_recursive(&directory));
     }
 
     #[test]

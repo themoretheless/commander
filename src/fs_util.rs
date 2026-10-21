@@ -201,6 +201,7 @@ pub fn sync_parent_namespace(path: &Path) -> std::io::Result<()> {
 }
 
 /// Total size in bytes of all files under `path` (parallel walk).
+#[cfg(test)]
 pub fn dir_size_recursive(path: &Path) -> u64 {
     jwalk::WalkDir::new(path)
         .skip_hidden(false)

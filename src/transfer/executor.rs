@@ -469,10 +469,8 @@ impl<N: Fn() + Send + 'static> TransferExecutor<N> {
                     &notify,
                     QUIET_HOURS_POLL,
                 );
-                let this_size = work_item.expectation.source.as_ref().map_or_else(
-                    |_| entry_size(&work_item.entry),
-                    |source| source.logical_bytes,
-                );
+                let this_size =
+                    execution_entry_size(&work_item.entry, &work_item.expectation.source);
                 let entry = work_item.entry.clone();
                 let dest = spec.target.join(&entry.name);
 
