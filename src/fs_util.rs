@@ -1,6 +1,6 @@
 //! Shared filesystem helpers used across panels, transfers and menus.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -427,19 +427,86 @@ pub fn available_copy_name(path: &Path) -> PathBuf {
         (path.file_stem().unwrap_or_default(), path.extension())
     };
     let stem = strip_copy_suffix(stem);
-    first_available(|i| {
-        let mut name = stem.to_os_string();
-        if i == 0 {
-            name.push(" copy");
-        } else {
-            name.push(format!(" copy {}", i + 1));
+    first_available(|i| parent.join(copy_leaf_name(stem, ext, i)))
+}
+
+const MAX_COPY_LEAF_UNITS: usize = 255;
+
+fn copy_leaf_name(stem: &OsStr, ext: Option<&OsStr>, index: usize) -> OsString {
+    let suffix = if index == 0 {
+        " copy".to_string()
+    } else {
+        format!(" copy {}", index + 1)
+    };
+    let extension_budget =
+        MAX_COPY_LEAF_UNITS.saturating_sub(component_units(OsStr::new(&suffix)) + 1);
+    let extension = ext.map(|ext| truncate_component(ext, extension_budget));
+    let extension_units = extension
+        .as_deref()
+        .map_or(0, |ext| 1 + component_units(ext));
+    let stem_budget =
+        MAX_COPY_LEAF_UNITS.saturating_sub(component_units(OsStr::new(&suffix)) + extension_units);
+
+    let mut name = truncate_component(stem, stem_budget);
+    name.push(suffix);
+    if let Some(extension) = extension {
+        name.push(".");
+        name.push(extension);
+    }
+    name
+}
+
+#[cfg(unix)]
+fn component_units(value: &OsStr) -> usize {
+    use std::os::unix::ffi::OsStrExt;
+    value.as_bytes().len()
+}
+
+#[cfg(unix)]
+fn truncate_component(value: &OsStr, max_units: usize) -> OsString {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let bytes = value.as_bytes();
+    let mut end = bytes.len().min(max_units);
+    if let Some(text) = value.to_str() {
+        while !text.is_char_boundary(end) {
+            end -= 1;
         }
-        if let Some(ext) = ext {
-            name.push(".");
-            name.push(ext);
-        }
-        parent.join(name)
-    })
+    }
+    OsString::from_vec(bytes[..end].to_vec())
+}
+
+#[cfg(windows)]
+fn component_units(value: &OsStr) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    value.encode_wide().count()
+}
+
+#[cfg(windows)]
+fn truncate_component(value: &OsStr, max_units: usize) -> OsString {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let mut units: Vec<_> = value.encode_wide().take(max_units).collect();
+    if units
+        .last()
+        .is_some_and(|unit| (0xD800..=0xDBFF).contains(unit))
+    {
+        units.pop();
+    }
+    OsString::from_wide(&units)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn component_units(value: &OsStr) -> usize {
+    value.to_string_lossy().len()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn truncate_component(value: &OsStr, max_units: usize) -> OsString {
+    let text = value.to_string_lossy();
+    let mut end = text.len().min(max_units);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    OsString::from(&text[..end])
 }
 
 /// `stem` without a trailing " copy" or " copy N" left by an earlier
@@ -798,6 +865,29 @@ mod tests {
 
         let second = duplicate(&f).unwrap();
         assert_eq!(second, tmp.path().join("doc copy 2.txt"));
+    }
+
+    #[test]
+    fn copy_names_reserve_room_for_suffix_and_extension() {
+        let stem = "a".repeat(251);
+        let first = copy_leaf_name(OsStr::new(&stem), Some(OsStr::new("txt")), 0);
+        let numbered = copy_leaf_name(OsStr::new(&stem), Some(OsStr::new("txt")), 999_998);
+
+        assert!(component_units(&first) <= MAX_COPY_LEAF_UNITS);
+        assert!(component_units(&numbered) <= MAX_COPY_LEAF_UNITS);
+        assert!(first.to_string_lossy().ends_with(" copy.txt"));
+        assert!(numbered.to_string_lossy().ends_with(" copy 999999.txt"));
+    }
+
+    #[test]
+    fn copy_name_truncation_keeps_unicode_character_boundaries() {
+        let stem = "🙂".repeat(63);
+        let name = copy_leaf_name(OsStr::new(&stem), Some(OsStr::new("txt")), 0);
+        let text = name.to_str().expect("a valid UTF-8 stem must stay valid");
+
+        assert!(component_units(&name) <= MAX_COPY_LEAF_UNITS);
+        assert!(text.ends_with(" copy.txt"));
+        assert!(!text.contains('\u{fffd}'));
     }
 
     #[test]
