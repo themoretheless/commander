@@ -606,8 +606,17 @@ impl App {
                 shift: i.modifiers.shift,
             })
             .collect();
-        if presses.iter().any(|press| press.code == KeyCode::Tab) {
-            i.consume_key(i.modifiers, egui::Key::Tab);
+        for (key, code) in [
+            (egui::Key::Tab, KeyCode::Tab),
+            (egui::Key::Enter, KeyCode::Enter),
+            (egui::Key::Space, KeyCode::Space),
+        ] {
+            if presses
+                .iter()
+                .any(|press| press.code == code && crate::command::map_key(*press).is_some())
+            {
+                i.consume_key(i.modifiers, key);
+            }
         }
         presses
     }
@@ -808,6 +817,36 @@ mod tests {
         let (presses, still_pressed) = result.unwrap();
         assert_eq!(map_keys(&presses), [Command::SwitchPanel]);
         assert!(!still_pressed, "egui focus traversal must not also see Tab");
+    }
+
+    #[test]
+    fn workspace_activation_keys_do_not_also_click_focused_widgets() {
+        for (key, expected) in [
+            (egui::Key::Space, Command::ToggleSelect),
+            (egui::Key::Enter, Command::Activate),
+        ] {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            };
+            let mut result = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(input, |ui| {
+                result = Some(ui.input_mut(|input| {
+                    let presses = App::collect_presses(input);
+                    (map_keys(&presses), input.key_pressed(key))
+                }));
+            }));
+            let (commands, still_pressed) = result.unwrap();
+            assert_eq!(commands, [expected]);
+            assert!(!still_pressed, "focused widgets must not also see {key:?}");
+        }
     }
 
     #[test]
