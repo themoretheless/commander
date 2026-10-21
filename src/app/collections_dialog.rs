@@ -156,6 +156,10 @@ impl App {
                             add = true;
                         }
                     });
+                    if let Some(error) = &state.error {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(error).size(10.0).color(t.accent_red));
+                    }
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(6.0);
@@ -279,9 +283,6 @@ impl App {
                                     .size(10.0)
                                     .color(t.accent_warning),
                                 );
-                            }
-                            if let Some(error) = &state.error {
-                                ui.label(egui::RichText::new(error).size(10.0).color(t.accent_red));
                             }
                             ui.separator();
 
