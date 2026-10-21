@@ -185,14 +185,17 @@ fn theme_style(mode: ThemeMode, preferences: crate::accessibility::Preferences) 
     visuals.widgets.noninteractive.corner_radius = ROUNDING_MD;
 
     visuals.widgets.inactive.bg_fill = c.bg_card;
+    visuals.widgets.inactive.weak_bg_fill = c.bg_card;
     visuals.widgets.inactive.fg_stroke.color = c.text_primary;
     visuals.widgets.inactive.corner_radius = ROUNDING_SM;
 
     visuals.widgets.hovered.bg_fill = c.bg_hover;
+    visuals.widgets.hovered.weak_bg_fill = c.bg_hover;
     visuals.widgets.hovered.fg_stroke.color = c.text_primary;
     visuals.widgets.hovered.corner_radius = ROUNDING_SM;
 
     visuals.widgets.active.bg_fill = c.accent;
+    visuals.widgets.active.weak_bg_fill = c.accent;
     visuals.widgets.active.fg_stroke.color = Color32::WHITE;
     visuals.widgets.active.corner_radius = ROUNDING_SM;
 
@@ -327,6 +330,14 @@ mod tests {
                 );
                 assert_eq!(visuals.widgets.open.bg_fill, colors.bg_hover);
                 assert_eq!(visuals.widgets.open.fg_stroke.color, colors.text_primary);
+                for (widget, expected) in [
+                    (&visuals.widgets.inactive, colors.bg_card),
+                    (&visuals.widgets.hovered, colors.bg_hover),
+                    (&visuals.widgets.active, colors.accent),
+                    (&visuals.widgets.open, colors.bg_hover),
+                ] {
+                    assert_eq!(widget.weak_bg_fill, expected);
+                }
                 // Idle buttons get an outline only in high contrast.
                 assert_eq!(
                     visuals.widgets.inactive.bg_stroke.color == colors.border,
