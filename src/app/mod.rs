@@ -651,6 +651,9 @@ pub struct SyncState {
 /// `crate::rename`; this only holds the editable rule fields.
 pub struct BatchRenameState {
     pub context: crate::workspace::BatchRenameContext,
+    /// Panel listing revision used to build `context.existing`. The selected
+    /// targets stay fixed, but sibling collisions follow watcher refreshes.
+    pub listing_generation: u64,
     pub find: String,
     pub replace: String,
     /// Treat `find` as a regular expression (`$1`-style groups in `replace`)

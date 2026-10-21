@@ -42,6 +42,21 @@ fn clear_error_after_rule_change(
     }
 }
 
+fn refresh_existing_names(
+    context: &mut BatchRenameContext,
+    cached_generation: &mut u64,
+    current_dir: &std::path::Path,
+    current_generation: u64,
+    existing: std::collections::HashSet<String>,
+) -> bool {
+    if context.dir != current_dir || *cached_generation == current_generation {
+        return false;
+    }
+    context.existing = existing;
+    *cached_generation = current_generation;
+    true
+}
+
 pub struct ValidatedBatchRename {
     rule: RenameRule,
     plans: Vec<RenamePlan>,
@@ -118,9 +133,11 @@ impl App {
         let Some(context) = self.ws.batch_rename_context() else {
             return;
         };
+        let listing_generation = self.ws.active_panel_ref().entries_gen();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.batch_rename = Some(BatchRenameState {
             context,
+            listing_generation,
             find: String::new(),
             replace: String::new(),
             regex_mode: false,
@@ -142,9 +159,35 @@ impl App {
         let escape_requested = self.take_escape_request(crate::accessibility::EscapeRoute::Modal(
             crate::accessibility::ModalSurface::BatchRename,
         ));
+        let listing_update = self.ui.modals.batch_rename.as_ref().map(|state| {
+            let panel = match state.context.panel {
+                crate::workspace::ActivePanel::Left => &self.ws.left,
+                crate::workspace::ActivePanel::Right => &self.ws.right,
+            };
+            (
+                panel.current_path.clone(),
+                panel.entries_gen(),
+                panel
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect(),
+            )
+        });
         let Some(state) = &mut self.ui.modals.batch_rename else {
             return;
         };
+        if let Some((current_dir, current_generation, existing)) = listing_update
+            && refresh_existing_names(
+                &mut state.context,
+                &mut state.listing_generation,
+                &current_dir,
+                current_generation,
+                existing,
+            )
+        {
+            state.validation = None;
+        }
         let t = self.colors;
 
         let target_count = state.context.targets.len();
@@ -610,6 +653,47 @@ mod tests {
         let current = ValidatedBatchRename::cached(&mut slot, &context, edited.clone());
         assert_eq!(current.rule, edited);
         assert!(!current.applicable);
+    }
+
+    #[test]
+    fn listing_refresh_adds_new_sibling_collision_to_preview() {
+        let mut context = context(&["a.md"], &[]);
+        let rule = RenameRule {
+            find: "a".to_string(),
+            replace: "b".to_string(),
+            ..RenameRule::default()
+        };
+        assert!(ValidatedBatchRename::build(&context, rule.clone()).applicable);
+
+        let mut generation = 4;
+        assert!(refresh_existing_names(
+            &mut context,
+            &mut generation,
+            std::path::Path::new("/fixture"),
+            5,
+            std::collections::HashSet::from(["a.md".to_string(), "b.md".to_string()]),
+        ));
+        let refreshed = ValidatedBatchRename::build(&context, rule);
+        assert!(!refreshed.applicable);
+        assert_eq!(generation, 5);
+        assert_eq!(refreshed.plans[0].status, PlanStatus::Collision);
+    }
+
+    #[test]
+    fn listing_refresh_never_retargets_a_different_directory() {
+        let mut context = context(&["a.md"], &[]);
+        let original = context.existing.clone();
+        let mut generation = 4;
+
+        assert!(!refresh_existing_names(
+            &mut context,
+            &mut generation,
+            std::path::Path::new("/elsewhere"),
+            5,
+            std::collections::HashSet::from(["b.md".to_string()]),
+        ));
+        assert_eq!(context.existing, original);
+        assert_eq!(generation, 4);
     }
 
     #[test]
