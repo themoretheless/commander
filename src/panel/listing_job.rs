@@ -5,6 +5,7 @@
 
 use crate::workload::{AbandonReason, Priority, TaskHandle, TaskKind, TaskSpec, WorkloadHandle};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 
 use super::watcher::ReconciliationTicket;
@@ -16,6 +17,19 @@ const MAX_IN_FLIGHT_LISTINGS: usize = 2;
 /// count toward [`MAX_IN_FLIGHT_LISTINGS`], so they cannot leave a new
 /// navigation stuck on Loading; this separately bounds how many may pile up.
 const MAX_CANCELLED_LISTINGS: usize = 4;
+
+/// Workload replacement keys include `(kind, path, generation)` but not the
+/// panel. Generations must therefore be process-wide, or two panes listing the
+/// same path can cancel/reject one another as stale.
+static NEXT_LISTING_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_listing_generation() -> u64 {
+    NEXT_LISTING_GENERATION
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            generation.checked_add(1)
+        })
+        .expect("listing generation space exhausted")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ListingBinding {
@@ -79,7 +93,6 @@ pub(super) struct ListingReady {
 }
 
 pub(super) struct ListingJobController {
-    generation: u64,
     desired: Option<ListingBinding>,
     ticket: Option<ReconciliationTicket>,
     focus: PendingFocus,
@@ -95,7 +108,6 @@ pub(super) struct ListingJobController {
 impl Default for ListingJobController {
     fn default() -> Self {
         Self {
-            generation: 0,
             desired: None,
             ticket: None,
             focus: PendingFocus::None,
@@ -127,10 +139,6 @@ impl ListingJobController {
         focus: PendingFocus,
         forced_sizes: bool,
     ) -> ListingBinding {
-        self.generation = self
-            .generation
-            .checked_add(1)
-            .expect("listing generation space exhausted");
         for in_flight in &mut self.in_flight {
             in_flight.cancel_once();
         }
@@ -153,7 +161,7 @@ impl ListingJobController {
         let binding = ListingBinding {
             path,
             show_hidden,
-            generation: self.generation,
+            generation: next_listing_generation(),
         };
         self.desired = Some(binding.clone());
         self.ticket = ticket;
@@ -424,6 +432,17 @@ mod tests {
             Some(Path::new("/var"))
         );
         assert!(job.is_awaiting());
+    }
+
+    #[test]
+    fn separate_panels_get_distinct_workload_generations_for_the_same_path() {
+        let mut left = ListingJobController::default();
+        let mut right = ListingJobController::default();
+
+        let left = left.request(PathBuf::from("/shared"), false, None, PendingFocus::None);
+        let right = right.request(PathBuf::from("/shared"), false, None, PendingFocus::None);
+
+        assert_ne!(left.generation, right.generation);
     }
 
     fn named(focus: &PendingFocus) -> Option<&str> {
