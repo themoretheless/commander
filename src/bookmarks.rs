@@ -38,7 +38,7 @@ impl Bookmarks {
     /// kept) and returns `false`; otherwise it is appended and returns `true`.
     pub fn add(&mut self, name: impl Into<String>, path: impl Into<PathBuf>) -> bool {
         let path = path.into();
-        if self.contains(&path) {
+        if path.to_str().is_none() || self.contains(&path) {
             return false;
         }
         self.items.push(Bookmark {
@@ -263,6 +263,18 @@ mod tests {
         assert_eq!(b.items.len(), 1);
         // First-seen name is kept.
         assert_eq!(b.items[0].name, "Code");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn add_rejects_non_utf8_paths_before_they_can_break_saves() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut bookmarks = Bookmarks::default();
+        let path = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', b'x', 0xff]));
+
+        assert!(!bookmarks.add("raw", path));
+        assert!(bookmarks.items.is_empty());
+        assert!(serde_json::to_vec(&bookmarks).is_ok());
     }
 
     #[test]

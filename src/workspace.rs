@@ -1215,7 +1215,13 @@ impl Workspace {
                     .by_slot(n)
                     .filter(|held| held.path != dir)
                     .map(|held| held.name.clone());
-                self.bookmark_dir(dir.clone());
+                if let Err(message) = self.bookmark_dir(dir.clone()) {
+                    self.emit_ui_request(UiRequest::Notice {
+                        message: message.to_string(),
+                        error: true,
+                    });
+                    return;
+                }
                 self.bookmarks.assign_slot(&dir, n);
                 self.save_bookmarks();
                 let name = self
@@ -1232,17 +1238,20 @@ impl Workspace {
                 // is already a favorite. The Favorites rail may be hidden, so
                 // say which way it went.
                 let dir = self.active_panel_ref().current_path.clone();
-                let message = if self.bookmarks.contains(&dir) {
+                let (message, error) = if self.bookmarks.contains(&dir) {
                     self.bookmarks.remove(&dir);
-                    "Removed from Favorites"
+                    ("Removed from Favorites", false)
+                } else if let Err(error) = self.bookmark_dir(dir) {
+                    (error, true)
                 } else {
-                    self.bookmark_dir(dir);
-                    "Added to Favorites"
+                    ("Added to Favorites", false)
                 };
-                self.save_bookmarks();
+                if !error {
+                    self.save_bookmarks();
+                }
                 self.emit_ui_request(UiRequest::Notice {
                     message: message.to_string(),
-                    error: false,
+                    error,
                 });
             }
             Command::ToggleSelect => {
@@ -2797,15 +2806,19 @@ impl Workspace {
     /// Add `dir` to the bookmarks if it is not already present, naming it after
     /// its final path component (the volume root falls back to its display
     /// path). A no-op when already bookmarked, so a slot assign keeps the name.
-    fn bookmark_dir(&mut self, dir: PathBuf) {
+    fn bookmark_dir(&mut self, dir: PathBuf) -> Result<(), &'static str> {
         if self.bookmarks.contains(&dir) {
-            return;
+            return Ok(());
+        }
+        if dir.to_str().is_none() {
+            return Err("This folder name cannot be saved in Favorites because it is not UTF-8");
         }
         let name = dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| dir.display().to_string());
         self.bookmarks.add(name, dir);
+        Ok(())
     }
 
     /// Confirm the pending op. Both transfers and deletes report completion
