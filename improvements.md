@@ -43,15 +43,15 @@ workspace delete/fileops/transfer queue), test-first.
 
 | PR | Items | Done |
 | --- | --- | --- |
-| P1 | 264 | 215 |
-| P2 | 34 | 30 |
-| P3 | 38 | 30 |
-| P4 | 72 | 63 |
+| P1 | 264 | 257 |
+| P2 | 34 | 31 |
+| P3 | 38 | 36 |
+| P4 | 72 | 66 |
 | P5 | 88 | 83 |
-| P6 | 398 | 383 |
+| P6 | 398 | 389 |
 | P7 | 268 | 254 |
-| P8 | 209 | 177 |
-| **Total** | **1371** | **1235** |
+| P8 | 209 | 201 |
+| **Total** | **1371** | **1317** |
 
 ## Final verification
 
@@ -59,14 +59,14 @@ Counted items by category:
 
 | Category | Done |
 | --- | --- |
-| ux | 397 |
-| bug | 272 |
+| ux | 407 |
+| bug | 324 |
 | test | 220 |
 | err | 118 |
-| perf | 98 |
-| refactor | 82 |
-| safety | 48 |
-| **Total** | **1235** |
+| perf | 115 |
+| refactor | 83 |
+| safety | 50 |
+| **Total** | **1317** |
 
 Every PR re-judged a random ~10% of its done items with an independent agent
 (items that failed were reopened or marked `M=n`). After P7 merged, a final
@@ -402,7 +402,7 @@ independent agent re-checked 50 randomly chosen counted items on `main`:
 | I-0323 | sw2:fs-layer-31 | perf | low? | y | S | `src/delta_copy.rs:447` matching_basis_chunk | Each blake3 index hit re-reads the basis chunk over the slow link, even when basis_offset == chunk.offset and no write is needed → When the candidate offset equals chunk.offset, trust the 32-byte blake3+length key and skip the verification read | P4 | done:5b1dcd6 |
 | I-0324 | sw2:fs-layer-23 | perf | low? | y | S | `src/fs_util.rs:154` copy_symlink | On unix the follow-stat result is unused, yet it still resolves the link target, which can block on a dead network mount → Compute `directory` only under #[cfg(windows)]; pass false on unix | P4 | done:215fdda |
 | I-0325 | sw2:imgcache-14 | perf | low | y | M | `src/image_cache.rs:1648` load_via_image_crate | EXIF rotate90/270 is applied to the full-res decode before thumbnailing, allocating and copying a second full-size image → Thumbnail first (swapping target w/h for 90/270 orientations), then apply_orientation on the downscaled image | P4 | done:c9677fe |
-| I-0326 | sw:platform-58 | perf | low? | y | M | `src/native_menu.rs:433` dynamic_entries | Tags, Open With apps and share services are queried synchronously before the menu shows, delaying it on slow/network volumes → Populate Open With/Share/Tags submenus lazily via NSMenuDelegate menuNeedsUpdate: instead of in show_native | P4 | deferred |
+| I-0326 | sw:platform-58 | perf | low? | y | M | `src/native_menu.rs:433` dynamic_entries | Tags, Open With apps and share services are queried synchronously before the menu shows, delaying it on slow/network volumes → Populate Open With/Share/Tags submenus lazily via NSMenuDelegate menuNeedsUpdate: instead of in show_native | P4 | done:8d0d3d4 |
 | I-0327 | sw2:panel-io-11 | perf | med | y | S | `src/panel.rs:877` PanelState::poll_fs_changes / poll_listing_results | Watcher-driven relists call refresh_sizes(true), so 'expensive' (>2s) invalidated dirs are re-walked every 10s during activity → Thread a forced flag through: watcher reconciliation (panel.rs:877, and listing results carrying a watcher ticket ~752) pass false; user refresh/nav pass true | P4 | done:0060f58 |
 | I-0328 | sw:panel-18 | perf | low? | y | S | `src/panel.rs:244` glob_match | Mask preview allocates two Vec<char> per entry per glob term each frame while the dialog is open. → Iterate pattern/text with byte or char slices without collecting, or cache the count by (buffer, listing revision, selection). | P4 | done:5686a2c |
 | I-0329 | sw2:panel-io-21 | perf | low? | y | M | `src/panel/dir_size_cache.rs:114` compare_cache_entries | Cache eviction ranks by directory mtime, so old stable trees (costly to re-walk) are evicted before recently used ones → Rank eviction by last-use/measure tick stored in the entry; keep mtime only for validation (schema bump) | P4 | done:5d3345d |
@@ -1590,6 +1590,10 @@ axes; Tab or Escape returns focus without closing the tool.
 I-1106 was implemented in `304d88b`: Option/Alt plus PageUp, PageDown, Home or
 End scrolls the active text preview without taking the plain cursor-navigation
 keys away from the file list; pane-local request and binding tests cover it.
+I-0326 was implemented in `8d0d3d4`: Open With applications, Finder tags and
+sharing services are no longer queried before the context menu appears. Each
+provider is loaded by its submenu delegate on demand, and the resulting rows
+are joined back into the invocation model before selection validation.
 
 | ID | Loc | Proposal |
 | --- | --- | --- |
