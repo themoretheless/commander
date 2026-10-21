@@ -42,6 +42,33 @@ enum OmniAction {
     Shell(String),
 }
 
+fn row_action(row: &OmniRow, matches: &[crate::command::CommandMatch]) -> OmniAction {
+    match row {
+        OmniRow::Folder { path, .. } => OmniAction::Go(path.clone()),
+        OmniRow::Command(index) => {
+            OmniAction::Run(matches[*index].label.to_string(), matches[*index].command)
+        }
+        OmniRow::QuickSlot { slot, .. } => OmniAction::Run(
+            format!("Jump to slot {slot}"),
+            crate::command::Command::JumpSlot(*slot),
+        ),
+        OmniRow::AssignSlotPrompt => OmniAction::ChooseSlot,
+        OmniRow::AssignSlot(slot) => OmniAction::Run(
+            format!("Assign quick-jump slot {slot}"),
+            crate::command::Command::AssignSlot(*slot),
+        ),
+    }
+}
+
+fn enter_target(selected: usize, focused: Option<usize>, enabled: &[bool]) -> Option<usize> {
+    let index = focused.unwrap_or(selected);
+    enabled
+        .get(index)
+        .copied()
+        .unwrap_or(false)
+        .then_some(index)
+}
+
 /// Show `path` with the home folder abbreviated to `~`. Component-aware, so
 /// a sibling such as `/home/user2` is never turned into `~2`.
 fn home_relative_display(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
@@ -378,6 +405,7 @@ impl App {
         let width = (ctx.content_rect().width() - 32.0).clamp(280.0, 640.0);
         let mut input_id = None;
         let mut selected_row_id = None;
+        let mut focused_row = None;
 
         egui::Window::new("Omnibar")
             .collapsible(false)
@@ -688,6 +716,7 @@ impl App {
                                         selected_row_id = Some(response.id);
                                     }
                                     if response.has_focus() {
+                                        focused_row = Some(index);
                                         ui.painter().rect_stroke(
                                             response.rect.shrink(2.0),
                                             crate::theme::ROUNDING_SM,
@@ -724,30 +753,18 @@ impl App {
                                             &row_label,
                                         )
                                     });
-                                    let activate = (enabled && response.clicked())
-                                        || (is_selected && enter && enabled);
-                                    if activate {
-                                        action = Some(match row {
-                                            OmniRow::Folder { path, .. } => {
-                                                OmniAction::Go(path.clone())
-                                            }
-                                            OmniRow::Command(i) => OmniAction::Run(
-                                                matches[*i].label.to_string(),
-                                                matches[*i].command,
-                                            ),
-                                            OmniRow::QuickSlot { slot, .. } => OmniAction::Run(
-                                                format!("Jump to slot {slot}"),
-                                                crate::command::Command::JumpSlot(*slot),
-                                            ),
-                                            OmniRow::AssignSlotPrompt => OmniAction::ChooseSlot,
-                                            OmniRow::AssignSlot(slot) => OmniAction::Run(
-                                                format!("Assign quick-jump slot {slot}"),
-                                                crate::command::Command::AssignSlot(*slot),
-                                            ),
-                                        });
+                                    if enabled && response.clicked() {
+                                        action = Some(row_action(row, &matches));
                                     }
                                 }
                             });
+                        if action.is_none()
+                            && enter
+                            && let Some(index) = enter_target(selected, focused_row, &enabled)
+                            && let Some(row) = rows.get(index)
+                        {
+                            action = Some(row_action(row, &matches));
+                        }
                         if input.trim().is_empty() {
                             ui.add_space(4.0);
                             Self::omnibar_hint(ui, t, crate::omnibar::GRAMMAR_HINT);
@@ -1019,8 +1036,8 @@ fn picked_count(panel: &PanelState) -> usize {
 mod tests {
     use super::{
         OmniRow, OmnibarMode, command_rows_shown, copy_preview, copy_style, dynamic_row_matches,
-        home_relative_display, input_accessible_label, jump_rows, path_submit, picked_count,
-        saved_searches_label, step_selection,
+        enter_target, home_relative_display, input_accessible_label, jump_rows, path_submit,
+        picked_count, saved_searches_label, step_selection,
     };
 
     #[test]
@@ -1046,6 +1063,14 @@ mod tests {
         assert_eq!(command_rows_shown(&OmnibarMode::Path("/tmp")), 0);
         assert_eq!(command_rows_shown(&OmnibarMode::Search("x")), 0);
         assert_eq!(command_rows_shown(&OmnibarMode::Shell("ls")), 0);
+    }
+
+    #[test]
+    fn enter_prefers_the_focused_row_over_the_arrow_selection() {
+        let enabled = [true, true, false];
+        assert_eq!(enter_target(0, Some(1), &enabled), Some(1));
+        assert_eq!(enter_target(0, None, &enabled), Some(0));
+        assert_eq!(enter_target(0, Some(2), &enabled), None);
     }
 
     #[test]
