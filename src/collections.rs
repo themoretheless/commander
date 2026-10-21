@@ -32,8 +32,10 @@ impl ProjectCollection {
         }
     }
 
-    pub const fn is_valid(&self) -> bool {
-        !self.name.is_empty() && !self.roots.is_empty()
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty()
+            && !self.roots.is_empty()
+            && self.roots.iter().all(|root| root.to_str().is_some())
     }
 }
 
@@ -301,6 +303,18 @@ mod tests {
         assert!(!collections.add(ProjectCollection::new("", [PathBuf::from("/a")])));
         assert!(!collections.add(ProjectCollection::new("Empty", [])));
         assert!(collections.items.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_root_is_rejected_before_it_can_break_saves() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', b'x', 0xff]));
+        let mut collections = ProjectCollections::default();
+
+        assert!(!collections.add(ProjectCollection::new("Raw", [root])));
+        assert!(collections.items.is_empty());
+        assert!(serde_json::to_vec(&collections).is_ok());
     }
 
     #[test]

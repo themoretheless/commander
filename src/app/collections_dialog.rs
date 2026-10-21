@@ -340,6 +340,7 @@ impl App {
                 (state.name.trim().to_string(), roots)
             };
             let collection = crate::collections::ProjectCollection::new(name.clone(), roots);
+            let non_utf8_root = collection.roots.iter().any(|root| root.to_str().is_none());
             let previous = self.project_collections.clone();
             let existed = self.project_collections.get(&name).is_some();
             if self.project_collections.add(collection) {
@@ -357,6 +358,13 @@ impl App {
                         state.error = Some("Could not save project collections".to_string());
                     }
                 }
+            } else if let Some(state) = self.ui.modals.collections_dialog.as_mut() {
+                state.error = Some(if non_utf8_root {
+                    "A selected folder name is not UTF-8 and cannot be saved in a project"
+                        .to_string()
+                } else {
+                    "Enter a project name and select at least one folder".to_string()
+                });
             }
         }
         if let Some(name) = delete {
