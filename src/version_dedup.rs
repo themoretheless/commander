@@ -3,6 +3,7 @@ use crate::operation::VersionStoreQuota;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(test)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -71,6 +72,13 @@ pub struct PayloadFile {
     pub copy: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayloadDigest {
+    pub relative: PathBuf,
+    pub digest: String,
+    pub size: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VersionStoreUsage {
     pub bytes_used: u64,
@@ -128,6 +136,7 @@ pub fn usage_of(
     }
 }
 
+#[cfg(test)]
 pub fn hash_file_chunked(path: &Path) -> Result<(String, u64), String> {
     let mut file = fs::File::open(path)
         .map_err(|e| format!("Could not open {} for content hashing: {e}", path.display()))?;
@@ -165,20 +174,62 @@ pub fn release_payload_refs(
     }
 }
 
+#[cfg(test)]
 pub fn register_payload_dedup(
     stored: &Path,
     key: &str,
     blobs: &mut BTreeMap<String, ContentBlob>,
     payload_files: &mut BTreeMap<String, Vec<PayloadFile>>,
 ) -> Result<(), String> {
-    release_payload_refs(blobs, payload_files, key);
-    let mut files = Vec::new();
+    let mut digests = Vec::new();
     for absolute in collect_regular_files(stored)? {
         let relative = absolute
             .strip_prefix(stored)
             .map_or_else(|_| PathBuf::from("."), Path::to_path_buf);
         let (digest, size) = hash_file_chunked(&absolute)?;
-        let copy = if let Some(blob) = blobs.get_mut(&digest) {
+        digests.push(PayloadDigest {
+            relative,
+            digest,
+            size,
+        });
+    }
+    register_payload_dedup_prehashed(stored, key, &digests, blobs, payload_files)
+}
+
+pub fn register_payload_dedup_prehashed(
+    stored: &Path,
+    key: &str,
+    digests: &[PayloadDigest],
+    blobs: &mut BTreeMap<String, ContentBlob>,
+    payload_files: &mut BTreeMap<String, Vec<PayloadFile>>,
+) -> Result<(), String> {
+    release_payload_refs(blobs, payload_files, key);
+    let mut files = Vec::with_capacity(digests.len());
+    for payload in digests {
+        if payload
+            .relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            && !payload.relative.as_os_str().is_empty()
+        {
+            return Err("Prehashed version payload has an unsafe relative path".to_string());
+        }
+        let absolute = if payload.relative.as_os_str().is_empty() {
+            stored.to_path_buf()
+        } else {
+            stored.join(&payload.relative)
+        };
+        let metadata = fs::symlink_metadata(&absolute)
+            .map_err(|error| format!("Could not inspect {}: {error}", absolute.display()))?;
+        if !metadata.is_file() || metadata.len() != payload.size {
+            return Err(format!(
+                "Prehashed version payload changed before registration: {}",
+                absolute.display()
+            ));
+        }
+        let digest = &payload.digest;
+        let size = payload.size;
+        let copy = if let Some(blob) = blobs.get_mut(digest) {
             blob.normalize_copies();
             let copy = match hardlink_replace(&blob.exemplar, &absolute) {
                 LinkOutcome::Linked => blob.exemplar_copy,
@@ -210,8 +261,8 @@ pub fn register_payload_dedup(
             0
         };
         files.push(PayloadFile {
-            relative,
-            digest,
+            relative: payload.relative.clone(),
+            digest: digest.clone(),
             size,
             copy,
         });
@@ -280,6 +331,7 @@ fn hardlink_replace(exemplar: &Path, target: &Path) -> LinkOutcome {
     LinkOutcome::Linked
 }
 
+#[cfg(test)]
 fn collect_regular_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let meta = fs::symlink_metadata(root)
         .map_err(|e| format!("Could not inspect version payload {}: {e}", root.display()))?;
@@ -388,6 +440,31 @@ mod tests {
         register_payload_dedup(&b, "2", &mut blobs, &mut files).unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs.values().next().unwrap().refs, 2);
+    }
+
+    #[test]
+    fn prehashed_registration_uses_copy_time_digest_without_rereading_for_hashing() {
+        let temp = TempDir::new();
+        let payload = temp.file("payload.bin", "copy-time bytes");
+        let digest = blake3::hash(b"copy-time bytes").to_hex().to_string();
+        let mut blobs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+
+        register_payload_dedup_prehashed(
+            &payload,
+            "one",
+            &[PayloadDigest {
+                relative: PathBuf::new(),
+                digest: digest.clone(),
+                size: 15,
+            }],
+            &mut blobs,
+            &mut files,
+        )
+        .unwrap();
+
+        assert_eq!(blobs.keys().next(), Some(&digest));
+        assert_eq!(files["one"][0].digest, digest);
     }
 
     fn usage(blobs: &BTreeMap<String, ContentBlob>) -> u64 {

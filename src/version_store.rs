@@ -32,6 +32,20 @@ fn test_versions_dir_serial() -> &'static Mutex<()> {
 }
 
 #[cfg(test)]
+type BeforeCopyHook = Box<dyn Fn(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_COPY_HOOK: std::cell::RefCell<Option<BeforeCopyHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn install_before_copy_hook(hook: BeforeCopyHook) {
+    BEFORE_COPY_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
+#[cfg(test)]
 pub struct TestVersionsDirGuard {
     previous: Option<PathBuf>,
     // Released after `drop` restores the previous directory.
@@ -240,38 +254,16 @@ fn preserve_at_inner(
         return Ok(None);
     }
     let persist = manifest_persist();
-    let _manifest_guard = crate::lock_util::recover(manifest_transaction());
-    let loaded = load_manifest_with(persist, root);
-    if loaded.blocked {
-        return Err(version_failure(
-            "Version manifest is unreadable or incompatible; preservation is blocked",
-        ));
-    }
-    if let Some(existing) = loaded
-        .manifest
-        .records
-        .iter()
-        .find(|record| record.key == key)
+    // Fast preflight under the manifest lock avoids copying for a replay or a
+    // blocked store. The authoritative state is loaded and checked again at
+    // commit because another preservation can finish while this one copies.
     {
-        if existing.operation_id != *operation_id || existing.original != path {
-            return Err(version_failure(
-                "Version key is already bound to a different authoritative record",
-            ));
+        let _manifest_guard = crate::lock_util::recover(manifest_transaction());
+        let loaded = load_manifest_with(persist, root);
+        ensure_manifest_writable(&loaded)?;
+        if let Some(existing) = replay_record(root, &loaded.manifest, path, operation_id, &key)? {
+            return Ok(Some(existing));
         }
-        // Same record: a replay. Report why its payload cannot be trusted
-        // instead of claiming a different record owns the key.
-        return validate_record(
-            root,
-            existing,
-            loaded.manifest.identities.get(&existing.key.0),
-        )
-        .map(|()| Some(existing.clone()))
-        .map_err(|message| {
-            version_failure(format!(
-                "Existing version of {} is not usable: {message}",
-                path.display()
-            ))
-        });
     }
     let stored = record_path(root, operation_id, &key, path);
     if !lexically_descends_from(root, &stored) {
@@ -279,36 +271,32 @@ fn preserve_at_inner(
             "Generated version path escaped the configured versions root",
         ));
     }
-    if crate::fs_util::path_is_taken(&stored) {
-        return Err(version_failure(
-            "Generated version path is occupied by untracked data",
-        ));
-    }
     if let Some(parent) = stored.parent() {
         ensure_version_parent(root, parent).map_err(version_failure)?;
     }
+    let staged = version_staging_path(&stored);
     // Every failure below abandons the new version: its payload is removed
     // (when still ours), the `<op>/<key>` directories created for it are
     // pruned once empty, and a failed removal is reported because it leaves
     // the deterministic stored path occupied for a retry of this step.
-    let abandon = |cleanup: String| {
-        remove_empty_version_dirs(stored.parent(), root);
+    let abandon_staged = |cleanup: String| {
+        remove_empty_version_dirs(staged.parent(), root);
         cleanup
     };
-    let copy_receipt = match copy_path_tracked(path, &stored) {
+    let copy_receipt = match copy_path_tracked(path, &staged) {
         Ok(receipt) => receipt,
         Err(failure) => {
-            let cleanup = abandon(
+            let cleanup = abandon_staged(
                 failure
                     .destination_identity
                     .as_ref()
-                    .map(|identity| remove_path_if_object_matches(&stored, identity))
+                    .map(|identity| remove_path_if_object_matches(&staged, identity))
                     .unwrap_or_default(),
             );
             return Err(version_failure(format!(
                 "Could not preserve {} at {}: {}{cleanup}",
                 path.display(),
-                stored.display(),
+                staged.display(),
                 failure.error
             )));
         }
@@ -317,24 +305,24 @@ fn preserve_at_inner(
         // The copy finished but its result could not be observed, so it
         // cannot be proven ours and is left in place; only directories that
         // are already empty are pruned.
-        let cleanup = abandon(format!(
+        let cleanup = abandon_staged(format!(
             "; the unbound copy was left at {}",
-            stored.display()
+            staged.display()
         ));
         return Err(version_failure(format!(
             "Could not bind the new version {}{cleanup}",
-            stored.display()
+            staged.display()
         )));
     };
-    let created_identity = PathIdentity::observe_deep(&stored).map_err(|error| {
-        let cleanup = abandon(remove_path_if_object_matches(&stored, &created_shallow));
+    let staged_identity = PathIdentity::observe_deep(&staged).map_err(|error| {
+        let cleanup = abandon_staged(remove_path_if_object_matches(&staged, &created_shallow));
         version_failure(format!(
             "Could not bind the new version {}: {error}{cleanup}",
-            stored.display()
+            staged.display()
         ))
     })?;
     let after = PathIdentity::observe(path).map_err(|error| {
-        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
         let mut failure = crate::ports::NativeFailure::from_io(&error);
         failure.message = format!(
             "Could not recheck {} after versioning: {}{cleanup}",
@@ -343,8 +331,8 @@ fn preserve_at_inner(
         );
         failure
     })?;
-    if !before.same_version(&after) || !paths_equal(path, &stored) {
-        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+    if !before.same_version(&after) || !paths_equal(path, &staged) {
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
         return Err(crate::ports::NativeFailure {
             kind: crate::ports::NativeFailureKind::Stale,
             message: format!(
@@ -353,11 +341,78 @@ fn preserve_at_inner(
             ),
         });
     }
-    if let Err(message) = validate_stored_path(root, &stored) {
-        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+    if let Err(message) = validate_stored_path(root, &staged) {
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
         return Err(version_failure(format!("{message}{cleanup}")));
     }
 
+    let _manifest_guard = crate::lock_util::recover(manifest_transaction());
+    let mut loaded = load_manifest_with(persist, root);
+    if let Err(failure) = ensure_manifest_writable(&loaded) {
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
+        return Err(version_failure(format!("{}{cleanup}", failure.message)));
+    }
+    match replay_record(root, &loaded.manifest, path, operation_id, &key) {
+        Ok(Some(existing)) => {
+            let _ = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
+            return Ok(Some(existing));
+        }
+        Ok(None) => {}
+        Err(failure) => {
+            let cleanup =
+                abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
+            return Err(version_failure(format!("{}{cleanup}", failure.message)));
+        }
+    }
+    let current_source = PathIdentity::observe(path).map_err(|error| {
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
+        let mut failure = crate::ports::NativeFailure::from_io(&error);
+        failure.message = format!(
+            "Could not recheck {} before publishing its version: {}{cleanup}",
+            path.display(),
+            failure.message
+        );
+        failure
+    })?;
+    if !before.same_version(&current_source) {
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
+        return Err(crate::ports::NativeFailure {
+            kind: crate::ports::NativeFailureKind::Stale,
+            message: format!(
+                "{} changed while its version waited to be published{cleanup}",
+                path.display()
+            ),
+        });
+    }
+    if crate::fs_util::path_is_taken(&stored) {
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
+        return Err(version_failure(format!(
+            "Generated version path is occupied by untracked data{cleanup}"
+        )));
+    }
+    if let Err(error) = crate::fs_at::rename_sibling(&staged, &stored, false) {
+        let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
+        return Err(version_failure(format!(
+            "Could not publish version at {}: {error}{cleanup}",
+            stored.display()
+        )));
+    }
+    let created_identity = PathIdentity::observe_deep(&stored).map_err(|error| {
+        version_failure(format!(
+            "Could not bind published version {}: {error}; the unbound payload was left for review",
+            stored.display()
+        ))
+    })?;
+    if !staged_identity.same_version(&created_identity) {
+        return Err(version_failure(format!(
+            "Published version changed during rename and was left for review at {}",
+            stored.display()
+        )));
+    }
+    let abandon_stored = |cleanup: String| {
+        remove_empty_version_dirs(stored.parent(), root);
+        cleanup
+    };
     let record = VersionRecord {
         operation_id: operation_id.clone(),
         key,
@@ -367,14 +422,14 @@ fn preserve_at_inner(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs()),
     };
-    let mut loaded = loaded;
-    if let Err(message) = crate::version_dedup::register_payload_dedup(
+    if let Err(message) = crate::version_dedup::register_payload_dedup_prehashed(
         &stored,
         &record.key.0,
+        &copy_receipt.payload_digests,
         &mut loaded.manifest.blobs,
         &mut loaded.manifest.payload_files,
     ) {
-        let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+        let cleanup = abandon_stored(remove_path_if_identity_matches(&stored, &created_identity));
         return Err(version_failure(format!("{message}{cleanup}")));
     }
     let created_identity = match PathIdentity::observe_deep(&stored) {
@@ -385,7 +440,8 @@ fn preserve_at_inner(
                 &mut loaded.manifest.payload_files,
                 &record.key.0,
             );
-            let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+            let cleanup =
+                abandon_stored(remove_path_if_identity_matches(&stored, &created_identity));
             return Err(version_failure(format!(
                 "Could not rebind version after content dedup {}: {error}{cleanup}",
                 stored.display()
@@ -419,13 +475,59 @@ fn preserve_at_inner(
                 &mut loaded.manifest.payload_files,
                 &record.key.0,
             );
-            let cleanup = abandon(remove_path_if_identity_matches(&stored, &created_identity));
+            let cleanup =
+                abandon_stored(remove_path_if_identity_matches(&stored, &created_identity));
             return Err(version_failure(format!(
                 "Could not save version manifest{cleanup}"
             )));
         }
     }
     Ok(Some(record))
+}
+
+fn ensure_manifest_writable(loaded: &LoadedManifest) -> Result<(), crate::ports::NativeFailure> {
+    if loaded.blocked {
+        Err(version_failure(
+            "Version manifest is unreadable or incompatible; preservation is blocked",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn replay_record(
+    root: &Path,
+    manifest: &VersionManifest,
+    path: &Path,
+    operation_id: &OperationId,
+    key: &IdempotencyKey,
+) -> Result<Option<VersionRecord>, crate::ports::NativeFailure> {
+    let Some(existing) = manifest.records.iter().find(|record| &record.key == key) else {
+        return Ok(None);
+    };
+    if existing.operation_id != *operation_id || existing.original != path {
+        return Err(version_failure(
+            "Version key is already bound to a different authoritative record",
+        ));
+    }
+    validate_record(root, existing, manifest.identities.get(&existing.key.0))
+        .map(|()| Some(existing.clone()))
+        .map_err(|message| {
+            version_failure(format!(
+                "Existing version of {} is not usable: {message}",
+                path.display()
+            ))
+        })
+}
+
+fn version_staging_path(stored: &Path) -> PathBuf {
+    let parent = stored.parent().unwrap_or_else(|| Path::new("."));
+    loop {
+        let candidate = parent.join(format!(".version-stage-{:016x}", rand::random::<u64>()));
+        if candidate != stored && !crate::fs_util::path_is_taken(&candidate) {
+            return candidate;
+        }
+    }
 }
 
 fn version_failure(message: impl Into<String>) -> crate::ports::NativeFailure {
@@ -1115,12 +1217,19 @@ struct CopyPathFailure {
 
 struct CopyPathReceipt {
     destination_identity: Option<PathIdentity>,
+    payload_digests: Vec<crate::version_dedup::PayloadDigest>,
 }
 
 fn copy_path_tracked(
     source: &Path,
     destination: &Path,
 ) -> Result<CopyPathReceipt, CopyPathFailure> {
+    #[cfg(test)]
+    BEFORE_COPY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow().as_ref() {
+            hook(source);
+        }
+    });
     enum Task {
         Copy(PathBuf, PathBuf),
         /// Runs after the directory's children: creating them bumps its mtime.
@@ -1129,6 +1238,7 @@ fn copy_path_tracked(
 
     let root_destination = destination.to_path_buf();
     let mut destination_identity = None;
+    let mut payload_digests = Vec::new();
     let mut tasks = vec![Task::Copy(source.to_path_buf(), destination.to_path_buf())];
     let result = (|| {
         while let Some(task) = tasks.pop() {
@@ -1180,7 +1290,25 @@ fn copy_path_tracked(
                     if destination == root_destination {
                         destination_identity = PathIdentity::observe(&destination).ok();
                     }
-                    std::io::copy(&mut input, &mut output)?;
+                    let mut hasher = blake3::Hasher::new();
+                    let mut size = 0_u64;
+                    let mut buffer = vec![0_u8; crate::version_dedup::CONTENT_CHUNK_SIZE];
+                    loop {
+                        let read = std::io::Read::read(&mut input, &mut buffer)?;
+                        if read == 0 {
+                            break;
+                        }
+                        std::io::Write::write_all(&mut output, &buffer[..read])?;
+                        hasher.update(&buffer[..read]);
+                        size = size.saturating_add(read as u64);
+                    }
+                    payload_digests.push(crate::version_dedup::PayloadDigest {
+                        relative: destination
+                            .strip_prefix(&root_destination)
+                            .map_or_else(|_| PathBuf::new(), Path::to_path_buf),
+                        digest: hasher.finalize().to_hex().to_string(),
+                        size,
+                    });
                     // Best effort: a filesystem without settable times still
                     // preserves the content.
                     let _ = output.set_times(copied_times(&metadata));
@@ -1194,6 +1322,7 @@ fn copy_path_tracked(
     match result {
         Ok(()) => Ok(CopyPathReceipt {
             destination_identity,
+            payload_digests,
         }),
         Err(error) => Err(CopyPathFailure {
             error,
@@ -1356,6 +1485,67 @@ fn grant_owner_access(directory: &Path) {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn payload_copy_does_not_hold_the_manifest_transaction() {
+        let temp = TempDir::new();
+        let versions = temp.path().join("versions");
+        let slow_source = temp.file("slow.txt", "slow payload");
+        let fast_source = temp.file("fast.txt", "fast payload");
+        let slow_operation = OperationId("slow-operation".to_string());
+        let fast_operation = OperationId("fast-operation".to_string());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let slow = {
+            let versions = versions.clone();
+            let source = slow_source.clone();
+            std::thread::spawn(move || {
+                let release_rx = std::sync::Mutex::new(release_rx);
+                install_before_copy_hook(Box::new(move |_| {
+                    let _ = entered_tx.send(());
+                    let _ = crate::lock_util::recover(&release_rx).recv();
+                }));
+                let result = preserve_at(
+                    &versions,
+                    &source,
+                    &slow_operation,
+                    slow_operation.step_key(0, &source),
+                    VersionRetentionPolicy::Forever,
+                );
+                BEFORE_COPY_HOOK.with(|slot| *slot.borrow_mut() = None);
+                result
+            })
+        };
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("slow copy never reached its outside-lock phase");
+
+        let (fast_tx, fast_rx) = std::sync::mpsc::channel();
+        let fast = {
+            let versions = versions.clone();
+            let source = fast_source.clone();
+            std::thread::spawn(move || {
+                let result = preserve_at(
+                    &versions,
+                    &source,
+                    &fast_operation,
+                    fast_operation.step_key(0, &source),
+                    VersionRetentionPolicy::Forever,
+                );
+                let _ = fast_tx.send(result);
+            })
+        };
+        let fast_result = fast_rx.recv_timeout(std::time::Duration::from_secs(5));
+        let _ = release_tx.send(());
+        fast.join().unwrap();
+        slow.join().unwrap().unwrap();
+
+        fast_result
+            .expect("a second preservation waited for the first payload copy")
+            .unwrap();
+        assert_eq!(load_manifest(&versions).records.len(), 2);
+    }
 
     #[test]
     fn blocked_manifest_is_reported_not_listed_as_empty() {
