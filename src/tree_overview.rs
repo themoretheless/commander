@@ -3,7 +3,8 @@
 use crate::panel::FileEntry;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
-use std::fs::{self, ReadDir};
+use std::fs::{self, DirEntry};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,13 +98,30 @@ fn spawn_with_cap(root: PathBuf, node_cap: usize, notify: Notify) -> OverviewRun
 struct Frame {
     path: PathBuf,
     depth: usize,
-    entries: ReadDir,
+    entries: std::vec::IntoIter<DirEntry>,
     top_entry: Option<FileEntry>,
     bytes: u64,
     files: usize,
     direct_files: usize,
     child_nodes: Vec<usize>,
     children_truncated: bool,
+}
+
+/// Materialize a directory before descending so the traversal stack does not
+/// retain one open directory descriptor per level.
+fn drain_directory(path: &Path, cancelled: &AtomicBool) -> io::Result<(Vec<DirEntry>, bool)> {
+    let mut entries = Vec::new();
+    let mut had_read_error = false;
+    for entry in fs::read_dir(path)? {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        match entry {
+            Ok(entry) => entries.push(entry),
+            Err(_) => had_read_error = true,
+        }
+    }
+    Ok((entries, had_read_error))
 }
 
 #[derive(Clone, Debug)]
@@ -234,7 +252,7 @@ fn run_worker(
 ) {
     let started = Instant::now();
     let mut state = ScanState::new(&root);
-    let Ok(root_entries) = fs::read_dir(&root) else {
+    let Ok((root_entries, root_read_error)) = drain_directory(&root, &cancelled) else {
         state.inaccessible(root.clone());
         finish(
             root,
@@ -249,13 +267,16 @@ fn run_worker(
         );
         return;
     };
+    if root_read_error {
+        state.inaccessible(root.clone());
+    }
 
     let root_device = device_of(&root);
     let mut seen_links = HashSet::new();
     let mut stack = vec![Frame {
         path: root.clone(),
         depth: 0,
-        entries: root_entries,
+        entries: root_entries.into_iter(),
         top_entry: None,
         bytes: 0,
         files: 0,
@@ -276,7 +297,7 @@ fn run_worker(
 
         let next = stack.last_mut().and_then(|frame| frame.entries.next());
         match next {
-            Some(Ok(dir_entry)) => {
+            Some(dir_entry) => {
                 let path = dir_entry.path();
                 state.progress.entries = state.progress.entries.saturating_add(1);
                 state.progress.current = path.clone();
@@ -328,18 +349,23 @@ fn run_worker(
                         }
                         continue;
                     }
-                    match fs::read_dir(&path) {
-                        Ok(entries) => stack.push(Frame {
-                            path,
-                            depth: stack.len(),
-                            entries,
-                            top_entry,
-                            bytes: 0,
-                            files: 0,
-                            direct_files: 0,
-                            child_nodes: Vec::new(),
-                            children_truncated: false,
-                        }),
+                    match drain_directory(&path, &cancelled) {
+                        Ok((entries, had_read_error)) => {
+                            if had_read_error {
+                                state.inaccessible(path.clone());
+                            }
+                            stack.push(Frame {
+                                path,
+                                depth: stack.len(),
+                                entries: entries.into_iter(),
+                                top_entry,
+                                bytes: 0,
+                                files: 0,
+                                direct_files: 0,
+                                child_nodes: Vec::new(),
+                                children_truncated: false,
+                            });
+                        }
                         Err(_) => {
                             state.inaccessible(path.clone());
                             let node = RawNode {
@@ -400,11 +426,6 @@ fn run_worker(
                 }
                 if !state.send_progress(&sender, &notify) {
                     return;
-                }
-            }
-            Some(Err(_)) => {
-                if let Some(frame) = stack.last() {
-                    state.inaccessible(frame.path.clone());
                 }
             }
             None => {
@@ -720,6 +741,24 @@ mod tests {
     }
 
     #[test]
+    fn deep_tree_does_not_retain_one_directory_handle_per_level() {
+        let temp = TempDir::new();
+        let mut deepest = temp.path().to_path_buf();
+        for _ in 0..300 {
+            deepest.push("d");
+            std::fs::create_dir(&deepest).unwrap();
+        }
+        std::fs::write(deepest.join("data.bin"), b"12345").unwrap();
+
+        let run = spawn(temp.path().to_path_buf(), Arc::new(|| {}));
+        let snapshot = completed(&run);
+
+        assert_eq!(snapshot.inaccessible_count, 0);
+        assert_eq!(snapshot.progress.files, 1);
+        assert_eq!(snapshot.progress.bytes, 5);
+    }
+
+    #[test]
     fn branch_points_remain_visible_and_largest_children_sort_first() {
         let temp = TempDir::new();
         temp.file("project/small/a.txt", "a");
@@ -841,7 +880,10 @@ mod tests {
         let temp = TempDir::new();
         temp.file("deep/inner/x.bin", "123");
         let frame = |path: PathBuf, depth: usize, bytes: u64, files: usize| Frame {
-            entries: std::fs::read_dir(temp.path()).unwrap(),
+            entries: drain_directory(temp.path(), &AtomicBool::new(false))
+                .unwrap()
+                .0
+                .into_iter(),
             path,
             depth,
             top_entry: None,
