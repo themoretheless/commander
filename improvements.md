@@ -1182,7 +1182,7 @@ independent agent re-checked 50 randomly chosen counted items on `main`:
 | I-1103 | sw3:kbd-a11y-24 | ux | low | y | S | `src/app/rename_dialog.rs:70` show_rename_dialog | Live name-validation errors are plain red labels, not announced; omnibar already uses Role::Status/Live::Polite for this → Give the error label an AccessKit Status role with Live::Polite like omnibar_dialog.rs:284 | P6 | done:4e308ec |
 | I-1104 | sw3:kbd-a11y-12 | ux | low | y | S | `src/app/render.rs:500` render_panel | Clear-filter button's accessible name is the glyph '×'; the 'Clear filter' tooltip is not exposed as its label → Set widget_info/accesskit label 'Clear filter' on the response, or use text 'Clear' with the glyph as decoration | P6 | done:3fbe406 |
 | I-1105 | sw3:kbd-a11y-13 | ux | low | y | S | `src/app/render.rs:623` render_panel | Loaded image preview has no accessible name/description; AT sees an unlabeled image instead of the file name → Add .alt_text(file name) to egui::Image or set an AccessKit label with the file name and pixel size | P6 | done:87ff2a6 |
-| I-1106 | sw3:kbd-a11y-14 | ux | med? | y | M | `src/app/render.rs:98` render_text_preview | Text preview can only be scrolled with a mouse; PageUp/Down/arrows drive the file cursor, so keyboard users cannot read long files → While a text preview is active, map PageUp/PageDown/Home/End to scroll the preview ScrollArea (e.g. scroll_with_delta) | P6 | proposal |
+| I-1106 | sw3:kbd-a11y-14 | ux | med? | y | M | `src/app/render.rs:98` render_text_preview | Text preview can only be scrolled with a mouse; PageUp/Down/arrows drive the file cursor, so keyboard users cannot read long files → While a text preview is active, map PageUp/PageDown/Home/End to scroll the preview ScrollArea (e.g. scroll_with_delta) | P6 | done:304d88b |
 | I-1107 | sw3:dialogs-28 | ux | low | y | S | `src/app/run_command_dialog.rs:165` App::show_run_command_dialog | 'Save as template' is disabled while a command runs although saving does not depend on the run → Enable Save when the line is non-empty, independent of state.run | P6 | done:d9db20b |
 | I-1108 | sw3:kbd-a11y-36 | ux | low | y | S | `src/app/run_command_dialog.rs:99` show_run_command_dialog | Command-line field has only a hint ('open -a Preview {paths}'), no accessible label → Link the 'Run command on N items' label via labelled_by or set an accesskit label 'Command line' | P6 | done:d9db20b |
 | I-1109 | sw3:kbd-a11y-38 | ux | low | y | S | `src/app/run_command_dialog.rs:208` show_run_command_dialog | Command finished/failed header appears silently; no live region announces completion to AT users → Mark the header label Role::Status/Live::Polite (Alert for failures) | P6 | done:d9db20b |
@@ -1587,7 +1587,9 @@ outcomes remain unrecorded; unit and end-to-end undo regressions cover both path
 I-1081 was implemented in `d93f4bc`: Tab now transfers keyboard focus from the
 visible file pane into the diff tool, where arrows and paging keys scroll both
 axes; Tab or Escape returns focus without closing the tool.
+I-1106 was implemented in `304d88b`: Option/Alt plus PageUp, PageDown, Home or
+End scrolls the active text preview without taking the plain cursor-navigation
+keys away from the file list; pane-local request and binding tests cover it.
 
 | ID | Loc | Proposal |
 | --- | --- | --- |
-| I-1106 | `src/app/render.rs` render_text_preview | Plain PageUp/PageDown/Home/End/arrows are the pane's cursor keys (command.rs map_key -> CursorPageUp/Down), and the quick-view preview follows the cursor, so taking those keys over while a preview is open would change how quick view navigates. That is a key-binding decision. Suggested direction: keep the plain keys on the cursor and add dedicated preview-scroll keys (e.g. Alt/Option+PageUp/PageDown/Home/End, or Shift+Space/Space as in viewers). Wire them in keys.rs collect_presses to scroll_with_delta on text_preview_scroll_id(side) in render.rs. |
