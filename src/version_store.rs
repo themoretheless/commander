@@ -232,7 +232,7 @@ fn preserve_at_inner(
     key: IdempotencyKey,
     retention: VersionRetentionPolicy,
 ) -> Result<Option<VersionRecord>, crate::ports::NativeFailure> {
-    let before = PathIdentity::observe(path).map_err(|error| {
+    let before_shallow = PathIdentity::observe(path).map_err(|error| {
         let mut failure = crate::ports::NativeFailure::from_io(&error);
         failure.message = format!(
             "Could not inspect {} for versioning: {}",
@@ -241,7 +241,7 @@ fn preserve_at_inner(
         );
         failure
     })?;
-    if expected.is_some_and(|expected| !expected.same_shallow_binding(&before)) {
+    if expected.is_some_and(|expected| !expected.same_shallow_binding(&before_shallow)) {
         return Err(crate::ports::NativeFailure {
             kind: crate::ports::NativeFailureKind::Stale,
             message: format!(
@@ -250,9 +250,18 @@ fn preserve_at_inner(
             ),
         });
     }
-    if !before.exists {
+    if !before_shallow.exists {
         return Ok(None);
     }
+    let before = PathIdentity::observe_deep(path).map_err(|error| {
+        let mut failure = crate::ports::NativeFailure::from_io(&error);
+        failure.message = format!(
+            "Could not bind {} before versioning: {}",
+            path.display(),
+            failure.message
+        );
+        failure
+    })?;
     let persist = manifest_persist();
     // Fast preflight under the manifest lock avoids copying for a replay or a
     // blocked store. The authoritative state is loaded and checked again at
@@ -321,7 +330,7 @@ fn preserve_at_inner(
             staged.display()
         ))
     })?;
-    let after = PathIdentity::observe(path).map_err(|error| {
+    let after = PathIdentity::observe_deep(path).map_err(|error| {
         let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
         let mut failure = crate::ports::NativeFailure::from_io(&error);
         failure.message = format!(
@@ -331,7 +340,7 @@ fn preserve_at_inner(
         );
         failure
     })?;
-    if !before.same_version(&after) || !paths_equal(path, &staged) {
+    if !before.same_version(&after) || !paths_structurally_equal(path, &staged) {
         let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
         return Err(crate::ports::NativeFailure {
             kind: crate::ports::NativeFailureKind::Stale,
@@ -364,7 +373,7 @@ fn preserve_at_inner(
             return Err(version_failure(format!("{}{cleanup}", failure.message)));
         }
     }
-    let current_source = PathIdentity::observe(path).map_err(|error| {
+    let current_source = PathIdentity::observe_deep(path).map_err(|error| {
         let cleanup = abandon_staged(remove_path_if_identity_matches(&staged, &staged_identity));
         let mut failure = crate::ports::NativeFailure::from_io(&error);
         failure.message = format!(
@@ -1353,6 +1362,14 @@ fn copy_path(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 pub fn paths_equal(left: &Path, right: &Path) -> bool {
+    paths_equal_inner(left, right, true)
+}
+
+fn paths_structurally_equal(left: &Path, right: &Path) -> bool {
+    paths_equal_inner(left, right, false)
+}
+
+fn paths_equal_inner(left: &Path, right: &Path, compare_file_bytes: bool) -> bool {
     let mut tasks = vec![(left.to_path_buf(), right.to_path_buf())];
     while let Some((left, right)) = tasks.pop() {
         let Ok(left_meta) = fs::symlink_metadata(&left) else {
@@ -1374,7 +1391,9 @@ pub fn paths_equal(left: &Path, right: &Path) -> bool {
             return false;
         }
         if !left_meta.is_dir() {
-            if !crate::fs_util::files_equal(&left, &right) {
+            if left_meta.len() != right_meta.len()
+                || (compare_file_bytes && !crate::fs_util::files_equal(&left, &right))
+            {
                 return false;
             }
             continue;
