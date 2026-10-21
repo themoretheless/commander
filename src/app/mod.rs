@@ -570,6 +570,38 @@ pub struct DiffState {
     pub name_b: String,
     pub lines: Vec<crate::textdiff::DiffLine>,
     pub message: Option<String>,
+    pub keyboard_focused: bool,
+    pub scroll_offset: egui::Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollCommand {
+    LineUp,
+    LineDown,
+    LineLeft,
+    LineRight,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+fn apply_scroll_command(
+    offset: egui::Vec2,
+    command: ScrollCommand,
+    page_height: f32,
+) -> egui::Vec2 {
+    const LINE: f32 = 24.0;
+    match command {
+        ScrollCommand::LineUp => egui::vec2(offset.x, (offset.y - LINE).max(0.0)),
+        ScrollCommand::LineDown => egui::vec2(offset.x, offset.y + LINE),
+        ScrollCommand::LineLeft => egui::vec2((offset.x - LINE).max(0.0), offset.y),
+        ScrollCommand::LineRight => egui::vec2(offset.x + LINE, offset.y),
+        ScrollCommand::PageUp => egui::vec2(offset.x, (offset.y - page_height).max(0.0)),
+        ScrollCommand::PageDown => egui::vec2(offset.x, offset.y + page_height),
+        ScrollCommand::Home => egui::vec2(offset.x, 0.0),
+        ScrollCommand::End => egui::vec2(offset.x, f32::MAX),
+    }
 }
 
 /// UI state for the duplicate-finder sheet. Grouping lives in `crate::dedup`;
@@ -1252,7 +1284,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_events, resolve_start_paths, secs_to_millis};
+    use super::{
+        ScrollCommand, apply_scroll_command, drain_events, resolve_start_paths, secs_to_millis,
+    };
     use crate::launch::LaunchPaths;
     use std::path::PathBuf;
 
@@ -1326,5 +1360,22 @@ mod tests {
         assert_eq!(secs_to_millis(-3.0), 0);
         assert_eq!(secs_to_millis(f64::NAN), 0);
         assert_eq!(secs_to_millis(f64::INFINITY), u64::MAX);
+    }
+
+    #[test]
+    fn keyboard_scroll_commands_clamp_at_the_start_and_reach_the_end() {
+        let offset = egui::vec2(12.0, 40.0);
+        assert_eq!(
+            apply_scroll_command(offset, ScrollCommand::PageUp, 100.0),
+            egui::vec2(12.0, 0.0)
+        );
+        assert_eq!(
+            apply_scroll_command(offset, ScrollCommand::LineLeft, 100.0),
+            egui::vec2(0.0, 40.0)
+        );
+        assert_eq!(
+            apply_scroll_command(offset, ScrollCommand::End, 100.0).y,
+            f32::MAX
+        );
     }
 }

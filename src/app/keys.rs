@@ -202,6 +202,11 @@ fn prioritized_modal(
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
+        if self.handle_diff_scroll_keys(ctx) {
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+            return;
+        }
         let contract = self.ui_contract(ctx);
         if matches!(
             contract.keyboard,
@@ -297,6 +302,10 @@ impl App {
 
     fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
         if super::update::switch_into_covered_pane(&self.ui.tools, self.ws.active, command) {
+            if let Some(diff) = &mut self.ui.tools.diff {
+                diff.keyboard_focused = true;
+                return;
+            }
             self.push_key_feedback(ctx, super::update::SWITCH_INTO_COVERED_PANE);
             return;
         }
@@ -312,6 +321,47 @@ impl App {
         } else if let Some(reason) = availability.reason {
             self.push_key_feedback(ctx, reason);
         }
+    }
+
+    fn handle_diff_scroll_keys(&mut self, ctx: &egui::Context) -> bool {
+        let Some(diff) = &mut self.ui.tools.diff else {
+            return false;
+        };
+        if !diff.keyboard_focused {
+            return false;
+        }
+
+        let mut exit = false;
+        let command = ctx.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
+            {
+                exit = true;
+                return None;
+            }
+            [
+                (egui::Key::ArrowUp, ScrollCommand::LineUp),
+                (egui::Key::ArrowDown, ScrollCommand::LineDown),
+                (egui::Key::ArrowLeft, ScrollCommand::LineLeft),
+                (egui::Key::ArrowRight, ScrollCommand::LineRight),
+                (egui::Key::PageUp, ScrollCommand::PageUp),
+                (egui::Key::PageDown, ScrollCommand::PageDown),
+                (egui::Key::Home, ScrollCommand::Home),
+                (egui::Key::End, ScrollCommand::End),
+            ]
+            .into_iter()
+            .find_map(|(key, command)| {
+                input
+                    .consume_key(egui::Modifiers::NONE, key)
+                    .then_some(command)
+            })
+        });
+        if exit {
+            diff.keyboard_focused = false;
+        } else if let Some(command) = command {
+            diff.scroll_offset = apply_scroll_command(diff.scroll_offset, command, 396.0);
+        }
+        true
     }
 
     fn push_key_feedback(&mut self, ctx: &egui::Context, message: &'static str) {

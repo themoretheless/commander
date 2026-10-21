@@ -2769,6 +2769,8 @@ mod tests {
             name_b: "b".into(),
             lines: Vec::new(),
             message: None,
+            keyboard_focused: false,
+            scroll_offset: egui::Vec2::ZERO,
         });
         assert!(pane_tool_covers(&tools, ActivePanel::Right));
         assert!(!pane_tool_covers(&tools, ActivePanel::Left));
@@ -2786,6 +2788,8 @@ mod tests {
             name_b: "b".into(),
             lines: Vec::new(),
             message: None,
+            keyboard_focused: false,
+            scroll_offset: egui::Vec2::ZERO,
         });
         assert!(switch_into_covered_pane(
             &tools,

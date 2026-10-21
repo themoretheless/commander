@@ -386,6 +386,8 @@ mod tests {
             name_b: "b".into(),
             lines: Vec::new(),
             message: None,
+            keyboard_focused: false,
+            scroll_offset: egui::Vec2::ZERO,
         });
         assert!(tools.any_open());
         tools.replace_on(crate::workspace::ActivePanel::Left);

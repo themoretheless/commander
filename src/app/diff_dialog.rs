@@ -104,15 +104,18 @@ fn render_diff_lines(
     ui: &mut egui::Ui,
     lines: &[crate::textdiff::DiffLine],
     t: &ThemeColors,
-) -> usize {
+    mut scroll_offset: egui::Vec2,
+) -> (usize, egui::Vec2) {
     let font = egui::FontId::monospace(12.0);
     let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font));
     let mut laid_out = 0;
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        egui::ScrollArea::both()
+        let output = egui::ScrollArea::both()
+            .id_salt("diff-lines")
             .max_height(420.0)
             .auto_shrink([false, false])
+            .scroll_offset(scroll_offset)
             .show_rows(ui, row_h, lines.len(), |ui, range| {
                 laid_out = range.len();
                 for line in &lines[range] {
@@ -131,8 +134,9 @@ fn render_diff_lines(
                     );
                 }
             });
+        scroll_offset = output.state.offset;
     });
-    laid_out
+    (laid_out, scroll_offset)
 }
 
 impl App {
@@ -168,6 +172,8 @@ impl App {
                     name_b,
                     lines,
                     message,
+                    keyboard_focused: false,
+                    scroll_offset: egui::Vec2::ZERO,
                 });
             }
         }
@@ -176,7 +182,7 @@ impl App {
     pub(crate) fn show_diff_tool(&mut self, ui: &mut egui::Ui) {
         let escape_requested =
             self.take_escape_request(crate::accessibility::EscapeRoute::PaneTool);
-        let Some(state) = &self.ui.tools.diff else {
+        let Some(state) = &mut self.ui.tools.diff else {
             return;
         };
         let t = self.colors;
@@ -217,7 +223,16 @@ impl App {
                         .color(t.text_muted),
                 );
             } else {
-                let _ = render_diff_lines(ui, &state.lines, &t);
+                let (_, offset) = render_diff_lines(ui, &state.lines, &t, state.scroll_offset);
+                state.scroll_offset = offset;
+            }
+
+            if state.keyboard_focused {
+                ui.label(
+                    egui::RichText::new("Keyboard scroll active · Tab or Esc returns to files")
+                        .size(11.0)
+                        .color(t.accent),
+                );
             }
 
             ui.add_space(10.0);
@@ -261,7 +276,7 @@ mod tests {
         let t = crate::theme::ThemeColors::light();
         let mut laid_out = 0;
         crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
-            laid_out = render_diff_lines(ui, &lines, &t);
+            laid_out = render_diff_lines(ui, &lines, &t, egui::Vec2::ZERO).0;
         }));
         assert!(laid_out > 0);
         assert!(
