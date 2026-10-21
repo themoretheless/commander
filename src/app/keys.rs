@@ -148,6 +148,26 @@ fn binding_modifiers(m: egui::Modifiers) -> bool {
     !m.alt && (m.command || !m.ctrl)
 }
 
+fn consume_scroll_command(
+    input: &mut egui::InputState,
+    modifiers: egui::Modifiers,
+    include_arrows: bool,
+) -> Option<ScrollCommand> {
+    [
+        (egui::Key::ArrowUp, ScrollCommand::LineUp, true),
+        (egui::Key::ArrowDown, ScrollCommand::LineDown, true),
+        (egui::Key::ArrowLeft, ScrollCommand::LineLeft, true),
+        (egui::Key::ArrowRight, ScrollCommand::LineRight, true),
+        (egui::Key::PageUp, ScrollCommand::PageUp, false),
+        (egui::Key::PageDown, ScrollCommand::PageDown, false),
+        (egui::Key::Home, ScrollCommand::Home, false),
+        (egui::Key::End, ScrollCommand::End, false),
+    ]
+    .into_iter()
+    .filter(|(_, _, arrow)| include_arrows || !arrow)
+    .find_map(|(key, command, _)| input.consume_key(modifiers, key).then_some(command))
+}
+
 /// The egui-drawn fallback context menu closes on Escape itself, so that
 /// press must not also close a pane tool or preview, or leave focus mode,
 /// underneath it. Modals and text fields keep their own Escape.
@@ -203,6 +223,11 @@ fn prioritized_modal(
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
         if self.handle_diff_scroll_keys(ctx) {
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+            return;
+        }
+        if self.handle_text_preview_scroll_keys(ctx) {
             self.ui.type_ahead = None;
             self.ui.chord = None;
             return;
@@ -339,28 +364,33 @@ impl App {
                 exit = true;
                 return None;
             }
-            [
-                (egui::Key::ArrowUp, ScrollCommand::LineUp),
-                (egui::Key::ArrowDown, ScrollCommand::LineDown),
-                (egui::Key::ArrowLeft, ScrollCommand::LineLeft),
-                (egui::Key::ArrowRight, ScrollCommand::LineRight),
-                (egui::Key::PageUp, ScrollCommand::PageUp),
-                (egui::Key::PageDown, ScrollCommand::PageDown),
-                (egui::Key::Home, ScrollCommand::Home),
-                (egui::Key::End, ScrollCommand::End),
-            ]
-            .into_iter()
-            .find_map(|(key, command)| {
-                input
-                    .consume_key(egui::Modifiers::NONE, key)
-                    .then_some(command)
-            })
+            consume_scroll_command(input, egui::Modifiers::NONE, true)
         });
         if exit {
             diff.keyboard_focused = false;
         } else if let Some(command) = command {
             diff.scroll_offset = apply_scroll_command(diff.scroll_offset, command, 396.0);
         }
+        true
+    }
+
+    fn handle_text_preview_scroll_keys(&mut self, ctx: &egui::Context) -> bool {
+        if !matches!(
+            self.ws.active_panel().preview,
+            Some(crate::panel::PreviewContent::Text { .. })
+        ) {
+            return false;
+        }
+        let command =
+            ctx.input_mut(|input| consume_scroll_command(input, egui::Modifiers::ALT, false));
+        let Some(command) = command else {
+            return false;
+        };
+        let panel_side = match self.ws.active {
+            crate::workspace::ActivePanel::Left => "left",
+            crate::workspace::ActivePanel::Right => "right",
+        };
+        super::render::request_text_preview_scroll(ctx, panel_side, command);
         true
     }
 
@@ -749,6 +779,36 @@ mod tests {
         let command = presses_for(egui::Key::A, egui::Modifiers::COMMAND);
         assert_eq!(command.len(), 1);
         assert!(command[0].command);
+    }
+
+    #[test]
+    fn option_paging_is_reserved_for_preview_scroll_without_claiming_arrows() {
+        let command_for = |key| {
+            let ctx = egui::Context::default();
+            let modifiers = egui::Modifiers::ALT;
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut command = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(input, |ui| {
+                command = ui
+                    .input_mut(|input| consume_scroll_command(input, egui::Modifiers::ALT, false));
+            }));
+            command
+        };
+        assert_eq!(
+            command_for(egui::Key::PageDown),
+            Some(ScrollCommand::PageDown)
+        );
+        assert_eq!(command_for(egui::Key::Home), Some(ScrollCommand::Home));
+        assert_eq!(command_for(egui::Key::ArrowDown), None);
     }
 
     fn press(code: KeyCode, command: bool) -> KeyPress {

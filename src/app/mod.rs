@@ -574,8 +574,9 @@ pub struct DiffState {
     pub scroll_offset: egui::Vec2,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ScrollCommand {
+    #[default]
     LineUp,
     LineDown,
     LineLeft,

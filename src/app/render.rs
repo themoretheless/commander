@@ -18,6 +18,19 @@ fn text_preview_scroll_id(panel_side: &str) -> egui::Id {
     egui::Id::new(("text_preview", panel_side))
 }
 
+pub(super) fn request_text_preview_scroll(
+    ctx: &egui::Context,
+    panel_side: &str,
+    command: ScrollCommand,
+) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            text_preview_scroll_id(panel_side).with("keyboard_scroll"),
+            command,
+        );
+    });
+}
+
 /// Whether the pane's text preview now shows a different file than last
 /// frame, so its scroll offset should go back to the top. Only the last
 /// path per pane is kept, so memory does not grow with every file viewed.
@@ -176,9 +189,24 @@ fn render_text_preview(
                 let scroll_id = text_preview_scroll_id(panel_side);
                 let mut scroll = egui::ScrollArea::both().id_salt(scroll_id);
                 if text_preview_path_changed(ui.ctx(), scroll_id, path) {
+                    ui.ctx().data_mut(|data| {
+                        data.remove_temp::<ScrollCommand>(scroll_id.with("keyboard_scroll"));
+                    });
                     scroll = scroll.scroll_offset(Vec2::ZERO);
+                } else if let Some(command) = ui.ctx().data_mut(|data| {
+                    data.remove_temp::<ScrollCommand>(scroll_id.with("keyboard_scroll"))
+                }) {
+                    let offset = ui.ctx().data(|data| {
+                        data.get_temp::<Vec2>(scroll_id.with("keyboard_offset"))
+                            .unwrap_or(Vec2::ZERO)
+                    });
+                    scroll = scroll.scroll_offset(apply_scroll_command(
+                        offset,
+                        command,
+                        ui.available_height().max(24.0),
+                    ));
                 }
-                scroll.auto_shrink([false; 2]).show(ui, |ui| {
+                let output = scroll.auto_shrink([false; 2]).show(ui, |ui| {
                     ui.style_mut().interaction.selectable_labels = true;
                     let galley = text_preview_galley(
                         ui,
@@ -191,6 +219,9 @@ fn render_text_preview(
                         },
                     );
                     ui.add(egui::Label::new(galley));
+                });
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(scroll_id.with("keyboard_offset"), output.state.offset);
                 });
                 return;
             }
@@ -1637,5 +1668,21 @@ mod tests {
             text_preview_scroll_id("right"),
             a
         ));
+    }
+
+    #[test]
+    fn text_preview_keyboard_scroll_requests_are_isolated_per_pane() {
+        let ctx = egui::Context::default();
+        request_text_preview_scroll(&ctx, "left", ScrollCommand::PageDown);
+        let left = text_preview_scroll_id("left").with("keyboard_scroll");
+        let right = text_preview_scroll_id("right").with("keyboard_scroll");
+        assert_eq!(
+            ctx.data_mut(|data| data.remove_temp::<ScrollCommand>(left)),
+            Some(ScrollCommand::PageDown)
+        );
+        assert_eq!(
+            ctx.data_mut(|data| data.remove_temp::<ScrollCommand>(right)),
+            None
+        );
     }
 }
