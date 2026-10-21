@@ -149,12 +149,27 @@ fn same_contract(left: &VolumeProfile, right: &VolumeProfile) -> bool {
 /// the same object: otherwise its volume id fell back to a hash of the
 /// first path component, shared by every dangling path.
 fn nearest_existing(path: &Path) -> PathBuf {
+    nearest_existing_with(path, |candidate| std::fs::metadata(candidate).map(|_| ()))
+}
+
+fn nearest_existing_with(
+    path: &Path,
+    mut probe: impl FnMut(&Path) -> std::io::Result<()>,
+) -> PathBuf {
     let mut candidate = path;
-    while std::fs::metadata(candidate).is_err() {
-        let Some(parent) = candidate.parent() else {
-            break;
-        };
-        candidate = parent;
+    loop {
+        match probe(candidate) {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(parent) = candidate.parent() else {
+                    break;
+                };
+                candidate = parent;
+            }
+            // Permission, stale-handle and other probe failures describe this
+            // path; climbing would silently assign its parent's volume.
+            Err(_) => break,
+        }
     }
     candidate.to_path_buf()
 }
@@ -520,6 +535,28 @@ mod tests {
         let second = profile(temp.path());
         assert_eq!(first.volume_id, second.volume_id);
         assert_eq!(first.generation, second.generation);
+    }
+
+    #[test]
+    fn nearest_existing_only_climbs_for_missing_paths() {
+        let denied = PathBuf::from("/denied-mount/folder");
+        let mut denied_probes = Vec::new();
+        let resolved = nearest_existing_with(&denied, |candidate| {
+            denied_probes.push(candidate.to_path_buf());
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert_eq!(resolved, denied);
+        assert_eq!(denied_probes, [PathBuf::from("/denied-mount/folder")]);
+
+        let missing = PathBuf::from("/existing/missing/child");
+        let resolved = nearest_existing_with(&missing, |candidate| {
+            if candidate == Path::new("/existing") {
+                Ok(())
+            } else {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+        });
+        assert_eq!(resolved, Path::new("/existing"));
     }
 
     #[test]
