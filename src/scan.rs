@@ -49,7 +49,13 @@ pub fn pending_flat_list() -> FlatList {
 pub fn find_conflicts(entries: &[FileEntry], target: &Path) -> Vec<String> {
     entries
         .iter()
-        .filter(|e| crate::fs_util::path_is_taken(&target.join(&e.name)))
+        .filter(|entry| {
+            let raw_name = entry
+                .path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new(&entry.name));
+            crate::fs_util::path_is_taken(&target.join(raw_name))
+        })
         .map(|e| e.name.clone())
         .collect()
 }
@@ -725,6 +731,26 @@ mod tests {
 
         let conflicts = find_conflicts(&[entry_for(&a), entry_for(&b)], dst.path());
         assert_eq!(conflicts, vec!["a.txt".to_string()]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn find_conflicts_uses_raw_non_utf8_names() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let (src, dst) = (TempDir::new(), TempDir::new());
+        let raw = std::ffi::OsString::from_vec(vec![b'r', b'a', b'w', 0xff]);
+        let source = src.path().join(&raw);
+        let existing = dst.path().join(&raw);
+        std::fs::write(&source, "source").unwrap();
+        std::fs::write(&existing, "target").unwrap();
+
+        let entry = entry_for(&source);
+        assert_eq!(
+            find_conflicts(&[entry.clone()], dst.path()),
+            vec![entry.name]
+        );
+        assert!(existing.exists());
     }
 
     #[test]
