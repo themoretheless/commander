@@ -594,6 +594,13 @@ fn extract_zip_members(
                 .push(format!("Could not create {}: {error}", parent.display()));
             continue;
         }
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170_000 == 0o120_000)
+        {
+            extract_zip_symlink(&mut entry, &enclosed, &out_path, &mut report);
+            continue;
+        }
         // `create_new` never clobbers and never writes through a symlink
         // (even a dangling one) already at the destination, and it closes
         // the race an `exists()` pre-check would leave open.
@@ -635,6 +642,82 @@ fn extract_zip_members(
         }
     }
     Ok(report)
+}
+
+fn symlink_target_stays_inside(member: &Path, target: &Path) -> bool {
+    if target.as_os_str().is_empty() || target.is_absolute() {
+        return false;
+    }
+    let mut depth = member
+        .parent()
+        .map_or(0, |parent| parent.components().count());
+    for component in target.components() {
+        match component {
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir if depth > 0 => depth -= 1,
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return false,
+        }
+    }
+    true
+}
+
+fn extract_zip_symlink(
+    entry: &mut zip::read::ZipFile<'_, fs::File>,
+    member: &Path,
+    out_path: &Path,
+    report: &mut ExtractReport,
+) {
+    let oversized = entry.size() > 4_096;
+    let mut bytes = Vec::new();
+    if let Err(error) = (&mut *entry).take(4_097).read_to_end(&mut bytes) {
+        report.errors.push(format!(
+            "Could not read symlink {}: {error}",
+            member.display()
+        ));
+        return;
+    }
+    let Ok(target) = String::from_utf8(bytes) else {
+        report.errors.push(format!(
+            "Skipped symlink {} with a non-UTF-8 target",
+            member.display()
+        ));
+        return;
+    };
+    let target = Path::new(&target);
+    if oversized || !symlink_target_stays_inside(member, target) {
+        report.errors.push(format!(
+            "Skipped unsafe symlink {} -> {}",
+            member.display(),
+            target.display()
+        ));
+        return;
+    }
+    if fs::symlink_metadata(out_path).is_ok() {
+        report.skipped_existing += 1;
+        return;
+    }
+    #[cfg(unix)]
+    let result = std::os::unix::fs::symlink(target, out_path);
+    #[cfg(windows)]
+    let result = std::os::windows::fs::symlink_file(target, out_path);
+    #[cfg(not(any(unix, windows)))]
+    let result: std::io::Result<()> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "symbolic links are unsupported on this platform",
+    ));
+    match result {
+        Ok(()) => report.extracted += 1,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            report.skipped_existing += 1;
+        }
+        Err(error) => report.errors.push(format!(
+            "Could not create symlink {}: {error}",
+            out_path.display()
+        )),
+    }
 }
 
 /// Copy `reader` to `writer` in chunks, checking `cancelled` between them so
@@ -1279,6 +1362,42 @@ mod tests {
         assert_eq!(report.extracted, 0);
         assert_eq!(report.skipped_existing, 1);
         assert!(!target.exists(), "extraction followed the dangling link");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_extract_creates_only_symlinks_that_stay_inside_the_destination() {
+        let temp = TempDir::new();
+        let archive = temp.path().join("links.zip");
+        let file = fs::File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .add_symlink("dir/link", "../target.txt", options)
+            .unwrap();
+        writer
+            .add_symlink("escape", "../../outside", options)
+            .unwrap();
+        writer.finish().unwrap();
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(archive.clone(), &cancelled).unwrap();
+        let indexes: Vec<_> = listing.members.iter().map(|member| member.index).collect();
+        let dest = temp.path().join("out");
+
+        let report = extract_members(&archive, &dest, &indexes, &cancelled).unwrap();
+
+        assert_eq!(report.extracted, 1);
+        assert_eq!(
+            fs::read_link(dest.join("dir/link")).unwrap(),
+            PathBuf::from("../target.txt")
+        );
+        assert!(!dest.join("escape").exists());
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("unsafe symlink"))
+        );
     }
 
     #[test]
