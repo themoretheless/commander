@@ -235,10 +235,10 @@ fn spawn_view_with_cap(
                 }
                 scanned += 1;
                 let path = dir_entry.path();
-                let Ok(metadata) = dir_entry.metadata() else {
-                    continue;
-                };
-                let Some(entry) = FileEntry::from_meta(path, &metadata) else {
+                // Keep virtual rows identical to panel rows: a link to a
+                // folder behaves as a folder, while a dangling link remains
+                // visible using its own metadata.
+                let Some(entry) = FileEntry::observe_lexical(path) else {
                     continue;
                 };
                 batch.push(VirtualEntry {
@@ -534,6 +534,42 @@ mod tests {
             view_names(root.path(), true),
             vec![".DS_Store", ".git", "visible.txt"]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn virtual_view_follows_folder_links_and_keeps_dangling_links() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new();
+        root.dir("target");
+        symlink("target", root.path().join("folder-link")).unwrap();
+        symlink("missing", root.path().join("dangling-link")).unwrap();
+
+        let run = spawn_view(
+            ProjectCollection::new("Links", [root.path().to_path_buf()]),
+            false,
+            Arc::new(|| {}),
+        );
+        let mut rows = Vec::new();
+        while let Ok(event) = run.receiver.recv_timeout(Duration::from_secs(5)) {
+            match event {
+                ViewEvent::Batch(batch) => rows.extend(batch),
+                ViewEvent::Complete { .. } => break,
+            }
+        }
+
+        let folder = rows
+            .iter()
+            .find(|row| row.entry.name == "folder-link")
+            .expect("folder link should be listed");
+        assert!(folder.entry.is_dir);
+        let dangling = rows
+            .iter()
+            .find(|row| row.entry.name == "dangling-link")
+            .expect("dangling link should be listed");
+        assert!(!dangling.entry.is_dir);
+        assert!(dangling.entry.permissions.is_none());
     }
 
     /// Every row and the final `(scanned, truncated)` of a capped view.
