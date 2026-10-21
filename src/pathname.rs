@@ -68,7 +68,9 @@ pub fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputErro
     let expanded = if trimmed == "~" {
         home.to_path_buf()
     } else if let Some(rest) = trimmed.strip_prefix("~/") {
-        home.join(rest)
+        // Repeated separators must stay inside `home`: joining an absolute
+        // remainder would otherwise discard the home prefix entirely.
+        home.join(rest.trim_start_matches('/'))
     } else {
         PathBuf::from(trimmed)
     };
@@ -178,6 +180,14 @@ mod tests {
         assert_eq!(
             parse_dir_input("  ~/Documents  ", home.path()),
             Ok(home.path().join("Documents"))
+        );
+        assert_eq!(
+            parse_dir_input("~//Documents", home.path()),
+            Ok(home.path().join("Documents"))
+        );
+        assert_eq!(
+            parse_dir_input("~/", home.path()),
+            Ok(home.path().to_path_buf())
         );
     }
 
