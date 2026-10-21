@@ -208,6 +208,17 @@ fn dynamic_row_matches(label: &str, query: &str) -> bool {
         .all(|word| label.contains(&word.to_lowercase()))
 }
 
+/// Omnibar result navigation owns unmodified vertical arrows. Consume them
+/// before the `TextEdit` is added so it cannot also move its caret.
+fn consume_selection_arrows(ctx: &egui::Context) -> (bool, bool) {
+    ctx.input_mut(|input| {
+        (
+            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+        )
+    })
+}
+
 impl App {
     pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
         self.open_omnibar(ctx, String::new());
@@ -379,13 +390,8 @@ impl App {
         };
 
         let state = self.ui.modals.palette_input.as_mut().unwrap();
-        let (up, down, enter) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::ArrowDown),
-                i.key_pressed(egui::Key::Enter),
-            )
-        });
+        let (up, down) = consume_selection_arrows(ctx);
+        let enter = ctx.input(|input| input.key_pressed(egui::Key::Enter));
         let enabled: Vec<bool> = rows.iter().map(row_enabled).collect();
         state.selected = step_selection(&enabled, state.selected, up, down);
         let selected = state.selected;
@@ -1035,9 +1041,10 @@ fn picked_count(panel: &PanelState) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        OmniRow, OmnibarMode, command_rows_shown, copy_preview, copy_style, dynamic_row_matches,
-        enter_target, home_relative_display, input_accessible_label, jump_rows, path_submit,
-        picked_count, saved_searches_label, step_selection,
+        OmniRow, OmnibarMode, command_rows_shown, consume_selection_arrows, copy_preview,
+        copy_style, dynamic_row_matches, enter_target, home_relative_display,
+        input_accessible_label, jump_rows, path_submit, picked_count, saved_searches_label,
+        step_selection,
     };
 
     #[test]
@@ -1071,6 +1078,31 @@ mod tests {
         assert_eq!(enter_target(0, Some(1), &enabled), Some(1));
         assert_eq!(enter_target(0, None, &enabled), Some(0));
         assert_eq!(enter_target(0, Some(2), &enabled), None);
+    }
+
+    #[test]
+    fn selection_arrows_are_consumed_before_the_text_input() {
+        for (key, expected) in [
+            (egui::Key::ArrowUp, (true, false)),
+            (egui::Key::ArrowDown, (false, true)),
+        ] {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |_ui| {
+                assert_eq!(consume_selection_arrows(&ctx), expected);
+                assert!(!ctx.input(|input| input.key_pressed(key)));
+            });
+            crate::testutil::discard_egui_output(output);
+        }
     }
 
     #[test]
