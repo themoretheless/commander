@@ -118,8 +118,10 @@ fn common_stem_prefix(entries: &[FileEntry]) -> Option<String> {
     loop {
         let raw = &first[..end];
         let undotted = raw.trim_start_matches('.');
-        let prefix = undotted
-            .trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, '_' | '-' | ' ' | '.'));
+        let prefix = undotted.trim_end_matches(|c: char| {
+            c.is_ascii_digit()
+                || matches!(c, '_' | '-' | ' ' | '.' | '(' | '[' | '{' | ',' | '+' | '#')
+        });
         if prefix.chars().count() < 2 {
             return None;
         }
@@ -342,6 +344,24 @@ mod tests {
             entry("report-feb.pdf", false, 1),
         ];
         assert_eq!(suggest_folder_name(&e), "report");
+    }
+
+    #[test]
+    fn suggest_folder_name_trims_opening_brackets_and_punctuation() {
+        for (left, right) in [
+            ("Photo (1).jpg", "Photo (2).jpg"),
+            ("Photo [draft].jpg", "Photo [final].jpg"),
+            ("Photo {a}.jpg", "Photo {b}.jpg"),
+            ("Photo, a.jpg", "Photo, b.jpg"),
+            ("Photo+one.jpg", "Photo+two.jpg"),
+            ("Photo#one.jpg", "Photo#two.jpg"),
+        ] {
+            assert_eq!(
+                suggest_folder_name(&[entry(left, false, 1), entry(right, false, 1)]),
+                "Photo",
+                "{left} + {right}"
+            );
+        }
     }
 
     #[test]
