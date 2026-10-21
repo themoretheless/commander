@@ -206,12 +206,6 @@ fn dialog_enter_suppressed(ctx: &egui::Context, layer: egui::LayerId) -> bool {
     focus_within_layer(ctx, layer) || focus_in_popup || egui::Popup::is_any_open(ctx)
 }
 
-/// Escape first belongs to an open combo/menu popup. The modal may consume
-/// the routed request only when no popup was open for this frame.
-fn dialog_escape_dismisses(ctx: &egui::Context, escape_requested: bool) -> bool {
-    escape_requested && !egui::Popup::is_any_open(ctx)
-}
-
 /// Set once the primary button took keyboard focus for this dialog, so the
 /// sheet is announced on open but later focus moves are left alone.
 const CONFIRM_FOCUSED: &str = "confirm_primary_focused";
@@ -524,7 +518,7 @@ impl App {
         let t = self.colors;
         let escape_requested =
             self.take_modal_escape(crate::accessibility::ModalSurface::Confirmation);
-        let escape_dismisses = dialog_escape_dismisses(ctx, escape_requested);
+        let escape_dismisses = super::ui_state::escape_closes_surface(ctx, escape_requested);
         let mutations_blocked = self.ws.mutations_blocked();
         let mutation_block = self.ws.mutation_block_reason("confirming this operation");
         let reduced_motion = self.accessibility_preferences.reduced_motion;
@@ -1701,13 +1695,12 @@ mod tests {
         FLOW_MAX_SECS, FitTone, FlatListMode, OverwritePolicy, PENDING_FLOW_START, PendingOp,
         clear_pending_dialog_state, collision_for_policy, conflict_banner, conflict_policy_enabled,
         conflict_row_text, conflict_rule_key, delete_not_started_message, dialog_enter_suppressed,
-        dialog_escape_dismisses, dialog_heading, dropped_items_note, dry_run_supported,
-        durability_controls, elided_name, fit_message, flat_list_header, flat_row_accessible_label,
-        flat_total, flow_rows, flow_transferred, focus_within_layer, highlighted_policy,
-        honours_click, is_conflict_row, normalization_note, not_enough_space_message,
-        nothing_left_message, primary_blocker, quiet_hours_label, should_focus_primary,
-        source_header, unavailable_size_message, unavailable_space_message,
-        unstarted_delete_explanation,
+        dialog_heading, dropped_items_note, dry_run_supported, durability_controls, elided_name,
+        fit_message, flat_list_header, flat_row_accessible_label, flat_total, flow_rows,
+        flow_transferred, focus_within_layer, highlighted_policy, honours_click, is_conflict_row,
+        normalization_note, not_enough_space_message, nothing_left_message, primary_blocker,
+        quiet_hours_label, should_focus_primary, source_header, unavailable_size_message,
+        unavailable_space_message, unstarted_delete_explanation,
     };
     use crate::filesystem_policy::CollisionPolicy;
     use crate::scan::{FlatFileEntry, FlatList};
@@ -2002,10 +1995,10 @@ mod tests {
     #[test]
     fn open_combo_popup_consumes_escape_before_the_dialog() {
         let ctx = egui::Context::default();
-        assert!(dialog_escape_dismisses(&ctx, true));
+        assert!(super::ui_state::escape_closes_surface(&ctx, true));
         egui::Popup::open_id(&ctx, egui::Id::new("durability_popup"));
-        assert!(!dialog_escape_dismisses(&ctx, true));
-        assert!(!dialog_escape_dismisses(&ctx, false));
+        assert!(!super::ui_state::escape_closes_surface(&ctx, true));
+        assert!(!super::ui_state::escape_closes_surface(&ctx, false));
     }
 
     #[test]

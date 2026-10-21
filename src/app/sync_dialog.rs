@@ -278,6 +278,7 @@ impl App {
         let ctx = &ctx;
         let escape_requested =
             self.take_escape_request(crate::accessibility::EscapeRoute::PaneTool);
+        let escape_requested = super::ui_state::escape_closes_surface(ctx, escape_requested);
         if self.ui.tools.sync.is_none() {
             return;
         }

@@ -258,6 +258,12 @@ pub const fn modal_close_requested(window_open: bool, escape_requested: bool) ->
     !window_open || escape_requested
 }
 
+/// Escape first belongs to an open combo/menu popup. A containing modal or
+/// pane tool may close only when no popup was open for this frame.
+pub fn escape_closes_surface(ctx: &egui::Context, escape_requested: bool) -> bool {
+    escape_requested && !egui::Popup::is_any_open(ctx)
+}
+
 /// Two-click confirmation for a destructive row action (delete a saved
 /// search, remove a project). The first click on `key` arms it; a second
 /// click on the same key confirms and disarms. Clicking another row arms that
@@ -374,6 +380,15 @@ mod tests {
             );
             assert!(!modal_close_requested(true, false));
         }
+    }
+
+    #[test]
+    fn an_open_popup_consumes_escape_before_its_surface() {
+        let ctx = egui::Context::default();
+        assert!(escape_closes_surface(&ctx, true));
+        egui::Popup::open_id(&ctx, egui::Id::new("surface_combo_popup"));
+        assert!(!escape_closes_surface(&ctx, true));
+        assert!(!escape_closes_surface(&ctx, false));
     }
 
     #[test]
