@@ -96,6 +96,7 @@ fn spawn_with_cap(root: PathBuf, node_cap: usize, notify: Notify) -> OverviewRun
 }
 
 struct Frame {
+    node_index: Option<usize>,
     path: PathBuf,
     depth: usize,
     entries: std::vec::IntoIter<DirEntry>,
@@ -133,6 +134,18 @@ struct RawNode {
     children: Vec<usize>,
     children_truncated: bool,
     unreadable: bool,
+}
+
+fn pending_raw_node(path: PathBuf) -> RawNode {
+    RawNode {
+        path,
+        bytes: 0,
+        files: 0,
+        direct_files: 0,
+        children: Vec::new(),
+        children_truncated: false,
+        unreadable: false,
+    }
 }
 
 struct TopLevelItem {
@@ -273,7 +286,17 @@ fn run_worker(
 
     let root_device = device_of(&root);
     let mut seen_links = HashSet::new();
+    let mut raw_nodes = Vec::new();
+    let mut truncated = false;
+    let root_node = push_raw_node(
+        &mut raw_nodes,
+        pending_raw_node(root.clone()),
+        node_cap,
+        &mut truncated,
+    );
+    state.truncated |= truncated;
     let mut stack = vec![Frame {
+        node_index: root_node,
         path: root.clone(),
         depth: 0,
         entries: root_entries.into_iter(),
@@ -284,9 +307,7 @@ fn run_worker(
         child_nodes: Vec::new(),
         children_truncated: false,
     }];
-    let mut raw_nodes = Vec::new();
     let mut top_level = TopLevelSet::default();
-    let mut root_node = None;
     let mut was_cancelled = false;
 
     while !stack.is_empty() {
@@ -327,13 +348,8 @@ fn run_worker(
                             children_truncated: true,
                             unreadable: false,
                         };
-                        let child_index = push_raw_node(
-                            &mut raw_nodes,
-                            node,
-                            node_cap,
-                            false,
-                            &mut state.truncated,
-                        );
+                        let child_index =
+                            push_raw_node(&mut raw_nodes, node, node_cap, &mut state.truncated);
                         if let Some(parent) = stack.last_mut() {
                             if let Some(index) = child_index {
                                 parent.child_nodes.push(index);
@@ -354,7 +370,21 @@ fn run_worker(
                             if had_read_error {
                                 state.inaccessible(path.clone());
                             }
+                            let node_index = push_raw_node(
+                                &mut raw_nodes,
+                                pending_raw_node(path.clone()),
+                                node_cap,
+                                &mut state.truncated,
+                            );
+                            if let Some(parent) = stack.last_mut() {
+                                if let Some(index) = node_index {
+                                    parent.child_nodes.push(index);
+                                } else {
+                                    parent.children_truncated = true;
+                                }
+                            }
                             stack.push(Frame {
+                                node_index,
                                 path,
                                 depth: stack.len(),
                                 entries: entries.into_iter(),
@@ -377,13 +407,8 @@ fn run_worker(
                                 children_truncated: false,
                                 unreadable: true,
                             };
-                            let child_index = push_raw_node(
-                                &mut raw_nodes,
-                                node,
-                                node_cap,
-                                false,
-                                &mut state.truncated,
-                            );
+                            let child_index =
+                                push_raw_node(&mut raw_nodes, node, node_cap, &mut state.truncated);
                             if let Some(parent) = stack.last_mut() {
                                 if let Some(index) = child_index {
                                     parent.child_nodes.push(index);
@@ -442,27 +467,16 @@ fn run_worker(
                 };
                 let bytes = node.bytes;
                 let files = node.files;
-                let node_index = push_raw_node(
-                    &mut raw_nodes,
-                    node,
-                    node_cap,
-                    is_root,
-                    &mut state.truncated,
-                );
-                if is_root {
-                    root_node = node_index;
-                } else {
+                if let Some(index) = frame.node_index {
+                    raw_nodes[index] = node;
+                }
+                if !is_root {
                     if let Some(entry) = frame.top_entry {
                         top_level.push(entry, bytes);
                     }
                     if let Some(parent) = stack.last_mut() {
                         parent.bytes = parent.bytes.saturating_add(bytes);
                         parent.files = parent.files.saturating_add(files);
-                        if let Some(index) = node_index {
-                            parent.child_nodes.push(index);
-                        } else {
-                            parent.children_truncated = true;
-                        }
                     }
                 }
             }
@@ -470,6 +484,7 @@ fn run_worker(
     }
 
     if was_cancelled {
+        publish_open_frames(&stack, &mut raw_nodes);
         fold_open_frames(&mut stack, &mut top_level);
     }
     if was_cancelled && let Some(root_frame) = stack.first() {
@@ -482,13 +497,9 @@ fn run_worker(
             children_truncated: true,
             unreadable: false,
         };
-        root_node = push_raw_node(
-            &mut raw_nodes,
-            partial_root,
-            node_cap,
-            true,
-            &mut state.truncated,
-        );
+        if let Some(index) = root_frame.node_index {
+            raw_nodes[index] = partial_root;
+        }
     }
 
     finish(
@@ -517,6 +528,22 @@ fn fold_open_frames(stack: &mut Vec<Frame>, top_level: &mut TopLevelSet) {
         parent.bytes = parent.bytes.saturating_add(frame.bytes);
         parent.files = parent.files.saturating_add(frame.files);
         parent.children_truncated = true;
+    }
+}
+
+fn publish_open_frames(stack: &[Frame], nodes: &mut [RawNode]) {
+    for frame in stack {
+        if let Some(index) = frame.node_index {
+            nodes[index] = RawNode {
+                path: frame.path.clone(),
+                bytes: frame.bytes,
+                files: frame.files,
+                direct_files: frame.direct_files,
+                children: frame.child_nodes.clone(),
+                children_truncated: true,
+                unreadable: false,
+            };
+        }
     }
 }
 
@@ -559,10 +586,9 @@ fn push_raw_node(
     nodes: &mut Vec<RawNode>,
     node: RawNode,
     cap: usize,
-    is_root: bool,
     truncated: &mut bool,
 ) -> Option<usize> {
-    if !is_root && nodes.len() >= cap.saturating_sub(1) {
+    if nodes.len() >= cap {
         *truncated = true;
         return None;
     }
@@ -794,6 +820,21 @@ mod tests {
     }
 
     #[test]
+    fn node_cap_keeps_ancestors_reachable_instead_of_orphaning_leaves() {
+        let temp = TempDir::new();
+        temp.file("wide/a/file.txt", "a");
+        temp.file("wide/b/file.txt", "b");
+        temp.file("wide/c/file.txt", "c");
+
+        let run = spawn_with_cap(temp.path().to_path_buf(), 3, Arc::new(|| {}));
+        let snapshot = completed(&run);
+
+        assert!(snapshot.truncated);
+        assert!(snapshot.nodes.iter().any(|node| node.label == "wide"));
+        assert!(snapshot.nodes.len() <= 2, "root occupies the third slot");
+    }
+
+    #[test]
     fn top_level_map_keeps_only_the_largest_bounded_set() {
         let temp = TempDir::new();
         for index in 0..(TOP_LEVEL_CAP + 8) {
@@ -880,6 +921,7 @@ mod tests {
         let temp = TempDir::new();
         temp.file("deep/inner/x.bin", "123");
         let frame = |path: PathBuf, depth: usize, bytes: u64, files: usize| Frame {
+            node_index: None,
             entries: drain_directory(temp.path(), &AtomicBool::new(false))
                 .unwrap()
                 .0
