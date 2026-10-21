@@ -3203,6 +3203,36 @@ fn move_then_undo_restores_the_source() {
 }
 
 #[test]
+fn partially_failed_move_keeps_a_truthful_undo_for_completed_placements() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let source = left.path().join("moved.txt");
+    let destination = right.file("moved.txt", "completed move");
+    let mut ws = workspace(&left, &right);
+    let operation = crate::operation::OperationId("partial-move-history".to_string());
+    let progress = ws.launch_test_transfer(
+        test_transfer_spec(&operation.0, right.path()),
+        transfer_queue::HistoryIntent::Record(crate::undo::Action::Move { pairs: Vec::new() }),
+    );
+    {
+        let mut progress = crate::lock_util::recover(&progress);
+        progress.finished = true;
+        progress.errors.push("second item failed".to_string());
+        progress
+            .placements
+            .push((source.clone(), destination.clone()));
+    }
+
+    assert!(ws.poll_transfer(|| {}).terminal.is_none());
+    ws.dismiss_transfer(|| {});
+    assert!(ws.can_undo(), "the completed subset must remain undoable");
+
+    let _ = ws.perform_undo(|| {});
+    wait_transfer(&mut ws);
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "completed move");
+    assert!(!destination.exists());
+}
+
+#[test]
 fn batch_rename_is_undoable_and_redoable() {
     let (l, r) = (TempDir::new(), TempDir::new());
     l.file("a.txt", "1");

@@ -506,6 +506,11 @@ impl TransferQueueController {
         match (history, clean) {
             (HistoryIntent::None, _) => HistoryOutcome::None,
             (HistoryIntent::Record(action), true) => HistoryOutcome::Record { action, placements },
+            (HistoryIntent::Record(action), false)
+                if !integrity_uncertain && !placements.is_empty() =>
+            {
+                HistoryOutcome::Record { action, placements }
+            }
             (HistoryIntent::Record(_), false) => HistoryOutcome::None,
             (HistoryIntent::Replay { reservation, .. }, true) => {
                 HistoryOutcome::Commit(reservation)
@@ -1415,6 +1420,36 @@ mod tests {
             }
         );
         assert!(controller.poll().retirement.is_none());
+    }
+
+    #[test]
+    fn failed_move_records_only_proven_placements_unless_integrity_is_uncertain() {
+        let action = crate::undo::Action::Move {
+            pairs: vec![(PathBuf::from("/planned-a"), PathBuf::from("/planned-b"))],
+        };
+        let placements = vec![(PathBuf::from("/moved-a"), PathBuf::from("/moved-b"))];
+
+        assert_eq!(
+            TransferQueueController::history_outcome(
+                HistoryIntent::Record(action.clone()),
+                false,
+                placements.clone(),
+                false,
+            ),
+            HistoryOutcome::Record {
+                action: action.clone(),
+                placements,
+            }
+        );
+        assert_eq!(
+            TransferQueueController::history_outcome(
+                HistoryIntent::Record(action),
+                false,
+                vec![(PathBuf::from("/uncertain-a"), PathBuf::from("/uncertain-b"))],
+                true,
+            ),
+            HistoryOutcome::None
+        );
     }
 
     #[test]
