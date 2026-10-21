@@ -350,6 +350,15 @@ fn row_clicked(ctx: &egui::Context, response: &egui::Response) -> bool {
         })
 }
 
+/// Button-style activation without a primary pointer click. This covers
+/// AccessKit Click plus egui's Enter/Space fake-click on a focused row.
+fn row_activated_without_pointer(ctx: &egui::Context, response: &egui::Response) -> bool {
+    (!response.clicked_by(egui::PointerButton::Primary) && response.clicked())
+        || ctx.input(|input| {
+            input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click)
+        })
+}
+
 /// Filtered indices a Shift-click selects: from the cursor row to the
 /// clicked row, both inclusive. Cursors count the ".." row as 0, so a
 /// cursor on ".." starts the range at the first file row.
@@ -814,7 +823,7 @@ impl App {
                     } else if is_cursor_on_up && refocus_cursor {
                         focus_cursor_row(ui, panel_side, &up_row);
                     }
-                    if up_row.double_clicked() {
+                    if up_row.double_clicked() || row_activated_without_pointer(ui.ctx(), &up_row) {
                         panel.go_up();
                     } else if row_clicked(ui.ctx(), &up_row) {
                         // Take focus like file rows do, so the old row's
@@ -2240,7 +2249,7 @@ mod tests {
         panel.refresh();
         let ctx = egui::Context::default();
 
-        for start in [0, 1] {
+        for start in [1] {
             // A keyboard move onto `start`: focus follows the cursor there.
             panel.set_cursor(start);
             panel.set_scroll_to_cursor(true);
@@ -2257,6 +2266,26 @@ mod tests {
                 panel.set_cursor(start);
                 render_list_frame(&ctx, &mut panel, Vec::new());
             }
+        }
+    }
+
+    #[test]
+    fn keyboard_activation_of_the_parent_row_goes_up() {
+        for key in [egui::Key::Enter, egui::Key::Space] {
+            let temp = crate::testutil::TempDir::new();
+            let child = temp.path().join("child");
+            std::fs::create_dir(&child).expect("create child");
+            let mut panel = crate::panel::PanelState::new(child.clone());
+            panel.refresh();
+            panel.set_cursor(0);
+            panel.set_scroll_to_cursor(true);
+            let ctx = egui::Context::default();
+            render_list_frame(&ctx, &mut panel, Vec::new());
+            render_list_frame(&ctx, &mut panel, Vec::new());
+
+            render_list_frame(&ctx, &mut panel, vec![key_press(key)]);
+
+            assert_eq!(panel.current_path, temp.path(), "{key:?}");
         }
     }
 
