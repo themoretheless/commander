@@ -391,7 +391,7 @@ fn format_bytes(bytes: u64) -> String {
 fn quote_if_needed(value: &str) -> String {
     if value
         .chars()
-        .all(|ch| !ch.is_whitespace() && !matches!(ch, '"' | '\''))
+        .all(|ch| !ch.is_whitespace() && !matches!(ch, '\\' | '"' | '\''))
     {
         value.to_string()
     } else {
@@ -630,6 +630,17 @@ mod tests {
                 Predicate::NameContains("it's".into()),
             ]
         );
+    }
+
+    #[test]
+    fn doubled_regex_backslash_survives_expression_round_trip() {
+        let query = Query {
+            mode: MatchMode::Regex,
+            predicates: vec![Predicate::NameContains(r"a\\d".into())],
+        };
+
+        assert_eq!(round_trip(&query), query);
+        assert_eq!(query.to_expression(), r#""a\\\\d""#);
     }
 
     #[test]
