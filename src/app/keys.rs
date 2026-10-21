@@ -241,7 +241,7 @@ impl App {
             self.ui.chord = None;
             return;
         }
-        let (mut presses, escape, now) = ctx.input(|i| {
+        let (mut presses, escape, now) = ctx.input_mut(|i| {
             (
                 Self::collect_presses(i),
                 i.key_pressed(egui::Key::Escape),
@@ -541,7 +541,7 @@ impl App {
     }
 
     /// Snapshot the pressed keys we care about as toolkit-independent values.
-    fn collect_presses(i: &egui::InputState) -> Vec<KeyPress> {
+    fn collect_presses(i: &mut egui::InputState) -> Vec<KeyPress> {
         const BINDINGS: &[(egui::Key, KeyCode)] = &[
             (egui::Key::Tab, KeyCode::Tab),
             (egui::Key::ArrowUp, KeyCode::Up),
@@ -597,7 +597,7 @@ impl App {
         if !binding_modifiers(i.modifiers) {
             return Vec::new();
         }
-        BINDINGS
+        let presses: Vec<_> = BINDINGS
             .iter()
             .filter(|(key, _)| i.key_pressed(*key))
             .map(|&(_, code)| KeyPress {
@@ -605,7 +605,11 @@ impl App {
                 command: i.modifiers.command,
                 shift: i.modifiers.shift,
             })
-            .collect()
+            .collect();
+        if presses.iter().any(|press| press.code == KeyCode::Tab) {
+            i.consume_key(i.modifiers, egui::Key::Tab);
+        }
+        presses
     }
 }
 
@@ -758,7 +762,7 @@ mod tests {
         };
         let mut presses = Vec::new();
         crate::testutil::discard_egui_output(ctx.run_ui(input, |ui| {
-            presses = ui.input(App::collect_presses);
+            presses = ui.input_mut(App::collect_presses);
         }));
         presses
     }
@@ -779,6 +783,31 @@ mod tests {
         let command = presses_for(egui::Key::A, egui::Modifiers::COMMAND);
         assert_eq!(command.len(), 1);
         assert!(command[0].command);
+    }
+
+    #[test]
+    fn workspace_tab_is_mapped_and_consumed_once() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let mut result = None;
+        crate::testutil::discard_egui_output(ctx.run_ui(input, |ui| {
+            result = Some(ui.input_mut(|input| {
+                let presses = App::collect_presses(input);
+                (presses, input.key_pressed(egui::Key::Tab))
+            }));
+        }));
+        let (presses, still_pressed) = result.unwrap();
+        assert_eq!(map_keys(&presses), [Command::SwitchPanel]);
+        assert!(!still_pressed, "egui focus traversal must not also see Tab");
     }
 
     #[test]
