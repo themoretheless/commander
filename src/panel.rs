@@ -728,6 +728,14 @@ impl PanelState {
         Ok(drop_nested_picks(entries))
     }
 
+    /// The same operation inputs as [`Self::picked_entries`], excluding a
+    /// destination row that must not become its own transfer source.
+    pub fn picked_entries_excluding(&self, excluded: &Path) -> Result<Vec<FileEntry>, StaleCursor> {
+        let mut entries = self.picked_entries()?;
+        entries.retain(|entry| entry.path != excluded);
+        Ok(entries)
+    }
+
     pub fn replace_selection(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         self.selection
             .replace_selected(paths.into_iter().collect::<HashSet<_>>());

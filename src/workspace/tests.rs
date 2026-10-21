@@ -4604,6 +4604,41 @@ fn keyboard_copy_into_cursor_folder_keeps_the_source() {
 }
 
 #[test]
+fn keyboard_drop_uses_a_pick_from_another_visited_folder() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let first = l.dir("first");
+    let second = l.dir("second");
+    let source = l.file("first/a.txt", "x");
+    let target = l.dir("second/target");
+    let mut ws = workspace(&l, &r);
+    ws.left.navigate_to(first);
+    ws.left.refresh();
+    ws.left.toggle_select(source.clone());
+    ws.left.navigate_to(second);
+    ws.left.refresh();
+    let cursor = ws
+        .left
+        .filtered_entries()
+        .iter()
+        .position(|entry| entry.path == target)
+        .unwrap()
+        + 1;
+    ws.left.set_cursor(cursor);
+
+    let context = ws.command_context();
+    assert_eq!(context.selected_entries, 0);
+    assert_eq!(context.picked_entries, 1);
+    assert!(context.can_transfer_into_cursor_folder);
+    assert!(crate::command::availability(Command::MoveIntoCursorFolder, &context).enabled);
+
+    ws.transfer_selection_into_cursor_folder(TransferKind::Move, || {});
+    wait_transfer(&mut ws);
+
+    assert!(target.join("a.txt").is_file());
+    assert!(!source.exists());
+}
+
+#[test]
 fn drop_without_an_explicit_target_is_cancelled() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let file = l.file("a.txt", "x");

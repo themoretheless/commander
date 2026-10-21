@@ -836,20 +836,24 @@ impl Workspace {
         let mut selected_entries = 0usize;
         let mut selected_file_count = 0usize;
         let mut first_selected_file_index = None;
-        let mut has_transfer_source = false;
         active.visit_filtered(|index, entry| {
             if !entry.is_dir {
                 visible_files = visible_files.saturating_add(1);
             }
             if active.is_selected(&entry.path) {
                 selected_entries = selected_entries.saturating_add(1);
-                has_transfer_source |= cursor.is_some_and(|target| entry.path != target.path);
                 if !entry.is_dir {
                     selected_file_count = selected_file_count.saturating_add(1);
                     first_selected_file_index.get_or_insert(index);
                 }
             }
             true
+        });
+        let has_transfer_source = cursor.is_some_and(|target| {
+            target.is_dir
+                && active
+                    .picked_entries_excluding(&target.path)
+                    .is_ok_and(|entries| !entries.is_empty())
         });
         let listing_entries = if active.selection_is_empty() {
             visible_entries
@@ -897,17 +901,21 @@ impl Workspace {
         let active = self.active_panel_ref();
         let cursor = active.cursor_entry();
         let mut has_selected = false;
-        let mut has_transfer_source = false;
         if !active.selection_is_empty() {
             active.visit_filtered(|_, entry| {
                 if active.is_selected(&entry.path) {
                     has_selected = true;
-                    has_transfer_source |= cursor.is_some_and(|target| entry.path != target.path);
                 }
-                !(has_selected
-                    && (!cursor.is_some_and(|target| target.is_dir) || has_transfer_source))
+                !has_selected
             });
         }
+
+        let has_transfer_source = cursor.is_some_and(|target| {
+            target.is_dir
+                && active
+                    .picked_entries_excluding(&target.path)
+                    .is_ok_and(|entries| !entries.is_empty())
+        });
 
         self.base_command_context(usize::from(has_selected), has_transfer_source)
     }

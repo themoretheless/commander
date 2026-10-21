@@ -287,7 +287,6 @@ pub enum CommandPredicate {
     ConfirmationClosed,
     TransferQueueIdle,
     HasPickedEntry,
-    HasSelectedEntry,
     HasCursorEntry,
     CursorIsDirectory,
     CursorIsFile,
@@ -324,10 +323,6 @@ impl CommandPredicate {
             Self::ConfirmationClosed => (!context.pending_operation, PENDING_REASON),
             Self::TransferQueueIdle => (!context.transfer_queue_busy, QUEUE_REASON),
             Self::HasPickedEntry => (context.picked_entries > 0, PICK_REASON),
-            Self::HasSelectedEntry => (
-                context.selected_entries > 0,
-                "Select at least one source item",
-            ),
             Self::HasCursorEntry => (context.cursor_entry, CURSOR_REASON),
             Self::CursorIsDirectory => (context.cursor_is_dir, "Highlight a destination folder"),
             Self::CursorIsFile => (context.cursor_is_file, "Highlight a ZIP or tar.gz file"),
@@ -398,7 +393,7 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         P::MutationsAllowed,
         P::ConfirmationClosed,
         P::TransferQueueIdle,
-        P::HasSelectedEntry,
+        P::HasPickedEntry,
         P::CursorIsDirectory,
         P::HasTransferSource,
         P::ActiveWritable,
@@ -1802,6 +1797,7 @@ mod tests {
     #[test]
     fn transfer_into_folder_explains_each_missing_target() {
         let mut context = CommandContext {
+            picked_entries: 1,
             selected_entries: 1,
             cursor_entry: true,
             cursor_is_file: true,
@@ -1823,10 +1819,10 @@ mod tests {
         }
         context.can_transfer_into_cursor_folder = true;
         assert!(availability(Command::MoveIntoCursorFolder, &context).enabled);
-        context.selected_entries = 0;
+        context.picked_entries = 0;
         assert_eq!(
             availability(Command::CopyIntoCursorFolder, &context).reason,
-            Some("Select at least one source item")
+            Some(PICK_REASON)
         );
     }
 

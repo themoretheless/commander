@@ -98,14 +98,14 @@ pub fn transfer_selection_into_cursor_folder(
 fn keyboard_drop_plan(workspace: &Workspace) -> Option<(Vec<PathBuf>, PathBuf)> {
     let panel = workspace.active_panel_ref();
     let target = panel.cursor_entry()?;
-    if !target.is_dir || panel.selection_is_empty() {
+    if !target.is_dir {
         return None;
     }
     let paths = panel
-        .selected_entries()
+        .picked_entries_excluding(&target.path)
+        .ok()?
         .into_iter()
         .map(|entry| entry.path)
-        .filter(|path| path != &target.path)
         .collect::<Vec<_>>();
     (!paths.is_empty()).then(|| (paths, target.path.clone()))
 }
