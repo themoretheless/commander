@@ -219,6 +219,10 @@ fn consume_selection_arrows(ctx: &egui::Context) -> (bool, bool) {
     })
 }
 
+const fn selection_reveal_requested(up: bool, down: bool, input_changed: bool) -> bool {
+    up || down || input_changed
+}
+
 impl App {
     pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
         self.open_omnibar(ctx, String::new());
@@ -394,7 +398,7 @@ impl App {
         let enter = ctx.input(|input| input.key_pressed(egui::Key::Enter));
         let enabled: Vec<bool> = rows.iter().map(row_enabled).collect();
         state.selected = step_selection(&enabled, state.selected, up, down);
-        let selected = state.selected;
+        let mut selected = state.selected;
         let validated_path = state.probe.as_ref().and_then(|p| {
             let exact = p.input().to_string();
             p.validated_path(&exact).map(std::path::Path::to_path_buf)
@@ -412,6 +416,7 @@ impl App {
         let mut input_id = None;
         let mut selected_row_id = None;
         let mut focused_row = None;
+        let mut reveal_selected = selection_reveal_requested(up, down, false);
 
         egui::Window::new("Omnibar")
             .collapsible(false)
@@ -467,6 +472,8 @@ impl App {
                     }
                     if resp.changed() {
                         state.selected = 0;
+                        selected = 0;
+                        reveal_selected = selection_reveal_requested(up, down, true);
                     }
                 });
                 ui.add_space(4.0);
@@ -701,7 +708,7 @@ impl App {
                                             }
                                         })
                                         .response;
-                                    if is_selected && (up || down) {
+                                    if is_selected && reveal_selected {
                                         response.scroll_to_me(None);
                                     }
                                     let response = response.interact(if enabled {
@@ -1044,7 +1051,7 @@ mod tests {
         OmniRow, OmnibarMode, command_rows_shown, consume_selection_arrows, copy_preview,
         copy_style, dynamic_row_matches, enter_target, home_relative_display,
         input_accessible_label, jump_rows, path_submit, picked_count, saved_searches_label,
-        step_selection,
+        selection_reveal_requested, step_selection,
     };
 
     #[test]
@@ -1103,6 +1110,14 @@ mod tests {
             });
             crate::testutil::discard_egui_output(output);
         }
+    }
+
+    #[test]
+    fn changed_input_reveals_the_reset_selection() {
+        assert!(selection_reveal_requested(false, false, true));
+        assert!(selection_reveal_requested(true, false, false));
+        assert!(selection_reveal_requested(false, true, false));
+        assert!(!selection_reveal_requested(false, false, false));
     }
 
     #[test]
