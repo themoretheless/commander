@@ -51,7 +51,7 @@ struct ProbeBinding {
 enum WorkerEvent {
     Completed {
         binding: ProbeBinding,
-        outcome: Result<(), DirInputError>,
+        outcome: Result<PathBuf, DirInputError>,
     },
     Cancelled {
         binding: ProbeBinding,
@@ -310,8 +310,12 @@ impl PathProbeController {
         self.status = match terminal {
             ProbeTerminal::Event(event) if event.binding() == &binding => match event {
                 WorkerEvent::Completed {
-                    outcome: Ok(()), ..
-                } => ProbeStatus::Valid,
+                    outcome: Ok(validated_path),
+                    ..
+                } => {
+                    self.lexical_path = Some(validated_path);
+                    ProbeStatus::Valid
+                }
                 WorkerEvent::Completed {
                     outcome: Err(error),
                     ..
@@ -368,17 +372,17 @@ mod tests {
     }
 
     impl DirectoryProbePort for RecordingProbe {
-        fn probe(&self, _path: &Path) -> Result<(), DirInputError> {
+        fn probe(&self, path: &Path) -> Result<PathBuf, DirInputError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *crate::lock_util::recover(&self.thread) = Some(std::thread::current().id());
-            Ok(())
+            Ok(path.to_path_buf())
         }
     }
 
     struct PanicProbe;
 
     impl DirectoryProbePort for PanicProbe {
-        fn probe(&self, _path: &Path) -> Result<(), DirInputError> {
+        fn probe(&self, _path: &Path) -> Result<PathBuf, DirInputError> {
             panic!("scripted probe failure");
         }
     }
@@ -426,14 +430,14 @@ mod tests {
     }
 
     impl DirectoryProbePort for BlockingProbe {
-        fn probe(&self, path: &Path) -> Result<(), DirInputError> {
+        fn probe(&self, path: &Path) -> Result<PathBuf, DirInputError> {
             let _ = self.calls.send(path.to_path_buf());
             if path == Path::new("first") {
                 self.first.wait();
             } else if path == Path::new("second") {
                 self.second.wait();
             }
-            Ok(())
+            Ok(path.to_path_buf())
         }
     }
 
@@ -766,7 +770,7 @@ mod tests {
     struct MissingProbe;
 
     impl DirectoryProbePort for MissingProbe {
-        fn probe(&self, _path: &Path) -> Result<(), DirInputError> {
+        fn probe(&self, _path: &Path) -> Result<PathBuf, DirInputError> {
             Err(DirInputError::Missing)
         }
     }

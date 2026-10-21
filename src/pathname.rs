@@ -78,13 +78,13 @@ pub fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputErro
 }
 
 pub trait DirectoryProbePort: Send + Sync {
-    fn probe(&self, path: &Path) -> Result<(), DirInputError>;
+    fn probe(&self, path: &Path) -> Result<PathBuf, DirInputError>;
 }
 
 pub struct FsDirectoryProbe;
 
 impl DirectoryProbePort for FsDirectoryProbe {
-    fn probe(&self, path: &Path) -> Result<(), DirInputError> {
+    fn probe(&self, path: &Path) -> Result<PathBuf, DirInputError> {
         match std::fs::metadata(path) {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => return Err(DirInputError::NotDirectory),
@@ -96,7 +96,7 @@ impl DirectoryProbePort for FsDirectoryProbe {
                 });
             }
         }
-        Ok(())
+        std::fs::canonicalize(path).map_err(|_| DirInputError::Unavailable)
     }
 }
 
@@ -212,7 +212,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn filesystem_probe_accepts_directory_symlink_without_canonicalizing() {
+    fn filesystem_probe_returns_the_canonical_directory_for_a_symlink() {
         let root = TempDir::new();
         let target = root.dir("target");
         let link = root.path().join("link");
@@ -222,7 +222,27 @@ mod tests {
             parse_dir_input(link.to_str().unwrap(), root.path()),
             Ok(link.clone())
         );
-        assert_eq!(FsDirectoryProbe.probe(&link), Ok(()));
+        assert_eq!(
+            FsDirectoryProbe.probe(&link),
+            Ok(target.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn filesystem_probe_resolves_parent_components_in_the_validated_path() {
+        let root = TempDir::new();
+        let parent = root.dir("a");
+        root.dir("a/b");
+        let lexical = root.path().join("a/b/..");
+
+        assert_eq!(
+            parse_dir_input(lexical.to_str().unwrap(), root.path()),
+            Ok(lexical.clone())
+        );
+        assert_eq!(
+            FsDirectoryProbe.probe(&lexical),
+            Ok(parent.canonicalize().unwrap())
+        );
     }
 
     #[test]
@@ -243,7 +263,10 @@ mod tests {
             FsDirectoryProbe.probe(&file),
             Err(DirInputError::NotDirectory)
         );
-        assert_eq!(FsDirectoryProbe.probe(root.path()), Ok(()));
+        assert_eq!(
+            FsDirectoryProbe.probe(root.path()),
+            Ok(root.path().canonicalize().unwrap())
+        );
     }
 
     #[test]
