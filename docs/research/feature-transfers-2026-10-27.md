@@ -1104,3 +1104,9 @@ Inspired by [Double Commander’s multi-rename tools](https://doublecmd.github.i
 [Double Commander configurable case sensitivity](https://doublecmd.github.io/doc/en/configuration.html) inspired an optional original-Unicode-name sort policy. Full-name/stem keys and name ties respect it; natural numeric order stays independent. Pane/tab serialization and legacy defaults are qualified. This is code-point ordering, not locale collation.
 
 [Verification](../qualification/case-sensitive-name-sort-2026-10-28/README.md)
+
+## Next transfer: independently name-ordered folder group
+
+[Double Commander directory sorting](https://doublecmd.github.io/doc/en/configuration.html) inspired folders-first with independent ascending name order, while files retain their chosen column/direction. Grouping toggles remain consistent; pane/tab persistence and both-pane cursor/selection behavior are qualified.
+
+[Verification](../qualification/folders-by-name-sort-2026-10-28/README.md)
