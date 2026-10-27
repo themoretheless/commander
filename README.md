@@ -200,6 +200,11 @@ module is a thin egui layer over it.
   search still takes hexadecimal input. A new viewer defaults to HEX.
   Find next/previous search exact hexadecimal byte sequences throughout the file,
   across page boundaries, with progress and cancellation.
+- **Sort: folders by name first (toggle)** (palette): keeps folders first in
+  ascending name order while files follow the chosen column and direction.
+  Natural name ordering and case settings apply to folders too. Enabling it
+  turns on folders-first; turning folders-first off clears this option. The
+  option is saved with pane/tab views and is off by default.
 - **Sort: case-sensitive names (toggle)** (palette): uses original Unicode names
   for name/stem sorting and name tie-breaks; ASCII uppercase sorts before
   lowercase. Natural numeric order still applies when enabled. This mode keeps

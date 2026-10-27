@@ -140,6 +140,55 @@ mod tests {
     }
 
     #[test]
+    fn independent_folder_names_ignore_file_column_and_direction() {
+        let dirs = vec![named("folder10.z", true, 1), named("folder2.a", true, 99)];
+        let files = vec![named("large.txt", false, 10), named("small.rs", false, 2)];
+        for column in [
+            SortColumn::Name,
+            SortColumn::Stem,
+            SortColumn::Size,
+            SortColumn::Modified,
+            SortColumn::Extension,
+            SortColumn::Kind,
+        ] {
+            for order in [SortOrder::Asc, SortOrder::Desc] {
+                for natural in [false, true] {
+                    let config = ViewConfig::default()
+                        .with_sort(column, order)
+                        .with_natural_name_sort(natural)
+                        .with_folders_by_name(true);
+                    let expected_dirs = if natural {
+                        ["folder2.a", "folder10.z"]
+                    } else {
+                        ["folder10.z", "folder2.a"]
+                    };
+                    let mut entries = files.clone();
+                    entries.extend(dirs.clone());
+                    let result = sorted(entries, config);
+                    assert_eq!(result[..2], expected_dirs);
+                    assert_eq!(
+                        result[2..],
+                        sorted(files.clone(), config.with_folders_by_name(false))
+                    );
+                }
+            }
+        }
+        let config = ViewConfig::default()
+            .with_sort(SortColumn::Size, SortOrder::Desc)
+            .with_folders_by_name(true);
+        let mut entries = files;
+        entries.extend(dirs);
+        assert_eq!(
+            sorted(entries.clone(), config),
+            ["folder2.a", "folder10.z", "large.txt", "small.rs"]
+        );
+        assert_eq!(
+            sorted(entries, config.with_folders_first(false)),
+            ["folder2.a", "large.txt", "small.rs", "folder10.z"]
+        );
+    }
+
+    #[test]
     fn case_sensitive_names_use_original_case_for_primary_and_tied_order() {
         let entries = vec![
             named("alpha", false, 1),

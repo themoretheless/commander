@@ -460,6 +460,51 @@ mod tests {
     }
 
     #[test]
+    fn folder_name_policy_roundtrips_and_legacy_defaults_to_existing_sort() {
+        let config = crate::panel::ViewConfig::default()
+            .with_folders_first(false)
+            .with_folders_by_name(true);
+        assert!(config.folders_first());
+        let mut left = serde_json::to_value(PersistedLeftView::from(config)).unwrap();
+        let mut right = serde_json::to_value(PersistedRightView::from(config)).unwrap();
+        assert!(
+            serde_json::from_value::<PersistedLeftView>(left.clone())
+                .unwrap()
+                .view_config()
+                .folders_by_name()
+        );
+        assert!(
+            serde_json::from_value::<PersistedRightView>(right.clone())
+                .unwrap()
+                .view_config()
+                .folders_by_name()
+        );
+        left.as_object_mut().unwrap().remove("left_folders_by_name");
+        right
+            .as_object_mut()
+            .unwrap()
+            .remove("right_folders_by_name");
+        assert!(
+            !serde_json::from_value::<PersistedLeftView>(left)
+                .unwrap()
+                .view_config()
+                .folders_by_name()
+        );
+        assert!(
+            !serde_json::from_value::<PersistedRightView>(right)
+                .unwrap()
+                .view_config()
+                .folders_by_name()
+        );
+        assert!(!config.with_folders_first(false).folders_by_name());
+        assert!(
+            !serde_json::from_str::<crate::panel::ViewConfig>("{}")
+                .unwrap()
+                .folders_by_name()
+        );
+    }
+
+    #[test]
     fn case_sensitive_sort_persists_for_both_panes_and_legacy_defaults_off() {
         let config = crate::panel::ViewConfig::default().with_case_sensitive_name_sort(true);
         let left = PersistedLeftView::from(config);

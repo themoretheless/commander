@@ -1883,6 +1883,60 @@ mod tests {
     }
 
     #[test]
+    fn folder_name_command_enables_grouping_and_preserves_cursor_and_tab_settings() {
+        use crate::command::Command;
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            let temp = TempDir::new();
+            temp.dir("Zulu");
+            temp.dir("Alpha");
+            let file = temp.file("large.txt", "12345");
+            temp.file("small.txt", "1");
+            let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+            ws.active = side;
+            ws.active_panel().refresh();
+            ws.active_panel().replace_selection([file.clone()]);
+            let row = ws
+                .active_panel_ref()
+                .entries()
+                .iter()
+                .position(|e| e.path == file)
+                .unwrap()
+                + 1;
+            ws.active_panel().set_cursor(row);
+            let other = ws.tab_snapshot(side.other());
+            ws.execute(Command::ToggleFoldersFirst);
+            assert!(!ws.active_panel_ref().view_config().folders_first());
+            ws.execute(Command::SortBySize);
+            ws.execute(Command::SortBySize);
+            ws.execute(Command::ToggleFoldersByName);
+            assert!(ws.active_panel_ref().view_config().folders_first());
+            assert!(ws.active_panel_ref().view_config().folders_by_name());
+            assert_eq!(
+                ws.active_panel_ref()
+                    .entries()
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Alpha", "Zulu", "large.txt", "small.txt"]
+            );
+            assert_eq!(ws.active_panel_ref().cursor_entry().unwrap().path, file);
+            assert!(ws.active_panel_ref().is_selected(&file));
+            assert_eq!(ws.tab_snapshot(side.other()), other);
+            assert!(ws.duplicate_tab_at(side, 0));
+            assert!(ws.tab_snapshot(side).entries[1].view.folders_by_name());
+            let saved: SavedTabs =
+                serde_json::from_str(&serde_json::to_string(&ws.tab_snapshot(side)).unwrap())
+                    .unwrap();
+            assert!(saved.entries[1].view.folders_by_name());
+            ws.execute(Command::ToggleFoldersFirst);
+            assert!(!ws.active_panel_ref().view_config().folders_by_name());
+            assert!(!ws.active_panel_ref().view_config().folders_first());
+            assert!(ws.tab_snapshot(side).entries[1].view.folders_by_name());
+            assert_eq!(ws.active, side);
+        }
+    }
+
+    #[test]
     fn case_sensitive_sort_command_preserves_focus_and_follows_tab_view_copies() {
         use crate::command::Command;
         for side in [ActivePanel::Left, ActivePanel::Right] {
