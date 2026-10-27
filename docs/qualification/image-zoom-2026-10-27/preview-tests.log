@@ -1,0 +1,83 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.43s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 75 tests
+test app::batch_rename_dialog::tests::listing_refresh_adds_new_sibling_collision_to_preview ... ok
+test app::confirm_dialog::tests::preview_rows_have_accessible_names ... ok
+test app::confirm_dialog::tests::preview_total_saturates_instead_of_overflowing ... ok
+test app::history_dialog::tests::large_undo_preview_lays_out_only_visible_paths ... ok
+test app::keys::tests::option_paging_is_reserved_for_preview_scroll_without_claiming_arrows ... ok
+test app::keys::ui_contract::escape_routes_only_to_modal_text_input_active_preview_or_focus_mode ... ok
+test app::keys::ui_contract::pane_tool_escape_ranks_below_modal_and_text_input_above_preview ... ok
+test app::mask_dialog::tests::preview_labels_selection_changes_not_pattern_matches ... ok
+test app::omnibar_dialog::tests::copy_commands_preview_the_text_they_would_copy ... ok
+test app::queue_dialog::tests::undo_label_matches_the_replay_preview_without_building_it ... ok
+test app::render::tests::a_newly_previewed_file_opens_at_its_top ... ok
+test app::render::tests::csv_preview_offers_table_and_source_controls ... ok
+test app::render::tests::disabled_image_preview_names_the_switch ... ok
+test app::render::tests::high_contrast_code_preview_disables_syntax_but_keeps_wrap_control_available ... ok
+test app::render::tests::preview_close_buttons_share_name_and_tooltip ... ok
+test app::render::tests::preview_failures_are_announced ... ok
+test app::render::tests::text_preview_keyboard_scroll_requests_are_isolated_per_pane ... ok
+test app::render::tests::text_preview_layout_is_reused_until_content_or_width_changes ... ok
+test app::run_command_dialog::tests::preview_is_one_job_with_tinted_placeholders ... ok
+test cmdtemplate::tests::preview_no_placeholder_is_all_literal ... ok
+test cmdtemplate::tests::preview_segments_tags_literals_and_substitutions ... ok
+test cmdtemplate::tests::preview_unknown_placeholder_stays_literal ... ok
+test code_preview::tests::oversized_unicode_source_keeps_all_text_without_running_syntax_lexer ... ok
+test code_preview::tests::rust_preview_colors_tokens_without_changing_source_or_wrap_budget ... ok
+test conflict_rules::tests::sample_preview_is_deterministic_and_rules_persist ... ok
+test document_preview::tests::html_is_static_decodes_entities_and_hides_executable_content ... ok
+test document_preview::tests::html_keeps_word_boundaries_across_inline_tags ... ok
+test document_preview::tests::markdown_renders_structure_and_inline_styles ... ok
+test document_preview::tests::previews_bound_work_and_accept_unicode_at_input_limit ... ok
+test encrypted_bundle::tests::encrypt_requires_recipient_and_secret_and_caps_the_preview ... ok
+test filesystem_policy::tests::normalization_preview_exposes_changes_and_case_collisions ... ok
+test image_cache::tests::changed_text_preview_tells_the_user_to_refresh_first ... ok
+test image_cache::tests::preview_target_floors_clamps_and_survives_non_finite_extents ... ok
+test image_cache::tests::retry_of_a_ready_preview_rereads_instead_of_serving_the_cache ... ok
+test image_cache::tests::standard_decoder_downsamples_to_preview_target ... ok
+test image_cache::tests::text_preview_store_is_bounded_and_uses_lru_order ... ok
+test image_cache::tests::text_preview_store_replaces_an_old_file_fingerprint ... ok
+test image_preview::tests::double_click_returns_a_zoomed_image_to_fit ... ok
+test image_preview::tests::fit_is_aspect_preserving_and_zoom_is_explicitly_relative ... ok
+test image_preview::tests::image_changes_reset_view_and_panes_keep_independent_state ... ok
+test image_preview::tests::mouse_drag_pans_a_zoomed_image ... ok
+test image_preview::tests::zoom_limits_and_invalid_gestures_do_not_poison_state ... ok
+test machine_pressure::tests::battery_thresholds_split_preview_from_index ... ok
+test machine_pressure::tests::low_battery_blocks_background_preview_and_index ... ok
+test panel::tests::declined_image_preview_message_names_the_file_and_the_switch ... ok
+test panel::tests::make_preview_marks_text_pending_without_reading_and_skips_dirs ... ok
+test panel::tests::preview_identity_goes_stale_when_size_or_date_changes ... ok
+test preview_find::tests::enter_and_shift_enter_navigate_only_the_focused_search_field ... ok
+test preview_find::tests::finding_a_distant_match_scrolls_the_preview_into_view ... ok
+test preview_find::tests::formatted_search_indexes_visible_text_and_skips_hidden_html ... ok
+test preview_find::tests::literal_unicode_search_uses_character_offsets ... ok
+test preview_find::tests::match_budget_is_explicit_and_navigation_wraps ... ok
+test preview_find::tests::query_edits_and_content_changes_reset_results_but_reflow_keeps_current ... ok
+test scan::tests::previews_stop_at_the_entry_cap_with_a_marker_row ... ok
+test scan::tests::skipped_links_are_marked_in_the_transfer_preview ... ok
+test support_bundle::tests::encrypted_export_keeps_plaintext_preview_and_round_trips ... ok
+test table_preview::tests::bounds_rows_columns_and_unicode_bytes ... ok
+test table_preview::tests::formulas_are_plain_text_and_empty_files_have_no_rows ... ok
+test table_preview::tests::quoted_multiline_unicode_and_ragged_rows ... ok
+test table_preview::tests::tsv_preserves_empty_cells_and_escaped_quotes ... ok
+test undo::tests::gather_preview_allows_a_missing_or_existing_directory ... ok
+test undo::tests::gather_preview_rejects_a_non_directory_destination ... ok
+test undo::tests::preview_allows_a_target_that_is_the_same_entry_as_its_source ... ok
+test undo::tests::preview_allows_targets_vacated_by_the_same_batch ... ok
+test undo::tests::preview_blocks_a_missing_source_and_occupied_destination ... ok
+test undo::tests::preview_blocks_a_rename_into_a_vanished_folder ... ok
+test undo::tests::preview_blocks_every_pair_targeting_the_same_path ... ok
+test undo::tests::preview_reports_an_uninspectable_source_instead_of_missing ... ok
+test undo::tests::restore_trash_preview_checks_the_stored_copy_and_destination ... ok
+test undo::tests::trash_redo_preview_blocks_a_missing_path ... ok
+test undo::tests::ungather_preview_reports_the_folder_cleanup_gap ... ok
+test workspace::tabs::tests::switching_clears_cross_pane_preview_and_revalidates_background_changes ... ok
+test workspace::tests::opening_a_preview_from_the_preview_side_moves_it_instead_of_doubling ... ok
+test workspace::tests::preview_follows_cursor_without_reading_text_on_the_workspace_thread ... ok
+test workspace::tests::preview_stays_open_while_the_cursor_passes_over_a_folder ... ok
+
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 2153 filtered out; finished in 1.25s
+

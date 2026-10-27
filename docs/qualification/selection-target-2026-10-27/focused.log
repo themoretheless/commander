@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.55s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 1 test
+test panel::tests::selection_targets_restrict_both_mask_directions_and_name_list_counts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2351 filtered out; finished in 0.01s
+

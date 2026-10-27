@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.85s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 15 tests
+test clipboard::tests::file_url_encodes_non_utf8_bytes_exactly ... ok
+test clipboard::tests::names_without_extensions_keep_selection_order_duplicates_and_control_escaping ... ok
+test clipboard::tests::file_url_percent_encodes_spaces ... ok
+test clipboard::tests::multiple_paths_join_with_newlines ... ok
+test clipboard::tests::shell_escaping_handles_quotes_and_spaces ... ok
+test clipboard::tests::name_only_of_root_falls_back ... ok
+test clipboard::tests::full_name_and_parent ... ok
+test clipboard::tests::file_url_escapes_url_syntax_and_multibyte_names ... ok
+test clipboard::tests::relative_to_other_of_the_other_root_itself_is_dot ... ok
+test clipboard::tests::relative_to_other_under_and_not_under ... ok
+test clipboard::tests::names_without_extensions_preserve_dotfiles_unicode_and_other_dots ... ok
+test clipboard::tests::parent_path_lists_each_folder_once ... ok
+test clipboard::tests::newline_in_a_name_stays_on_one_line ... ok
+test app::update::tests::clipboard_feedback_reports_success_only_after_committed_outcome ... ok
+test app::render::tests::copy_displayed_text_uses_current_galley_and_defers_clipboard_io ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 2380 filtered out; finished in 0.15s
+

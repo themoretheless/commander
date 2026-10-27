@@ -166,8 +166,18 @@ pub fn apply_theme(
 
 /// The egui style for `mode` and `preferences`, without touching a context.
 fn theme_style(mode: ThemeMode, preferences: crate::accessibility::Preferences) -> Style {
-    let c = ThemeColors::for_preferences(mode, preferences);
+    theme_style_with_colors(
+        mode,
+        preferences,
+        ThemeColors::for_preferences(mode, preferences),
+    )
+}
 
+pub fn theme_style_with_colors(
+    mode: ThemeMode,
+    preferences: crate::accessibility::Preferences,
+    c: ThemeColors,
+) -> Style {
     let mut style = Style::default();
     let mut visuals = match mode {
         ThemeMode::Light => Visuals::light(),

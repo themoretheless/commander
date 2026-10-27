@@ -87,6 +87,23 @@ jobs:
       matrix:
         scenario:
           - desktop_base
+          - icons_grid
+          - image_preview
+          - pdf_preview
+          - permissions
+          - rename_presets
+          - rename_target
+          - rename_options
+          - name_list
+          - checksums
+          - hex_preview
+          - hex_search
+          - folder_tabs
+          - code_preview
+          - unicode_preview
+          - regex_preview
+          - json_preview
+          - archive_browser
           - minimum_window
           - zoom_200_accessible
           - confirmation_owner

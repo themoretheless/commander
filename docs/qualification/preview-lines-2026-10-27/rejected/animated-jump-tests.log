@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.32s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 2 tests
+test preview_lines::tests::logical_lines_survive_unicode_crlf_empty_lines_and_wrapping ... ok
+test preview_lines::tests::enter_jumps_to_a_distant_line_and_invalid_input_does_not_scroll ... FAILED
+
+failures:
+
+---- preview_lines::tests::enter_jumps_to_a_distant_line_and_invalid_input_does_not_scroll stdout ----
+
+thread 'preview_lines::tests::enter_jumps_to_a_distant_line_and_invalid_input_does_not_scroll' (79775605) panicked at src/preview_lines.rs:191:9:
+line 200 must become visible: 94.067215
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    preview_lines::tests::enter_jumps_to_a_distant_line_and_invalid_input_does_not_scroll
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2239 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--bin commander`

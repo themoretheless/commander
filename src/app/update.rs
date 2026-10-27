@@ -347,7 +347,7 @@ fn invalidate_tree_children(cache: &mut super::tree::ChildCache, dir: &std::path
 }
 
 /// Whether an open pane tool replaces `side`'s file list.
-fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bool {
+pub(super) fn pane_tool_covers(tools: &super::ui_state::PaneTools, side: ActivePanel) -> bool {
     tools.side == Some(side) && tools.any_open()
 }
 
@@ -534,6 +534,8 @@ fn copied_paths_label(style: crate::clipboard::PathStyle, n: usize) -> String {
     let label = crate::clipboard::style_label(style);
     if n == 1 {
         label.to_string()
+    } else if style == crate::clipboard::PathStyle::NameWithoutExtension {
+        format!("{n} names without extensions")
     } else {
         format!("{n} {label}s")
     }
@@ -845,6 +847,18 @@ impl eframe::App for App {
         self.poll_recovery(&ctx);
         self.poll_checksum(&ctx);
         self.show_checksum_dialog(&ctx);
+        if let Some((open, copy)) = self
+            .hex_viewer
+            .as_mut()
+            .map(|viewer| viewer.show(&ctx, &self.workload))
+        {
+            if let Some(text) = copy {
+                self.write_clipboard(&text, "hex preview page", &ctx);
+            }
+            if !open {
+                self.hex_viewer = None;
+            }
+        }
         self.show_quit_confirmation(&ctx);
         self.show_history_dialog(&ctx);
         self.show_confirm_dialog(&ctx);
@@ -856,6 +870,8 @@ impl eframe::App for App {
         self.show_mask_dialog(&ctx);
         self.show_run_command_dialog(&ctx);
         self.show_palette_dialog(&ctx);
+        self.show_permissions_dialog(&ctx);
+        self.show_keyboard_help(&ctx);
         // Keep the background disabled on the close frame too, so the pointer
         // release that dismissed a modal cannot click through into a file row.
         let input_policy = FrameInputPolicy::resolve(
@@ -920,6 +936,7 @@ impl eframe::App for App {
         self.show_fallback_context_menu(&ctx);
         self.show_developer_panel(&ctx, input_policy.background_enabled());
         self.handle_drop(&ctx, input_policy);
+        crate::preview_find::PreviewFind::retire_unused(&ctx);
     }
 
     /// eframe calls this on exit and on its auto-save interval; persist our
@@ -1358,6 +1375,19 @@ impl App {
         } else {
             self.handle_keys(ctx);
         }
+        let tab_key = egui::Id::new("workspace_tab_revision");
+        let tab_revision = self.ws.tab_revision();
+        let changed = ctx.data_mut(|data| {
+            let old = data.get_temp::<u64>(tab_key).unwrap_or(0);
+            data.insert_temp(tab_key, tab_revision);
+            old != tab_revision
+        });
+        if changed {
+            self.compare_cache = None;
+            self.ui.cancel_context_menu();
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+        }
         self.preload_images(ctx);
         {
             let c = ctx.clone();
@@ -1488,6 +1518,7 @@ impl App {
                 };
                 ctx.memory_mut(|memory| memory.request_focus(super::render::pane_filter_id(side)));
             }
+            UiRequest::Permissions(targets) => self.open_permissions(targets, ctx),
             UiRequest::Archive(path) => self.open_archive(path, ctx),
             UiRequest::SavedSearch => self.open_saved_search(),
             UiRequest::ProjectCollections => self.open_collections(ctx),
@@ -1519,14 +1550,21 @@ impl App {
                 );
             }
             UiRequest::VerifyChecksum(paths) => self.start_checksum(paths, ctx),
+            UiRequest::HexPreview(path) => {
+                self.hex_viewer = Some(crate::hex_preview::HexViewer::new(path))
+            }
             UiRequest::HiddenFilesOutcome(outcome) => {
                 self.apply_hidden_files_outcome(outcome, ctx);
+            }
+            UiRequest::KeyboardHelp => {
+                self.ui.modals.keyboard_help = true;
+                Self::mark_modal_opened(ctx, UiModal::KeyboardHelp);
             }
             UiRequest::Redo => self.open_history_preview(HistoryReplayMode::Redo, ctx),
         }
     }
 
-    fn start_checksum(&mut self, paths: Vec<std::path::PathBuf>, ctx: &egui::Context) {
+    pub(crate) fn start_checksum(&mut self, paths: Vec<std::path::PathBuf>, ctx: &egui::Context) {
         if paths.is_empty() || self.checksum_task.is_some() {
             return;
         }
@@ -1557,11 +1595,14 @@ impl App {
         ) {
             Ok(task) => {
                 self.checksum_report = None;
+                self.checksum_expected.clear();
+                self.checksum_algorithm = crate::checksum::Algorithm::default();
                 self.checksum_task = Some(super::ChecksumTask {
                     receiver,
                     task,
                     completed,
                     total,
+                    cancel_requested: false,
                 });
             }
             Err(error) => self.toast(
@@ -1596,15 +1637,43 @@ impl App {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let cancelled = task.cancel_requested;
                 self.checksum_task = None;
+                if cancelled {
+                    self.checksum_report = Some(crate::checksum::ChecksumReport {
+                        cancelled: true,
+                        ..Default::default()
+                    });
+                }
                 self.toast(
                     ctx,
-                    crate::toasts::ToastKind::Error,
-                    "Checksum verification stopped before returning a result",
+                    if cancelled {
+                        crate::toasts::ToastKind::Info
+                    } else {
+                        crate::toasts::ToastKind::Error
+                    },
+                    if cancelled {
+                        "Checksum calculation cancelled"
+                    } else {
+                        "Checksum calculation stopped before returning a result"
+                    },
                     false,
                 );
             }
         }
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn checksum_comparison_is(
+        &self,
+        algorithm: crate::checksum::Algorithm,
+        expected: crate::checksum::ExpectedMatch,
+    ) -> bool {
+        self.checksum_task.is_none()
+            && self.checksum_algorithm == algorithm
+            && self.checksum_report.as_ref().is_some_and(|report| {
+                report.compare_expected_algorithm(&self.checksum_expected, algorithm) == expected
+            })
     }
 
     fn show_checksum_dialog(&mut self, ctx: &egui::Context) {
@@ -1614,35 +1683,84 @@ impl App {
         let mut open = true;
         let mut copy = None;
         let mut cancel = false;
-        egui::Window::new("Checksum verification")
+        let mut export_error = None;
+        egui::Window::new("Checksums").default_width(590.0)
+            .default_pos(egui::pos2((ctx.input(|input| input.viewport_rect().right()) - 620.0).max(16.0), 96.0))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().id_salt("checksum-sheet").max_height((ctx.input(|input| input.viewport_rect().height()) - 160.0).max(120.0)).show(ui, |ui| {
                 if let Some(task) = &self.checksum_task {
                     let completed = task.completed.load(std::sync::atomic::Ordering::Acquire);
                     ui.label(format!("Hashing {completed} of {} files…", task.total));
-                    if ui.button("Cancel").clicked() {
+                    if ui.add_enabled(!task.cancel_requested, egui::Button::new(if task.cancel_requested { "Stopping…" } else { "Cancel" })).clicked() {
                         cancel = true;
                     }
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
                 if let Some(report) = &self.checksum_report {
                     ui.label(report.summary_line());
-                    egui::ScrollArea::vertical()
-                        .max_height(320.0)
-                        .show(ui, |ui| {
-                            ui.monospace(report.detailed_text());
-                        });
-                    if ui.button("Copy report").clicked() {
-                        copy = Some(report.detailed_text());
-                    }
+                    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 3.0 * ui.text_style_height(&egui::TextStyle::Monospace) + 3.0 * ui.spacing().item_spacing.y + 8.0;
+                    egui::ScrollArea::both().max_height(320.0).show_rows(ui, row_height, report.rows.len(), |ui, range| {
+                        ui.set_min_width(550.0);
+                        for row in &report.rows[range] {
+                            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.set_min_height(row_height);
+                                let path = row.path.to_string_lossy().escape_debug().to_string();
+                                ui.add(egui::Label::new(&path).truncate()).on_hover_text(&path);
+                                if let Some(message) = row.error.as_ref().or(row.skipped.as_ref()) { ui.add(egui::Label::new(message).truncate()).on_hover_text(message); }
+                                else { ui.monospace(format!("SHA-256 {}\nBLAKE3  {}\nContent {}", row.sha256_hex.as_deref().unwrap_or("-"), row.blake3_hex.as_deref().unwrap_or("-"), row.content_hash.map(|value| format!("{value:016x}")).unwrap_or_else(|| "-".into()))); }
+                            });
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Compare as");
+                        for algorithm in [crate::checksum::Algorithm::Sha256, crate::checksum::Algorithm::Blake3] {
+                            let choice = ui.selectable_value(&mut self.checksum_algorithm, algorithm, algorithm.label());
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("checksum-algorithm", algorithm.label())), choice.rect));
+                            #[cfg(not(feature = "visual-qa"))]
+                            let _ = choice;
+                        }
+                    });
+                    let algorithm = self.checksum_algorithm;
+                    let comparable = report.single_digest(algorithm).is_some();
+                    let expected_label = format!("Expected {}", algorithm.label());
+                    ui.label(&expected_label);
+                    let expected = ui.add_enabled(comparable, egui::TextEdit::singleline(&mut self.checksum_expected).desired_width(f32::INFINITY).char_limit(128).hint_text("Paste 64 hexadecimal characters"));
+                    expected.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, expected.enabled(), &expected_label));
+                    #[cfg(feature = "visual-qa")]
+                    ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-expected"), expected.rect));
+                    use crate::checksum::ExpectedMatch;
+                    let (message, color) = match report.compare_expected_algorithm(&self.checksum_expected, self.checksum_algorithm) {
+                        ExpectedMatch::Empty if comparable => ("Paste an expected digest to compare this file", ui.visuals().text_color()),
+                        ExpectedMatch::Empty | ExpectedMatch::Unavailable => ("Select one completed file to compare an expected digest", ui.visuals().text_color()),
+                        ExpectedMatch::Invalid => ("Enter exactly 64 hexadecimal characters", ui.visuals().error_fg_color),
+                        ExpectedMatch::Match => ("Digest matches the selected algorithm", self.colors.accent),
+                        ExpectedMatch::Mismatch => ("Digest does not match the selected algorithm", ui.visuals().error_fg_color),
+                    };
+                    ui.colored_label(color, message);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add_enabled(!report.rows.is_empty(), egui::Button::new("Copy report")).clicked() { copy = Some(report.detailed_text()); }
+                        if ui.add_enabled(comparable, egui::Button::new(format!("Copy {} digest", algorithm.label()))).clicked() {
+                            copy = report.single_digest(algorithm).map(str::to_owned);
+                        }
+                        if ui.add_enabled(report.successful() > 0, egui::Button::new(format!("Copy SHA-256 list ({})", report.successful()))).on_hover_text("Computed files only; skipped, failed and unprocessed entries are omitted").clicked() {
+                            match report.sha256_list() { Ok(text) => copy = Some(text), Err(error) => export_error = Some(error) }
+                        }
+                    });
                 }
+                });
             });
         if let Some(text) = copy {
             self.write_clipboard(&text, "checksum report", ctx);
         }
-        if cancel && let Some(task) = self.checksum_task.take() {
+        if let Some(error) = export_error {
+            self.toast(ctx, crate::toasts::ToastKind::Error, error, false);
+        }
+        if cancel && let Some(task) = self.checksum_task.as_mut() {
+            task.cancel_requested = true;
             task.task.cancel();
         }
         if !open {
@@ -2276,6 +2394,16 @@ impl App {
         );
         tree_toggle |= right_outcome.tree_toggle;
 
+        for text in [
+            left_outcome.copy_preview_text.as_deref(),
+            right_outcome.copy_preview_text.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.write_clipboard(text, "displayed preview text", &ctx);
+        }
+
         let pending_external_opens = external_open.into_inner();
         for (panel, request) in [
             (ActivePanel::Left, left_outcome.context_menu_request),
@@ -2327,9 +2455,16 @@ impl App {
             self.show_pane_tool(ui);
             return super::render::PanelRenderOutcome::default();
         }
+        // Tab actions own focus above the body, including middle-close without activation.
+        if self.render_folder_tabs(ui, side) {
+            ui.ctx().request_repaint();
+            return super::render::PanelRenderOutcome::default();
+        }
         if input_policy.allows_raw_input(
             ui.is_enabled(),
-            ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.any_pressed()),
+            !egui::Popup::is_any_open(ui.ctx())
+                && ui.rect_contains_pointer(ui.available_rect_before_wrap())
+                && ui.input(|i| i.pointer.any_pressed()),
         ) {
             self.ws.active = side;
         }
@@ -2346,6 +2481,7 @@ impl App {
             close_preview,
             &t,
             &mut self.image_cache,
+            &mut self.pdf_cache,
             label,
             self.show_tree,
             self.show_size_bars,
@@ -2356,6 +2492,7 @@ impl App {
             metrics,
             self.accessibility_preferences.reduced_motion,
             self.ws.nav_lock,
+            self.accessibility_preferences.high_contrast,
         )
     }
 
@@ -3460,6 +3597,14 @@ mod tests {
         assert_eq!(copied_paths_label(PathStyle::FullPath, 1), "path");
         assert_eq!(copied_paths_label(PathStyle::FullPath, 3), "3 paths");
         assert_eq!(copied_paths_label(PathStyle::NameOnly, 2), "2 names");
+        assert_eq!(
+            copied_paths_label(PathStyle::NameWithoutExtension, 1),
+            "name without extension"
+        );
+        assert_eq!(
+            copied_paths_label(PathStyle::NameWithoutExtension, 2),
+            "2 names without extensions"
+        );
         assert_eq!(copied_paths_label(PathStyle::FileUrl, 2), "2 file URLs");
     }
 

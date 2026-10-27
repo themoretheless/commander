@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.92s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 9 tests
+test image_preview::tests::fit_is_aspect_preserving_and_zoom_is_explicitly_relative ... ok
+test image_preview::tests::zoom_limits_and_invalid_gestures_do_not_poison_state ... ok
+test image_preview::tests::all_orientations_compose_in_display_space_and_preserve_extent ... ok
+test image_preview::tests::rotated_mesh_maps_source_corners_without_changing_screen_geometry ... ok
+test image_preview::tests::switching_file_resets_orientation_without_changing_other_pane ... ok
+test image_preview::tests::image_changes_reset_view_and_panes_keep_independent_state ... ok
+test image_preview::tests::checkerboard_reuses_one_tiny_repeat_texture_and_constant_geometry ... ok
+test image_preview::tests::mouse_drag_pans_a_zoomed_image ... ok
+test image_preview::tests::double_click_returns_a_zoomed_image_to_fit ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 2281 filtered out; finished in 0.04s
+

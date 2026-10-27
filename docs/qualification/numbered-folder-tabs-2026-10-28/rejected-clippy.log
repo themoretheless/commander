@@ -1,0 +1,13 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: the borrowed expression implements the required traits
+    --> src/workspace/tabs.rs:1881:52
+     |
+1881 |                 ws.active_panel().set_search_query(&format!("slot {index}"));
+     |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("slot {index}")`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#needless_borrows_for_generic_args
+     = note: `-D clippy::needless-borrows-for-generic-args` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_borrows_for_generic_args)]`
+
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

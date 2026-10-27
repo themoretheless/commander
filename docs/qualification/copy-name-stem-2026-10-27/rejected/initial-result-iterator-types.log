@@ -1,0 +1,48 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `is_some` found for enum `std::result::Result<T, E>` in the current scope
+    --> src/workspace.rs:1454:65
+     |
+1454 |                 if self.active_panel_ref().selected_or_cursor().is_some() {
+     |                                                                 ^^^^^^^
+     |
+help: there is a method `is_ok` with a similar name
+     |
+1454 -                 if self.active_panel_ref().selected_or_cursor().is_some() {
+1454 +                 if self.active_panel_ref().selected_or_cursor().is_ok() {
+     |
+
+error[E0599]: no method named `any` found for struct `std::vec::Vec<ui_request::UiRequest>` in the current scope
+    --> src/workspace/tests.rs:6842:36
+     |
+6842 |     assert!(ws.drain_ui_requests().any(|request| matches!(
+     |             -----------------------^^^
+     |
+help: there is a method `as_any` with a similar name, but with different arguments
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-30.0.1/src/dispatch.rs:80:5
+     |
+  80 |     fn as_any(&self) -> &dyn Any;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `any` found for struct `std::vec::Vec<ui_request::UiRequest>` in the current scope
+    --> src/workspace/tests.rs:6860:36
+     |
+6860 |     assert!(ws.drain_ui_requests().any(|request| matches!(
+     |             -----------------------^^^
+     |
+help: there is a method `as_any` with a similar name, but with different arguments
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-30.0.1/src/dispatch.rs:80:5
+     |
+  80 |     fn as_any(&self) -> &dyn Any;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `next` found for struct `std::vec::Vec<ui_request::UiRequest>` in the current scope
+    --> src/workspace/tests.rs:6889:36
+     |
+6889 |     assert!(ws.drain_ui_requests().next().is_none());
+     |                                    ^^^^
+     |
+help: there is a method `ne` with a similar name, but with different arguments
+    --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/cmp.rs:278:4
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander" test) due to 4 previous errors

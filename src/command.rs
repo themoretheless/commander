@@ -13,6 +13,8 @@ pub enum Command {
     CursorHome,
     /// Jump to the last row.
     CursorEnd,
+    CursorFirstFile,
+    CursorLastFile,
     /// Move up by one visible page.
     CursorPageUp,
     /// Move down by one visible page.
@@ -36,6 +38,8 @@ pub enum Command {
     /// Enter: open file / enter dir / go up on the ".." row.
     Activate,
     GoUp,
+    GoHome,
+    GoRoot,
     /// Cmd+[: walk back through this panel's directory history.
     JumpBack,
     /// Cmd+]: walk forward again after a [`JumpBack`](Command::JumpBack).
@@ -107,6 +111,7 @@ pub enum Command {
     CopyPath,
     /// Copy the selection's file name(s).
     CopyName,
+    CopyNameWithoutExtension,
     /// Copy the selection's parent directory path(s).
     CopyParentPath,
     /// Copy the selection as `file://` URL(s).
@@ -127,6 +132,8 @@ pub enum Command {
     SelectIdentical,
     /// Clear the selection in this folder and every other folder visited.
     ClearSelection,
+    SaveSelection,
+    RestoreSelection,
     /// Show/hide the transfer-queue panel (pause/resume/reorder/cancel the
     /// jobs waiting behind the active transfer).
     ToggleQueuePanel,
@@ -134,6 +141,32 @@ pub enum Command {
     ToggleCompare,
     /// Switch between the light and dark theme.
     ToggleTheme,
+    ShowListView,
+    ShowIconsView,
+    NewTab,
+    CloseTab,
+    ProtectTab,
+    UnprotectTab,
+    ReopenClosedTab,
+    EditPermissions,
+    NextTab,
+    PreviousTab,
+    FirstTab,
+    LastTab,
+    /// Activate a zero-based folder-tab position in the focused pane.
+    GoToTab(usize),
+    OpenFolderTab,
+    OpenFolderBackgroundTab,
+    /// Navigate the other pane to the highlighted folder without moving focus.
+    OpenFolderOtherPane,
+    CopyTabsToOther,
+    MoveTabLeft,
+    MoveTabRight,
+    CloseDuplicateTabs,
+    CloseOtherTabs,
+    CloseTabsLeft,
+    CloseTabsRight,
+    KeyboardHelp,
     /// Show or hide the size bars behind file sizes.
     ToggleSizeBars,
     /// Show or hide the folder sidebar.
@@ -145,10 +178,13 @@ pub enum Command {
     ToggleHidden,
     /// Toggle whether folders are pinned to the top of the active listing.
     ToggleFoldersFirst,
+    ToggleFoldersByName,
     /// Toggle natural (`file2` < `file10`) vs plain A-Z name ordering.
     ToggleNaturalSort,
+    ToggleCaseSensitiveSort,
     /// Sort the active panel by name (again: flip the order).
     SortByName,
+    SortByStem,
     /// Sort the active panel by size (again: flip the order).
     SortBySize,
     /// Sort the active panel by modification time (again: flip the order).
@@ -165,6 +201,13 @@ pub enum Command {
     SelectLargest,
     /// Select files sharing the cursor file's extension.
     SelectLikeCursor,
+    DeselectLikeCursor,
+    SelectSameStem,
+    DeselectSameStem,
+    SelectVisibleFiles,
+    SelectVisibleFolders,
+    InvertVisibleFiles,
+    InvertVisibleFolders,
     /// Select zero-byte files in the filtered view.
     SelectEmptyFiles,
     /// Copy the active listing to the clipboard as plain text.
@@ -175,6 +218,8 @@ pub enum Command {
     CopyListingMarkdown,
     /// Verify content hashes for the selection (user-facing checksum).
     VerifyChecksum,
+    /// Read the cursor file as hexadecimal bytes without editing it.
+    ViewHex,
     /// Create symlinks in the other panel pointing at the selection.
     CreateSymlink,
     /// Create hard links in the other panel for selected regular files.
@@ -183,7 +228,7 @@ pub enum Command {
     ToggleNavLock,
     /// Repeat the last workspace command (dot-repeat).
     RepeatLast,
-    /// Browse the archive under the cursor (ZIP / tar.gz).
+    /// Browse the archive under the cursor (ZIP / TAR / tar.gz).
     BrowseArchive,
     /// Mark the active panel root as Trusted (research J003).
     SetTrustTrusted,
@@ -220,10 +265,20 @@ impl Command {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommandContext {
     pub visible_entries: usize,
+    pub tab_count: usize,
+    pub active_tab_protected: bool,
+    pub other_tab_count: usize,
+    pub active_tab_index: usize,
+    pub duplicate_tabs: usize,
+    pub closed_tabs: usize,
+    pub closable_tabs_left: usize,
+    pub closable_tabs_right: usize,
     pub visible_files: usize,
     pub other_entries: usize,
     pub picked_entries: usize,
     pub selected_entries: usize,
+    pub can_save_selection: bool,
+    pub can_restore_selection: bool,
     pub listing_entries: usize,
     pub cursor_entry: bool,
     /// The cursor row is already selected, so Space would deselect it.
@@ -298,6 +353,7 @@ pub enum CommandPredicate {
     InfoTarget,
     HasVisibleEntry,
     HasVisibleFile,
+    HasVisibleFolder,
     HasOtherEntry,
     HasListingEntry,
     CursorHasExtension,
@@ -308,6 +364,21 @@ pub enum CommandPredicate {
     ActiveWritable,
     InactiveWritable,
     AnyPaneWritable,
+    CanAddTab,
+    CanCopyTabsToOther,
+    CanCloseTab,
+    ActiveTabUnprotected,
+    ActiveTabProtected,
+    CanMoveTabLeft,
+    CanMoveTabRight,
+    HasDuplicateTabs,
+    HasClosedTab,
+    HasClosableTabLeft,
+    HasClosableTabRight,
+    HasClosableOtherTab,
+    UnixPermissions,
+    CanSaveSelection,
+    CanRestoreSelection,
 }
 
 impl CommandPredicate {
@@ -320,12 +391,66 @@ impl CommandPredicate {
                     (!context.active_mutation, ACTIVE_MUTATION_REASON)
                 }
             }
+            Self::CanAddTab => (
+                context.tab_count < crate::workspace::tabs::MAX_TABS,
+                "This pane already has eight tabs",
+            ),
+            Self::CanCopyTabsToOther => (
+                context.tab_count > 0
+                    && context.other_tab_count > 0
+                    && context.tab_count.saturating_add(context.other_tab_count)
+                        <= crate::workspace::tabs::MAX_TABS,
+                "The other pane needs room for the whole tab group (eight tabs maximum)",
+            ),
+            Self::CanMoveTabLeft => (context.active_tab_index > 0, "This tab is already first"),
+            Self::CanMoveTabRight => (
+                context.active_tab_index + 1 < context.tab_count,
+                "This tab is already last",
+            ),
+            Self::CanSaveSelection => (
+                context.can_save_selection,
+                "Wait for a complete folder listing",
+            ),
+            Self::CanRestoreSelection => (
+                context.can_restore_selection,
+                "No saved selection for this folder, or its listing is incomplete",
+            ),
+            Self::UnixPermissions => (cfg!(unix), "POSIX permission editing requires a Unix host"),
+            Self::HasClosableTabLeft => (
+                context.closable_tabs_left > 0,
+                "No unprotected folder tabs to the left",
+            ),
+            Self::HasClosableTabRight => (
+                context.closable_tabs_right > 0,
+                "No unprotected folder tabs to the right",
+            ),
+            Self::HasClosableOtherTab => (
+                context.closable_tabs_left > 0 || context.closable_tabs_right > 0,
+                "No other unprotected folder tabs",
+            ),
+            Self::HasClosedTab => (
+                context.closed_tabs > 0,
+                "No recently closed folder tabs in this pane",
+            ),
+            Self::HasDuplicateTabs => (
+                context.duplicate_tabs > 0,
+                "No duplicate folder tabs in this pane",
+            ),
+            Self::CanCloseTab => (context.tab_count > 1, "Keep at least one tab in each pane"),
+            Self::ActiveTabProtected => (context.active_tab_protected, "This tab is not protected"),
+            Self::ActiveTabUnprotected => (
+                !context.active_tab_protected,
+                "Unprotect this tab before closing it",
+            ),
             Self::ConfirmationClosed => (!context.pending_operation, PENDING_REASON),
             Self::TransferQueueIdle => (!context.transfer_queue_busy, QUEUE_REASON),
             Self::HasPickedEntry => (context.picked_entries > 0, PICK_REASON),
             Self::HasCursorEntry => (context.cursor_entry, CURSOR_REASON),
             Self::CursorIsDirectory => (context.cursor_is_dir, "Highlight a destination folder"),
-            Self::CursorIsFile => (context.cursor_is_file, "Highlight a ZIP or tar.gz file"),
+            Self::CursorIsFile => (
+                context.cursor_is_file,
+                "Highlight a ZIP, TAR or tar.gz file",
+            ),
             Self::HasTransferSource => (
                 context.can_transfer_into_cursor_folder,
                 "Choose a source outside the destination folder",
@@ -340,6 +465,10 @@ impl CommandPredicate {
             Self::InfoTarget => (context.info_open || context.cursor_entry, CURSOR_REASON),
             Self::HasVisibleEntry => (context.visible_entries > 0, VISIBLE_REASON),
             Self::HasVisibleFile => (context.visible_files > 0, "No visible files in this panel"),
+            Self::HasVisibleFolder => (
+                context.visible_entries > context.visible_files,
+                "No visible folders in this panel",
+            ),
             Self::HasOtherEntry => (context.other_entries > 0, "The other panel is empty"),
             Self::HasListingEntry => (context.listing_entries > 0, VISIBLE_REASON),
             Self::CursorHasExtension => (
@@ -423,6 +552,40 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
     const ACTIVATE: &[P] = &[P::CanActivate];
 
     match command {
+        SaveSelection => &[P::ConfirmationClosed, P::CanSaveSelection],
+        RestoreSelection => &[P::ConfirmationClosed, P::CanRestoreSelection],
+        ProtectTab => &[P::ConfirmationClosed, P::ActiveTabUnprotected],
+        UnprotectTab => &[P::ConfirmationClosed, P::ActiveTabProtected],
+        GoToTab(_) => &[P::ConfirmationClosed],
+        FirstTab => &[P::ConfirmationClosed, P::CanMoveTabLeft],
+        LastTab => &[P::ConfirmationClosed, P::CanMoveTabRight],
+        MoveTabLeft => &[P::ConfirmationClosed, P::CanMoveTabLeft],
+        MoveTabRight => &[P::ConfirmationClosed, P::CanMoveTabRight],
+        CloseOtherTabs => &[P::ConfirmationClosed, P::HasClosableOtherTab],
+        CloseTabsLeft => &[P::ConfirmationClosed, P::HasClosableTabLeft],
+        CloseTabsRight => &[P::ConfirmationClosed, P::HasClosableTabRight],
+        CloseDuplicateTabs => &[P::ConfirmationClosed, P::HasDuplicateTabs],
+        EditPermissions => &[
+            P::MutationsAllowed,
+            P::ConfirmationClosed,
+            P::TransferQueueIdle,
+            P::HasPickedEntry,
+            P::ActiveWritable,
+            P::UnixPermissions,
+        ],
+        ReopenClosedTab => &[P::ConfirmationClosed, P::CanAddTab, P::HasClosedTab],
+        NewTab => &[P::ConfirmationClosed, P::CanAddTab],
+        CopyTabsToOther => &[P::ConfirmationClosed, P::CanCopyTabsToOther],
+        OpenFolderTab | OpenFolderBackgroundTab => {
+            &[P::ConfirmationClosed, P::CanAddTab, P::CursorIsDirectory]
+        }
+        OpenFolderOtherPane => &[P::ConfirmationClosed, P::CursorIsDirectory],
+        CloseTab => &[
+            P::ConfirmationClosed,
+            P::CanCloseTab,
+            P::ActiveTabUnprotected,
+        ],
+        NextTab | PreviousTab => &[P::ConfirmationClosed, P::CanCloseTab],
         RequestCopy => COPY,
         RequestMove => MOVE,
         RequestDelete => DELETE,
@@ -434,25 +597,36 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         CreateSymlink | CreateHardlink => COPY,
         BeginRunBar => RUN_SELECTION,
         VerifyChecksum => PICKED,
-        BrowseArchive => CURSOR_FILE,
+        BrowseArchive | ViewHex => CURSOR_FILE,
         Undo => UNDO,
         Redo => REDO,
         DiffFiles => DIFF,
         TogglePreview => PREVIEW,
         ToggleInfo => INFO,
-        CopyPath | CopyName | CopyParentPath | CopyFileUrl | CopyShellPath | CopyRelativePath => {
-            PICKED
+        CopyPath
+        | CopyName
+        | CopyNameWithoutExtension
+        | CopyParentPath
+        | CopyFileUrl
+        | CopyShellPath
+        | CopyRelativePath => PICKED,
+        SelectAll | InvertSelection | SelectOnlyHere | BeginSelectMask | SelectVisibleFolders => {
+            VISIBLE
         }
-        SelectAll | InvertSelection | SelectOnlyHere | BeginSelectMask => VISIBLE,
         SelectSameNamed | SelectDiffering | SelectIdentical => COMPARE,
-        SelectJunk | SelectLargest | SelectEmptyFiles => VISIBLE_FILES,
-        SelectLikeCursor => EXTENSION,
+        SelectJunk | SelectLargest | SelectEmptyFiles | SelectVisibleFiles => VISIBLE_FILES,
+        CursorFirstFile | CursorLastFile => VISIBLE_FILES,
+        InvertVisibleFiles => VISIBLE_FILES,
+        InvertVisibleFolders => &[P::HasVisibleFolder],
+        SelectLikeCursor | DeselectLikeCursor => EXTENSION,
+        SelectSameStem | DeselectSameStem => CURSOR_FILE,
         CopyListingText | CopyListingCsv | CopyListingMarkdown => LISTING,
         ToggleSelect | ExtendSelectUp | ExtendSelectDown | ExtendSelectHome | ExtendSelectEnd
         | ExtendSelectPageUp | ExtendSelectPageDown => CURSOR,
         JumpBack => BACK,
         JumpForward => FORWARD,
         GoUp => UP,
+        GoHome | GoRoot => &[P::ConfirmationClosed],
         Activate => ACTIVATE,
         _ => &[],
     }
@@ -469,10 +643,21 @@ pub const fn requires_context(command: Command) -> bool {
 /// suitable for disabled controls. This describes capability, not execution;
 /// operation methods still repeat their safety checks at commit time.
 pub fn availability(command: Command, context: &CommandContext) -> CommandAvailability {
-    predicates(command)
+    if let Some(reason) = predicates(command)
         .iter()
         .find_map(|predicate| predicate.failure(context))
-        .map_or_else(CommandAvailability::enabled, CommandAvailability::disabled)
+    {
+        return CommandAvailability::disabled(reason);
+    }
+    if let Command::GoToTab(index) = command {
+        if index >= context.tab_count || index >= crate::workspace::tabs::MAX_TABS {
+            return CommandAvailability::disabled("This folder tab is not open");
+        }
+        if index == context.active_tab_index {
+            return CommandAvailability::disabled("This folder tab is already active");
+        }
+    }
+    CommandAvailability::enabled()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -606,6 +791,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Project collections", "", "project collection workspace roots virtual view", Command::OpenProjectCollections),
     entry("Copy path", "Cmd+Shift+C", "clipboard copy path", Command::CopyPath),
     entry("Copy name", "", "clipboard copy name filename", Command::CopyName),
+    entry("Copy name without extension", "", "clipboard copy filename stem basename no suffix extension", Command::CopyNameWithoutExtension),
     entry("Copy parent path", "", "clipboard copy parent folder path", Command::CopyParentPath),
     entry("Copy as file URL", "", "clipboard copy url file url", Command::CopyFileUrl),
     entry("Copy shell-escaped path", "", "clipboard copy shell escaped path", Command::CopyShellPath),
@@ -622,6 +808,8 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Select files only in this panel", "", "selection only here unique missing other panel compare diff", Command::SelectOnlyHere),
     entry("Select files differing from other panel", "", "selection differing changed modified other panel compare diff", Command::SelectDiffering),
     entry("Select files identical to other panel", "", "selection identical same equal other panel compare diff dedupe", Command::SelectIdentical),
+    entry("Save selection in memory", "", "selection save remember store buffer marks", Command::SaveSelection),
+    entry("Restore saved selection", "", "selection restore recall buffer marks", Command::RestoreSelection),
     entry("Clear selection in all folders", "", "selection clear deselect none reset all folders", Command::ClearSelection),
     entry("Operations panel", "Cmd+J", "activity operations queue progress history errors recovery", Command::ToggleQueuePanel),
     entry("Operation history", "", "history receipts journal log operations undo", Command::OpenReceipts),
@@ -629,15 +817,24 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Select clutter files", "", "selection junk clutter ds_store thumbs desktop.ini cleanup cruft", Command::SelectJunk),
     entry("Select 10 largest files", "", "selection largest biggest top size files heavy", Command::SelectLargest),
     entry("Select files like cursor (same extension)", "", "selection same extension like cursor type matching", Command::SelectLikeCursor),
+    entry("Select files with cursor's name (ignore extension)", "", "selection same stem basename name without extension", Command::SelectSameStem),
+    entry("Deselect files with cursor's name (ignore extension)", "", "selection unselect subtract same stem basename name without extension", Command::DeselectSameStem),
+    entry("Deselect files like cursor (same extension)", "", "selection unselect subtract remove same extension type", Command::DeselectLikeCursor),
+    entry("Invert visible file selection", "", "selection invert files only toggle flip keep folders", Command::InvertVisibleFiles),
+    entry("Invert visible folder selection", "", "selection invert folders directories only toggle flip keep files", Command::InvertVisibleFolders),
+    entry("Add visible files to selection", "", "selection select all files only add", Command::SelectVisibleFiles),
+    entry("Add visible folders to selection", "", "selection select all folders directories only add", Command::SelectVisibleFolders),
     entry("Select empty files", "", "selection empty zero byte blank files cleanup", Command::SelectEmptyFiles),
     entry("Copy listing as text", "", "clipboard copy listing export text list folder contents", Command::CopyListingText),
     entry("Copy listing as CSV", "", "clipboard copy listing export csv spreadsheet folder", Command::CopyListingCsv),
     entry("Copy listing as Markdown", "", "clipboard copy listing export markdown table folder", Command::CopyListingMarkdown),
-    entry("Verify checksum", "", "file checksum hash verify blake content integrity digests", Command::VerifyChecksum),
+    entry("Verify checksum", "", "file checksum hash verify blake sha256 sha-256 expected content integrity digests", Command::VerifyChecksum),
+    entry("Change permissions", "", "file permissions chmod mode access read write execute owner group others", Command::EditPermissions),
     entry("Create symlink in other panel", "", "file symlink soft link alias create other panel", Command::CreateSymlink),
     entry("Create hard link in other panel", "", "file hardlink hard link create other panel", Command::CreateHardlink),
     entry("Toggle navigation lock", "", "panels navigation lock sync mirror lockstep dual", Command::ToggleNavLock),
     entry("Repeat last command", ".", "repeat last command again dot redo", Command::RepeatLast),
+    entry("View as hex", "", "binary bytes hexadecimal inspect offset viewer", Command::ViewHex),
     entry("Browse archive", "", "archive zip tar gz browse extract inspect members", Command::BrowseArchive),
     entry("Trust: mark Trusted", "", "trust trusted root allow run command providers archive", Command::SetTrustTrusted),
     entry("Trust: mark Restricted", "", "trust restricted root gate providers archive inspect", Command::SetTrustRestricted),
@@ -648,7 +845,10 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Run command on selection", "", "run command shell open with terminal execute tool launcher", Command::BeginRunBar),
     entry("Toggle hidden files", "Cmd+H", "view hidden show hidden dotfiles invisible", Command::ToggleHidden),
     entry("Sort: folders first (toggle)", "", "sort folders first dirs top order grouping directories", Command::ToggleFoldersFirst),
+    entry("Sort: case-sensitive names (toggle)", "", "sort case sensitive uppercase lowercase Unicode names ordering", Command::ToggleCaseSensitiveSort),
+    entry("Sort: folders by name first (toggle)", "", "sort folders directories name first alphabetical independent files", Command::ToggleFoldersByName),
     entry("Sort: natural order (toggle)", "", "sort natural numeric ascii alphabetical order names file10", Command::ToggleNaturalSort),
+    entry("Sort by name without extension", "", "sort stem basename name no extension suffix alphabetical order", Command::SortByStem),
     entry("Sort by name", "", "sort name alphabetical filename order a-z", Command::SortByName),
     entry("Sort by size", "", "sort size bytes largest smallest big", Command::SortBySize),
     entry("Sort by modified", "", "sort modified date time newest oldest recent mtime", Command::SortByModified),
@@ -656,11 +856,45 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Sort by kind", "", "sort kind category group images docs code archives", Command::SortByKind),
     entry("Reverse sort order", "", "sort reverse flip order ascending descending invert", Command::ReverseSort),
     entry("Compare panels (toggle)", "", "compare panels differences diff highlight mirror", Command::ToggleCompare),
+    entry("New folder tab", "Cmd+T", "view tabs new duplicate pane folder", Command::NewTab),
+    entry("Open highlighted folder in new tab", "", "view tabs open folder", Command::OpenFolderTab),
+    entry("Open highlighted folder in background tab", "", "view tabs open folder background keep focus", Command::OpenFolderBackgroundTab),
+    entry("Open highlighted folder in other pane", "", "navigation directory opposite target browse folder keep focus", Command::OpenFolderOtherPane),
+    entry("Copy all folder tabs to other pane", "", "view tabs copy all opposite panel group background", Command::CopyTabsToOther),
+    entry("Reopen closed folder tab", "Cmd+Shift+T", "view tabs reopen restore recently closed undo", Command::ReopenClosedTab),
+    entry("Protect folder tab from closing", "", "view tabs protect lock keep prevent close", Command::ProtectTab),
+    entry("Unprotect folder tab", "", "view tabs unprotect unlock allow close", Command::UnprotectTab),
+    entry("Close folder tab", "Cmd+Shift+W", "view tabs close pane", Command::CloseTab),
+    entry("Go to folder tab 1", "", "view tabs position index jump 1", Command::GoToTab(0)),
+    entry("Go to folder tab 2", "", "view tabs position index jump 2", Command::GoToTab(1)),
+    entry("Go to folder tab 3", "", "view tabs position index jump 3", Command::GoToTab(2)),
+    entry("Go to folder tab 4", "", "view tabs position index jump 4", Command::GoToTab(3)),
+    entry("Go to folder tab 5", "", "view tabs position index jump 5", Command::GoToTab(4)),
+    entry("Go to folder tab 6", "", "view tabs position index jump 6", Command::GoToTab(5)),
+    entry("Go to folder tab 7", "", "view tabs position index jump 7", Command::GoToTab(6)),
+    entry("Go to folder tab 8", "", "view tabs position index jump 8", Command::GoToTab(7)),
+    entry("First folder tab", "", "view tabs first beginning jump", Command::FirstTab),
+    entry("Last folder tab", "", "view tabs last end jump", Command::LastTab),
+    entry("Next folder tab", "Cmd+Shift+]", "view tabs next pane", Command::NextTab),
+    entry("Previous folder tab", "Cmd+Shift+[", "view tabs previous pane", Command::PreviousTab),
+    entry("Move folder tab left", "", "view tabs reorder move left", Command::MoveTabLeft),
+    entry("Move folder tab right", "", "view tabs reorder move right", Command::MoveTabRight),
+    entry("Close other folder tabs", "", "view tabs close others keep current protected", Command::CloseOtherTabs),
+    entry("Close folder tabs to the left", "", "view tabs close left group protected", Command::CloseTabsLeft),
+    entry("Close folder tabs to the right", "", "view tabs close right group protected", Command::CloseTabsRight),
+    entry("Close duplicate folder tabs", "", "view tabs deduplicate cleanup duplicate close", Command::CloseDuplicateTabs),
+    entry("View as list", "", "view list table browser", Command::ShowListView),
+    entry("View as icons", "", "view icons grid thumbnails browser", Command::ShowIconsView),
     entry("Switch light/dark theme", "", "view theme dark light mode appearance colors", Command::ToggleTheme),
     entry("Size bars (toggle)", "", "view size bars graph usage proportion", Command::ToggleSizeBars),
     entry("Folder sidebar (toggle)", "", "view folder sidebar tree navigation outline", Command::ToggleFolderSidebar),
     entry("Cycle density", "Cmd+Shift+D", "view density rows compact comfortable spacious", Command::CycleDensity),
+    entry("Keyboard shortcuts", "F1", "help keyboard shortcuts reference", Command::KeyboardHelp),
     entry("Toggle preview", "F3", "view preview quick look viewer inspect", Command::TogglePreview),
+    entry("Go to first visible file", "", "navigation cursor first file skip folders start", Command::CursorFirstFile),
+    entry("Go to last visible file", "", "navigation cursor last file skip folders end", Command::CursorLastFile),
+    entry("Go to home folder", "Cmd+Shift+H", "navigation home user directory personal folder", Command::GoHome),
+    entry("Go to disk root", "", "navigation root filesystem drive volume top directory", Command::GoRoot),
     entry("Equalize panels", "Cmd+E", "panels equalize same folder mirror", Command::EqualizePanels),
     entry("Swap panels", "Cmd+U", "panels swap exchange switch sides", Command::SwapPanels),
     entry("Undo", "Cmd+Z", "history undo revert rollback", Command::Undo),
@@ -860,6 +1094,7 @@ pub enum KeyCode {
     Enter,
     Backspace,
     Space,
+    F1,
     F2,
     F3,
     F5,
@@ -886,6 +1121,8 @@ pub enum KeyCode {
     V,
     N,
     Z,
+    T,
+    W,
     BracketLeft,
     BracketRight,
     /// Period / `.` for vim-style repeat-last-command.
@@ -924,6 +1161,11 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         Enter if press.command => Some(Command::MoveIntoCursorFolder),
         Enter => Some(Command::Activate),
         Backspace => Some(Command::GoUp),
+        T if press.command && press.shift => Some(Command::ReopenClosedTab),
+        T if press.command => Some(Command::NewTab),
+        W if press.command && press.shift => Some(Command::CloseTab),
+        BracketLeft if press.command && press.shift => Some(Command::PreviousTab),
+        BracketRight if press.command && press.shift => Some(Command::NextTab),
         BracketLeft if press.command => Some(Command::JumpBack),
         BracketRight if press.command => Some(Command::JumpForward),
         // Cmd+Shift+1..9 assigns the active dir to a slot; Cmd+1..9 jumps to it.
@@ -933,6 +1175,7 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         Space => Some(Command::ToggleSelect),
         // Only a bare `.` repeats; Cmd+. is a system/cancel chord elsewhere.
         Period if !press.command => Some(Command::RepeatLast),
+        F1 => Some(Command::KeyboardHelp),
         F2 => Some(Command::BeginRename),
         R if press.command && press.shift => Some(Command::BeginBatchRename),
         R if press.command => Some(Command::BeginRename),
@@ -961,6 +1204,7 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         Z if press.command => Some(Command::Undo),
         J if press.command => Some(Command::ToggleQueuePanel),
         K if press.command => Some(Command::BeginPalette),
+        H if press.command && press.shift => Some(Command::GoHome),
         H if press.command => Some(Command::ToggleHidden),
         _ => None,
     }
@@ -1443,7 +1687,7 @@ mod tests {
         context.cursor_is_dir = true;
         assert_eq!(
             availability(Command::BrowseArchive, &context).reason,
-            Some("Highlight a ZIP or tar.gz file")
+            Some("Highlight a ZIP, TAR or tar.gz file")
         );
         context.cursor_is_dir = false;
         context.cursor_is_file = true;
@@ -1645,6 +1889,7 @@ mod tests {
     #[test]
     fn mutating_commands_are_exactly_the_mutation_gated_ones() {
         let mutating = [
+            Command::EditPermissions,
             Command::RequestCopy,
             Command::RequestMove,
             Command::CreateDir,
@@ -1681,6 +1926,26 @@ mod tests {
         ] {
             assert!(!command.mutates_filesystem(), "{command:?}");
         }
+    }
+
+    #[test]
+    fn shifted_new_tab_shortcut_restores_instead_of_creating_a_tab() {
+        assert_eq!(
+            map_key(KeyPress {
+                code: KeyCode::T,
+                command: true,
+                shift: false
+            }),
+            Some(Command::NewTab)
+        );
+        assert_eq!(
+            map_key(KeyPress {
+                code: KeyCode::T,
+                command: true,
+                shift: true
+            }),
+            Some(Command::ReopenClosedTab)
+        );
     }
 
     #[test]
@@ -1721,6 +1986,7 @@ mod tests {
             }
         }
         press.code = match *key {
+            "F1" => KeyCode::F1,
             "F2" => KeyCode::F2,
             "F3" => KeyCode::F3,
             "F5" => KeyCode::F5,
@@ -1747,6 +2013,8 @@ mod tests {
             "P" => KeyCode::P,
             "R" => KeyCode::R,
             "S" => KeyCode::S,
+            "T" => KeyCode::T,
+            "W" => KeyCode::W,
             "U" => KeyCode::U,
             "Z" => KeyCode::Z,
             other => panic!("unknown key {other} in {shortcut}"),

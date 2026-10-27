@@ -1,0 +1,7 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 30.24s
+     Running `target/debug/commander --visual-qa code_preview --output target/visual-qa`
+2026-10-27T22:50:07 INFO  commander::logging: logging initialized
+2026-10-27T22:50:07 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: code_preview
+2026-10-27T22:50:07 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

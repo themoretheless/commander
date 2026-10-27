@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.62s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 2 tests
+test panel::tests::kind_inversion_is_reversible_and_preserves_hidden_picks_and_other_kind ... ok
+test workspace::tests::kind_inversion_commands_preserve_the_other_panel_and_gate_missing_kinds ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2414 filtered out; finished in 0.01s
+

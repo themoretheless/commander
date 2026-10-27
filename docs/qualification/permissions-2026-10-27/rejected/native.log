@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 31.38s
+     Running `target/debug/commander --visual-qa permissions --output target/visual-qa-permissions`
+2026-10-27T16:24:47 INFO  commander::logging: logging initialized
+2026-10-27T16:24:47 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: permissions
+2026-10-27T16:24:47 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: target/visual-qa-permissions
+2026-10-27T16:24:47 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+Error: AppCreation(Custom { kind: Other, error: "1 visual QA checks failed" })

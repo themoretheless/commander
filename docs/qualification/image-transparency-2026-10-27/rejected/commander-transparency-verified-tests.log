@@ -1,0 +1,120 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.29s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 9 tests
+test image_preview::tests::fit_is_aspect_preserving_and_zoom_is_explicitly_relative ... ok
+test image_preview::tests::zoom_limits_and_invalid_gestures_do_not_poison_state ... ok
+test image_preview::tests::all_orientations_compose_in_display_space_and_preserve_extent ... ok
+test image_preview::tests::rotated_mesh_maps_source_corners_without_changing_screen_geometry ... ok
+test image_preview::tests::image_changes_reset_view_and_panes_keep_independent_state ... ok
+test image_preview::tests::switching_file_resets_orientation_without_changing_other_pane ... ok
+test image_preview::tests::mouse_drag_pans_a_zoomed_image ... ok
+test image_preview::tests::double_click_returns_a_zoomed_image_to_fit ... ok
+
+thread 'image_preview::tests::checkerboard_reuses_one_tiny_repeat_texture_and_constant_geometry' (80256806) panicked at src/image_preview.rs:383:14:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'image_preview::tests::checkerboard_reuses_one_tiny_repeat_texture_and_constant_geometry' (80256806) panicked at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/textures.rs:337:9:
+Dropped TexturesDelta with 2 unapplied deltas. Deltas need to be handled. If you want to drop this intentionally call `clear` before dropping.
+stack backtrace:
+   0:        0x104d531d4 - std[b48edf25e4918a56]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:        0x104d531d4 - std[b48edf25e4918a56]::backtrace_rs::backtrace::trace_unsynchronized::<std[b48edf25e4918a56]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:        0x104d531d4 - std[b48edf25e4918a56]::sys::backtrace::_print_fmt
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/sys/backtrace.rs:74:9
+   3:        0x104d531d4 - <<std[b48edf25e4918a56]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[c8d719163aab4bdd]::fmt::Display>::fmt
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/sys/backtrace.rs:44:26
+   4:        0x104d6aad0 - <core[c8d719163aab4bdd]::fmt::rt::Argument>::fmt
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/fmt/rt.rs:152:76
+   5:        0x104d6aad0 - core[c8d719163aab4bdd]::fmt::write
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/fmt/mod.rs:1687:22
+   6:        0x104d58154 - core[c8d719163aab4bdd]::io::write::default_write_fmt::<alloc[d1d92da783517f63]::vec::Vec<u8>>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/io/write.rs:402:11
+   7:        0x104d58154 - <alloc[d1d92da783517f63]::vec::Vec<u8> as core[c8d719163aab4bdd]::io::write::Write>::write_fmt
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/io/write.rs:335:13
+   8:        0x104d31d94 - <std[b48edf25e4918a56]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/sys/backtrace.rs:47:25
+   9:        0x104d31d94 - std[b48edf25e4918a56]::panicking::default_hook::{closure#0}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:289:27
+  10:        0x104d49fec - std[b48edf25e4918a56]::panicking::default_hook
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:313:9
+  11:        0x1041558e4 - <alloc[d1d92da783517f63]::boxed::Box<dyn for<'a, 'b> core[c8d719163aab4bdd]::ops::function::Fn<(&'a std[b48edf25e4918a56]::panic::PanicHookInfo<'b>,), Output = ()> + core[c8d719163aab4bdd]::marker::Sync + core[c8d719163aab4bdd]::marker::Send> as core[c8d719163aab4bdd]::ops::function::Fn<(&std[b48edf25e4918a56]::panic::PanicHookInfo,)>>::call
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2380:9
+  12:        0x1041558e4 - test[67a8b0455b084e74]::test_main_inner::<test[67a8b0455b084e74]::test_main_static::{closure#0}>::{closure#0}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/test/src/lib.rs:155:21
+  13:        0x104d4a53c - <alloc[d1d92da783517f63]::boxed::Box<dyn for<'a, 'b> core[c8d719163aab4bdd]::ops::function::Fn<(&'a std[b48edf25e4918a56]::panic::PanicHookInfo<'b>,), Output = ()> + core[c8d719163aab4bdd]::marker::Sync + core[c8d719163aab4bdd]::marker::Send> as core[c8d719163aab4bdd]::ops::function::Fn<(&std[b48edf25e4918a56]::panic::PanicHookInfo,)>>::call
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2380:9
+  14:        0x104d4a53c - std[b48edf25e4918a56]::panicking::panic_with_hook
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:819:13
+  15:        0x104d31e18 - std[b48edf25e4918a56]::panicking::panic_handler::{closure#0}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:685:13
+  16:        0x104d2a914 - std[b48edf25e4918a56]::sys::backtrace::__rust_end_short_backtrace::<std[b48edf25e4918a56]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/sys/backtrace.rs:182:18
+  17:        0x104d32a1c - __rustc[f608e4faed187991]::rust_begin_unwind
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:676:5
+  18:        0x104dd4200 - core[c8d719163aab4bdd]::panicking::panic_fmt
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/panicking.rs:80:14
+  19:        0x10474945c - <epaint[185044081b1c73a5]::textures::TexturesDelta as core[c8d719163aab4bdd]::ops::drop::Drop>::drop
+                               at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/textures.rs:337:9
+  20:        0x104715838 - core[c8d719163aab4bdd]::ptr::drop_glue::<epaint[185044081b1c73a5]::textures::TexturesDelta>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ptr/mod.rs:848:1
+  21:        0x1045e1168 - core[c8d719163aab4bdd]::ptr::drop_glue::<egui[1b30fdab45de339e]::data::output::FullOutput>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ptr/mod.rs:848:1
+  22:        0x103b9a540 - commander[5cad7496ef8de140]::image_preview::tests::checkerboard_reuses_one_tiny_repeat_texture_and_constant_geometry
+                               at /Users/themoretheless/Documents/Sources/commander/src/image_preview.rs:394:5
+  23:        0x103b50ea8 - commander[5cad7496ef8de140]::image_preview::tests::checkerboard_reuses_one_tiny_repeat_texture_and_constant_geometry::{closure#0}
+                               at /Users/themoretheless/Documents/Sources/commander/src/image_preview.rs:358:75
+  24:        0x102c9ae7c - <commander[5cad7496ef8de140]::image_preview::tests::checkerboard_reuses_one_tiny_repeat_texture_and_constant_geometry::{closure#0} as core[c8d719163aab4bdd]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  25:        0x10414aad8 - <fn() -> core[c8d719163aab4bdd]::result::Result<(), alloc[d1d92da783517f63]::string::String> as core[c8d719163aab4bdd]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  26:        0x10414aad8 - test[67a8b0455b084e74]::__rust_begin_short_backtrace::<core[c8d719163aab4bdd]::result::Result<(), alloc[d1d92da783517f63]::string::String>, fn() -> core[c8d719163aab4bdd]::result::Result<(), alloc[d1d92da783517f63]::string::String>>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/test/src/lib.rs:733:18
+  27:        0x104155f08 - test[67a8b0455b084e74]::run_test_in_process::{closure#0}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/test/src/lib.rs:756:74
+  28:        0x104155f08 - <core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<test[67a8b0455b084e74]::run_test_in_process::{closure#0}> as core[c8d719163aab4bdd]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/panic/unwind_safe.rs:275:9
+  29:        0x104155f08 - std[b48edf25e4918a56]::panicking::catch_unwind::do_call::<core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<test[67a8b0455b084e74]::run_test_in_process::{closure#0}>, core[c8d719163aab4bdd]::result::Result<(), alloc[d1d92da783517f63]::string::String>>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:573:43
+  30:        0x104155f08 - std[b48edf25e4918a56]::panicking::catch_unwind::<core[c8d719163aab4bdd]::result::Result<(), alloc[d1d92da783517f63]::string::String>, core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<test[67a8b0455b084e74]::run_test_in_process::{closure#0}>>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:541:19
+  31:        0x104155f08 - std[b48edf25e4918a56]::panic::catch_unwind::<core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<test[67a8b0455b084e74]::run_test_in_process::{closure#0}>, core[c8d719163aab4bdd]::result::Result<(), alloc[d1d92da783517f63]::string::String>>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panic.rs:359:14
+  32:        0x104155f08 - test[67a8b0455b084e74]::run_test_in_process
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/test/src/lib.rs:756:27
+  33:        0x104155f08 - test[67a8b0455b084e74]::run_test::{closure#0}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/test/src/lib.rs:677:43
+  34:        0x1041508a8 - test[67a8b0455b084e74]::run_test::{closure#1}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/test/src/lib.rs:707:41
+  35:        0x1041508a8 - std[b48edf25e4918a56]::sys::backtrace::__rust_begin_short_backtrace::<test[67a8b0455b084e74]::run_test::{closure#1}, ()>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/sys/backtrace.rs:166:18
+  36:        0x1041583cc - std[b48edf25e4918a56]::thread::lifecycle::spawn_unchecked::<test[67a8b0455b084e74]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/thread/lifecycle.rs:64:13
+  37:        0x1041583cc - <core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<std[b48edf25e4918a56]::thread::lifecycle::spawn_unchecked<test[67a8b0455b084e74]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core[c8d719163aab4bdd]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/panic/unwind_safe.rs:275:9
+  38:        0x1041583cc - std[b48edf25e4918a56]::panicking::catch_unwind::do_call::<core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<std[b48edf25e4918a56]::thread::lifecycle::spawn_unchecked<test[67a8b0455b084e74]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:573:43
+  39:        0x1041583cc - std[b48edf25e4918a56]::panicking::catch_unwind::<(), core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<std[b48edf25e4918a56]::thread::lifecycle::spawn_unchecked<test[67a8b0455b084e74]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:541:19
+  40:        0x1041583cc - std[b48edf25e4918a56]::panic::catch_unwind::<core[c8d719163aab4bdd]::panic::unwind_safe::AssertUnwindSafe<std[b48edf25e4918a56]::thread::lifecycle::spawn_unchecked<test[67a8b0455b084e74]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panic.rs:359:14
+  41:        0x1041583cc - std[b48edf25e4918a56]::thread::lifecycle::spawn_unchecked::<test[67a8b0455b084e74]::run_test::{closure#1}, ()>::{closure#1}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/thread/lifecycle.rs:62:26
+  42:        0x1041583cc - <std[b48edf25e4918a56]::thread::lifecycle::spawn_unchecked<test[67a8b0455b084e74]::run_test::{closure#1}, ()>::{closure#1} as core[c8d719163aab4bdd]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  43:        0x104d522c4 - <alloc[d1d92da783517f63]::boxed::Box<dyn core[c8d719163aab4bdd]::ops::function::FnOnce<(), Output = ()> + core[c8d719163aab4bdd]::marker::Send> as core[c8d719163aab4bdd]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  44:        0x104d522c4 - <std[b48edf25e4918a56]::sys::thread::unix::Thread>::new::thread_start
+                               at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/sys/thread/unix.rs:127:17
+  45:        0x1832d0c58 - __pthread_cond_wait
+
+thread 'image_preview::tests::checkerboard_reuses_one_tiny_repeat_texture_and_constant_geometry' (80256806) panicked at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/panicking.rs:233:5:
+panic in a destructor during cleanup
+thread caused non-unwinding panic. aborting.
+error: test failed, to rerun pass `--bin commander`
+
+Caused by:
+  process didn't exit successfully: `/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b 'image_preview::'` (signal: 6, SIGABRT: process abort signal)

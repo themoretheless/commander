@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.91s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 20 tests
+test session::tests::restorable_window_size_clamps_and_rejects_garbage ... ok
+test session::tests::nearest_surviving_dir_keeps_a_saved_root_but_skips_root_ancestors ... ok
+test session::tests::persisted_panel_views_restore_as_complete_configs ... ok
+test session::tests::sanitized_paths_restore_the_nearest_surviving_ancestor ... ok
+test session::tests::sanitized_paths_fall_back_to_home_when_missing ... ok
+test session::tests::panel_views_keep_the_legacy_flat_json_schema ... ok
+test session::tests::non_utf8_paths_do_not_block_the_rest_of_the_session_save ... ok
+test session::tests::density_defaults_when_absent_from_json ... ok
+test session::tests::recent_history_defaults_when_absent ... ok
+test session::tests::a_session_saved_before_system_theme_keeps_its_fixed_theme ... ok
+test session::tests::sort_toggles_default_true_when_absent ... ok
+test session::tests::round_trips_through_json ... ok
+test session::tests::window_size_round_trips_and_defaults_when_absent ... ok
+test session::tests::browser_modes_restore_and_legacy_sessions_default_to_list ... ok
+test session::tests::tab_session_recovers_records_and_keeps_legacy_active_folders ... ok
+test session::tests::tree_expansion_persists_shallow_folders_first_and_capped ... ok
+test session::tests::invalid_preset_blocks_session_rewrite_and_preserves_original_bytes ... ok
+test session::tests::strict_session_rejects_partial_payload_and_blocks_automatic_save ... ok
+test session::tests::rename_presets_survive_atomic_session_save_and_legacy_sessions_default_empty ... ok
+test session::tests::sanitized_paths_fall_back_to_home_when_a_probe_hangs ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 2240 filtered out; finished in 0.11s
+

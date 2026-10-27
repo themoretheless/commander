@@ -1,0 +1,5 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running `target/debug/commander --visual-qa confirmation_owner --output target/visual-qa-permissions`
+2026-10-27T16:28:38 INFO  commander::logging: logging initialized
+2026-10-27T16:28:38 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: confirmation_owner
+2026-10-27T16:28:38 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

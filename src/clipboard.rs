@@ -11,6 +11,8 @@ pub enum PathStyle {
     FullPath,
     /// Just the final component (file name).
     NameOnly,
+    /// Final component with its last extension removed (a lexical operation).
+    NameWithoutExtension,
     /// The enclosing directory.
     ParentPath,
     /// A `file://` URL with the path percent-encoded.
@@ -26,6 +28,7 @@ pub const fn style_label(style: PathStyle) -> &'static str {
     match style {
         PathStyle::FullPath => "path",
         PathStyle::NameOnly => "name",
+        PathStyle::NameWithoutExtension => "name without extension",
         PathStyle::ParentPath => "parent path",
         PathStyle::FileUrl => "file URL",
         PathStyle::ShellEscaped => "shell-escaped path",
@@ -72,6 +75,10 @@ fn format_one(p: &Path, style: PathStyle, other_root: Option<&Path>) -> String {
         PathStyle::NameOnly => p
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(full),
+        PathStyle::NameWithoutExtension => p
+            .file_stem()
+            .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(full),
         PathStyle::ParentPath => p
             .parent()
@@ -148,6 +155,41 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn names_without_extensions_preserve_dotfiles_unicode_and_other_dots() {
+        for (source, expected) in [
+            ("/tmp/Photo.JPG", "Photo"),
+            ("/tmp/archive.tar.gz", "archive.tar"),
+            ("/tmp/.env", ".env"),
+            ("/tmp/.config.json", ".config"),
+            ("/tmp/README", "README"),
+            ("/tmp/trailing.", "trailing"),
+            ("/tmp/ёж.文.txt", "ёж.文"),
+            ("/tmp/folder.with.dots", "folder.with"),
+            ("/", "/"),
+        ] {
+            assert_eq!(
+                format(&[p(source)], PathStyle::NameWithoutExtension, None),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn names_without_extensions_keep_selection_order_duplicates_and_control_escaping() {
+        let paths = [
+            p("/a/a.txt"),
+            p("/b/a.jpg"),
+            p("/a/line\nname.txt"),
+            p("/a/tab\tname.txt"),
+        ];
+        assert_eq!(
+            format(&paths, PathStyle::NameWithoutExtension, None),
+            "a\na\nline\\nname\ntab\\tname"
+        );
+        assert_eq!(format(&[], PathStyle::NameWithoutExtension, None), "");
     }
 
     #[test]

@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on package cache
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.16s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 14 tests
+test app::batch_rename_dialog::tests::flagged_rows_explain_their_glyph ... ok
+test app::batch_rename_dialog::tests::unchanged_rule_keeps_apply_error ... ok
+test app::batch_rename_dialog::tests::renamed_toast_pluralizes ... ok
+test app::batch_rename_dialog::tests::changing_rule_clears_previous_apply_error ... ok
+test app::batch_rename_dialog::tests::listing_refresh_never_retargets_a_different_directory ... ok
+test app::batch_rename_dialog::tests::enter_submits_only_from_text_fields_or_no_focus ... ok
+test app::batch_rename_dialog::tests::invalid_target_names_block_before_ordering ... ok
+test app::batch_rename_dialog::tests::chained_rename_onto_a_name_being_vacated_is_applicable ... ok
+test app::batch_rename_dialog::tests::no_op_rule_is_not_applicable_and_gives_no_reason ... ok
+test app::batch_rename_dialog::tests::regex_error_is_reported_separately_from_the_summary ... ok
+test app::batch_rename_dialog::tests::validation_is_rebuilt_only_when_the_rule_changes ... ok
+test app::batch_rename_dialog::tests::same_frame_invalid_edit_cannot_submit_under_previous_validation ... ok
+test app::batch_rename_dialog::tests::listing_refresh_adds_new_sibling_collision_to_preview ... ok
+test app::batch_rename_dialog::tests::collisions_block_with_the_conflicting_name ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 2246 filtered out; finished in 0.01s
+

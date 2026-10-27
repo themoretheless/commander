@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.58s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test workspace::tests::home_and_root_commands_respect_confirmation_and_leave_tabs_intact ... ok
+test workspace::tests::home_and_root_commands_keep_other_pane_and_restore_back_history ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2375 filtered out; finished in 0.02s
+

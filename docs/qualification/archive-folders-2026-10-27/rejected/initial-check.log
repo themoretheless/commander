@@ -1,0 +1,33 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0502]: cannot borrow `*state.member_filter.folder` as immutable because it is also borrowed as mutable
+   --> src/app/archive_dialog.rs:656:61
+    |
+508 |                     } = &mut state.member_filter;
+    |                         ------------------------ mutable borrow occurs here
+...
+656 |                         .show_rows(ui, 30.0, visible.len(), |ui, rows| {
+    |                                                             ^^^^^^^^^^ immutable borrow occurs here
+...
+703 |                                             let path = if state.member_filter.folder.is_some() {
+    |                                                           -------------------------- second borrow occurs due to use of `*state.member_filter.folder` in closure
+...
+852 |                                 .filter(|index| !visible_set.contains(*index))
+    |                                                  ----------- mutable borrow later captured here by closure
+
+error[E0502]: cannot borrow `*state.member_filter.folder` as immutable because it is also borrowed as mutable
+   --> src/app/archive_dialog.rs:842:35
+    |
+508 |                     } = &mut state.member_filter;
+    |                         ------------------------ mutable borrow occurs here
+...
+842 |                     ui.horizontal(|ui| {
+    |                                   ^^^^ immutable borrow occurs here
+...
+845 |                             && state.member_filter.folder.is_none()
+    |                                -------------------------- second borrow occurs due to use of `*state.member_filter.folder` in closure
+...
+852 |                                 .filter(|index| !visible_set.contains(*index))
+    |                                                  ----------- mutable borrow later captured here by closure
+
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors

@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.44s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test workspace::tabs::tests::move_tab_between_panes_rejects_last_tab_invalid_index_and_capacity_atomically ... ok
+test workspace::tabs::tests::move_tab_between_panes_preserves_runtime_state_and_history_without_copying_files ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2398 filtered out; finished in 0.10s
+

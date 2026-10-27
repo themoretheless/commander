@@ -24,10 +24,16 @@ pub struct PersistedLeftView {
     show_hidden: bool,
     #[serde(rename = "left_folders_first", default = "default_true")]
     folders_first: bool,
+    #[serde(rename = "left_folders_by_name", default)]
+    folders_by_name: bool,
     #[serde(rename = "left_natural_sort", default = "default_true")]
     natural_name_sort: bool,
+    #[serde(rename = "left_case_sensitive_sort", default)]
+    case_sensitive_name_sort: bool,
     #[serde(rename = "left_density", default)]
     density: crate::density::Density,
+    #[serde(rename = "left_browser_mode", default)]
+    mode: crate::panel::BrowserMode,
 }
 
 impl PersistedLeftView {
@@ -40,6 +46,9 @@ impl PersistedLeftView {
             self.natural_name_sort,
             self.density,
         )
+        .with_mode(self.mode)
+        .with_case_sensitive_name_sort(self.case_sensitive_name_sort)
+        .with_folders_by_name(self.folders_by_name)
     }
 }
 
@@ -50,8 +59,11 @@ impl From<crate::panel::ViewConfig> for PersistedLeftView {
             sort_order: config.sort_order(),
             show_hidden: config.show_hidden(),
             folders_first: config.folders_first(),
+            folders_by_name: config.folders_by_name(),
             natural_name_sort: config.natural_name_sort(),
+            case_sensitive_name_sort: config.case_sensitive_name_sort(),
             density: config.density(),
+            mode: config.mode(),
         }
     }
 }
@@ -66,10 +78,16 @@ pub struct PersistedRightView {
     show_hidden: bool,
     #[serde(rename = "right_folders_first", default = "default_true")]
     folders_first: bool,
+    #[serde(rename = "right_folders_by_name", default)]
+    folders_by_name: bool,
     #[serde(rename = "right_natural_sort", default = "default_true")]
     natural_name_sort: bool,
+    #[serde(rename = "right_case_sensitive_sort", default)]
+    case_sensitive_name_sort: bool,
     #[serde(rename = "right_density", default)]
     density: crate::density::Density,
+    #[serde(rename = "right_browser_mode", default)]
+    mode: crate::panel::BrowserMode,
 }
 
 impl PersistedRightView {
@@ -82,6 +100,9 @@ impl PersistedRightView {
             self.natural_name_sort,
             self.density,
         )
+        .with_mode(self.mode)
+        .with_case_sensitive_name_sort(self.case_sensitive_name_sort)
+        .with_folders_by_name(self.folders_by_name)
     }
 }
 
@@ -92,8 +113,11 @@ impl From<crate::panel::ViewConfig> for PersistedRightView {
             sort_order: config.sort_order(),
             show_hidden: config.show_hidden(),
             folders_first: config.folders_first(),
+            folders_by_name: config.folders_by_name(),
             natural_name_sort: config.natural_name_sort(),
+            case_sensitive_name_sort: config.case_sensitive_name_sort(),
             density: config.density(),
+            mode: config.mode(),
         }
     }
 }
@@ -103,10 +127,16 @@ pub struct Session {
     pub left_path: PathBuf,
     pub right_path: PathBuf,
     pub active_left: bool,
+    #[serde(default)]
+    pub left_tabs: crate::workspace::tabs::SavedTabs,
+    #[serde(default)]
+    pub right_tabs: crate::workspace::tabs::SavedTabs,
     pub theme_dark: bool,
     /// Follow the OS light/dark appearance instead of `theme_dark`.
     #[serde(default)]
     pub theme_follow_system: bool,
+    #[serde(default)]
+    pub theme_palette: Option<String>,
     pub ui_scale: f32,
     pub show_tree: bool,
     pub tree_width: f32,
@@ -136,6 +166,8 @@ pub struct Session {
     pub recent_order: crate::panel::RecentOrder,
     #[serde(default)]
     pub search_history: crate::search::QueryHistory,
+    #[serde(default)]
+    pub rename_presets: crate::rename_presets::Presets,
     #[serde(default)]
     pub durability_profile: crate::operation::DurabilityProfile,
     #[serde(default)]
@@ -343,6 +375,23 @@ fn session_for_persistence(session: &Session) -> Session {
     };
     persisted.left_path = serializable_ancestor(&persisted.left_path);
     persisted.right_path = serializable_ancestor(&persisted.right_path);
+    for tabs in [&mut persisted.left_tabs, &mut persisted.right_tabs] {
+        let mut active = 0;
+        let mut entries = Vec::new();
+        for (index, tab) in tabs.entries.iter().enumerate() {
+            if entries.len() == crate::workspace::tabs::MAX_TABS {
+                break;
+            }
+            if tab.path.is_absolute() && tab.path.to_str().is_some() {
+                if index == tabs.active {
+                    active = entries.len();
+                }
+                entries.push(tab.clone());
+            }
+        }
+        tabs.entries = entries;
+        tabs.active = active;
+    }
     persisted
         .recent_paths
         .retain(|path| path.to_str().is_some());
@@ -370,8 +419,11 @@ mod tests {
             left_path: left,
             right_path: right,
             active_left: true,
+            left_tabs: Default::default(),
+            right_tabs: Default::default(),
             theme_dark: true,
             theme_follow_system: true,
+            theme_palette: None,
             ui_scale: 1.1,
             show_tree: true,
             tree_width: 220.0,
@@ -396,6 +448,7 @@ mod tests {
             recent_stats: crate::panel::VisitStats::default(),
             recent_order: crate::panel::RecentOrder::Frecency,
             search_history: crate::search::QueryHistory::default(),
+            rename_presets: crate::rename_presets::Presets::default(),
             durability_profile: crate::operation::DurabilityProfile::default(),
             version_retention: crate::operation::VersionRetentionPolicy::default(),
             sync_guard_policy: crate::sync_guard::GuardPolicy::default(),
@@ -406,6 +459,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn case_sensitive_sort_persists_for_both_panes_and_legacy_defaults_off() {
+        let config = crate::panel::ViewConfig::default().with_case_sensitive_name_sort(true);
+        let left = PersistedLeftView::from(config);
+        let right = PersistedRightView::from(config);
+        let mut left_json = serde_json::to_value(left).unwrap();
+        let mut right_json = serde_json::to_value(right).unwrap();
+        assert!(
+            serde_json::from_value::<PersistedLeftView>(left_json.clone())
+                .unwrap()
+                .view_config()
+                .case_sensitive_name_sort()
+        );
+        assert!(
+            serde_json::from_value::<PersistedRightView>(right_json.clone())
+                .unwrap()
+                .view_config()
+                .case_sensitive_name_sort()
+        );
+        left_json
+            .as_object_mut()
+            .unwrap()
+            .remove("left_case_sensitive_sort");
+        right_json
+            .as_object_mut()
+            .unwrap()
+            .remove("right_case_sensitive_sort");
+        assert!(
+            !serde_json::from_value::<PersistedLeftView>(left_json)
+                .unwrap()
+                .view_config()
+                .case_sensitive_name_sort()
+        );
+        assert!(
+            !serde_json::from_value::<PersistedRightView>(right_json)
+                .unwrap()
+                .view_config()
+                .case_sensitive_name_sort()
+        );
+        assert!(
+            !serde_json::from_str::<crate::panel::ViewConfig>("{}")
+                .unwrap()
+                .case_sensitive_name_sort()
+        );
+    }
+
+    #[test]
+    fn tab_session_recovers_records_and_keeps_legacy_active_folders() {
+        let session = sample(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut value = serde_json::to_value(session).unwrap();
+        value["left_tabs"] = serde_json::json!({"entries":[{"path":"/left"},{"path":false},{"path":"/other"}],"active":2});
+        let restored: Session = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(restored.left_tabs.entries.len(), 2);
+        assert_eq!(restored.left_tabs.active, 1);
+        assert_eq!(restored.left_path, PathBuf::from("/left"));
+        value.as_object_mut().unwrap().remove("left_tabs");
+        value.as_object_mut().unwrap().remove("right_tabs");
+        let legacy: Session = serde_json::from_value(value).unwrap();
+        assert!(legacy.left_tabs.entries.is_empty());
+        assert!(legacy.right_tabs.entries.is_empty());
+    }
     #[test]
     fn window_size_round_trips_and_defaults_when_absent() {
         let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
@@ -476,6 +590,48 @@ mod tests {
         assert_eq!(persisted[0], PathBuf::from("/deep"));
         assert_eq!(persisted[1], PathBuf::from("/deep/a"));
         assert_eq!(persisted, persisted_tree_expanded(&expanded));
+    }
+
+    #[test]
+    fn rename_presets_survive_atomic_session_save_and_legacy_sessions_default_empty() {
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut session = sample(temp.path().into(), temp.path().into());
+        let rule = crate::rename::RenameRule {
+            prefix: "Фото_".into(),
+            numbering: Some(crate::rename::Numbering {
+                start: 3,
+                step: 2,
+                pad: 4,
+            }),
+            ..Default::default()
+        };
+        session.rename_presets.add("Photos", rule.clone()).unwrap();
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let restored = load_at(&persist, &path).value.unwrap();
+        assert_eq!(restored.rename_presets.get("Photos").unwrap().rule, rule);
+        let mut legacy = serde_json::to_value(&session).unwrap();
+        legacy.as_object_mut().unwrap().remove("rename_presets");
+        let restored: Session = serde_json::from_value(legacy).unwrap();
+        assert!(restored.rename_presets.items().is_empty());
+    }
+
+    #[test]
+    fn invalid_preset_blocks_session_rewrite_and_preserves_original_bytes() {
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let session = sample(temp.path().into(), temp.path().into());
+        let mut value = serde_json::to_value(&session).unwrap();
+        value["rename_presets"] = serde_json::json!([{"name":"invalid", "rule":{"numbering":{"start":1,"step":1,"pad":999999999}}}]);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut loaded = load_at(&persist, &path);
+        assert!(loaded.value.is_none());
+        assert!(save_at(&persist, &path, &session, &mut loaded.gate).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
     #[test]
@@ -602,6 +758,31 @@ mod tests {
         }
         assert!(!object.contains_key("left_view"));
         assert!(!object.contains_key("right_view"));
+    }
+
+    #[test]
+    fn browser_modes_restore_and_legacy_sessions_default_to_list() {
+        let mut session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        session.left_view = crate::panel::ViewConfig::default()
+            .with_mode(crate::panel::BrowserMode::Icons)
+            .into();
+        let mut value = serde_json::to_value(&session).unwrap();
+        let restored: Session = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            restored.view_configs()[0].mode(),
+            crate::panel::BrowserMode::Icons
+        );
+        value.as_object_mut().unwrap().remove("left_browser_mode");
+        value.as_object_mut().unwrap().remove("right_browser_mode");
+        let legacy: Session = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            legacy.view_configs()[0].mode(),
+            crate::panel::BrowserMode::List
+        );
+        assert_eq!(
+            legacy.view_configs()[1].mode(),
+            crate::panel::BrowserMode::List
+        );
     }
 
     #[test]

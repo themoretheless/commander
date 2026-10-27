@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.02s
+     Running unittests src/main.rs (target/debug/build/commander/64b722dc4e709030/out/commander-64b722dc4e709030)
+
+running 17 tests
+test app::keys::tests::a_cancelled_leader_starts_the_search ... ok
+test app::keys::tests::a_numeric_buffer_jumps_as_a_name_once_no_motion_follows ... ok
+test app::keys::tests::a_numeric_buffer_waits_for_its_motion_instead_of_jumping ... ok
+test app::keys::tests::alt_and_mac_ctrl_never_route_to_unmodified_bindings ... ok
+test app::keys::tests::an_aborted_chord_handles_the_second_key_as_a_motion ... ok
+test app::keys::tests::an_open_modal_keeps_priority_over_a_deferred_request ... ok
+test app::keys::tests::backspace_edits_a_live_search_instead_of_going_up ... ok
+test app::keys::tests::consumed_keys_strip_only_one_occurrence_each ... ok
+test app::keys::tests::escape_on_the_fallback_menu_only_closes_the_menu ... ok
+test app::keys::tests::first_pending_modal_reserves_escape_in_fifo_order ... ok
+test app::keys::tests::g_and_s_stay_ordinary_letters_mid_search ... ok
+test app::keys::tests::gg_and_ss_complete_their_chords ... ok
+test app::keys::tests::option_paging_is_reserved_for_preview_scroll_without_claiming_arrows ... ok
+test app::keys::tests::period_extends_a_live_search_instead_of_repeating ... ok
+test app::keys::tests::unowned_escape_ends_the_search ... ok
+test app::keys::tests::workspace_activation_keys_do_not_also_click_focused_widgets ... ok
+test app::keys::tests::workspace_tab_is_mapped_and_consumed_once ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 2176 filtered out; finished in 0.07s
+

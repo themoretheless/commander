@@ -1,0 +1,38 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `extension_case_preview` is never used
+  --> src/app/batch_rename_dialog.rs:71:12
+   |
+69 | impl ValidatedBatchRename {
+   | ------------------------- method in this implementation
+70 |     #[cfg(feature = "visual-qa")]
+71 |     pub fn extension_case_preview(
+   |            ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.23s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 5 tests
+test rename::tests::extension_case_changes_only_the_last_extension_after_find_replace ... ok
+test rename_presets::tests::independent_extension_case_round_trips_in_named_presets ... ok
+test app::batch_rename_dialog::tests::extension_case_rebuilds_cached_plan_before_submit ... ok
+test rename::tests::extension_case_defaults_preserve_legacy_json_and_collisions_are_blocked ... FAILED
+test workspace::tests::extension_case_only_rename_is_undoable_and_keeps_payload ... ok
+
+failures:
+
+---- rename::tests::extension_case_defaults_preserve_legacy_json_and_collisions_are_blocked stdout ----
+
+thread 'rename::tests::extension_case_defaults_preserve_legacy_json_and_collisions_are_blocked' (80962236) panicked at src/rename.rs:465:9:
+assertion failed: plan.iter().all(|row| row.status == PlanStatus::Collision)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    rename::tests::extension_case_defaults_preserve_legacy_json_and_collisions_are_blocked
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 2362 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--bin commander`

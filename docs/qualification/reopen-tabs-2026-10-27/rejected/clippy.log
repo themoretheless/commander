@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: the borrowed expression implements the required traits
+   --> src/workspace/tabs.rs:433:38
+    |
+433 |             ws.left.set_search_query(&format!("tab-{index}"));
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("tab-{index}")`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#needless_borrows_for_generic_args
+    = note: `-D clippy::needless-borrows-for-generic-args` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrows_for_generic_args)]`
+
+error: unnecessary use of `clone` to create a slice from a reference
+   --> src/workspace/tabs.rs:467:9
+    |
+467 |         assert_eq!(ws.closed_tab_paths(ActivePanel::Right), [child.clone()]);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#cloned_ref_to_slice_refs
+    = note: `-D clippy::cloned-ref-to-slice-refs` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::cloned_ref_to_slice_refs)]`
+
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

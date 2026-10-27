@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.50s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 3 tests
+test panel::tests::same_stem_actions_keep_unrelated_and_filtered_out_picks ... ok
+test panel::tests::same_stem_uses_only_the_last_extension ... ok
+test workspace::tests::same_stem_commands_use_cursor_file_and_leave_other_pane_unchanged ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2409 filtered out; finished in 0.01s
+

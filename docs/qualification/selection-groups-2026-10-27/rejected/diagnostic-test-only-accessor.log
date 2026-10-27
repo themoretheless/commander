@@ -1,0 +1,20 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `selected_paths` found for struct `panel::PanelState` in the current scope
+    --> src/visual_qa.rs:1999:44
+     |
+1999 |                         self.inner.ws.left.selected_paths(),
+     |                                            ^^^^^^^^^^^^^^
+     |
+    ::: src/panel.rs:537:1
+     |
+ 537 | pub struct PanelState {
+     | --------------------- method `selected_paths` not found for this struct
+     |
+help: there is a method `selected_entries` with a similar name
+     |
+1999 -                         self.inner.ws.left.selected_paths(),
+1999 +                         self.inner.ws.left.selected_entries(),
+     |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

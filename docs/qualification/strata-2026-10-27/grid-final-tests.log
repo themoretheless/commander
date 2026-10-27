@@ -1,0 +1,48 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.46s
+     Running unittests src/main.rs (target/debug/build/commander/64b722dc4e709030/out/commander-64b722dc4e709030)
+
+running 40 tests
+test app::file_list::tests::a_refocus_request_puts_focus_back_on_the_cursor_row ... ok
+test app::file_list::tests::click_modifiers_pick_the_selection_gesture ... ok
+test app::file_list::tests::compact_rows_keep_the_minimum_control_height ... ok
+test app::file_list::tests::degenerate_viewport_never_inverts_the_row_window ... ok
+test app::file_list::tests::dragged_folder_is_not_its_own_drop_target ... ok
+test app::file_list::tests::drop_target_is_probed_once_per_drag ... ok
+test app::file_list::tests::empty_state_text_is_renderable_and_platform_neutral ... ok
+test app::file_list::tests::entering_another_folder_is_detected_once_per_pane ... ok
+test app::file_list::tests::filter_matches_are_underlined_not_only_tinted ... ok
+test app::file_list::tests::filtered_footer_marks_the_size_as_the_folder_total ... ok
+test app::file_list::tests::focus_follows_keyboard_cursor_moves_only ... ok
+test app::file_list::tests::folder_extremes_keep_the_full_names_for_hover ... ok
+test app::file_list::tests::folder_of_only_hidden_items_does_not_read_as_empty ... ok
+test app::file_list::tests::footer_count_is_singular_for_one_item ... ok
+test app::file_list::tests::footer_notes_name_filters_and_hidden_selected_rows ... ok
+test app::file_list::tests::grid_rows_count_the_parent_row_first ... ok
+test app::file_list::tests::highlight_merges_runs_and_falls_back_to_plain ... ok
+test app::file_list::tests::highlight_ranges_index_chars_not_bytes ... ok
+test app::file_list::tests::icon_grid_keeps_keyboard_focus_and_reveals_distant_cursor ... ok
+test app::file_list::tests::keyboard_activation_of_the_parent_row_goes_up ... ok
+test app::file_list::tests::matches_are_mapped_through_the_ellipsis ... ok
+test app::file_list::tests::matches_stay_aligned_when_controls_are_shown_as_symbols ... ok
+test app::file_list::tests::modal_close_refocus_waits_for_free_focus_then_expires ... ok
+test app::file_list::tests::name_budget_uses_average_glyph_width ... ok
+test app::file_list::tests::narrow_rows_keep_room_for_the_compare_symbol ... ok
+test app::file_list::tests::parent_row_announces_the_cursor ... ok
+test app::file_list::tests::parent_row_cursor_never_forces_the_file_window ... ok
+test app::file_list::tests::partial_folder_total_reads_as_a_lower_bound ... ok
+test app::file_list::tests::revealed_row_is_pulled_into_the_window ... ok
+test app::file_list::tests::row_label_speaks_what_the_row_only_paints ... ok
+test app::file_list::tests::row_window_is_measured_below_the_parent_row ... ok
+test app::file_list::tests::rows_without_a_captured_identity_explain_the_missing_menu ... ok
+test app::file_list::tests::selected_cursor_row_drops_the_chevron_for_the_check_mark ... ok
+test app::file_list::tests::selected_folder_symlink_is_not_left_measuring ... ok
+test app::file_list::tests::selection_summary_counts_only_visible_selected_rows ... ok
+test app::file_list::tests::shift_click_range_spans_cursor_to_clicked_row ... ok
+test app::file_list::tests::space_on_a_focused_row_does_not_pull_the_cursor_back ... ok
+test app::file_list::tests::unavailable_folder_offers_a_retry_not_a_permission_message ... ok
+test app::file_list::tests::unlistable_folder_wins_over_the_filter_empty_state ... ok
+test app::file_list::tests::unmeasured_selected_folder_marks_the_size_as_a_lower_bound ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 2153 filtered out; finished in 0.37s
+

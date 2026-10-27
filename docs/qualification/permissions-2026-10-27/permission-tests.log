@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.98s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 17 tests
+test fs_at::tests::remove_keeps_the_permission_error_when_the_rmdir_retry_says_not_a_directory ... ok
+test app::file_list::tests::unavailable_folder_offers_a_retry_not_a_permission_message ... ok
+test permissions::tests::octal_and_bit_edits_preserve_unedited_and_special_bits ... ok
+test fs_util::tests::private_directory_rejects_symlinks_and_uses_owner_only_permissions ... ok
+test permissions::tests::unix::stale_modes_and_preflight_errors_do_not_silently_apply ... ok
+test permissions::tests::unix::foreign_permission_preview_binds_identity_before_commit ... ok
+test permissions::tests::unix::cancellation_leaves_committed_changes_and_stops_before_the_next_item ... ok
+test panel::tests::make_info_reads_permissions_from_the_listing_not_the_disk ... ok
+test permissions::tests::unix::permission_edits_only_touch_selected_items_and_keep_contents ... ok
+test panel::tests::make_info_says_when_permissions_cannot_be_read ... ok
+test permissions::tests::unix::hardlink_aliases_and_mixed_bit_states_are_handled ... ok
+test permissions::tests::unix::explicit_descendants_commit_before_ancestors_lose_access ... ok
+test permissions::tests::unix::replacement_and_symlink_substitution_never_change_the_new_target ... ok
+test permissions::tests::unix::asynchronous_cancellation_reaches_the_worker_before_commit ... ok
+test version_dedup::tests::dedup_keeps_a_separate_copy_when_permissions_differ ... ok
+test workspace::tests::permission_request_keeps_the_selected_listing_identity ... ok
+test panel::tests::permission_targets_keep_explicit_parent_child_and_missing_foreign_picks ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 2222 filtered out; finished in 0.01s
+

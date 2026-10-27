@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.22s
+     Running `target/debug/commander --visual-qa pdf_preview --output target/visual-qa-pdf`
+2026-10-27T17:37:32 INFO  commander::logging: logging initialized
+2026-10-27T17:37:32 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: pdf_preview
+2026-10-27T17:37:32 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-27T17:37:33 INFO  commander::visual_qa: PDF native QA: pointer Next/Previous round trip 1 -> 2 -> 1 validated
+2026-10-27T17:37:33 INFO  commander::visual_qa: PDF native QA: pointer Next/Previous round trip 1 -> 2 -> 1 validated

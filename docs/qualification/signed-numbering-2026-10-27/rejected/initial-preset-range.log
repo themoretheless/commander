@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.46s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 4 tests
+test rename::tests::signed_numbering_descends_crosses_zero_and_pads_the_sign ... ok
+test rename::tests::signed_numbering_widens_arithmetic_and_accepts_legacy_unsigned_values ... ok
+test rename_presets::tests::signed_numbering_round_trips_in_presets ... FAILED
+test app::batch_rename_dialog::tests::signed_numbering_rebuilds_cached_preview_and_preserves_step_in_state ... ok
+
+failures:
+
+---- rename_presets::tests::signed_numbering_round_trips_in_presets stdout ----
+
+thread 'rename_presets::tests::signed_numbering_round_trips_in_presets' (81002123) panicked at src/rename_presets.rs:126:18:
+called `Result::unwrap()` on an `Err` value: "Preset numbering is outside the editor's supported range"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    rename_presets::tests::signed_numbering_round_trips_in_presets
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 2367 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

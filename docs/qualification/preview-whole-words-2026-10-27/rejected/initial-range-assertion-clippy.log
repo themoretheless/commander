@@ -1,0 +1,89 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: manual implementation of `.is_multiple_of()`
+    --> src/visual_qa.rs:1189:20
+     |
+1189 |                 if self.regex_click_phase % 3 > 0 {
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!self.regex_click_phase.is_multiple_of(3)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#manual_is_multiple_of
+     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:557:67
+    |
+557 |         assert_eq!(matches_options("[cat]", "cat", true, true).0, [1..4]);
+    |                                                                   ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+    = note: `-D clippy::single-range-in-vec-init` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::single_range_in_vec_init)]`
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+557 -         assert_eq!(matches_options("[cat]", "cat", true, true).0, [1..4]);
+557 +         assert_eq!(matches_options("[cat]", "cat", true, true).0, (1..4).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 4, try
+    |
+557 -         assert_eq!(matches_options("[cat]", "cat", true, true).0, [1..4]);
+557 +         assert_eq!(matches_options("[cat]", "cat", true, true).0, [1; 4]);
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:559:70
+    |
+559 |         assert_eq!(matches_options("catalog", "cat", true, false).0, [0..3]);
+    |                                                                      ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+559 -         assert_eq!(matches_options("catalog", "cat", true, false).0, [0..3]);
+559 +         assert_eq!(matches_options("catalog", "cat", true, false).0, (0..3).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 3, try
+    |
+559 -         assert_eq!(matches_options("catalog", "cat", true, false).0, [0..3]);
+559 +         assert_eq!(matches_options("catalog", "cat", true, false).0, [0; 3]);
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:602:13
+    |
+602 |             [0..3]
+    |             ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+602 -             [0..3]
+602 +             (0..3).collect::<std::vec::Vec<usize>>()
+    |
+help: if you wanted an array of len 3, try
+    |
+602 -             [0..3]
+602 +             [0; 3]
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:629:35
+    |
+629 |         assert_eq!(state.matches, [0..7]);
+    |                                   ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+629 -         assert_eq!(state.matches, [0..7]);
+629 +         assert_eq!(state.matches, (0..7).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 7, try
+    |
+629 -         assert_eq!(state.matches, [0..7]);
+629 +         assert_eq!(state.matches, [0; 7]);
+    |
+
+error: could not compile `commander` (bin "commander" test) due to 5 previous errors

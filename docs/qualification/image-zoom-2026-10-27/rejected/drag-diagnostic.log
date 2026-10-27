@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.90s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 1 test
+test image_preview::tests::mouse_drag_pans_a_zoomed_image ... zoom=4, viewport=[300.0 216.0] size=[1200.0 800.0] content=[1200.0 800.0] inner=[[0.0 34.0] - [300.0 250.0]] offset=[0.0 0.0] drag=None
+zoom=4, viewport=[300.0 216.0] size=[1200.0 800.0] content=[1200.0 800.0] inner=[[0.0 34.0] - [300.0 250.0]] offset=[0.0 0.0] drag=None
+zoom=4, viewport=[300.0 216.0] size=[1200.0 800.0] content=[1200.0 800.0] inner=[[0.0 34.0] - [300.0 250.0]] offset=[0.0 0.0] drag=None
+zoom=4, viewport=[300.0 216.0] size=[1200.0 800.0] content=[1200.0 800.0] inner=[[0.0 34.0] - [300.0 250.0]] offset=[0.0 0.0] drag=None
+
+thread 'image_preview::tests::mouse_drag_pans_a_zoomed_image' (79457818) panicked at src/image_preview.rs:245:9:
+drag must pan the image: [0.0 0.0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    image_preview::tests::mouse_drag_pans_a_zoomed_image
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2226 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--bin commander`

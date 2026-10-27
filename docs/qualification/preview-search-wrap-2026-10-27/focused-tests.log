@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.29s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 18 tests
+test preview_find::tests::whole_word_regex_keeps_trailing_free_spacing_comments_valid ... ok
+test preview_find::tests::literal_unicode_search_uses_character_offsets ... ok
+test preview_find::tests::whole_words_exclude_unicode_word_interiors_and_keep_character_offsets ... ok
+test preview_find::tests::whole_word_regex_groups_alternation_and_retains_limits ... ok
+test preview_find::tests::regex_unicode_anchors_capture_groups_and_zero_width_are_character_ranges ... ok
+test preview_find::tests::match_budget_is_explicit_and_navigation_wraps ... ok
+test preview_find::tests::zero_width_regex_matches_draw_a_marker_without_modifying_text ... ok
+test preview_find::tests::regex_errors_limits_and_cancellation_are_explicit ... ok
+test preview_find::tests::formatted_search_indexes_visible_text_and_skips_hidden_html ... ok
+test preview_find::tests::hidden_previews_cancel_jobs_and_admission_failure_is_visible ... ok
+test preview_find::tests::finding_a_distant_match_scrolls_the_preview_into_view ... ok
+test preview_find::tests::retiring_one_pane_keeps_the_other_job_and_abandonment_can_be_retried ... ok
+test preview_find::tests::whole_word_toggle_discards_pending_regex_results ... ok
+test preview_find::tests::query_edits_and_content_changes_reset_results_but_reflow_keeps_current ... ok
+test preview_find::tests::regex_jobs_debounce_discard_old_results_and_preserve_normal_completion_counts ... ok
+test preview_find::tests::enter_and_shift_enter_navigate_only_the_focused_search_field ... ok
+test preview_find::tests::wrap_toggle_keeps_current_result_and_disables_edges_for_buttons_and_f3 ... ok
+test preview_find::tests::f3_navigates_both_directions_wraps_and_does_not_consume_without_focus ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 2374 filtered out; finished in 0.03s
+

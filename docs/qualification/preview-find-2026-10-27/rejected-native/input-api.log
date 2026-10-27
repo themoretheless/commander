@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0560]: struct `RawInput` has no field named `modifiers`
+   --> src/preview_find.rs:296:17
+    |
+296 |                 modifiers,
+    |                 ^^^^^^^^^ `RawInput` does not have this field
+    |
+    = note: available fields are: `viewport_id`, `viewports`, `safe_area_insets`, `max_texture_side`, `time` ... and 6 others
+
+For more information about this error, try `rustc --explain E0560`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

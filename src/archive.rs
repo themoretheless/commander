@@ -1,5 +1,5 @@
 //! Bounded archive inspection and extraction shared by the archive browser and
-//! search. ZIP and tar.gz listing are in-process; selected tar extraction uses
+//! search. ZIP, TAR and tar.gz listing are in-process; selected tar extraction uses
 //! system `tar`. Auto-inspect callers should consult `crate::trust` (J003 hooks).
 
 use std::fs;
@@ -22,6 +22,7 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 pub enum ArchiveKind {
     Zip,
     TarGz,
+    Tar,
 }
 
 impl ArchiveKind {
@@ -29,6 +30,7 @@ impl ArchiveKind {
         match self {
             Self::Zip => "ZIP",
             Self::TarGz => "tar.gz",
+            Self::Tar => "TAR",
         }
     }
 }
@@ -51,6 +53,7 @@ pub struct ArchiveMember {
 
 #[derive(Clone, Debug)]
 pub struct ArchiveListing {
+    pub tree: Result<Arc<crate::archive_tree::Tree>, String>,
     pub kind: ArchiveKind,
     pub members: Vec<ArchiveMember>,
     pub declared_members: usize,
@@ -82,8 +85,7 @@ pub struct VisitSummary {
     pub unsafe_members: usize,
     pub unreadable_members: usize,
     pub content_skipped: usize,
-    /// The archive's members were not searched at all because content search
-    /// is not supported for this format (tar.gz would need a full decompress).
+    /// A provider could not search the archive members for this format.
     pub members_not_searched: bool,
     pub cancelled: bool,
 }
@@ -103,6 +105,8 @@ pub fn kind_of(path: &Path) -> Option<ArchiveKind> {
         .unwrap_or_default();
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         Some(ArchiveKind::TarGz)
+    } else if name.ends_with(".tar") {
+        Some(ArchiveKind::Tar)
     } else if path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
@@ -141,20 +145,16 @@ pub fn visit_members(
         return Ok(VisitSummary::default());
     }
     match kind_of(archive_path) {
-        Some(ArchiveKind::TarGz) => {
-            if needs_content {
-                budget.archives += 1;
-                return Ok(VisitSummary {
-                    members_not_searched: true,
-                    ..Default::default()
-                });
-            }
-            return visit_tar_gz_list(archive_path, budget, cancelled, |member| {
-                emit(SearchMember {
-                    member,
-                    content: None,
-                })
-            });
+        Some(kind @ (ArchiveKind::TarGz | ArchiveKind::Tar)) => {
+            return visit_tar(
+                archive_path,
+                kind,
+                needs_content,
+                MAX_TAR_STREAM_BYTES,
+                budget,
+                cancelled,
+                emit,
+            );
         }
         Some(ArchiveKind::Zip) => {}
         None => {
@@ -244,17 +244,65 @@ pub fn visit_members(
     Ok(summary)
 }
 
-fn visit_tar_gz_list(
+/// Includes skipped payloads: sequential TAR scans must read past them to
+/// reach later headers. A large/bomb stream produces an explicit partial listing.
+const MAX_TAR_STREAM_BYTES: u64 = 128 * 1024 * 1024;
+
+struct TarStream<'a, R> {
+    inner: R,
+    remaining: &'a std::cell::Cell<u64>,
+    limited: &'a std::cell::Cell<bool>,
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl<R: Read> Read for TarStream<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if (self.cancelled)() {
+            return Err(std::io::Error::other("Archive scan cancelled"));
+        }
+        if self.remaining.get() == 0 {
+            self.limited.set(true);
+            return Err(std::io::Error::other("Archive stream limit reached"));
+        }
+        let length = buffer
+            .len()
+            .min(64 * 1024)
+            .min(self.remaining.get() as usize);
+        let count = self.inner.read(&mut buffer[..length])?;
+        self.remaining.set(self.remaining.get() - count as u64);
+        Ok(count)
+    }
+}
+
+fn visit_tar(
     archive_path: &Path,
+    kind: ArchiveKind,
+    needs_content: bool,
+    stream_limit: u64,
     budget: &mut SearchBudget,
     cancelled: impl Fn() -> bool,
-    mut emit: impl FnMut(ArchiveMember) -> bool,
+    mut emit: impl FnMut(SearchMember) -> bool,
 ) -> Result<VisitSummary, String> {
     budget.archives += 1;
     let file = fs::File::open(archive_path)
         .map_err(|error| format!("Could not open archive {}: {error}", archive_path.display()))?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
+    let reader: Box<dyn Read> = match kind {
+        ArchiveKind::Tar => Box::new(file),
+        ArchiveKind::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
+        ArchiveKind::Zip => return Err("Expected a TAR archive".into()),
+    };
+    let remaining = std::cell::Cell::new(stream_limit);
+    let limited = std::cell::Cell::new(false);
+    let reader = TarStream {
+        inner: reader,
+        remaining: &remaining,
+        limited: &limited,
+        cancelled: &cancelled,
+    };
+    let mut archive = tar::Archive::new(reader);
     let entries = archive
         .entries()
         .map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
@@ -268,15 +316,27 @@ fn visit_tar_gz_list(
             budget.truncated = true;
             break;
         }
-        budget.members += 1;
-        summary.declared_members += 1;
-        let entry = match entry {
+        let mut entry = match entry {
             Ok(entry) => entry,
-            Err(_) => {
-                summary.unreadable_members += 1;
-                continue;
+            Err(error) => {
+                if limited.get() {
+                    budget.truncated = true;
+                    break;
+                }
+                if cancelled() {
+                    summary.cancelled = true;
+                    break;
+                }
+                return Err(format!(
+                    "Could not read TAR archive {}: {error}",
+                    archive_path.display()
+                ));
             }
         };
+        budget.members += 1;
+        summary.declared_members += 1;
+        let size = entry.header().size().unwrap_or(0);
+        summary.declared_uncompressed_bytes += u128::from(size);
         let raw_name = entry.path_bytes();
         let raw_name = raw_name.strip_prefix(b"./").unwrap_or(&raw_name);
         if raw_name.is_empty() || raw_name == b"." {
@@ -290,27 +350,61 @@ fn visit_tar_gz_list(
             summary.unsafe_members += 1;
             continue;
         }
+        let tar_name = Some(tar_name_from_bytes(raw_name));
         let is_dir = entry.header().entry_type().is_dir();
-        let size = entry.header().size().unwrap_or(0);
-        let modified = entry
-            .header()
-            .mtime()
-            .ok()
-            .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds));
+        let is_regular = entry.header().entry_type().is_file();
+        let modified = entry.header().mtime().ok().and_then(|seconds| {
+            std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))
+        });
         let member = ArchiveMember {
             index,
             path,
             is_dir,
             size: if is_dir { 0 } else { size },
             compressed_size: 0,
-            tar_name: Some(tar_name_from_bytes(raw_name)),
+            tar_name,
             modified,
         };
-        if !emit(member) {
+        let content = if needs_content && !is_dir {
+            if !is_regular
+                || size > MAX_MEMBER_TEXT_BYTES
+                || budget.content_bytes.saturating_add(size) > MAX_TOTAL_TEXT_BYTES
+            {
+                summary.content_skipped += 1;
+                None
+            } else {
+                let mut bytes = Vec::with_capacity(size as usize);
+                let result = (&mut entry)
+                    .take(MAX_MEMBER_TEXT_BYTES + 1)
+                    .read_to_end(&mut bytes);
+                budget.content_bytes = budget.content_bytes.saturating_add(bytes.len() as u64);
+                if cancelled() {
+                    summary.cancelled = true;
+                    break;
+                }
+                if limited.get() {
+                    budget.truncated = true;
+                    break;
+                }
+                if result.is_err()
+                    || bytes.len() as u64 != size
+                    || bytes.iter().take(8192).any(|byte| *byte == 0)
+                {
+                    summary.content_skipped += 1;
+                    None
+                } else {
+                    Some(Arc::from(String::from_utf8_lossy(&bytes).into_owned()))
+                }
+            }
+        } else {
+            None
+        };
+        if !emit(SearchMember { member, content }) {
             break;
         }
         summary.emitted += 1;
     }
+    budget.truncated |= limited.get();
     Ok(summary)
 }
 
@@ -471,7 +565,12 @@ fn list_archive(path: PathBuf, cancelled: &AtomicBool) -> Result<ArchiveListing,
         return Err("Archive listing cancelled".to_string());
     }
     members.sort_by(|left, right| left.path.cmp(&right.path));
+    let tree = crate::archive_tree::Tree::build(&members, || cancelled.load(Ordering::Acquire));
+    if cancelled.load(Ordering::Acquire) {
+        return Err("Archive listing cancelled".into());
+    }
     Ok(ArchiveListing {
+        tree,
         kind,
         members,
         declared_members: summary.declared_members,
@@ -501,8 +600,8 @@ pub fn extract_members(
         Some(ArchiveKind::Zip) => {
             extract_zip_members(archive_path, dest_dir, member_indexes, cancelled)
         }
-        Some(ArchiveKind::TarGz) => {
-            extract_tar_gz_members(archive_path, dest_dir, member_indexes, cancelled)
+        Some(ArchiveKind::TarGz | ArchiveKind::Tar) => {
+            extract_tar_members(archive_path, dest_dir, member_indexes, cancelled)
         }
         None => Err(format!(
             "Unsupported archive format: {}",
@@ -765,7 +864,7 @@ fn dos_time_to_system(time: zip::DateTime) -> Option<std::time::SystemTime> {
     Some(local.into())
 }
 
-fn extract_tar_gz_members(
+fn extract_tar_members(
     archive_path: &Path,
     dest_dir: &Path,
     member_indexes: &[usize],
@@ -839,7 +938,11 @@ fn extract_tar_gz_members(
     fs::write(&list_path, &names)
         .map_err(|error| format!("Could not extract {}: {error}", archive_path.display()))?;
     let output = std::process::Command::new("tar")
-        .arg("-xzf")
+        .arg(if kind_of(archive_path) == Some(ArchiveKind::Tar) {
+            "-xf"
+        } else {
+            "-xzf"
+        })
         .arg(archive_path)
         .arg("-C")
         .arg(dest_dir)
@@ -1114,6 +1217,222 @@ mod tests {
         assert_eq!(modified("undated.txt"), None);
     }
 
+    fn write_test_tar(path: &Path, files: &[(&str, &[u8])]) {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, bytes) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(37);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *bytes).unwrap();
+        }
+        let bytes = builder.into_inner().unwrap();
+        if kind_of(path) == Some(ArchiveKind::TarGz) {
+            let mut gzip = flate2::write::GzEncoder::new(
+                fs::File::create(path).unwrap(),
+                flate2::Compression::fast(),
+            );
+            gzip.write_all(&bytes).unwrap();
+            gzip.finish().unwrap();
+        } else {
+            fs::write(path, bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn tar_content_search_handles_plain_and_gzip_and_preserves_metadata() {
+        let temp = TempDir::new();
+        let large = vec![b'a'; MAX_MEMBER_TEXT_BYTES as usize + 1];
+        for name in ["pack.tar", "pack.tgz"] {
+            let path = temp.path().join(name);
+            write_test_tar(
+                &path,
+                &[
+                    ("docs/ёж.txt", "Unicode needle".as_bytes()),
+                    ("binary.dat", b"zero\0bytes"),
+                    ("large.txt", &large),
+                ],
+            );
+            let mut budget = SearchBudget::default();
+            let mut members = Vec::new();
+            let summary = visit_members(
+                &path,
+                true,
+                &mut budget,
+                || false,
+                |member| {
+                    members.push(member);
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(members.len(), 3);
+            assert_eq!(members[0].content.as_deref(), Some("Unicode needle"));
+            assert_eq!(members[0].member.path, Path::new("docs/ёж.txt"));
+            assert_eq!(
+                members[0].member.modified,
+                Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(37))
+            );
+            assert!(members[1].content.is_none());
+            assert!(members[2].content.is_none());
+            assert_eq!(summary.content_skipped, 2);
+            assert_eq!(
+                summary.declared_uncompressed_bytes,
+                u128::from(14_u64 + 10 + large.len() as u64)
+            );
+            assert!(!summary.members_not_searched);
+            assert!(!budget.truncated);
+        }
+    }
+
+    #[test]
+    fn tar_stream_budget_includes_skipped_payloads_and_cancels_between_members() {
+        let temp = TempDir::new();
+        let path = temp.path().join("limited.tgz");
+        write_test_tar(
+            &path,
+            &[("large.txt", &vec![b'x'; 9000]), ("later.txt", b"needle")],
+        );
+        for needs_content in [false, true] {
+            let mut budget = SearchBudget::default();
+            visit_tar(
+                &path,
+                ArchiveKind::TarGz,
+                needs_content,
+                1024,
+                &mut budget,
+                || false,
+                |_| true,
+            )
+            .unwrap();
+            assert!(budget.truncated);
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut budget = SearchBudget::default();
+        let summary = visit_members(
+            &path,
+            false,
+            &mut budget,
+            || cancelled.load(Ordering::Acquire),
+            |_| {
+                cancelled.store(true, Ordering::Release);
+                true
+            },
+        )
+        .unwrap();
+        assert!(summary.cancelled);
+        assert_eq!(summary.emitted, 1);
+        assert!(!budget.truncated);
+    }
+
+    #[test]
+    fn tar_visits_share_member_and_text_budgets() {
+        let temp = TempDir::new();
+        let path = temp.path().join("budget.tar");
+        write_test_tar(&path, &[("first.txt", b"needle"), ("second.txt", b"later")]);
+        let mut budget = SearchBudget {
+            members: MAX_MEMBERS_PER_RUN - 1,
+            content_bytes: MAX_TOTAL_TEXT_BYTES - 3,
+            ..Default::default()
+        };
+        let summary = visit_members(
+            &path,
+            true,
+            &mut budget,
+            || false,
+            |member| {
+                assert!(member.content.is_none());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.emitted, 1);
+        assert_eq!(summary.content_skipped, 1);
+        assert_eq!(budget.members, MAX_MEMBERS_PER_RUN);
+        assert_eq!(budget.content_bytes, MAX_TOTAL_TEXT_BYTES - 3);
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn tar_stream_checks_cancellation_while_skipping_a_payload() {
+        let remaining = std::cell::Cell::new(1000);
+        let limited = std::cell::Cell::new(false);
+        let cancelled = std::cell::Cell::new(false);
+        let cancel = || cancelled.get();
+        let mut reader = TarStream {
+            inner: std::io::repeat(0),
+            remaining: &remaining,
+            limited: &limited,
+            cancelled: &cancel,
+        };
+        assert_eq!(reader.read(&mut [0; 128]).unwrap(), 128);
+        cancelled.set(true);
+        assert!(reader.read(&mut [0; 128]).is_err());
+        assert_eq!(remaining.get(), 872);
+        assert!(!limited.get());
+    }
+
+    #[test]
+    fn tar_content_search_does_not_follow_link_targets() {
+        let temp = TempDir::new();
+        let outside = temp.file("secret.txt", "must not be read");
+        let path = temp.path().join("links.tar");
+        let mut builder = tar::Builder::new(fs::File::create(&path).unwrap());
+        for entry_type in [tar::EntryType::Symlink, tar::EntryType::Link] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_entry_type(entry_type);
+            builder
+                .append_link(
+                    &mut header,
+                    if entry_type.is_symlink() {
+                        "symbolic"
+                    } else {
+                        "hard"
+                    },
+                    &outside,
+                )
+                .unwrap();
+        }
+        builder.finish().unwrap();
+        let mut budget = SearchBudget::default();
+        let summary = visit_members(
+            &path,
+            true,
+            &mut budget,
+            || false,
+            |member| {
+                assert!(member.content.is_none());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.emitted, 2);
+        assert_eq!(summary.content_skipped, 2);
+        assert_eq!(budget.content_bytes, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plain_tar_extraction_keeps_existing_files_and_extracts_literal_names() {
+        let temp = TempDir::new();
+        let path = temp.path().join("plain.tar");
+        write_test_tar(
+            &path,
+            &[("keep.txt", b"archive"), ("nested/a*b.txt", b"new")],
+        );
+        let dest = temp.dir("out");
+        fs::write(dest.join("keep.txt"), b"original").unwrap();
+        let report = extract_members(&path, &dest, &[0, 1], &AtomicBool::new(false)).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.extracted, 1);
+        assert_eq!(report.skipped_existing, 1);
+        assert_eq!(fs::read(dest.join("keep.txt")).unwrap(), b"original");
+        assert_eq!(fs::read(dest.join("nested/a*b.txt")).unwrap(), b"new");
+    }
+
     #[test]
     fn supported_archive_detection_is_case_insensitive() {
         assert!(is_supported(Path::new("bundle.ZIP")));
@@ -1122,7 +1441,8 @@ mod tests {
             kind_of(Path::new("bundle.tar.gz")),
             Some(ArchiveKind::TarGz)
         );
-        assert!(!is_supported(Path::new("bundle.tar")));
+        assert_eq!(kind_of(Path::new("bundle.TAR")), Some(ArchiveKind::Tar));
+        assert!(!is_supported(Path::new("bundle.tar.xz")));
     }
 
     #[test]
@@ -1136,6 +1456,14 @@ mod tests {
         let dest = temp.path().join("out");
         let cancelled = AtomicBool::new(false);
         let listing = list_archive(archive.clone(), &cancelled).unwrap();
+        let tree = listing.tree.as_ref().unwrap();
+        assert_eq!(tree.directories.len(), 1);
+        assert_eq!(tree.directories[0].path, Path::new("nested"));
+        assert_eq!(
+            listing.members.len(),
+            2,
+            "synthetic folders never enter extraction members"
+        );
         let indexes: Vec<usize> = listing
             .members
             .iter()

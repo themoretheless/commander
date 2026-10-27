@@ -1,0 +1,25 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `select_path` found for struct `panel::PanelState` in the current scope
+    --> src/visual_qa.rs:1568:22
+     |
+1565 | /                 self.inner
+1566 | |                     .ws
+1567 | |                     .left
+1568 | |                     .select_path(self.fixture.left.join("item.txt"));
+     | |_____________________-^^^^^^^^^^^
+     |
+    ::: src/panel.rs:537:1
+     |
+ 537 |   pub struct PanelState {
+     |   --------------------- method `select_path` not found for this struct
+     |
+help: there is a method `select_all` with a similar name, but with different arguments
+    --> src/panel.rs:1779:5
+     |
+1779 |     pub fn select_all(&mut self) {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

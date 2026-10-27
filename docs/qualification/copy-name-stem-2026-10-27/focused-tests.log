@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.05s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 3 tests
+test clipboard::tests::names_without_extensions_keep_selection_order_duplicates_and_control_escaping ... ok
+test clipboard::tests::names_without_extensions_preserve_dotfiles_unicode_and_other_dots ... ok
+test workspace::tests::copy_name_without_extension_uses_selected_paths_and_cursor_fallback_without_mutation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2385 filtered out; finished in 0.01s
+

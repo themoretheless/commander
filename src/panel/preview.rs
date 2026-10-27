@@ -28,6 +28,7 @@ impl PreviewIdentity {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreviewContent {
+    Pdf(PreviewIdentity),
     Image(PathBuf),
     Pending(PreviewIdentity),
     Text {
@@ -171,6 +172,9 @@ fn info_kind(target_kind: String, is_symlink: bool, dangling: bool) -> String {
 pub fn make_preview(entry: &FileEntry) -> Option<PreviewContent> {
     if entry.is_dir {
         return None;
+    }
+    if entry.extension.eq_ignore_ascii_case("pdf") {
+        return Some(PreviewContent::Pdf(PreviewIdentity::from_entry(entry)));
     }
     if !entry.is_image() {
         return Some(PreviewContent::Pending(PreviewIdentity::from_entry(entry)));

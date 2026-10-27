@@ -1,0 +1,96 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:485:50
+    |
+485 |         assert_eq!(indexed("Ёж ёж", "ёж", true), [3..5]);
+    |                                                  ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+    = note: `-D clippy::single-range-in-vec-init` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::single_range_in_vec_init)]`
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+485 -         assert_eq!(indexed("Ёж ёж", "ёж", true), [3..5]);
+485 +         assert_eq!(indexed("Ёж ёж", "ёж", true), (3..5).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 5, try
+    |
+485 -         assert_eq!(indexed("Ёж ёж", "ёж", true), [3..5]);
+485 +         assert_eq!(indexed("Ёж ёж", "ёж", true), [3; 5]);
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:491:52
+    |
+491 |         assert_eq!(indexed("ёж\né É", r"$", true), [6..6]);
+    |                                                    ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+491 -         assert_eq!(indexed("ёж\né É", r"$", true), [6..6]);
+491 +         assert_eq!(indexed("ёж\né É", r"$", true), (6..6).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 6, try
+    |
+491 -         assert_eq!(indexed("ёж\né É", r"$", true), [6..6]);
+491 +         assert_eq!(indexed("ёж\né É", r"$", true), [6; 6]);
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:492:53
+    |
+492 |         assert_eq!(indexed("a[x]", r"\[x\]", true), [1..4]);
+    |                                                     ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+492 -         assert_eq!(indexed("a[x]", r"\[x\]", true), [1..4]);
+492 +         assert_eq!(indexed("a[x]", r"\[x\]", true), (1..4).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 4, try
+    |
+492 -         assert_eq!(indexed("a[x]", r"\[x\]", true), [1..4]);
+492 +         assert_eq!(indexed("a[x]", r"\[x\]", true), [1; 4]);
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:581:35
+    |
+581 |         assert_eq!(state.matches, [8..15]);
+    |                                   ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+581 -         assert_eq!(state.matches, [8..15]);
+581 +         assert_eq!(state.matches, (8..15).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 15, try
+    |
+581 -         assert_eq!(state.matches, [8..15]);
+581 +         assert_eq!(state.matches, [8; 15]);
+    |
+
+error: a `Vec` of `Range` that is only one element
+   --> src/preview_find.rs:634:33
+    |
+634 |                 state.matches = vec![2..2];
+    |                                 ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+634 -                 state.matches = vec![2..2];
+634 +                 state.matches = (2..2).collect::<std::vec::Vec<usize>>();
+    |
+help: if you wanted a `Vec` of len 2, try
+    |
+634 -                 state.matches = vec![2..2];
+634 +                 state.matches = vec![2; 2];
+    |
+
+error: could not compile `commander` (bin "commander" test) due to 5 previous errors

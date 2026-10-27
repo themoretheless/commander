@@ -1,0 +1,21 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+   --> src/app/permissions_dialog.rs:184:17
+    |
+184 | /                 if ui.button("Stop").on_hover_text("Already applied permission changes remain").clicked() || escape {
+185 | |                     if let Some(run) = &state.applying { run.cancel(); }
+186 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+184 ~                 if (ui.button("Stop").on_hover_text("Already applied permission changes remain").clicked() || escape) {
+185 ~                     && let Some(run) = &state.applying { run.cancel(); }
+    |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

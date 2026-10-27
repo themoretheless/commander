@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: manual implementation of `.is_multiple_of()`
+    --> src/visual_qa.rs:1189:20
+     |
+1189 |                 if self.regex_click_phase % 3 > 0 {
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!self.regex_click_phase.is_multiple_of(3)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#manual_is_multiple_of
+     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -1,0 +1,27 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.45s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 6 tests
+test app::render::tests::disabled_image_preview_names_the_switch ... ok
+test image_preview::tests::fit_is_aspect_preserving_and_zoom_is_explicitly_relative ... ok
+test image_preview::tests::image_changes_reset_view_and_panes_keep_independent_state ... ok
+test image_preview::tests::mouse_drag_pans_a_zoomed_image ... FAILED
+test image_preview::tests::zoom_limits_and_invalid_gestures_do_not_poison_state ... ok
+test panel::tests::declined_image_preview_message_names_the_file_and_the_switch ... ok
+
+failures:
+
+---- image_preview::tests::mouse_drag_pans_a_zoomed_image stdout ----
+
+thread 'image_preview::tests::mouse_drag_pans_a_zoomed_image' (79438499) panicked at src/image_preview.rs:236:9:
+drag must pan the image: [0.0 0.0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    image_preview::tests::mouse_drag_pans_a_zoomed_image
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 2221 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--bin commander`

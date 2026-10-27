@@ -23,6 +23,23 @@ const MAX_CAPTURE_ATTEMPTS: u8 = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     DesktopBase,
+    IconsGrid,
+    ImagePreview,
+    PdfPreview,
+    Checksums,
+    HexPreview,
+    HexSearch,
+    Permissions,
+    RenamePresets,
+    RenameTarget,
+    RenameOptions,
+    NameList,
+    FolderTabs,
+    CodePreview,
+    UnicodePreview,
+    RegexPreview,
+    JsonPreview,
+    ArchiveBrowser,
     MinimumWindow,
     Zoom200Accessible,
     ConfirmationOwner,
@@ -32,8 +49,25 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 22] = [
         Self::DesktopBase,
+        Self::IconsGrid,
+        Self::ImagePreview,
+        Self::PdfPreview,
+        Self::Checksums,
+        Self::HexPreview,
+        Self::HexSearch,
+        Self::Permissions,
+        Self::RenamePresets,
+        Self::RenameTarget,
+        Self::RenameOptions,
+        Self::NameList,
+        Self::FolderTabs,
+        Self::CodePreview,
+        Self::UnicodePreview,
+        Self::RegexPreview,
+        Self::JsonPreview,
+        Self::ArchiveBrowser,
         Self::MinimumWindow,
         Self::Zoom200Accessible,
         Self::ConfirmationOwner,
@@ -49,6 +83,23 @@ impl Scenario {
     const fn name(self) -> &'static str {
         match self {
             Self::DesktopBase => "desktop_base",
+            Self::IconsGrid => "icons_grid",
+            Self::ImagePreview => "image_preview",
+            Self::PdfPreview => "pdf_preview",
+            Self::Checksums => "checksums",
+            Self::HexPreview => "hex_preview",
+            Self::HexSearch => "hex_search",
+            Self::Permissions => "permissions",
+            Self::RenamePresets => "rename_presets",
+            Self::RenameTarget => "rename_target",
+            Self::RenameOptions => "rename_options",
+            Self::NameList => "name_list",
+            Self::FolderTabs => "folder_tabs",
+            Self::CodePreview => "code_preview",
+            Self::UnicodePreview => "unicode_preview",
+            Self::RegexPreview => "regex_preview",
+            Self::JsonPreview => "json_preview",
+            Self::ArchiveBrowser => "archive_browser",
             Self::MinimumWindow => "minimum_window",
             Self::Zoom200Accessible => "zoom_200_accessible",
             Self::ConfirmationOwner => "confirmation_owner",
@@ -59,7 +110,26 @@ impl Scenario {
     const fn viewport(self) -> [f32; 2] {
         match self {
             Self::MinimumWindow | Self::Zoom200Accessible => [900.0, 500.0],
-            Self::DesktopBase | Self::ConfirmationOwner | Self::PaneTool => [1280.0, 760.0],
+            Self::DesktopBase
+            | Self::IconsGrid
+            | Self::ImagePreview
+            | Self::PdfPreview
+            | Self::Checksums
+            | Self::HexPreview
+            | Self::HexSearch
+            | Self::Permissions
+            | Self::RenamePresets
+            | Self::RenameTarget
+            | Self::RenameOptions
+            | Self::NameList
+            | Self::FolderTabs
+            | Self::CodePreview
+            | Self::UnicodePreview
+            | Self::RegexPreview
+            | Self::JsonPreview
+            | Self::ArchiveBrowser
+            | Self::ConfirmationOwner
+            | Self::PaneTool => [1280.0, 760.0],
         }
     }
 
@@ -78,7 +148,26 @@ impl Scenario {
     const fn theme(self) -> ThemeMode {
         match self {
             Self::MinimumWindow | Self::Zoom200Accessible => ThemeMode::Light,
-            Self::DesktopBase | Self::ConfirmationOwner | Self::PaneTool => ThemeMode::Dark,
+            Self::DesktopBase
+            | Self::IconsGrid
+            | Self::ImagePreview
+            | Self::PdfPreview
+            | Self::Checksums
+            | Self::HexPreview
+            | Self::HexSearch
+            | Self::Permissions
+            | Self::RenamePresets
+            | Self::RenameTarget
+            | Self::RenameOptions
+            | Self::NameList
+            | Self::FolderTabs
+            | Self::CodePreview
+            | Self::UnicodePreview
+            | Self::RegexPreview
+            | Self::JsonPreview
+            | Self::ArchiveBrowser
+            | Self::ConfirmationOwner
+            | Self::PaneTool => ThemeMode::Dark,
         }
     }
 
@@ -91,6 +180,16 @@ impl Scenario {
 
     const fn show_tree(self) -> bool {
         matches!(self, Self::MinimumWindow)
+    }
+
+    const fn modal_owner(self) -> Option<&'static str> {
+        match self {
+            Self::ConfirmationOwner => Some("Confirmation"),
+            Self::Permissions => Some("Permissions"),
+            Self::NameList => Some("Mask"),
+            Self::RenamePresets | Self::RenameTarget | Self::RenameOptions => Some("BatchRename"),
+            _ => None,
+        }
     }
 
     const fn needs_confirmation(self) -> bool {
@@ -189,6 +288,27 @@ fn run(request: Request) -> eframe::Result<()> {
     .map_err(app_error)?;
     write_unfinished_manifest(&scenario_dir, request.scenario, "attempted", None)
         .map_err(app_error)?;
+
+    if (request.scenario == Scenario::Permissions && !cfg!(unix))
+        || (request.scenario == Scenario::PdfPreview && !cfg!(target_os = "macos"))
+    {
+        let detail = "This native preview scenario is unavailable on this host";
+        write_capabilities(
+            &scenario_dir,
+            CapabilityStatus::Unsupported,
+            "unsupported_platform",
+            detail,
+            None,
+        )
+        .map_err(app_error)?;
+        write_unfinished_manifest(&scenario_dir, request.scenario, "skipped", Some(detail))
+            .map_err(app_error)?;
+        return if request.allow_skip {
+            Ok(())
+        } else {
+            Err(app_error(detail))
+        };
+    }
 
     let fixture = Fixture::create(request.scenario).map_err(app_error)?;
     crate::fs_util::install_storage_root_override(fixture.root.join("state"))
@@ -355,6 +475,133 @@ impl Fixture {
             std::fs::write(path, contents)
                 .map_err(|error| format!("could not write QA fixture: {error}"))?;
         }
+        if matches!(scenario, Scenario::IconsGrid | Scenario::ImagePreview) {
+            let (width, height) = if scenario == Scenario::ImagePreview {
+                (96, 72)
+            } else {
+                (64, 48)
+            };
+            image::RgbaImage::from_fn(width, height, |x, y| {
+                let alpha = if scenario == Scenario::ImagePreview && x < width / 3 {
+                    0
+                } else if scenario == Scenario::ImagePreview && x < width / 2 {
+                    128
+                } else {
+                    255
+                };
+                image::Rgba([
+                    ((x * 255) / width) as u8,
+                    ((y * 255) / height) as u8,
+                    160,
+                    alpha,
+                ])
+            })
+            .save(left.join("photo.png"))
+            .map_err(|error| format!("could not create thumbnail fixture: {error}"))?;
+        }
+        if scenario == Scenario::HexSearch {
+            let mut data = vec![0x11; 131104];
+            for offset in [4094, 65534] {
+                data[offset..offset + 4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+            }
+            std::fs::write(left.join("bytes.bin"), data).map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::HexPreview {
+            std::fs::write(
+                left.join("bytes.bin"),
+                (0..8197).map(|index| index as u8).collect::<Vec<_>>(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::FolderTabs {
+            std::fs::write(
+                left.join("Design/inside.txt"),
+                "Folder opened in opposite pane",
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::RenameOptions {
+            std::fs::write(left.join("TXT-TXT.txt"), "original bytes")
+                .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::RenameTarget {
+            std::fs::write(left.join("item.txt"), "original bytes")
+                .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::Checksums {
+            std::fs::write(left.join("checksum.txt"), "abc").map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::PdfPreview {
+            std::fs::write(left.join("preview.pdf"), crate::pdf_preview::fixture())
+                .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::JsonPreview {
+            std::fs::write(left.join("preview.json"), r#"{"z":9007199254740993123456789,"message":"café / ёж","nested":{"message":"second"},"z":-0.00e+007}"#).map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::RegexPreview {
+            std::fs::write(
+                left.join("regex.txt"),
+                "item-12\nITEM-34\nxitem-56\n[abc]\n",
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::UnicodePreview {
+            let mut bytes = vec![0xfe, 0xff];
+            for unit in "UTF-16 preview\nmessage: café / ёж\nmessage: deuxième\n".encode_utf16()
+            {
+                bytes.extend_from_slice(&unit.to_be_bytes());
+            }
+            std::fs::write(left.join("unicode.txt"), bytes).map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::CodePreview {
+            let code = r#"// Rust source preview: logical line numbers stay aligned when this intentionally long comment wraps. café / ёж.
+
+fn main() {
+    let message = "Hello, Commander";
+    println!("{message}");
+}
+"#;
+            let code = code.replace("    println!", "\tprintln!") + "// commander\n";
+            std::fs::write(left.join("preview.rs"), code)
+                .map_err(|error| format!("could not create code fixture: {error}"))?;
+        }
+        if scenario == Scenario::ArchiveBrowser {
+            let create_archive = || -> std::io::Result<()> {
+                let file = std::fs::File::create(left.join("sample.tar"))?;
+                let mut builder = tar::Builder::new(file);
+                for (name, bytes) in [
+                    (
+                        "docs/notes.txt",
+                        b"Archive content search needle\n".as_slice(),
+                    ),
+                    ("src/main.rs", b"// A larger file deliberately sorts before docs when ordered by size.\nfn main() {}\n".as_slice()),
+                    ("src/nested/helper.rs", b"// helper\n".as_slice()),
+                    ("src/file10.rs", b"same".as_slice()),
+                    ("src/file2.rs", b"same".as_slice()),
+                    ("src/folder10/readme", b"x".as_slice()),
+                    ("src/folder2/readme", b"x".as_slice()),
+                ] {
+                    let mut header = tar::Header::new_gnu();
+                    header.set_size(bytes.len() as u64);
+                    header.set_mode(0o644);
+                    header.set_mtime(37);
+                    header.set_cksum();
+                    builder.append_data(&mut header, name, bytes)?;
+                }
+                builder.finish()
+            };
+            create_archive().map_err(|error| format!("could not create TAR fixture: {error}"))?;
+        }
+        if scenario == Scenario::Permissions {
+            let path = left.join("permissions.txt");
+            std::fs::write(&path, "permission fixture\n").map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640))
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         Ok(Self { root, left, right })
     }
 }
@@ -370,6 +617,7 @@ struct EffectCounters {
     context_menu: AtomicUsize,
     deferred_menu: AtomicUsize,
     clipboard: AtomicUsize,
+    clipboard_text: std::sync::Mutex<Option<String>>,
     opener: AtomicUsize,
     trash: AtomicUsize,
     free_space: AtomicUsize,
@@ -408,7 +656,12 @@ impl ContextMenuPort for FakeContextMenu {
 struct FakeClipboard(Arc<EffectCounters>);
 
 impl ClipboardPort for FakeClipboard {
-    fn write_text(&self, _text: &str) -> ClipboardOutcome {
+    fn write_text(&self, text: &str) -> ClipboardOutcome {
+        *self
+            .0
+            .clipboard_text
+            .lock()
+            .expect("recording clipboard lock") = Some(text.to_owned());
         self.0.clipboard.fetch_add(1, Ordering::Relaxed);
         ClipboardOutcome::Committed
     }
@@ -542,7 +795,15 @@ pub fn record_painted_glyph(
     glyph: crate::app::glyphs::PaintedGlyph,
     rect: Rect,
 ) {
-    ctx.data_mut(|data| data.insert_temp(painted_glyph_key(glyph), rect));
+    ctx.data_mut(|data| {
+        // The contract checks one real instance of each glyph. Keep the first
+        // painted instance instead of replacing it with a duplicate from the
+        // other pane that may be occluded by a centered modal.
+        let key = painted_glyph_key(glyph);
+        if data.get_temp::<Rect>(key).is_none() {
+            data.insert_temp(key, rect);
+        }
+    });
 }
 
 pub fn record_input_policy(
@@ -621,10 +882,10 @@ impl ProbeSnapshot {
             && self.right_pane.is_some()
             && required_painted_glyphs(scenario)
                 .all(|glyph| self.painted_glyphs.contains_key(&glyph))
-            && (if scenario.needs_confirmation() {
+            && (if let Some(owner) = scenario.modal_owner() {
                 self.confirmation.is_some()
                     && self.background_enabled == Some(false)
-                    && self.modal_owner.as_deref() == Some("Confirmation")
+                    && self.modal_owner.as_deref() == Some(owner)
                     && self.modal_above_background == Some(true)
             } else {
                 self.left_row.is_some_and(|row| row.enabled && row.hovered)
@@ -690,6 +951,20 @@ struct VisualQaApp {
     capture_probes: HashMap<u64, ProbeSnapshot>,
     confirmation_requested: bool,
     pane_tool_opened: bool,
+    pdf_click_phase: u8,
+    image_click_phase: u8,
+    checksum_click_phase: u8,
+    hex_click_phase: u8,
+    hex_search_phase: u8,
+    regex_click_phase: u8,
+    text_size_click_phase: u8,
+    tab_group_phase: u8,
+    selection_groups_applied: bool,
+    name_list_phase: u8,
+    json_mode_phase: u8,
+    preset_click_phase: u8,
+    rename_target_phase: u8,
+    rename_options_phase: u8,
     last_probe_summary: String,
     pending_screenshot: Option<(u64, Arc<ColorImage>)>,
     pending_event_error: Option<String>,
@@ -735,7 +1010,7 @@ impl VisualQaApp {
             accessibility_preferences: scenario.preferences(),
             show_tree: scenario.show_tree(),
         };
-        let inner = App::new_visual_qa(
+        let mut inner = App::new_visual_qa(
             cc,
             seed,
             Rc::new(FakeContextMenu(Arc::clone(&counters))),
@@ -744,6 +1019,42 @@ impl VisualQaApp {
             Arc::new(FakeTrash(Arc::clone(&counters))),
             Arc::new(FakeFreeSpace(Arc::clone(&counters))),
         );
+        if scenario == Scenario::FolderTabs {
+            let opened_design = inner.ws.new_tab(
+                crate::workspace::ActivePanel::Left,
+                Some(fixture.left.join("Design")),
+            );
+            let opened_root = inner.ws.new_tab(
+                crate::workspace::ActivePanel::Left,
+                Some(fixture.left.clone()),
+            );
+            let closed_root = inner.ws.close_tab(crate::workspace::ActivePanel::Left);
+            let reopened_root = inner
+                .ws
+                .reopen_closed_tab(crate::workspace::ActivePanel::Left);
+            let opened_extra = inner.ws.new_tab(
+                crate::workspace::ActivePanel::Left,
+                Some(fixture.left.join("Design")),
+            );
+            let closed_extra = inner.ws.close_tab(crate::workspace::ActivePanel::Left);
+            if !opened_design
+                || !opened_root
+                || !closed_root
+                || !reopened_root
+                || !opened_extra
+                || !closed_extra
+            {
+                return Err(VisualQaCreationError::Setup(
+                    "could not prepare three tabs and a recently closed tab".to_string(),
+                ));
+            }
+        }
+        if scenario == Scenario::IconsGrid {
+            inner
+                .ws
+                .left
+                .set_browser_mode(crate::panel::BrowserMode::Icons);
+        }
         Ok(Self {
             inner,
             scenario,
@@ -761,6 +1072,20 @@ impl VisualQaApp {
             capture_probes: HashMap::new(),
             confirmation_requested: false,
             pane_tool_opened: false,
+            pdf_click_phase: 0,
+            image_click_phase: 0,
+            checksum_click_phase: 0,
+            hex_click_phase: 0,
+            hex_search_phase: 0,
+            regex_click_phase: 0,
+            text_size_click_phase: 0,
+            tab_group_phase: 0,
+            selection_groups_applied: false,
+            name_list_phase: 0,
+            json_mode_phase: 0,
+            preset_click_phase: 0,
+            rename_target_phase: 0,
+            rename_options_phase: 0,
             last_probe_summary: "no rendered frame yet".to_string(),
             pending_screenshot: None,
             pending_event_error: None,
@@ -847,13 +1172,964 @@ impl eframe::App for VisualQaApp {
                 Err(error) => self.pending_event_error = Some(error),
             }
         }
-        if !self.scenario.needs_confirmation()
+        if self.scenario.modal_owner().is_none()
+            && !(self.scenario == Scenario::PdfPreview && self.pdf_click_phase < 9)
+            && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
+            && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 81)
+            && !(self.scenario == Scenario::JsonPreview && self.json_mode_phase < 9)
+            && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 12)
+            && !(self.scenario == Scenario::HexPreview && self.hex_click_phase < 17)
+            && !(self.scenario == Scenario::HexSearch && self.hex_search_phase < 13)
+            && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
         {
             input
                 .events
                 .push(egui::Event::PointerMoved(row.rect.center()));
+        }
+        if self.scenario == Scenario::NameList && self.name_list_phase < 13 {
+            let phase = self.name_list_phase;
+            let preview = ctx
+                .data(|data| data.get_temp::<Option<usize>>(egui::Id::new("mask-names-preview")))
+                .flatten();
+            if (phase == 7 && preview != Some(3)) || (phase == 10 && preview != Some(2)) {
+                return;
+            }
+            let (key, local) = match phase {
+                0..=2 => (egui::Id::new("mask-names-toggle"), phase),
+                3..=6 => (egui::Id::new("mask-names-input"), phase - 3),
+                7..=9 => (egui::Id::new(("mask-selection-choice", "Files")), phase - 7),
+                _ => (
+                    egui::Id::new(("mask-selection-choice", "Folders")),
+                    phase - 10,
+                ),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 6 {
+                    input.events.push(egui::Event::Text(
+                        "notes.md\nREADME.txt\nDesign\nmissing.txt".into(),
+                    ));
+                } else if !local.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.name_list_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (75..81).contains(&self.tab_group_phase) {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Left;
+            let key = if phase < 78 {
+                egui::Id::new(("folder-tab-anchor", side, 1usize))
+            } else {
+                egui::Id::new(("folder-tab-deduplicate", side))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = if phase < 78 { phase - 75 } else { phase - 78 };
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if phase < 78 {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (65..75).contains(&self.tab_group_phase) {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Left;
+            if phase == 71 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+                self.tab_group_phase += 1;
+            } else {
+                if phase == 72 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                let key = if (68..71).contains(&phase) {
+                    egui::Id::new(("folder-tab-protect", side))
+                } else {
+                    egui::Id::new(("folder-tab-anchor", side, 1usize))
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    let local = if phase < 68 {
+                        phase - 65
+                    } else if phase < 71 {
+                        phase - 68
+                    } else {
+                        phase - 72
+                    };
+                    if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: if phase < 68 {
+                                egui::PointerButton::Secondary
+                            } else if phase < 71 {
+                                egui::PointerButton::Primary
+                            } else {
+                                egui::PointerButton::Middle
+                            },
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.tab_group_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (55..65).contains(&self.tab_group_phase) {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Left;
+            let key = if phase < 58 {
+                egui::Id::new(("folder-tab-anchor", side, 1usize))
+            } else if phase < 62 {
+                egui::Id::new(("folder-tab-title-input", side))
+            } else {
+                egui::Id::new(("folder-tab-title-save", side))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 61 {
+                    input.events.push(egui::Event::Text("Work".into()));
+                } else {
+                    let local = if phase < 58 {
+                        phase - 55
+                    } else if phase < 62 {
+                        phase - 58
+                    } else {
+                        phase - 62
+                    };
+                    if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: if phase < 58 {
+                                egui::PointerButton::Secondary
+                            } else {
+                                egui::PointerButton::Primary
+                            },
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (49..55).contains(&self.tab_group_phase) {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Right;
+            let key = if phase < 52 {
+                egui::Id::new(("folder-tab-anchor", side, 1usize))
+            } else {
+                egui::Id::new(("folder-tab-close-left", side))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = if phase < 52 { phase - 49 } else { phase - 52 };
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if phase < 52 {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (43..49).contains(&self.tab_group_phase) {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Right;
+            let key = if phase < 46 {
+                egui::Id::new(("folder-tab-anchor", side, 2usize))
+            } else {
+                egui::Id::new(("folder-tab-transfer", side))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = if phase < 46 { phase - 43 } else { phase - 46 };
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if phase < 46 {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (37..43).contains(&self.tab_group_phase) {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Right;
+            let key = if phase < 40 {
+                egui::Id::new(("folder-tab-anchor", side, 1usize))
+            } else {
+                egui::Id::new(("folder-tab-duplicate", side))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = if phase < 40 { phase - 37 } else { phase - 40 };
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if phase < 40 {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (34..37).contains(&self.tab_group_phase) {
+            let key = egui::Id::new((
+                "folder-tab-anchor",
+                crate::workspace::ActivePanel::Right,
+                2usize,
+            ));
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if self.tab_group_phase > 34 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Middle,
+                        pressed: self.tab_group_phase == 35,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (30..34).contains(&self.tab_group_phase) {
+            use crate::command::Command;
+            let home = dirs::home_dir();
+            let root = self.fixture.left.ancestors().last().unwrap();
+            match self.tab_group_phase {
+                30 => {
+                    let modifiers = egui::Modifiers {
+                        command: true,
+                        mac_cmd: true,
+                        shift: true,
+                        ..Default::default()
+                    };
+                    input.events.push(egui::Event::ModifiersChanged(modifiers));
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::H,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    });
+                    self.tab_group_phase = 31;
+                }
+                31 if home.as_ref() == Some(&self.inner.ws.left.current_path) => {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::H,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(Default::default()));
+                    self.inner.ws.execute(Command::JumpBack);
+                    self.tab_group_phase = 32;
+                }
+                32 if self.inner.ws.left.current_path == self.fixture.left => {
+                    self.inner.ws.execute(Command::GoRoot);
+                    self.tab_group_phase = 33;
+                }
+                33 if self.inner.ws.left.current_path == root => {
+                    self.inner.ws.execute(Command::JumpBack);
+                    self.tab_group_phase = 34;
+                }
+                _ => {}
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && self.tab_group_phase < 30 {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Left;
+            if phase == 6 && self.inner.ws.tab_count(side) != 2 {
+                return;
+            }
+            if phase == 12 {
+                if self.inner.ws.tab_count(side) != 1 {
+                    return;
+                }
+                self.inner.ws.left.focus_child("Design".into());
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|entry| entry.name == "Design")
+                {
+                    return;
+                }
+            }
+            if phase == 18 && self.inner.ws.tab_count(side) != 2 {
+                return;
+            }
+            if phase == 24 && self.inner.ws.tab_count(side.other()) != 3 {
+                return;
+            }
+            let key = match phase {
+                24..=26 => egui::Id::new(("folder-tab-anchor", side, 0usize)),
+                27..=29 => egui::Id::new(("folder-open-other", side)),
+                18..=20 => egui::Id::new(("folder-tab-anchor", side, 1usize)),
+                21..=23 => egui::Id::new(("folder-tabs-copy-other", side)),
+                12..=14 => egui::Id::new(("folder-tab-new", side)),
+                15..=17 => egui::Id::new(("folder-tab-open-background", side)),
+                0..=2 => egui::Id::new(("folder-tab-anchor", side, 1usize)),
+                3..=5 => egui::Id::new(("folder-tab-close-right", side)),
+                6..=8 => egui::Id::new(("folder-tab-anchor", side, 0usize)),
+                _ => egui::Id::new(("folder-tab-close-others", side)),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if phase < 3
+                            || (6..9).contains(&phase)
+                            || (12..15).contains(&phase)
+                            || (18..21).contains(&phase)
+                            || (24..27).contains(&phase)
+                        {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::JsonPreview && self.json_mode_phase < 9 {
+            let phase = self.json_mode_phase;
+            if phase == 3
+                && ctx
+                    .data(|data| data.get_temp::<bool>(egui::Id::new(("document_source", "right"))))
+                    != Some(true)
+            {
+                return;
+            }
+            let key = if phase < 6 {
+                egui::Id::new(("json-preview-mode", "right", phase < 3))
+            } else {
+                egui::Id::new(("copy-preview-text", "right"))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.json_mode_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::CodePreview && (9..13).contains(&self.text_size_click_phase) {
+            let id = egui::Id::new(("text_preview", "right")).with("find");
+            let current = ctx
+                .data(|data| data.get_temp::<crate::preview_find::PreviewFind>(id))
+                .and_then(|find| find.current_match());
+            let phase = self.text_size_click_phase;
+            if phase == 9 || phase == 11 || current == Some(if phase == 10 { 1 } else { 0 }) {
+                let modifiers = egui::Modifiers {
+                    shift: phase == 11,
+                    ..Default::default()
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::F3,
+                    physical_key: None,
+                    pressed: phase == 9 || phase == 11,
+                    repeat: false,
+                    modifiers,
+                });
+                self.text_size_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::CodePreview && self.text_size_click_phase < 9 {
+            let key = if self.text_size_click_phase < 3 {
+                egui::Id::new(("text_preview", "right")).with("A+")
+            } else if self.text_size_click_phase < 6 {
+                egui::Id::new(("text_preview", "right"))
+                    .with("whitespace")
+                    .with("control")
+            } else {
+                egui::Id::new(("text_preview", "right"))
+                    .with("find")
+                    .with("query-control")
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !self.text_size_click_phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: self.text_size_click_phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.text_size_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::CodePreview && (13..16).contains(&self.text_size_click_phase)
+        {
+            let key = egui::Id::new(("text_preview", "right"))
+                .with("find")
+                .with("wrap-toggle");
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if self.text_size_click_phase > 13 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: self.text_size_click_phase == 14,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.text_size_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::CodePreview && (16..24).contains(&self.text_size_click_phase)
+        {
+            let phase = self.text_size_click_phase;
+            let find_id = egui::Id::new(("text_preview", "right")).with("find");
+            if phase == 22 {
+                let modifiers = egui::Modifiers {
+                    command: true,
+                    mac_cmd: true,
+                    ..Default::default()
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                });
+                self.text_size_click_phase += 1;
+            } else if phase == 23 {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(Default::default()));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+                input.events.push(egui::Event::Text("Commander".into()));
+                self.text_size_click_phase += 1;
+            } else {
+                let key = find_id.with(if phase < 19 {
+                    "smart-case-toggle"
+                } else {
+                    "query-control"
+                });
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    let click = if phase < 19 { phase - 16 } else { phase - 19 };
+                    if click > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: click == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.text_size_click_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::CodePreview && (24..27).contains(&self.text_size_click_phase)
+        {
+            let phase = self.text_size_click_phase;
+            let find_id = egui::Id::new(("text_preview", "right")).with("find");
+            let ready = ctx.data(|data| {
+                data.get_temp::<crate::preview_find::PreviewFind>(find_id)
+                    .is_some_and(|find| find.match_count() == 1 && find.smart_case_enabled())
+            });
+            if ready
+                && let Some(rect) =
+                    ctx.data(|data| data.get_temp::<egui::Rect>(find_id.with("clear-query")))
+            {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase > 24 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 25,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.text_size_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::Checksums && self.checksum_click_phase < 12 {
+            let phase = self.checksum_click_phase;
+            if phase == 4
+                && !self.inner.checksum_comparison_is(
+                    crate::checksum::Algorithm::Sha256,
+                    crate::checksum::ExpectedMatch::Match,
+                )
+            {
+                return;
+            }
+            if phase == 7
+                && !self.inner.checksum_comparison_is(
+                    crate::checksum::Algorithm::Blake3,
+                    crate::checksum::ExpectedMatch::Mismatch,
+                )
+            {
+                return;
+            }
+            let key = if (4..7).contains(&phase) {
+                egui::Id::new(("checksum-algorithm", "BLAKE3"))
+            } else {
+                egui::Id::new("checksum-expected")
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                match phase {
+                    3 => input.events.push(egui::Event::Text(
+                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into(),
+                    )),
+                    10 => input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    }),
+                    11 => input.events.push(egui::Event::Text(
+                        "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85".into(),
+                    )),
+                    1 | 2 | 5 | 6 | 8 | 9 => input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: matches!(phase, 1 | 5 | 8),
+                        modifiers: Default::default(),
+                    }),
+                    _ => {}
+                }
+                self.checksum_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6 {
+            let find_id = egui::Id::new(("text_preview", "right")).with("find");
+            if self.regex_click_phase == 3
+                && !ctx
+                    .data(|data| data.get_temp::<crate::preview_find::PreviewFind>(find_id))
+                    .is_some_and(|find| find.regex_ready() && find.match_count() == 3)
+            {
+                return;
+            }
+            let key = find_id.with(if self.regex_click_phase < 3 {
+                "regex-toggle"
+            } else {
+                "whole-words-toggle"
+            });
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !self.regex_click_phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: self.regex_click_phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.regex_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexSearch && self.hex_search_phase < 13 {
+            let viewer = self.inner.hex_viewer.as_ref();
+            let ready = if self.hex_search_phase < 7 {
+                viewer.and_then(crate::hex_preview::HexViewer::shown_offset) == Some(0)
+            } else if self.hex_search_phase < 10 {
+                viewer.and_then(crate::hex_preview::HexViewer::matched_offset) == Some(4094)
+            } else {
+                viewer.and_then(crate::hex_preview::HexViewer::matched_offset) == Some(65534)
+            };
+            if ready {
+                let (key, phase) = if self.hex_search_phase < 4 {
+                    ("hex-query", self.hex_search_phase)
+                } else if self.hex_search_phase < 7 {
+                    ("hex-find-next", self.hex_search_phase - 4)
+                } else if self.hex_search_phase < 10 {
+                    ("hex-find-next", self.hex_search_phase - 7)
+                } else {
+                    ("hex-find-previous", self.hex_search_phase - 10)
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
+                {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if self.hex_search_phase == 3 {
+                        input.events.push(egui::Event::Text("de ad be ef".into()));
+                    } else if !phase.is_multiple_of(3) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase % 3 == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexPreview && self.hex_click_phase < 17 {
+            let shown = self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .and_then(crate::hex_preview::HexViewer::shown_offset);
+            let expected = if self.hex_click_phase >= 14 {
+                8192
+            } else if self.hex_click_phase < 3 {
+                0
+            } else if self.hex_click_phase < 6 {
+                4096
+            } else {
+                0
+            };
+            if shown == Some(expected) {
+                let (key, phase) = if self.hex_click_phase < 3 {
+                    ("hex-next", self.hex_click_phase)
+                } else if self.hex_click_phase < 6 {
+                    ("hex-previous", self.hex_click_phase - 3)
+                } else if self.hex_click_phase < 11 {
+                    ("hex-offset", self.hex_click_phase - 6)
+                } else if self.hex_click_phase < 14 {
+                    ("hex-go", self.hex_click_phase - 11)
+                } else {
+                    ("Decimal", self.hex_click_phase - 14)
+                };
+                let key = if self.hex_click_phase >= 14 {
+                    egui::Id::new(("hex-byte-format", key))
+                } else {
+                    egui::Id::new(key)
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if self.hex_click_phase == 9 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers {
+                                command: true,
+                                mac_cmd: true,
+                                ..Default::default()
+                            },
+                        });
+                    } else if self.hex_click_phase == 10 {
+                        input.events.push(egui::Event::Text("0x2000".into()));
+                    } else if !phase.is_multiple_of(3) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase % 3 == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_click_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::ImagePreview && self.image_click_phase < 21 {
+            if self.image_click_phase == 9
+                && !crate::image_preview::black_background_active(ctx, "right")
+            {
+                return;
+            }
+            let label = if self.image_click_phase < 3 {
+                "Rotate right"
+            } else if self.image_click_phase < 6 {
+                "Mirror H"
+            } else if self.image_click_phase < 9 {
+                "Black"
+            } else if self.image_click_phase < 12 {
+                "Checkerboard"
+            } else if self.image_click_phase < 15 {
+                "Enlarge small images"
+            } else if self.image_click_phase < 18 {
+                "Center image"
+            } else {
+                "Rotate 180°"
+            };
+            let key = if self.image_click_phase < 12 || self.image_click_phase >= 18 {
+                egui::Id::new(("image_preview_view", "right")).with(label)
+            } else {
+                egui::Id::new(("image-preview-control", "right", label))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !self.image_click_phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: self.image_click_phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.image_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions && self.rename_options_phase < 40 {
+            let phase = self.rename_options_phase;
+            let validated = self
+                .inner
+                .ui
+                .modals
+                .batch_rename
+                .as_ref()
+                .and_then(|state| state.validation.as_ref());
+            let ready = match phase {
+                0..=2 => true,
+                3..=5 => validated.is_some_and(|validation| {
+                    validation.options_preview(true, false, "doc-doc.doc")
+                }),
+                6..=8 => validated.is_some_and(|validation| {
+                    validation.options_preview(true, true, "doc-TXT.txt")
+                }),
+                9..=11 => validated.is_some_and(|validation| {
+                    validation
+                        .extension_case_preview(crate::rename::ExtensionCase::Upper, "doc-TXT.TXT")
+                }),
+                12..=14 => validated.is_some_and(|validation| {
+                    validation
+                        .extension_case_preview(crate::rename::ExtensionCase::Lower, "doc-TXT.txt")
+                }),
+                15..=17 => validated.is_some_and(|validation| {
+                    validation.options_preview(true, true, "doc-TXT-03.txt")
+                }),
+                18..=20 => validated.is_some_and(|validation| {
+                    validation.options_preview(true, true, "-03doc-TXT.txt")
+                }),
+                21..=23 => validated
+                    .is_some_and(|validation| validation.options_preview(true, true, "-03.txt")),
+                24..=26 => {
+                    validated.is_some_and(|validation| validation.reset_preview("TXT-TXT.txt"))
+                }
+                27..=36 => validated.is_some_and(|validation| {
+                    validation.options_preview(false, false, "TXT-TXT.txt")
+                }),
+                _ => validated
+                    .is_some_and(|validation| validation.options_preview(false, false, "TXT.txt")),
+            };
+            if ready {
+                let key = match phase {
+                    0..=2 => egui::Id::new("rename-ignore-case"),
+                    3..=5 => egui::Id::new("rename-first-only"),
+                    6..=8 => egui::Id::new(("rename-extension-case", "UPPER")),
+                    9..=11 => egui::Id::new(("rename-extension-case", "lower")),
+                    12..=14 => egui::Id::new("rename-numbering"),
+                    15..=17 => egui::Id::new(("rename-number-position", "Before name")),
+                    18..=20 => egui::Id::new(("rename-number-position", "Counter only")),
+                    21..=23 => egui::Id::new("rename-reset-rule"),
+                    24..=26 => egui::Id::new("rename-trim-spaces"),
+                    27..=29 => egui::Id::new("rename-collapse-repeats"),
+                    30..=32 => egui::Id::new(("rename-normalization", "NFC")),
+                    33..=36 => egui::Id::new("rename-remove-prefix"),
+                    _ => egui::Id::new("rename-stem-limit"),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if phase == 36 {
+                        input.events.push(egui::Event::Text("TXT-".into()));
+                    } else if !phase.is_multiple_of(3) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase % 3 == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.rename_options_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::RenameTarget && self.rename_target_phase < 12 {
+            let stem_ready = self.rename_target_phase != 6
+                || self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| {
+                        validation.target_preview(crate::rename::ReplaceTarget::Stem, "item.txt")
+                    });
+            if stem_ready {
+                let key =
+                    if self.rename_target_phase < 3 || (6..9).contains(&self.rename_target_phase) {
+                        egui::Id::new("rename-replace-target-combo")
+                    } else {
+                        egui::Id::new((
+                            "rename-replace-target-option",
+                            if self.rename_target_phase < 6 {
+                                "Name stem"
+                            } else {
+                                "Extension"
+                            },
+                        ))
+                    };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if !self.rename_target_phase.is_multiple_of(3) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: self.rename_target_phase % 3 == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.rename_target_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::RenamePresets && self.preset_click_phase < 10 {
+            let key = if self.preset_click_phase < 3 {
+                egui::Id::new("rename-preset-combo")
+            } else if self.preset_click_phase < 6 {
+                egui::Id::new(("rename-preset-row", "Photos"))
+            } else {
+                egui::Id::new("rename-preset-name")
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if self.preset_click_phase == 9 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                } else if !self.preset_click_phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: self.preset_click_phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.preset_click_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::PdfPreview && self.pdf_click_phase < 9 {
+            let forward = self.pdf_click_phase < 3;
+            let expected_page = if self.pdf_click_phase < 3 || self.pdf_click_phase >= 6 {
+                1
+            } else {
+                2
+            };
+            if self.inner.pdf_cache.shown_page("right") == Some(expected_page)
+                && let Some(rect) = ctx.data(|data| {
+                    data.get_temp::<egui::Rect>(egui::Id::new((
+                        if self.pdf_click_phase >= 6 {
+                            "pdf-text-mode"
+                        } else if forward {
+                            "pdf-next"
+                        } else {
+                            "pdf-previous"
+                        },
+                        "right",
+                    )))
+                })
+            {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !self.pdf_click_phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: self.pdf_click_phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!("PDF QA pointer phase {} at {pos:?}", self.pdf_click_phase);
+                self.pdf_click_phase += 1;
+            }
         }
     }
 
@@ -951,18 +2227,735 @@ impl eframe::App for VisualQaApp {
             return;
         }
 
+        if self.scenario == Scenario::ArchiveBrowser && !self.pane_tool_opened {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner
+                .open_archive(self.fixture.left.join("sample.tar"), &ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::ArchiveBrowser
+            && let Some(state) = self.inner.ui.tools.archive.as_mut()
+            && state.listing.is_some()
+            && state.member_filter.order.field != crate::archive_order::Field::Size
+        {
+            // Listing publication resets its row cache: choose the fixture's
+            // sort only after publication, then wait for a rendered sorted frame.
+            state.member_filter.navigate(Some(PathBuf::from("src")));
+            state.selected.insert(0); // docs/notes.txt stays selected outside this folder.
+            state
+                .member_filter
+                .order
+                .choose(crate::archive_order::Field::Size);
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if matches!(self.scenario, Scenario::HexPreview | Scenario::HexSearch)
+            && !self.pane_tool_opened
+        {
+            self.inner.ws.left.focus_child("bytes.bin".into());
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.name == "bytes.bin")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.execute(crate::command::Command::ViewHex);
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::Checksums && !self.pane_tool_opened {
+            let path = self.fixture.left.join("checksum.txt");
+            self.inner.ws.left.focus_child("checksum.txt".into());
+            self.inner.start_checksum(vec![path], &ctx);
+            self.pane_tool_opened = true;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::NameList && !self.pane_tool_opened {
+            if !self.inner.ws.left.entries().is_empty() {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.clear_selection();
+                self.inner.open_mask(&ctx);
+                self.inner.ui.modals.mask_input = Some(String::new());
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::RenameOptions && !self.pane_tool_opened {
+            self.inner.ws.left.focus_child("TXT-TXT.txt".into());
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.name == "TXT-TXT.txt")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.clear_selection();
+                self.inner
+                    .ws
+                    .left
+                    .toggle_select(self.fixture.left.join("TXT-TXT.txt"));
+                self.inner.open_batch_rename(&ctx);
+                if let Some(state) = self.inner.ui.modals.batch_rename.as_mut() {
+                    state.find = "txt".into();
+                    state.replace = "doc".into();
+                    state.num_start = -3;
+                    state.num_step = -2;
+                    state.num_pad = 3;
+                }
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::RenameTarget && !self.pane_tool_opened {
+            self.inner.ws.left.focus_child("item.txt".into());
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.name == "item.txt")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.clear_selection();
+                self.inner
+                    .ws
+                    .left
+                    .toggle_select(self.fixture.left.join("item.txt"));
+                self.inner.open_batch_rename(&ctx);
+                if let Some(state) = self.inner.ui.modals.batch_rename.as_mut() {
+                    state.find = "txt".into();
+                    state.replace = "log".into();
+                }
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::RenamePresets
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner
+                .ws
+                .left
+                .toggle_select(self.fixture.left.join("notes.md"));
+            self.inner
+                .ws
+                .left
+                .toggle_select(self.fixture.left.join("README.txt"));
+            self.inner
+                .rename_presets
+                .add(
+                    "Photos",
+                    crate::rename::RenameRule {
+                        prefix: "Photo_".into(),
+                        numbering: Some(crate::rename::Numbering {
+                            start: 1,
+                            step: 1,
+                            pad: 2,
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .expect("valid fixture preset");
+            self.inner.open_batch_rename(&ctx);
+            self.pane_tool_opened = true;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::Permissions && !self.pane_tool_opened {
+            self.inner.ws.left.focus_child("permissions.txt".into());
+            if let Some(entry) = self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .filter(|entry| entry.name == "permissions.txt")
+            {
+                let target = crate::permissions::Target {
+                    path: entry.path.clone(),
+                    identity: entry.identity.clone(),
+                    capture_on_worker: false,
+                };
+                self.inner.open_permissions(vec![target], &ctx);
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::Permissions
+            && let Some(state) = self.inner.ui.modals.permissions.as_mut()
+            && state
+                .plan
+                .as_ref()
+                .is_some_and(crate::permissions::Plan::ready)
+        {
+            state.change = crate::permissions::Change::exact(0o644);
+        }
+
+        if self.scenario == Scenario::PdfPreview && !self.pane_tool_opened {
+            self.inner.ws.left.focus_child("preview.pdf".into());
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.name == "preview.pdf")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner
+                    .ws
+                    .execute(crate::command::Command::TogglePreview);
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::ImagePreview && !self.pane_tool_opened {
+            self.inner.ws.left.focus_child("photo.png".to_string());
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.name == "photo.png")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                crate::image_preview::seed(
+                    &ctx,
+                    "right",
+                    &self.fixture.left.join("photo.png"),
+                    2.0,
+                );
+                self.inner
+                    .ws
+                    .execute(crate::command::Command::TogglePreview);
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        if matches!(
+            self.scenario,
+            Scenario::CodePreview
+                | Scenario::UnicodePreview
+                | Scenario::RegexPreview
+                | Scenario::JsonPreview
+        ) && !self.pane_tool_opened
+        {
+            let filename = if self.scenario == Scenario::JsonPreview {
+                "preview.json"
+            } else if self.scenario == Scenario::RegexPreview {
+                "regex.txt"
+            } else if self.scenario == Scenario::UnicodePreview {
+                "unicode.txt"
+            } else {
+                "preview.rs"
+            };
+            if !self.inner.ws.left.entries().is_empty() {
+                self.inner.ws.left.focus_child(filename.to_string());
+                if self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|entry| entry.name == filename)
+                {
+                    self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                    ctx.data_mut(|data| {
+                        data.insert_temp(
+                            egui::Id::new(("text_preview", "right")).with("find"),
+                            crate::preview_find::PreviewFind::with_query(
+                                if self.scenario == Scenario::RegexPreview {
+                                    r"item-\d+"
+                                } else {
+                                    "message"
+                                },
+                            ),
+                        )
+                    });
+                    self.inner
+                        .ws
+                        .execute(crate::command::Command::TogglePreview);
+                    self.pane_tool_opened = true;
+                }
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::PdfPreview
+            && self.pdf_click_phase == 9
+            && self.inner.pdf_cache.shown_page("right") == Some(1)
+        {
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    egui::Id::new(("pdf-page-text", "right")).with("find"),
+                    crate::preview_find::PreviewFind::with_query("Commander"),
+                )
+            });
+            self.pdf_click_phase = 10;
+        }
         let probes = ProbeSnapshot::read(&ctx);
         let listings_ready =
             !self.inner.ws.left.entries().is_empty() && !self.inner.ws.right.entries().is_empty();
         self.last_probe_summary = format!(
-            "attempts={}, pending={}, stable={}, listings={}/{}, probes={probes:?}",
+            "attempts={}, pending={}, stable={}, listings={}/{}, probes={probes:?}, {}",
             self.capture_attempts,
             self.capture_probes.len(),
             self.stable_frames,
             self.inner.ws.left.entries().len(),
             self.inner.ws.right.entries().len(),
+            if self.scenario == Scenario::PdfPreview {
+                format!(
+                    "PDF phase {}: {}",
+                    self.pdf_click_phase,
+                    self.inner.pdf_cache.diagnostic("right")
+                )
+            } else {
+                String::new()
+            },
         );
-        if listings_ready && probes.ready(self.scenario) {
+        if self.scenario == Scenario::PdfPreview
+            && self.pdf_click_phase == 10
+            && ctx.data(|data| {
+                data.get_temp::<crate::preview_find::PreviewFind>(
+                    egui::Id::new(("pdf-page-text", "right")).with("find"),
+                )
+                .is_some_and(|find| find.match_count() == 1)
+            })
+            && self.inner.pdf_cache.shown_page("right") == Some(1)
+            && self.stable_frames == 0
+        {
+            log::info!(
+                "PDF native QA: pointer round trip 1 -> 2 -> 1 and Page text/search validated"
+            );
+        }
+        let thumbnail_ready = self.scenario != Scenario::IconsGrid
+            || self
+                .inner
+                .image_cache
+                .get(&self.fixture.left.join("photo.png"))
+                .is_some();
+        let scenario_state_ready = match self.scenario {
+            Scenario::JsonPreview => {
+                self.json_mode_phase == 9
+                    && ctx.data(|data| {
+                        data.get_temp::<bool>(egui::Id::new(("document_source", "right")))
+                    }) == Some(false)
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 1
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .expect("recorded clipboard")
+                        .as_deref()
+                        == crate::json_preview::shown_format(&ctx, "right").as_deref()
+                    && crate::json_preview::shown_format(&ctx, "right").is_some_and(|text| {
+                        text.lines().count() > 1
+                            && text.contains("9007199254740993123456789")
+                            && text.matches("\"z\"").count() == 2
+                    })
+                    && ctx
+                        .data(|data| {
+                            data.get_temp::<crate::preview_find::PreviewFind>(
+                                egui::Id::new(("text_preview", "right")).with("find"),
+                            )
+                        })
+                        .is_some_and(|find| find.match_count() == 2)
+            }
+
+            Scenario::NameList => {
+                self.name_list_phase == 13
+                    && self.inner.ui.modals.mask_input.as_deref()
+                        == Some("notes.md\nREADME.txt\nDesign\nmissing.txt")
+                    && self.inner.ws.left.selected_count() == 0
+                    && ctx
+                        .data(|data| {
+                            data.get_temp::<Option<usize>>(egui::Id::new("mask-names-preview"))
+                        })
+                        .flatten()
+                        == Some(1)
+            }
+            Scenario::IconsGrid => {
+                if !self.selection_groups_applied
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.name == "photo.png")
+                {
+                    self.inner.ws.left.focus_child("photo.png".into());
+                    if self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|entry| entry.name == "photo.png")
+                    {
+                        self.inner
+                            .ws
+                            .execute(crate::command::Command::SelectVisibleFiles);
+                        self.inner
+                            .ws
+                            .execute(crate::command::Command::DeselectLikeCursor);
+                        self.inner
+                            .ws
+                            .execute(crate::command::Command::SelectVisibleFolders);
+                        self.selection_groups_applied = true;
+                    }
+                }
+                self.selection_groups_applied
+                    && self.inner.ws.left.selected_count() == 4
+                    && self.inner.ws.left.entries().iter().all(|entry| {
+                        self.inner.ws.left.is_selected(&entry.path)
+                            == (entry.is_dir || entry.extension != "png")
+                    })
+            }
+
+            Scenario::HexSearch => {
+                self.hex_search_phase == 13
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .and_then(crate::hex_preview::HexViewer::matched_offset)
+                        == Some(4094)
+            }
+            Scenario::HexPreview => {
+                self.hex_click_phase == 17
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .is_some_and(crate::hex_preview::HexViewer::decimal_mode)
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .and_then(crate::hex_preview::HexViewer::shown_offset)
+                        == Some(8192)
+            }
+            Scenario::Checksums => {
+                self.checksum_click_phase == 12
+                    && self.inner.checksum_comparison_is(
+                        crate::checksum::Algorithm::Blake3,
+                        crate::checksum::ExpectedMatch::Match,
+                    )
+            }
+            Scenario::RenameOptions => {
+                self.rename_options_phase == 40
+                    && self
+                        .inner
+                        .ui
+                        .modals
+                        .batch_rename
+                        .as_ref()
+                        .is_some_and(|state| {
+                            state.rule()
+                                == (crate::rename::RenameRule {
+                                    remove_prefix: "TXT-".into(),
+                                    stem_limit: Some(32),
+                                    trim_spaces: true,
+                                    collapse_repeats: true,
+                                    normalization: crate::rename::NameNormalization::Nfc,
+                                    ..Default::default()
+                                })
+                                && (state.num_start, state.num_step, state.num_pad) == (1, 1, 2)
+                                && state.preset_selected.is_none()
+                                && state.validation.as_ref().is_some_and(|validation| {
+                                    validation.options_preview(false, false, "TXT.txt")
+                                })
+                        })
+                    && self.fixture.left.join("TXT-TXT.txt").exists()
+                    && !self.fixture.left.join("-03doc-TXT.txt").exists()
+            }
+            Scenario::RenameTarget => {
+                self.rename_target_phase == 12
+                    && self
+                        .inner
+                        .ui
+                        .modals
+                        .batch_rename
+                        .as_ref()
+                        .and_then(|state| state.validation.as_ref())
+                        .is_some_and(|validation| {
+                            validation
+                                .target_preview(crate::rename::ReplaceTarget::Extension, "item.log")
+                        })
+                    && self.fixture.left.join("item.txt").exists()
+                    && !self.fixture.left.join("item.log").exists()
+            }
+            Scenario::RenamePresets => {
+                self.preset_click_phase == 10
+                    && self
+                        .inner
+                        .ui
+                        .modals
+                        .batch_rename
+                        .as_ref()
+                        .is_some_and(|state| {
+                            state.preset_selected.as_deref() == Some("Photos")
+                                && state.rule().prefix == "Photo_"
+                                && state.rule().numbering.is_some()
+                        })
+                    && self.fixture.left.join("notes.md").exists()
+                    && self.fixture.left.join("README.txt").exists()
+            }
+            Scenario::Permissions => {
+                self.inner
+                    .ui
+                    .modals
+                    .permissions
+                    .as_ref()
+                    .is_some_and(|state| {
+                        state.plan.as_ref().is_some_and(|plan| {
+                            plan.ready() && plan.changed_count(state.change) == 1
+                        })
+                    })
+            }
+            Scenario::PdfPreview => {
+                self.pdf_click_phase == 10
+                    && ctx.data(|data| {
+                        data.get_temp::<crate::preview_find::PreviewFind>(
+                            egui::Id::new(("pdf-page-text", "right")).with("find"),
+                        )
+                        .is_some_and(|find| find.match_count() == 1)
+                    })
+                    && self.inner.pdf_cache.ready("right")
+                    && self.inner.pdf_cache.shown_page("right") == Some(1)
+            }
+            Scenario::ImagePreview => {
+                self.image_click_phase == 21
+                    && crate::image_preview::centered(&ctx, "right") == Some(false)
+                    && crate::image_preview::enlarges_small(&ctx, "right")
+                    && crate::image_preview::orientation(&ctx, "right") == Some([2, 1, 0, 3])
+                    && crate::image_preview::checkerboard_active(&ctx, "right")
+                    && matches!(
+                        self.inner.ws.right.preview,
+                        Some(crate::panel::PreviewContent::Image(_))
+                    )
+                    && self
+                        .inner
+                        .image_cache
+                        .get(&self.fixture.left.join("photo.png"))
+                        .is_some()
+                    && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
+            }
+            Scenario::ArchiveBrowser => self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+                state.listing.as_ref().is_some_and(|listing| {
+                    let ordered = |a: &str, b: &str, folders: bool| {
+                        let members = if folders {
+                            &listing.tree.as_ref().unwrap().directories
+                        } else {
+                            &listing.members
+                        };
+                        let position = |path: &str| {
+                            members
+                                .iter()
+                                .position(|entry| entry.path == Path::new(path))
+                                .and_then(|index| {
+                                    state.member_filter.row_position(
+                                        index + if folders { listing.members.len() } else { 0 },
+                                    )
+                                })
+                        };
+                        matches!((position(a), position(b)), (Some(a), Some(b)) if a < b)
+                    };
+                    listing.kind == crate::archive::ArchiveKind::Tar
+                        && listing.members.len() == 7
+                        && state.member_filter.order.natural
+                        && ordered("src/file2.rs", "src/file10.rs", false)
+                        && ordered("src/folder2", "src/folder10", true)
+                        && state.member_filter.current_folder() == Some(Path::new("src"))
+                        && state.selected.contains(&0)
+                        && !listing.truncated
+                        && state.member_filter.order.field == crate::archive_order::Field::Size
+                        && state.member_filter.order.descending
+                        && state
+                            .member_filter
+                            .first_visible_member()
+                            .and_then(|index| listing.members.get(index))
+                            .is_some_and(|member| member.path == Path::new("src/main.rs"))
+                })
+            }),
+            Scenario::FolderTabs => {
+                self.tab_group_phase == 81
+                    && self
+                        .inner
+                        .ws
+                        .tab_snapshot(crate::workspace::ActivePanel::Left)
+                        .entries[0]
+                        .close_protected
+                    && self
+                        .inner
+                        .ws
+                        .tab_snapshot(crate::workspace::ActivePanel::Left)
+                        .entries[0]
+                        .title
+                        .as_deref()
+                        == Some("Work")
+                    && self
+                        .inner
+                        .ws
+                        .tab_snapshot(crate::workspace::ActivePanel::Left)
+                        .entries[0]
+                        .path
+                        == self.fixture.left
+                    && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left) == 2
+                    && self
+                        .inner
+                        .ws
+                        .closed_tab_count(crate::workspace::ActivePanel::Left)
+                        == 4
+                    && self
+                        .inner
+                        .ws
+                        .active_tab_index(crate::workspace::ActivePanel::Left)
+                        == 0
+                    && self.inner.ws.left.current_path == self.fixture.left
+                    && self.inner.ws.right.current_path == self.fixture.left
+                    && self.inner.ws.active == crate::workspace::ActivePanel::Left
+                    && self
+                        .inner
+                        .ws
+                        .tab_count(crate::workspace::ActivePanel::Right)
+                        == 1
+                    && self
+                        .inner
+                        .ws
+                        .active_tab_index(crate::workspace::ActivePanel::Right)
+                        == 0
+                    && self
+                        .inner
+                        .ws
+                        .tab_snapshot(crate::workspace::ActivePanel::Right)
+                        .entries[0]
+                        .path
+                        == self.fixture.left
+                    && self
+                        .inner
+                        .ws
+                        .closed_tab_paths(crate::workspace::ActivePanel::Right)
+                        == vec![
+                            self.fixture.left.join("Design"),
+                            self.fixture.left.join("Design"),
+                        ]
+                    && self
+                        .inner
+                        .ws
+                        .tab_snapshot(crate::workspace::ActivePanel::Left)
+                        .entries[1]
+                        .path
+                        == self.fixture.left.join("Design")
+            }
+            Scenario::RegexPreview => {
+                self.regex_click_phase == 6
+                    && ctx.data(|data| {
+                        data.get_temp::<crate::preview_find::PreviewFind>(
+                            egui::Id::new(("text_preview", "right")).with("find"),
+                        )
+                        .is_some_and(|find| find.regex_ready() && find.match_count() == 2)
+                    })
+            }
+            Scenario::UnicodePreview => {
+                matches!(&self.inner.ws.right.preview,
+                    Some(crate::panel::PreviewContent::Text { content, .. })
+                    if content.as_ref() == "UTF-16 preview\nmessage: café / ёж\nmessage: deuxième\n")
+                    && ctx.data(|data| {
+                        data.get_temp::<crate::preview_find::PreviewFind>(
+                            egui::Id::new(("text_preview", "right")).with("find"),
+                        )
+                        .is_some_and(|find| find.match_count() == 2)
+                    })
+            }
+            Scenario::CodePreview => {
+                self.text_size_click_phase == 27
+                    && ctx.data(|data| {
+                        data.get_temp::<[bool; 2]>(
+                            egui::Id::new(("text_preview", "right"))
+                                .with("find")
+                                .with("navigation-enabled"),
+                        )
+                    }) == Some([false, false])
+                    && ctx
+                        .data(|data| {
+                            data.get_temp::<[usize; 2]>(
+                                egui::Id::new(("text_preview", "right")).with("whitespace-counts"),
+                            )
+                        })
+                        .is_some_and(|counts| counts[0] > 0 && counts[1] > 0)
+                    && ctx.data(|data| {
+                        data.get_temp::<u16>(
+                            egui::Id::new(("text_preview", "right")).with("text-percent"),
+                        )
+                    }) == Some(125)
+                    && matches!(
+                        self.inner.ws.right.preview,
+                        Some(crate::panel::PreviewContent::Text { .. })
+                    )
+                    && ctx.data(|data| {
+                        data.get_temp::<crate::preview_find::PreviewFind>(
+                            egui::Id::new(("text_preview", "right")).with("find"),
+                        )
+                        .is_some_and(|find| find.match_count() == 0 && find.smart_case_enabled())
+                    })
+            }
+            _ => true,
+        };
+        if self.scenario == Scenario::FolderTabs {
+            self.last_probe_summary.push_str(&format!(
+                "; tab_phase={}, focus={:?}, left={:?}, right={:?}",
+                self.tab_group_phase,
+                self.inner.ws.active,
+                self.inner
+                    .ws
+                    .tab_snapshot(crate::workspace::ActivePanel::Left),
+                self.inner
+                    .ws
+                    .tab_snapshot(crate::workspace::ActivePanel::Right)
+            ));
+        }
+        if self.scenario == Scenario::CodePreview {
+            self.last_probe_summary.push_str(&format!(
+                "; right_text={}, find_matches={:?}",
+                matches!(
+                    self.inner.ws.right.preview,
+                    Some(crate::panel::PreviewContent::Text { .. })
+                ),
+                ctx.data(|data| data
+                    .get_temp::<crate::preview_find::PreviewFind>(
+                        egui::Id::new(("text_preview", "right")).with("find")
+                    )
+                    .map(|find| find.match_count()))
+            ));
+        }
+        if listings_ready && thumbnail_ready && scenario_state_ready && probes.ready(self.scenario)
+        {
             let geometry = probes.geometry_key();
             if geometry == self.last_geometry {
                 self.stable_frames = self.stable_frames.saturating_add(1);
@@ -981,9 +2974,9 @@ impl eframe::App for VisualQaApp {
                 }
             }
         }
-        if self.capture_probes.is_empty() {
-            ctx.request_repaint_after(Duration::from_millis(16));
-        }
+        // Keep timeout/retry observation alive while waiting for the native
+        // screenshot event too; an idle backend must not leave QA hung forever.
+        ctx.request_repaint_after(Duration::from_millis(16));
         let _keep_fixture_alive = &self.fixture;
     }
 
@@ -1090,6 +3083,13 @@ struct NativeEffectCalls {
 }
 
 impl NativeEffectCalls {
+    fn expected_for(self, scenario: Scenario) -> bool {
+        if scenario == Scenario::JsonPreview {
+            self.clipboard == 1 && self.total() == 1
+        } else {
+            self.total() == 0
+        }
+    }
     const fn total(self) -> usize {
         self.context_menu
             + self.deferred_menu
@@ -1252,7 +3252,7 @@ fn write_capture(
             probes.right_pane.map(|record| record.rect),
         ),
     ];
-    if scenario.needs_confirmation() {
+    if scenario.modal_owner().is_some() {
         required_rects.push((
             "confirmation_rect",
             probes.confirmation.map(|record| record.rect),
@@ -1314,10 +3314,10 @@ fn write_capture(
         panes_do_not_overlap,
         format!("left={:?}, right={:?}", probes.left_pane, probes.right_pane),
     ));
-    if scenario.needs_confirmation() {
+    if let Some(owner) = scenario.modal_owner() {
         checks.push(check(
             "modal_owner",
-            probes.modal_owner.as_deref() == Some("Confirmation"),
+            probes.modal_owner.as_deref() == Some(owner),
             format!("owner={:?}", probes.modal_owner),
         ));
         checks.push(check(
@@ -1351,8 +3351,11 @@ fn write_capture(
     }
     checks.push(check(
         "native_effect_isolation",
-        calls.total() == 0,
-        format!("{calls:?}"),
+        calls.expected_for(scenario),
+        format!(
+            "{calls:?}; expected {} recording clipboard write(s)",
+            usize::from(scenario == Scenario::JsonPreview)
+        ),
     ));
 
     let failed = checks.iter().filter(|check| !check.passed).count();
@@ -1457,11 +3460,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_json_copy_scenario_accepts_exactly_one_recording_clipboard_call() {
+        for scenario in Scenario::ALL {
+            let empty = NativeEffectCalls::default();
+            assert_eq!(
+                empty.expected_for(scenario),
+                scenario != Scenario::JsonPreview
+            );
+            assert_eq!(
+                NativeEffectCalls {
+                    clipboard: 1,
+                    ..empty
+                }
+                .expected_for(scenario),
+                scenario == Scenario::JsonPreview
+            );
+            assert!(
+                !NativeEffectCalls {
+                    clipboard: 2,
+                    ..empty
+                }
+                .expected_for(scenario)
+            );
+            assert!(!NativeEffectCalls { opener: 1, ..empty }.expected_for(scenario));
+            assert!(
+                !NativeEffectCalls {
+                    clipboard: 1,
+                    opener: 1,
+                    ..empty
+                }
+                .expected_for(scenario)
+            );
+        }
+    }
+
+    #[test]
     fn required_scenario_matrix_is_stable() {
         assert_eq!(
             Scenario::ALL.map(Scenario::name),
             [
                 "desktop_base",
+                "icons_grid",
+                "image_preview",
+                "pdf_preview",
+                "checksums",
+                "hex_preview",
+                "hex_search",
+                "permissions",
+                "rename_presets",
+                "rename_target",
+                "rename_options",
+                "name_list",
+                "folder_tabs",
+                "code_preview",
+                "unicode_preview",
+                "regex_preview",
+                "json_preview",
+                "archive_browser",
                 "minimum_window",
                 "zoom_200_accessible",
                 "confirmation_owner",

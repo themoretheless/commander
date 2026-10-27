@@ -1,0 +1,6 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.97s
+     Running `target/debug/commander --visual-qa rename_target --output target/visual-qa`
+2026-10-27T20:10:26 INFO  commander::logging: logging initialized
+2026-10-27T20:10:26 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: rename_target
+2026-10-27T20:10:26 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.48s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 5 tests
+test rename::tests::extension_case_changes_only_the_last_extension_after_find_replace ... ok
+test rename_presets::tests::independent_extension_case_round_trips_in_named_presets ... ok
+test app::batch_rename_dialog::tests::extension_case_rebuilds_cached_plan_before_submit ... ok
+test rename::tests::extension_case_defaults_preserve_legacy_json_and_collisions_are_blocked ... ok
+test workspace::tests::extension_case_only_rename_is_undoable_and_keeps_payload ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2362 filtered out; finished in 0.02s
+

@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.97s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 4 tests
+test pdf_preview::tests::bounded_dimensions_reject_invalid_input ... ok
+test pdf_preview::tests::worker_refuses_stale_oversized_and_cancelled_sources ... ok
+CoreGraphics PDF has logged an error. Set environment variable "CG_PDF_VERBOSE" to learn more.
+test pdf_preview::tests::native_pdf_pages_preserve_crop_rotation_and_upright_pixel_order ... ok
+test pdf_preview::tests::page_field_enters_a_real_worker_and_closing_releases_the_cache ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2246 filtered out; finished in 0.32s
+

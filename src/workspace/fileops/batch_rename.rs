@@ -145,7 +145,10 @@ pub fn apply_batch_rename_in(
         return Err("Nothing selected to rename".into());
     }
     if let Some(error) = crate::rename::regex_error(rule) {
-        return Err(format!("Invalid regex: {error}"));
+        return Err(format!(
+            "Invalid {}: {error}",
+            if rule.regex { "regex" } else { "find pattern" }
+        ));
     }
     let (existing, lossy) = dir_names_with_lossy(&context.dir);
     // A non-UTF-8 name is only known here by its lossy U+FFFD form, which

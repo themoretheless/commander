@@ -1,0 +1,69 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `command_availability` found for struct `workspace::Workspace` in the current scope
+    --> src/workspace/tabs.rs:1878:24
+     |
+1878 |             assert!(ws.command_availability(Command::ProtectTab).enabled);
+     |                        ^^^^^^^^^^^^^^^^^^^^ method not found in `workspace::Workspace`
+     |
+    ::: src/workspace.rs:334:1
+     |
+ 334 | pub struct Workspace {
+     | -------------------- method `command_availability` not found for this struct
+
+error[E0599]: no method named `command_availability` found for struct `workspace::Workspace` in the current scope
+    --> src/workspace/tabs.rs:1879:25
+     |
+1879 |             assert!(!ws.command_availability(Command::UnprotectTab).enabled);
+     |                         ^^^^^^^^^^^^^^^^^^^^ method not found in `workspace::Workspace`
+     |
+    ::: src/workspace.rs:334:1
+     |
+ 334 | pub struct Workspace {
+     | -------------------- method `command_availability` not found for this struct
+
+error[E0599]: no method named `command_availability` found for struct `workspace::Workspace` in the current scope
+    --> src/workspace/tabs.rs:1881:25
+     |
+1881 |             assert!(!ws.command_availability(Command::ProtectTab).enabled);
+     |                         ^^^^^^^^^^^^^^^^^^^^ method not found in `workspace::Workspace`
+     |
+    ::: src/workspace.rs:334:1
+     |
+ 334 | pub struct Workspace {
+     | -------------------- method `command_availability` not found for this struct
+
+error[E0599]: no method named `command_availability` found for struct `workspace::Workspace` in the current scope
+    --> src/workspace/tabs.rs:1882:24
+     |
+1882 |             assert!(ws.command_availability(Command::UnprotectTab).enabled);
+     |                        ^^^^^^^^^^^^^^^^^^^^ method not found in `workspace::Workspace`
+     |
+    ::: src/workspace.rs:334:1
+     |
+ 334 | pub struct Workspace {
+     | -------------------- method `command_availability` not found for this struct
+
+error[E0599]: no method named `command_availability` found for struct `workspace::Workspace` in the current scope
+    --> src/workspace/tabs.rs:1883:25
+     |
+1883 |             assert!(!ws.command_availability(Command::CloseTab).enabled);
+     |                         ^^^^^^^^^^^^^^^^^^^^ method not found in `workspace::Workspace`
+     |
+    ::: src/workspace.rs:334:1
+     |
+ 334 | pub struct Workspace {
+     | -------------------- method `command_availability` not found for this struct
+
+error[E0599]: no method named `command_availability` found for struct `workspace::Workspace` in the current scope
+    --> src/workspace/tabs.rs:1889:24
+     |
+1889 |             assert!(ws.command_availability(Command::CloseTab).enabled);
+     |                        ^^^^^^^^^^^^^^^^^^^^ method not found in `workspace::Workspace`
+     |
+    ::: src/workspace.rs:334:1
+     |
+ 334 | pub struct Workspace {
+     | -------------------- method `command_availability` not found for this struct
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander" test) due to 6 previous errors

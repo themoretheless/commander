@@ -241,6 +241,28 @@ impl App {
             self.ui.chord = None;
             return;
         }
+        if self.icon_navigation_columns(ctx).is_some() {
+            let horizontal = ctx.input_mut(|input| {
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+                    Some((-1, false))
+                } else if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+                    Some((1, false))
+                } else if input.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft) {
+                    Some((-1, true))
+                } else if input.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight) {
+                    Some((1, true))
+                } else {
+                    None
+                }
+            });
+            if let Some((delta, extend)) = horizontal {
+                if extend {
+                    self.extend_icon_selection(1, delta > 0);
+                } else {
+                    self.execute_key_command(ctx, Command::CursorMove(delta));
+                }
+            }
+        }
         let (mut presses, escape, now) = ctx.input_mut(|i| {
             (
                 Self::collect_presses(i),
@@ -274,7 +296,25 @@ impl App {
             })
             .collect();
         for cmd in map_keys(&presses) {
-            self.execute_key_command(ctx, cmd);
+            let columns = self.icon_navigation_columns(ctx);
+            let cmd = match (columns, cmd) {
+                (Some(columns), Command::CursorUp) => Command::CursorMove(-(columns as i32)),
+                (Some(columns), Command::CursorDown) => {
+                    Command::CursorMove(if self.ws.active_panel_ref().cursor() == 0 {
+                        1
+                    } else {
+                        columns as i32
+                    })
+                }
+                _ => cmd,
+            };
+            if let (Some(columns), Command::ExtendSelectUp | Command::ExtendSelectDown) =
+                (columns, cmd)
+            {
+                self.extend_icon_selection(columns, cmd == Command::ExtendSelectDown);
+            } else {
+                self.execute_key_command(ctx, cmd);
+            }
             if self.ws.has_any_pending_ui_modal() {
                 break;
             }
@@ -323,6 +363,44 @@ impl App {
 
     pub(crate) fn take_modal_escape(&mut self, owner: ModalSurface) -> bool {
         self.take_escape_request(EscapeRoute::Modal(owner))
+    }
+
+    fn icon_navigation_columns(&self, ctx: &egui::Context) -> Option<usize> {
+        let panel = self.ws.active_panel_ref();
+        if panel.browser_mode() != crate::panel::BrowserMode::Icons
+            || panel.preview.is_some()
+            || super::update::pane_tool_covers(&self.ui.tools, self.ws.active)
+        {
+            return None;
+        }
+        let side = if self.ws.active == ActivePanel::Left {
+            "left"
+        } else {
+            "right"
+        };
+        Some(ctx.data(|data| {
+            data.get_temp::<usize>(egui::Id::new(("icon_columns", side)))
+                .unwrap_or(1)
+        }))
+    }
+
+    fn extend_icon_selection(&mut self, columns: usize, down: bool) {
+        let panel = self.ws.active_panel();
+        let start = panel.cursor();
+        let end = if down {
+            start
+                .saturating_add(if start == 0 { 1 } else { columns })
+                .min(panel.filtered_count())
+        } else {
+            start.saturating_sub(columns)
+        };
+        let paths: Vec<_> = (start.min(end).max(1)..=start.max(end))
+            .filter_map(|row| panel.filtered_get(row - 1))
+            .map(|entry| entry.path.clone())
+            .collect();
+        panel.extend_selection(paths);
+        panel.set_cursor(end);
+        panel.set_scroll_to_cursor(true);
     }
 
     fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
@@ -554,6 +632,7 @@ impl App {
             (egui::Key::Backspace, KeyCode::Backspace),
             (egui::Key::Space, KeyCode::Space),
             (egui::Key::Period, KeyCode::Period),
+            (egui::Key::F1, KeyCode::F1),
             (egui::Key::F2, KeyCode::F2),
             (egui::Key::F3, KeyCode::F3),
             (egui::Key::F5, KeyCode::F5),
@@ -579,6 +658,8 @@ impl App {
             (egui::Key::U, KeyCode::U),
             (egui::Key::V, KeyCode::V),
             (egui::Key::Z, KeyCode::Z),
+            (egui::Key::T, KeyCode::T),
+            (egui::Key::W, KeyCode::W),
             (egui::Key::J, KeyCode::J),
             (egui::Key::OpenBracket, KeyCode::BracketLeft),
             (egui::Key::CloseBracket, KeyCode::BracketRight),
@@ -774,6 +855,23 @@ mod tests {
             presses = ui.input_mut(App::collect_presses);
         }));
         presses
+    }
+
+    #[test]
+    fn home_shortcut_keeps_plain_command_h_for_hidden_files() {
+        for (shift, expected) in [(false, Command::ToggleHidden), (true, Command::GoHome)] {
+            let presses = presses_for(
+                egui::Key::H,
+                egui::Modifiers {
+                    command: true,
+                    mac_cmd: true,
+                    shift,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(map_keys(&presses), vec![expected]);
+        }
+        assert!(map_keys(&presses_for(egui::Key::H, egui::Modifiers::SHIFT)).is_empty());
     }
 
     #[test]

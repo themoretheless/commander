@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: a `Vec` of `Range` that is only one element
+    --> src/preview_find.rs:1068:25
+     |
+1068 |         empty.matches = vec![0..1];
+     |                         ^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+     = note: `-D clippy::single-range-in-vec-init` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::single_range_in_vec_init)]`
+help: if you wanted a `Vec` that contains the entire range, try
+     |
+1068 -         empty.matches = vec![0..1];
+1068 +         empty.matches = (0..1).collect::<std::vec::Vec<usize>>();
+     |
+help: if you wanted a `Vec` of len 1, try
+     |
+1068 -         empty.matches = vec![0..1];
+1068 +         empty.matches = vec![0; 1];
+     |
+
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

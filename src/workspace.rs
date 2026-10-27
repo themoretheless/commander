@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 mod delete;
 mod fileops;
 mod space_probe;
+pub mod tabs;
 mod transfer_queue;
 
 pub use transfer_queue::QueueRow;
@@ -24,7 +25,7 @@ use crate::ui_request::{UiModal, UiRequest};
 
 const UI_DEEP_OBSERVATION_ENTRY_BUDGET: usize = 100_000;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum ActivePanel {
     Left,
     Right,
@@ -334,6 +335,8 @@ pub struct Workspace {
     pub left: PanelState,
     pub right: PanelState,
     pub active: ActivePanel,
+    tabs: [tabs::PaneTabs; 2],
+    tab_revision: u64,
     pub pending_op: Option<PendingOp>,
     pub safe_state: Option<crate::operation::SafeState>,
     pub durability_profile: crate::operation::DurabilityProfile,
@@ -702,6 +705,8 @@ impl Workspace {
             left: PanelState::new_with_view(left, left_view),
             right: PanelState::new_with_view(right, right_view),
             active: ActivePanel::Left,
+            tabs: Default::default(),
+            tab_revision: 0,
             pending_op: None,
             safe_state: None,
             durability_profile: crate::operation::DurabilityProfile::default(),
@@ -793,6 +798,21 @@ impl Workspace {
     #[cfg(test)]
     fn pending_ui_requests(&self) -> Vec<UiRequest> {
         self.ui_requests.snapshot()
+    }
+
+    /// Read the last known policy without filesystem probes during modal painting.
+    pub(crate) fn known_active_volume_read_only(&self) -> bool {
+        self.command_capabilities
+            .borrow()
+            .as_ref()
+            .is_some_and(|cached| match self.active {
+                ActivePanel::Left => {
+                    cached.left_path == self.left.current_path && cached.left_read_only
+                }
+                ActivePanel::Right => {
+                    cached.right_path == self.right.current_path && cached.right_read_only
+                }
+            })
     }
 
     fn pane_read_only(&self) -> (bool, bool) {
@@ -930,6 +950,9 @@ impl Workspace {
     ) -> crate::command::CommandContext {
         let (active, inactive) = self.panes();
         let cursor = active.cursor_entry();
+        let (closable_tabs_left, closable_tabs_right) = self
+            .tab_snapshot(self.active)
+            .closable_sides(self.active_tab_index(self.active));
         let pending_operation = self.pending_op.is_some();
         let transfer_queue_busy = self.has_unfinished_transfer_work();
         let (left_read_only, right_read_only) = self.pane_read_only();
@@ -941,6 +964,16 @@ impl Workspace {
                 elsewhere => selected_entries.saturating_add(elsewhere),
             },
             selected_entries,
+            can_save_selection: active.can_save_selection(),
+            can_restore_selection: active.can_restore_selection(),
+            tab_count: self.tab_count(self.active),
+            active_tab_protected: self.active_panel_ref().tab_close_protected,
+            other_tab_count: self.tab_count(self.active.other()),
+            active_tab_index: self.active_tab_index(self.active),
+            duplicate_tabs: self.duplicate_tab_count(self.active),
+            closed_tabs: self.closed_tab_count(self.active),
+            closable_tabs_left,
+            closable_tabs_right,
             cursor_entry: cursor.is_some(),
             cursor_selected: cursor.is_some_and(|entry| active.is_selected(&entry.path)),
             cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
@@ -1058,6 +1091,11 @@ impl Workspace {
                     | Command::CursorDown
                     | Command::CursorHome
                     | Command::CursorEnd
+                    | Command::CursorFirstFile
+                    | Command::CursorLastFile
+                    | Command::FirstTab
+                    | Command::LastTab
+                    | Command::GoToTab(_)
                     | Command::CursorPageUp
                     | Command::CursorPageDown
                     | Command::CursorMove(_)
@@ -1075,6 +1113,85 @@ impl Workspace {
             cmd
         };
         match cmd {
+            Command::ProtectTab | Command::UnprotectTab => {
+                let index = self.active_tab_index(self.active);
+                self.set_tab_close_protection(self.active, index, cmd == Command::ProtectTab);
+            }
+            Command::MoveTabLeft | Command::MoveTabRight => {
+                let index = self.active_tab_index(self.active);
+                let target = if cmd == Command::MoveTabLeft {
+                    index.checked_sub(1)
+                } else {
+                    index.checked_add(1)
+                };
+                if let Some(target) = target {
+                    self.move_tab(self.active, index, target);
+                }
+            }
+            Command::CloseOtherTabs | Command::CloseTabsLeft | Command::CloseTabsRight => {
+                let anchor = self.active_tab_index(self.active);
+                if cmd == Command::CloseTabsLeft {
+                    self.close_tabs_left(self.active, anchor);
+                } else {
+                    self.close_tab_group(self.active, anchor, cmd == Command::CloseOtherTabs);
+                }
+            }
+            Command::CloseDuplicateTabs => {
+                self.close_duplicate_tabs(self.active);
+            }
+            Command::NewTab => {
+                self.new_tab(self.active, None);
+            }
+            Command::CopyTabsToOther => {
+                self.copy_tabs_to_other(self.active);
+            }
+            Command::OpenFolderTab | Command::OpenFolderBackgroundTab => {
+                let path = self
+                    .active_panel_ref()
+                    .cursor_entry()
+                    .filter(|entry| entry.is_dir)
+                    .map(|entry| entry.path.clone());
+                if let Some(path) = path {
+                    if cmd == Command::OpenFolderBackgroundTab {
+                        self.new_background_tab(self.active, path);
+                    } else {
+                        self.new_tab(self.active, Some(path));
+                    }
+                }
+            }
+            Command::EditPermissions => match self.active_panel_ref().permission_targets() {
+                Ok(targets) if !targets.is_empty() => {
+                    self.emit_ui_request(UiRequest::Permissions(targets))
+                }
+                _ => self.emit_ui_request(UiRequest::Notice {
+                    message: "The selected items changed. Refresh the panel and select them again"
+                        .into(),
+                    error: true,
+                }),
+            },
+            Command::ReopenClosedTab => {
+                self.reopen_closed_tab(self.active);
+            }
+            Command::CloseTab => {
+                self.close_tab(self.active);
+            }
+            Command::GoToTab(index) => {
+                self.select_tab(self.active, index);
+            }
+            Command::FirstTab | Command::LastTab => {
+                let index = if cmd == Command::FirstTab {
+                    0
+                } else {
+                    self.tab_count(self.active).saturating_sub(1)
+                };
+                self.select_tab(self.active, index);
+            }
+            Command::NextTab => {
+                self.step_tab(self.active, true);
+            }
+            Command::PreviousTab => {
+                self.step_tab(self.active, false);
+            }
             Command::SwitchPanel => {
                 self.active = self.active.other();
             }
@@ -1092,6 +1209,10 @@ impl Workspace {
                     panel.set_cursor(panel.cursor() + 1);
                     panel.set_scroll_to_cursor(true);
                 }
+            }
+            Command::CursorFirstFile | Command::CursorLastFile => {
+                self.active_panel()
+                    .jump_to_file_edge(matches!(cmd, Command::CursorLastFile));
             }
             Command::CursorHome => {
                 let panel = self.active_panel();
@@ -1309,12 +1430,52 @@ impl Workspace {
                     self.emit_ui_request(UiRequest::Rename(path));
                 }
             }
+            Command::OpenFolderOtherPane => {
+                if self.pending_op.is_some() {
+                    return;
+                }
+                if let Some(target) = self
+                    .active_panel_ref()
+                    .cursor_entry()
+                    .filter(|entry| entry.is_dir)
+                    .map(|entry| entry.path.clone())
+                {
+                    let other = self.inactive_panel_mut();
+                    other.preview = None;
+                    other.navigate_to(target);
+                }
+            }
+            Command::GoHome | Command::GoRoot => {
+                if self.pending_op.is_some() {
+                    return;
+                }
+                let target = if cmd == Command::GoHome {
+                    dirs::home_dir().filter(|path| path.is_absolute())
+                } else {
+                    let path = &self.active_panel_ref().current_path;
+                    path.is_absolute()
+                        .then(|| path.ancestors().last().map(Path::to_path_buf))
+                        .flatten()
+                };
+                match target {
+                    Some(target) => {
+                        let panel = self.active_panel();
+                        panel.preview = None;
+                        if panel.current_path != target {
+                            panel.navigate_to(target);
+                        }
+                    }
+                    None => self.notice("The requested home or root folder is unavailable".into()),
+                }
+            }
             Command::EqualizePanels => {
                 let target = self.active_panel_ref().current_path.clone();
                 self.inactive_panel_mut().navigate_to(target);
             }
             Command::SwapPanels => {
                 std::mem::swap(&mut self.left, &mut self.right);
+                self.tabs.swap(0, 1);
+                self.tab_revision = self.tab_revision.wrapping_add(1);
                 self.active = self.active.other();
             }
             Command::BeginBatchRename => self.emit_ui_request(UiRequest::BatchRename),
@@ -1328,6 +1489,11 @@ impl Workspace {
             Command::OpenProjectCollections => self.emit_ui_request(UiRequest::ProjectCollections),
             Command::CopyPath => {
                 self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::FullPath))
+            }
+            Command::CopyNameWithoutExtension => {
+                self.emit_ui_request(UiRequest::CopyPaths(
+                    crate::clipboard::PathStyle::NameWithoutExtension,
+                ));
             }
             Command::CopyName => {
                 self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::NameOnly))
@@ -1363,9 +1529,26 @@ impl Workspace {
             Command::SelectOnlyHere => self.select_by_relation(|r| &r.only_here),
             Command::SelectDiffering => self.select_by_relation(|r| &r.differing),
             Command::SelectIdentical => self.select_by_relation(|r| &r.identical),
+            Command::SaveSelection => {
+                if self.pending_op.is_none() && !self.has_any_pending_ui_modal() {
+                    self.active_panel().save_selection();
+                }
+            }
+            Command::RestoreSelection => {
+                if self.pending_op.is_none() && !self.has_any_pending_ui_modal() {
+                    self.active_panel().restore_saved_selection();
+                }
+            }
             Command::ClearSelection => self.active_panel().clear_selection_everywhere(),
             Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
             Command::ToggleCompare => self.emit_ui_request(UiRequest::ToggleCompare),
+            Command::KeyboardHelp => self.emit_ui_request(UiRequest::KeyboardHelp),
+            Command::ShowListView => self
+                .active_panel()
+                .set_browser_mode(crate::panel::BrowserMode::List),
+            Command::ShowIconsView => self
+                .active_panel()
+                .set_browser_mode(crate::panel::BrowserMode::Icons),
             Command::ToggleTheme => self.emit_ui_request(UiRequest::ToggleTheme),
             Command::ToggleSizeBars => self.emit_ui_request(UiRequest::ToggleSizeBars),
             Command::ToggleFolderSidebar => self.emit_ui_request(UiRequest::ToggleFolderSidebar),
@@ -1375,11 +1558,23 @@ impl Workspace {
                 let outcome = self.active_panel().toggle_hidden();
                 self.emit_ui_request(UiRequest::HiddenFilesOutcome(outcome));
             }
+            Command::ToggleFoldersByName => {
+                let panel = self.active_panel();
+                panel.toggle_folders_by_name();
+                let on = panel.view_config().folders_by_name();
+                self.notice(toggle_notice("Folders by name first", on));
+            }
             Command::ToggleFoldersFirst => {
                 let panel = self.active_panel();
                 panel.toggle_folders_first();
                 let on = panel.view_config().folders_first();
                 self.notice(toggle_notice("Folders first", on));
+            }
+            Command::ToggleCaseSensitiveSort => {
+                let panel = self.active_panel();
+                panel.toggle_case_sensitive_name_sort();
+                let on = panel.view_config().case_sensitive_name_sort();
+                self.notice(toggle_notice("Case-sensitive name sort", on));
             }
             Command::ToggleNaturalSort => {
                 let panel = self.active_panel();
@@ -1388,11 +1583,15 @@ impl Workspace {
                 self.notice(toggle_notice("Natural name sort", on));
             }
             Command::SortByName
+            | Command::SortByStem
             | Command::SortBySize
             | Command::SortByModified
             | Command::SortByExtension
             | Command::SortByKind => {
                 let (column, label) = match cmd {
+                    Command::SortByStem => {
+                        (crate::panel::SortColumn::Stem, "name without extension")
+                    }
                     Command::SortByName => (crate::panel::SortColumn::Name, "name"),
                     Command::SortBySize => (crate::panel::SortColumn::Size, "size"),
                     Command::SortByModified => (crate::panel::SortColumn::Modified, "modified"),
@@ -1441,6 +1640,36 @@ impl Workspace {
                 };
                 self.notice(message);
             }
+            Command::SelectSameStem | Command::DeselectSameStem => {
+                let select = matches!(cmd, Command::SelectSameStem);
+                let changed = self.active_panel().change_same_stem_as_cursor(select);
+                self.notice(format!(
+                    "{} {changed} visible file(s) with the cursor's name, ignoring extension",
+                    if select { "Selected" } else { "Deselected" }
+                ));
+            }
+            Command::DeselectLikeCursor => {
+                let removed = self.active_panel().deselect_same_extension_as_cursor();
+                self.notice(format!(
+                    "Deselected {removed} visible file(s) with the cursor's extension"
+                ));
+            }
+            Command::InvertVisibleFiles | Command::InvertVisibleFolders => {
+                let folders = cmd == Command::InvertVisibleFolders;
+                let changed = self.active_panel().invert_visible_kind(folders);
+                self.notice(format!(
+                    "Inverted selection for {changed} visible {}",
+                    if folders { "folder(s)" } else { "file(s)" }
+                ));
+            }
+            Command::SelectVisibleFiles | Command::SelectVisibleFolders => {
+                let folders = cmd == Command::SelectVisibleFolders;
+                let added = self.active_panel().select_visible_kind(folders);
+                self.notice(format!(
+                    "Added {added} visible {} to selection",
+                    if folders { "folder(s)" } else { "file(s)" }
+                ));
+            }
             Command::SelectEmptyFiles => {
                 let added = self.active_panel().select_empty_files();
                 self.notice(smart_select_message(
@@ -1459,6 +1688,17 @@ impl Workspace {
                 self.request_listing_copy(crate::listing_export::ListingFormat::Markdown)
             }
             Command::VerifyChecksum => self.verify_checksum(),
+            Command::ViewHex => {
+                if let Some(entry) = self
+                    .active_panel_ref()
+                    .cursor_entry()
+                    .filter(|entry| !entry.is_dir && !entry.is_symlink())
+                {
+                    self.emit_ui_request(UiRequest::HexPreview(entry.path.clone()));
+                } else {
+                    self.notice("Hex preview requires a regular file under the cursor".into());
+                }
+            }
             Command::CreateSymlink => self.create_symlinks(),
             Command::CreateHardlink => self.create_hardlinks(),
             Command::ToggleNavLock => {
@@ -1480,7 +1720,7 @@ impl Workspace {
                         self.emit_ui_request(UiRequest::Archive(entry.path));
                     }
                     _ => self.emit_ui_request(UiRequest::Notice {
-                        message: "Highlight a ZIP or tar.gz archive first".to_string(),
+                        message: "Highlight a ZIP, TAR or tar.gz archive first".to_string(),
                         error: true,
                     }),
                 }
@@ -3349,7 +3589,8 @@ impl Workspace {
             Some(PreviewContent::Image(path)) => {
                 entry.is_image() && path.as_path() == entry.path.as_path()
             }
-            Some(PreviewContent::Pending(identity))
+            Some(PreviewContent::Pdf(identity))
+            | Some(PreviewContent::Pending(identity))
             | Some(PreviewContent::Text { identity, .. }) => {
                 !entry.is_image() && identity.matches_entry(entry)
             }

@@ -1,0 +1,29 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.24s
+     Running unittests src/main.rs (target/debug/build/commander/64b722dc4e709030/out/commander-64b722dc4e709030)
+
+running 21 tests
+test cmdtemplate::tests::dir_token_does_not_clobber_dir_other ... ok
+test cmdtemplate::tests::empty_selection_expands_path_and_name_lists_to_nothing ... ok
+test cmdtemplate::tests::expand_does_not_re_substitute_a_substituted_value ... ok
+test cmdtemplate::tests::expands_both_directories ... ok
+test cmdtemplate::tests::expands_names_from_final_component ... ok
+test cmdtemplate::tests::expands_paths_quoted_and_space_joined ... ok
+test cmdtemplate::tests::matches_empty_filter_applies_to_any_selection ... ok
+test cmdtemplate::tests::matches_is_case_insensitive_and_dot_optional ... ok
+test cmdtemplate::tests::matches_multi_part_extension_filters ... ok
+test cmdtemplate::tests::matches_when_any_entry_has_a_listed_extension ... ok
+test cmdtemplate::tests::names_starting_with_dash_are_not_options ... ok
+test cmdtemplate::tests::non_utf8_paths_are_reported_only_for_used_placeholders ... ok
+test cmdtemplate::tests::preview_no_placeholder_is_all_literal ... ok
+test cmdtemplate::tests::preview_segments_tags_literals_and_substitutions ... ok
+test cmdtemplate::tests::preview_unknown_placeholder_stays_literal ... ok
+test cmdtemplate::tests::quotes_embedded_single_quotes ... ok
+test cmdtemplate::tests::substitutions_skip_tokens_absent_from_the_template ... ok
+test cmdtemplate::tests::templates_reorder_and_remove ... ok
+test cmdtemplate::tests::templates_store_add_dedupes_matching_and_round_trips ... ok
+test cmdtemplate::tests::unknown_placeholder_is_left_verbatim ... ok
+test cmdtemplate::tests::updating_template_metadata_preserves_order_and_does_not_duplicate_command ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 2185 filtered out; finished in 0.01s
+

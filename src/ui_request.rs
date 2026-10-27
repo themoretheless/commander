@@ -10,6 +10,8 @@ use crate::transfer::TransferKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiModal {
+    KeyboardHelp,
+    Permissions,
     History,
     Rename,
     BatchRename,
@@ -23,6 +25,8 @@ pub enum UiModal {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiRequest {
+    KeyboardHelp,
+    Permissions(Vec<crate::permissions::Target>),
     Rename(PathBuf),
     SelectMask,
     RunCommand,
@@ -63,6 +67,7 @@ pub enum UiRequest {
         error: bool,
     },
     VerifyChecksum(Vec<PathBuf>),
+    HexPreview(PathBuf),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
 }
@@ -70,6 +75,8 @@ pub enum UiRequest {
 impl UiRequest {
     pub(crate) const fn modal(&self) -> Option<UiModal> {
         match self {
+            Self::KeyboardHelp => Some(UiModal::KeyboardHelp),
+            Self::Permissions(_) => Some(UiModal::Permissions),
             Self::Undo | Self::Redo => Some(UiModal::History),
             Self::Rename(_) => Some(UiModal::Rename),
             Self::BatchRename => Some(UiModal::BatchRename),
@@ -100,6 +107,7 @@ impl UiRequest {
             | Self::CopyText { .. }
             | Self::Notice { .. }
             | Self::VerifyChecksum(_)
+            | Self::HexPreview(_)
             | Self::HiddenFilesOutcome(_)
             | Self::FocusFilter => None,
         }
@@ -108,7 +116,9 @@ impl UiRequest {
     pub(crate) const fn coalesces_when_open(&self) -> bool {
         matches!(
             self,
-            Self::SelectMask
+            Self::KeyboardHelp
+                | Self::Permissions(_)
+                | Self::SelectMask
                 | Self::RunCommand
                 | Self::GoToPath
                 | Self::Recent
@@ -240,6 +250,22 @@ mod tests {
             queue.emit(request);
         }
         queue.prepend_deferred(deferred);
+    }
+
+    #[test]
+    fn keyboard_help_is_modal_coalesced_and_defers_other_dialogs() {
+        let mut sink = FakeSink::default();
+        let deferred = dispatch_snapshot(
+            vec![
+                UiRequest::KeyboardHelp,
+                UiRequest::KeyboardHelp,
+                UiRequest::RunCommand,
+            ],
+            &mut sink,
+        );
+        assert_eq!(sink.open_modal, Some(UiModal::KeyboardHelp));
+        assert_eq!(sink.applied, vec![UiRequest::KeyboardHelp]);
+        assert_eq!(deferred, vec![UiRequest::RunCommand]);
     }
 
     #[test]

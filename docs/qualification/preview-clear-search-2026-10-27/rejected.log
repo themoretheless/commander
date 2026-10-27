@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0433]: cannot find `Runtime` in `workload`
+   --> src/preview_find.rs:908:40
+    |
+908 |         let runtime = crate::workload::Runtime::manual();
+    |                                        ^^^^^^^ could not find `Runtime` in `workload`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

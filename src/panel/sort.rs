@@ -1,66 +1,20 @@
+use crate::natural_sort::compare as natural_cmp;
 use std::cmp::Ordering;
 
 use super::{FileEntry, SizeSnapshot, SortColumn, SortOrder, ViewConfig};
 
-/// Natural ("human") ordering: runs of digits compare by numeric value, so
-/// "file2" sorts before "file10". Inputs are expected pre-lowercased.
-///
-/// Works on UTF-8 bytes so sorting a listing does not allocate per
-/// comparison: digits are ASCII and never occur inside a multi-byte
-/// character, and byte order within UTF-8 matches code point order.
-pub(super) fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let (mut i, mut j) = (0usize, 0usize);
-    // Leading-zero count only breaks a tie once the rest of the names compare
-    // equal, so "a01b" still sorts before "a1c".
-    let mut zero_tiebreak = Ordering::Equal;
-    while i < a.len() && j < b.len() {
-        let (ca, cb) = (a[i], b[j]);
-        if ca.is_ascii_digit() && cb.is_ascii_digit() {
-            let si = i;
-            while i < a.len() && a[i].is_ascii_digit() {
-                i += 1;
-            }
-            let sj = j;
-            while j < b.len() && b[j].is_ascii_digit() {
-                j += 1;
-            }
-            let va = strip_leading_zeros(&a[si..i]);
-            let vb = strip_leading_zeros(&b[sj..j]);
-            let ordering = va.len().cmp(&vb.len()).then_with(|| va.cmp(vb));
-            if ordering != Ordering::Equal {
-                return ordering;
-            }
-            if zero_tiebreak == Ordering::Equal {
-                zero_tiebreak = (i - si).cmp(&(j - sj));
-            }
-        } else {
-            match ca.cmp(&cb) {
-                Ordering::Equal => {
-                    i += 1;
-                    j += 1;
-                }
-                ordering => return ordering,
-            }
-        }
-    }
-    // One side is exhausted: the longer remainder sorts last.
-    (a.len() - i).cmp(&(b.len() - j)).then(zero_tiebreak)
-}
-
-fn strip_leading_zeros(run: &[u8]) -> &[u8] {
-    let mut first = 0;
-    while first + 1 < run.len() && run[first] == b'0' {
-        first += 1;
-    }
-    &run[first..]
-}
-
 /// Name order as the user configured it: natural ("file2" before "file10")
 /// or plain A-Z. Every other column breaks its ties with this, always
-/// ascending whatever the sort direction, so equal keys read alphabetically
-/// ("alpha" before "Zeta") instead of in byte path order.
+/// ascending whatever the sort direction. Default folded ordering puts
+/// "alpha" before "Zeta"; the case-sensitive option compares original names.
 fn name_cmp(a: &FileEntry, b: &FileEntry, config: ViewConfig) -> Ordering {
+    if config.case_sensitive_name_sort() {
+        return if config.natural_name_sort() {
+            natural_cmp(&a.name, &b.name)
+        } else {
+            a.name.cmp(&b.name)
+        };
+    }
     let folded = if config.natural_name_sort() {
         natural_cmp(&a.sort_key, &b.sort_key)
     } else {
@@ -72,6 +26,42 @@ fn name_cmp(a: &FileEntry, b: &FileEntry, config: ViewConfig) -> Ordering {
         } else {
             a.name_lower.cmp(&b.name_lower)
         }
+    })
+}
+
+/// Borrow normalized name keys without allocating during comparison. Directory
+/// names keep their dots; files lose only their final extension.
+fn stem_key(key: &str, directory: bool) -> &str {
+    if directory {
+        key
+    } else {
+        std::path::Path::new(key)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(key)
+    }
+}
+
+fn stem_cmp(a: &FileEntry, b: &FileEntry, config: ViewConfig) -> Ordering {
+    let compare = |a: &str, b: &str| {
+        if config.natural_name_sort() {
+            natural_cmp(a, b)
+        } else {
+            a.cmp(b)
+        }
+    };
+    if config.case_sensitive_name_sort() {
+        return compare(stem_key(&a.name, a.is_dir), stem_key(&b.name, b.is_dir));
+    }
+    compare(
+        stem_key(&a.sort_key, a.is_dir),
+        stem_key(&b.sort_key, b.is_dir),
+    )
+    .then_with(|| {
+        compare(
+            stem_key(&a.name_lower, a.is_dir),
+            stem_key(&b.name_lower, b.is_dir),
+        )
     })
 }
 
@@ -89,12 +79,16 @@ pub(super) fn sort_entries_with_sizes(
             match (a.is_dir, b.is_dir) {
                 (true, false) => return Ordering::Less,
                 (false, true) => return Ordering::Greater,
+                (true, true) if config.folders_by_name() => {
+                    return name_cmp(a, b, config).then_with(|| a.path.cmp(&b.path));
+                }
                 _ => {}
             }
         }
 
         let primary = match config.sort_column() {
             SortColumn::Name => name_cmp(a, b, config),
+            SortColumn::Stem => stem_cmp(a, b, config),
             SortColumn::Size => sizes
                 .map_or(a.size, |sizes| sizes.display_size(a))
                 .cmp(&sizes.map_or(b.size, |sizes| sizes.display_size(b))),
@@ -143,6 +137,137 @@ mod tests {
     fn sorted(mut entries: Vec<FileEntry>, config: ViewConfig) -> Vec<String> {
         sort_entries(&mut entries, config);
         entries.into_iter().map(|e| e.name).collect()
+    }
+
+    #[test]
+    fn case_sensitive_names_use_original_case_for_primary_and_tied_order() {
+        let entries = vec![
+            named("alpha", false, 1),
+            named("Beta", false, 1),
+            named("Zulu", false, 1),
+            named("beta", false, 1),
+        ];
+        for natural in [false, true] {
+            let config = ViewConfig::default()
+                .with_natural_name_sort(natural)
+                .with_case_sensitive_name_sort(true);
+            assert_eq!(
+                sorted(entries.clone(), config),
+                ["Beta", "Zulu", "alpha", "beta"]
+            );
+            assert_eq!(
+                sorted(
+                    entries.clone(),
+                    config.with_sort(SortColumn::Name, SortOrder::Desc)
+                ),
+                ["beta", "alpha", "Zulu", "Beta"]
+            );
+            assert_eq!(
+                sorted(
+                    entries.clone(),
+                    config.with_sort(SortColumn::Size, SortOrder::Desc)
+                ),
+                ["Beta", "Zulu", "alpha", "beta"]
+            );
+            assert_eq!(
+                sorted(entries.clone(), config.with_case_sensitive_name_sort(false)),
+                ["alpha", "Beta", "beta", "Zulu"]
+            );
+        }
+    }
+
+    #[test]
+    fn sensitive_stems_keep_numeric_sort_and_unicode_code_point_order() {
+        let config = ViewConfig::default()
+            .with_sort(SortColumn::Stem, SortOrder::Asc)
+            .with_case_sensitive_name_sort(true);
+        let entries = vec![
+            named("file2.zip", false, 1),
+            named("File10.txt", false, 1),
+            named("File2.rs", false, 1),
+            named("File2.txt", false, 1),
+            named("zebra", false, 1),
+            named("Éclair", false, 1),
+        ];
+        assert_eq!(
+            sorted(entries.clone(), config),
+            [
+                "File2.rs",
+                "File2.txt",
+                "File10.txt",
+                "file2.zip",
+                "zebra",
+                "Éclair"
+            ]
+        );
+        assert_eq!(
+            sorted(entries, config.with_natural_name_sort(false)),
+            [
+                "File10.txt",
+                "File2.rs",
+                "File2.txt",
+                "file2.zip",
+                "zebra",
+                "Éclair"
+            ]
+        );
+    }
+
+    #[test]
+    fn stem_sort_strips_final_extension_and_keeps_ties_ascending() {
+        let entries = vec![
+            named("a-z.txt", false, 1),
+            named("a.txt", false, 1),
+            named("a.rs", false, 1),
+            named("archive.tar.gz", false, 1),
+            named("archive.zip", false, 1),
+            named(".env", false, 1),
+            named(".env.local", false, 1),
+        ];
+        let config = ViewConfig::default().with_sort(SortColumn::Stem, SortOrder::Asc);
+        assert_eq!(
+            sorted(entries.clone(), config),
+            [
+                ".env",
+                ".env.local",
+                "a.rs",
+                "a.txt",
+                "a-z.txt",
+                "archive.zip",
+                "archive.tar.gz"
+            ]
+        );
+        assert_eq!(
+            sorted(entries, config.with_sort(SortColumn::Stem, SortOrder::Desc)),
+            [
+                "archive.tar.gz",
+                "archive.zip",
+                "a-z.txt",
+                "a.rs",
+                "a.txt",
+                ".env",
+                ".env.local"
+            ]
+        );
+    }
+
+    #[test]
+    fn stem_sort_respects_natural_order_and_directory_dots() {
+        let entries = vec![
+            named("file10.zip", false, 1),
+            named("file2.txt", false, 1),
+            named("a.z", true, 0),
+            named("a-b", true, 0),
+        ];
+        let config = ViewConfig::default().with_sort(SortColumn::Stem, SortOrder::Asc);
+        assert_eq!(
+            sorted(entries.clone(), config),
+            ["a-b", "a.z", "file2.txt", "file10.zip"]
+        );
+        assert_eq!(
+            sorted(entries, config.with_natural_name_sort(false)),
+            ["a-b", "a.z", "file10.zip", "file2.txt"]
+        );
     }
 
     #[test]

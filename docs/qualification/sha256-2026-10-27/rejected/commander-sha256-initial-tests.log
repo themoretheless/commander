@@ -1,0 +1,52 @@
+   Compiling typenum v1.20.1
+   Compiling const-oid v0.10.2
+   Compiling cpufeatures v0.3.1
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling generic-array v0.14.7
+   Compiling hybrid-array v0.4.15
+   Compiling crypto-common v0.1.7
+   Compiling inout v0.1.4
+   Compiling block-buffer v0.10.4
+   Compiling universal-hash v0.5.1
+   Compiling digest v0.10.7
+   Compiling cipher v0.4.4
+   Compiling aead v0.5.2
+   Compiling poly1305 v0.8.0
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling blake2 v0.10.6
+   Compiling chacha20 v0.9.1
+   Compiling chacha20poly1305 v0.10.1
+   Compiling argon2 v0.5.3
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.72s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 8 tests
+test checksum::tests::summary_line_for_empty_and_failed_only_reports ... ok
+test checksum::tests::detailed_text_formats_ok_error_skipped_and_unknown_rows ... ok
+test checksum::tests::symlinks_are_skipped_without_following_them ... ok
+test checksum::tests::missing_paths_report_the_os_error_and_folders_explain_the_skip ... ok
+test checksum::tests::blake3_hex_is_the_lowercase_digest_of_the_content ... ok
+test checksum::tests::folders_are_skipped_not_failed ... ok
+test checksum::tests::identical_files_share_hashes ... ok
+test checksum::tests::content_hash_matches_the_streaming_content_hash ... FAILED
+
+failures:
+
+---- checksum::tests::content_hash_matches_the_streaming_content_hash stdout ----
+
+thread 'checksum::tests::content_hash_matches_the_streaming_content_hash' (80151514) panicked at src/checksum.rs:338:9:
+assertion `left == right` failed
+  left: Some(18203956701175770193)
+ right: Some(5867113652790927868)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    checksum::tests::content_hash_matches_the_streaming_content_hash
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 2252 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin commander`

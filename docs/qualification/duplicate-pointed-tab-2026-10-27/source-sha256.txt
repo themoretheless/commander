@@ -1,0 +1,4 @@
+1bca3c12f9d13ef3d4b1ae4f3b17674b5f63cf154bb5b65be083b49a81d7aa50  README.md
+ededd62825ec5cafd0a23d7bffb5f04b5d3480bae536a80513562bb83d044836  src/workspace/tabs.rs
+d4bc039fa7042718a43c876b92da7ac42dee7dc54da0f0ec91540bf54e90873a  src/app/tabs.rs
+653e12868cd23ed3888cc0cfb42cb133dce2147f3569ec7b75b5b81344289cab  src/visual_qa.rs

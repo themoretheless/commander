@@ -1,3 +1,7 @@
+fn icon_columns(width: f32) -> usize {
+    ((width / 128.0).floor() as usize).clamp(1, 64)
+}
+
 use super::*;
 
 /// Why a row has no context menu: the menu binds to the file identity
@@ -647,6 +651,7 @@ impl App {
     pub(crate) fn render_file_list(
         ui: &mut egui::Ui,
         panel: &mut PanelState,
+        image_cache: &mut crate::image_cache::ImageCache,
         is_active: bool,
         t: &ThemeColors,
         panel_side: &str,
@@ -906,11 +911,16 @@ impl App {
                 // The rows are virtualized, so AT learns the full row count
                 // and each row's position from a grid node, not from the
                 // handful of rows laid out this frame.
-                let grid_rows = filtered.len() + usize::from(can_go_up);
+                let grid_columns = if panel.browser_mode() == crate::panel::BrowserMode::Icons {
+                    icon_columns(ui.available_width())
+                } else {
+                    1
+                };
+                let grid_rows = filtered.len().div_ceil(grid_columns) + usize::from(can_go_up);
                 ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                     node.set_role(egui::accesskit::Role::Grid);
                     node.set_row_count(grid_rows);
-                    node.set_column_count(1);
+                    node.set_column_count(grid_columns);
                 });
 
                 // Deferred row interactions (applied after the loop).
@@ -933,7 +943,20 @@ impl App {
                 // allocated row height; `row_h` adds the 1px item spacing so the
                 // virtualization stride matches (Comfortable == 28 + 1 == 29,
                 // the pre-density default).
-                let row_content = row_content_height(metrics);
+                let icons = panel.browser_mode() == crate::panel::BrowserMode::Icons;
+                let columns = if icons {
+                    icon_columns(ui.available_width())
+                } else {
+                    1
+                };
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::new(("icon_columns", panel_side)), columns)
+                });
+                let row_content = if icons {
+                    110.0 + metrics.name_pt
+                } else {
+                    row_content_height(metrics)
+                };
                 let row_h = row_content + 1.0;
                 // The semantic kind stub picks the matching toned palette.
                 let dark = t.is_dark();
@@ -970,7 +993,8 @@ impl App {
                 let now = std::time::SystemTime::now();
 
                 // Feed the visible-row count back to the core for PageUp/Down.
-                panel.set_page_rows(((viewport.height() / row_h).floor() as usize).max(1));
+                panel
+                    .set_page_rows(((viewport.height() / row_h).floor() as usize).max(1) * columns);
 
                 // Largest entry size in the listing, used to scale occupancy
                 // bars.
@@ -988,9 +1012,11 @@ impl App {
                     scroll_top,
                     viewport.height(),
                     row_h,
-                    total_rows,
-                    cursor_row_to_reveal(cursor, reveal_cursor),
+                    total_rows.div_ceil(columns),
+                    cursor_row_to_reveal(cursor, reveal_cursor).map(|row| row / columns),
                 );
+                let first_visible = first_visible * columns;
+                let last_visible = (last_visible * columns).min(total_rows);
                 panel.set_scroll_anchor(first_visible);
                 let avg_glyph_width = ui.ctx().fonts_mut(|fonts| {
                     fonts.glyph_width(&egui::FontId::proportional(metrics.name_pt), 'n')
@@ -1000,10 +1026,12 @@ impl App {
                 if first_visible > 0 {
                     ui.allocate_space(Vec2::new(
                         ui.available_width(),
-                        first_visible as f32 * row_h,
+                        (first_visible / columns) as f32 * row_h,
                     ));
                 }
 
+                let grid_origin = ui.cursor().min;
+                let cell_width = ui.available_width() / columns as f32;
                 // Render only visible rows
                 for (offset, &entry_idx) in filtered[first_visible..last_visible].iter().enumerate()
                 {
@@ -1028,10 +1056,29 @@ impl App {
                         zebra
                     };
 
-                    let (row_rect, row_resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), row_content),
-                        Sense::click_and_drag(),
-                    );
+                    let (row_rect, row_resp) = if icons {
+                        let rect = egui::Rect::from_min_size(
+                            grid_origin
+                                + egui::vec2(
+                                    (idx % columns) as f32 * cell_width,
+                                    (offset / columns) as f32 * row_h,
+                                ),
+                            egui::vec2((cell_width - 4.0).max(1.0), row_content),
+                        );
+                        (
+                            rect,
+                            ui.interact(
+                                rect,
+                                egui::Id::new(("icon_entry", panel_side, &entry.path)),
+                                Sense::click_and_drag(),
+                            ),
+                        )
+                    } else {
+                        ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), row_content),
+                            Sense::click_and_drag(),
+                        )
+                    };
                     let row_resp = if let Some(map) = compare {
                         if let Some(hint) = crate::compare::compare_hint(entry, map) {
                             row_resp.on_hover_text(hint)
@@ -1078,8 +1125,13 @@ impl App {
                             item_count,
                             compare_status.map(|status| compare_marker(status).1),
                         ),
-                        grid_row_index(idx, can_go_up),
+                        grid_row_index(idx / columns, can_go_up),
                     );
+                    if icons {
+                        ui.ctx().accesskit_node_builder(row_resp.id, |node| {
+                            node.set_column_index(idx % columns);
+                        });
+                    }
                     let accesskit_context_menu_requested = ui.is_enabled()
                         && crate::accessibility::consume_show_context_menu(ui.ctx(), row_resp.id);
                     #[cfg(feature = "visual-qa")]
@@ -1101,8 +1153,11 @@ impl App {
                     }
 
                     // Paint background
-                    let full_rect =
-                        egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), row_rect.y_range());
+                    let full_rect = if icons {
+                        row_rect
+                    } else {
+                        egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), row_rect.y_range())
+                    };
                     if is_cursor && is_active && ui.is_enabled() {
                         ui.ctx().data_mut(|data| {
                             data.insert_temp(egui::Id::new("current_focus_indicator"), full_rect);
@@ -1210,139 +1265,202 @@ impl App {
                         .accesskit_node_builder(child_ui.unique_id(), |node| {
                             node.set_hidden();
                         });
-                    child_ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-
-                        if is_selected {
-                            ui.label(
-                                egui::RichText::new("\u{2713}")
-                                    .size(metrics.meta_pt)
-                                    .strong()
-                                    .color(t.accent_purple),
-                            );
-                        } else {
-                            ui.add_space(9.0);
-                        }
-
-                        if entry.is_dir {
-                            Self::paint_folder_icon(ui, item_count, t.folder);
-                        } else {
-                            ui.add_space(3.0);
-                            let (red, green, blue) = crate::file_color::kind_color(
-                                crate::selection_summary::kind_of(entry),
-                                dark,
-                            );
-                            crate::app::glyphs::file_document(
-                                ui,
-                                &entry.extension,
-                                Color32::from_rgb(red, green, blue),
-                                t.bg_panel,
-                            );
-                        }
-                        ui.add_space(3.0);
-
-                        let name_color = if is_selected {
-                            t.accent_purple
-                        } else if entry.is_dir {
-                            t.text_primary
-                        } else {
-                            t.text_secondary
-                        };
-                        let responsive =
-                            crate::accessibility::file_row_layout(ui.available_width());
-                        let inline_compare = compare_status.filter(|_| !responsive.show_metadata);
-                        let name_width = name_column_width(responsive, inline_compare.is_some());
-                        let max_name_chars = name_char_budget(name_width, avg_glyph_width);
-                        let display_name = crate::display_name::truncate_preserving_extension(
-                            &entry.name,
-                            max_name_chars,
-                        );
-                        let shortened = display_name.as_ref() != entry.name;
-                        let name_label = if query.is_empty() {
-                            egui::Label::new(
-                                egui::RichText::new(display_name.as_ref())
-                                    .size(metrics.name_pt)
-                                    .color(name_color),
-                            )
-                        } else {
-                            // Score the full name (what the filter matched) and
-                            // carry the hits through the truncation.
-                            let ranges = crate::fuzzy::score(&query, &entry.name)
-                                .map(|m| m.matched_ranges)
-                                .unwrap_or_default();
-                            let ranges = if shortened {
-                                map_ranges_to_display(&entry.name, &display_name, &ranges)
-                            } else {
-                                ranges
-                            };
-                            egui::Label::new(highlight_name_job(
-                                display_name.as_ref(),
-                                &ranges,
-                                name_color,
-                                t.accent,
-                                metrics.name_pt,
-                            ))
-                        };
-                        // `add_sized` would center the label in its slot; names
-                        // read from the left edge of the column.
-                        let name_response = ui
-                            .allocate_ui_with_layout(
-                                egui::vec2(name_width, row_content),
-                                Layout::left_to_right(Align::Center),
-                                |ui| {
-                                    ui.set_min_width(name_width);
-                                    ui.add(name_label.truncate())
-                                },
-                            )
-                            .inner;
-                        if shortened {
-                            name_response.on_hover_text(&entry.name);
-                        }
-                        if let Some(status) = inline_compare {
-                            let (symbol, hint) = compare_marker(status);
-                            ui.label(
-                                egui::RichText::new(symbol)
-                                    .size(metrics.meta_pt)
-                                    .strong()
-                                    .color(t.text_secondary),
-                            )
-                            .on_hover_text(hint);
-                        }
-
-                        if responsive.show_metadata {
+                    if icons {
+                        child_ui.with_layout(Layout::top_down(Align::Center), |ui| {
+                            ui.add_space(8.0);
                             ui.allocate_ui_with_layout(
-                                egui::vec2(responsive.metadata_width, row_content),
-                                Layout::right_to_left(Align::Center),
+                                egui::vec2(64.0, 48.0),
+                                Layout::top_down(Align::Center),
                                 |ui| {
-                                    ui.add_space(4.0);
-                                    let modified_resp = ui.label(
-                                        egui::RichText::new(&modified_label)
-                                            .size(metrics.meta_pt)
-                                            .color(t.text_muted),
-                                    );
-                                    if entry.modified.is_some() {
-                                        modified_resp.on_hover_text(&entry.modified_str);
-                                    }
-                                    ui.add_space(10.0);
-                                    ui.label(
-                                        egui::RichText::new(size_text)
-                                            .size(metrics.meta_pt)
-                                            .color(t.text_muted),
-                                    );
-                                    if let Some(status) = compare_status {
-                                        let (symbol, hint) = compare_marker(status);
-                                        ui.label(
-                                            egui::RichText::new(symbol)
-                                                .size(metrics.meta_pt)
-                                                .strong()
-                                                .color(t.text_secondary),
-                                        )
-                                        .on_hover_text(hint);
+                                    if let Some(texture) =
+                                        image_cache.get(&entry.path).filter(|_| entry.is_image())
+                                    {
+                                        ui.add(
+                                            egui::Image::new(texture)
+                                                .fit_to_exact_size(egui::vec2(64.0, 48.0)),
+                                        );
+                                    } else if entry.is_dir {
+                                        Self::paint_folder_icon(ui, item_count, t.folder);
+                                    } else {
+                                        crate::app::glyphs::file_document(
+                                            ui,
+                                            &entry.extension,
+                                            t.accent,
+                                            t.bg_panel,
+                                        );
                                     }
                                 },
                             );
-                        }
-                    });
+                            ui.add_space(8.0);
+                            let name = crate::display_name::truncate_preserving_extension(
+                                &entry.name,
+                                name_char_budget(cell_width - 16.0, avg_glyph_width),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(name.as_ref())
+                                        .size(metrics.name_pt)
+                                        .color(t.text_primary),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&entry.name);
+                            ui.label(
+                                egui::RichText::new(size_text)
+                                    .size(metrics.meta_pt)
+                                    .color(t.text_muted),
+                            );
+                            if is_selected {
+                                ui.label(
+                                    egui::RichText::new("✓ Selected")
+                                        .size(metrics.meta_pt)
+                                        .color(t.accent_purple),
+                                );
+                            }
+                            if let Some(status) = compare_status {
+                                ui.label(
+                                    egui::RichText::new(compare_marker(status).0)
+                                        .size(metrics.meta_pt),
+                                );
+                            }
+                        });
+                    } else {
+                        child_ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+
+                            if is_selected {
+                                ui.label(
+                                    egui::RichText::new("\u{2713}")
+                                        .size(metrics.meta_pt)
+                                        .strong()
+                                        .color(t.accent_purple),
+                                );
+                            } else {
+                                ui.add_space(9.0);
+                            }
+
+                            if entry.is_dir {
+                                Self::paint_folder_icon(ui, item_count, t.folder);
+                            } else {
+                                ui.add_space(3.0);
+                                let (red, green, blue) = crate::file_color::kind_color(
+                                    crate::selection_summary::kind_of(entry),
+                                    dark,
+                                );
+                                crate::app::glyphs::file_document(
+                                    ui,
+                                    &entry.extension,
+                                    Color32::from_rgb(red, green, blue),
+                                    t.bg_panel,
+                                );
+                            }
+                            ui.add_space(3.0);
+
+                            let name_color = if is_selected {
+                                t.accent_purple
+                            } else if entry.is_dir {
+                                t.text_primary
+                            } else {
+                                t.text_secondary
+                            };
+                            let responsive =
+                                crate::accessibility::file_row_layout(ui.available_width());
+                            let inline_compare =
+                                compare_status.filter(|_| !responsive.show_metadata);
+                            let name_width =
+                                name_column_width(responsive, inline_compare.is_some());
+                            let max_name_chars = name_char_budget(name_width, avg_glyph_width);
+                            let display_name = crate::display_name::truncate_preserving_extension(
+                                &entry.name,
+                                max_name_chars,
+                            );
+                            let shortened = display_name.as_ref() != entry.name;
+                            let name_label = if query.is_empty() {
+                                egui::Label::new(
+                                    egui::RichText::new(display_name.as_ref())
+                                        .size(metrics.name_pt)
+                                        .color(name_color),
+                                )
+                            } else {
+                                // Score the full name (what the filter matched) and
+                                // carry the hits through the truncation.
+                                let ranges = crate::fuzzy::score(&query, &entry.name)
+                                    .map(|m| m.matched_ranges)
+                                    .unwrap_or_default();
+                                let ranges = if shortened {
+                                    map_ranges_to_display(&entry.name, &display_name, &ranges)
+                                } else {
+                                    ranges
+                                };
+                                egui::Label::new(highlight_name_job(
+                                    display_name.as_ref(),
+                                    &ranges,
+                                    name_color,
+                                    t.accent,
+                                    metrics.name_pt,
+                                ))
+                            };
+                            // `add_sized` would center the label in its slot; names
+                            // read from the left edge of the column.
+                            let name_response = ui
+                                .allocate_ui_with_layout(
+                                    egui::vec2(name_width, row_content),
+                                    Layout::left_to_right(Align::Center),
+                                    |ui| {
+                                        ui.set_min_width(name_width);
+                                        ui.add(name_label.truncate())
+                                    },
+                                )
+                                .inner;
+                            if shortened {
+                                name_response.on_hover_text(&entry.name);
+                            }
+                            if let Some(status) = inline_compare {
+                                let (symbol, hint) = compare_marker(status);
+                                ui.label(
+                                    egui::RichText::new(symbol)
+                                        .size(metrics.meta_pt)
+                                        .strong()
+                                        .color(t.text_secondary),
+                                )
+                                .on_hover_text(hint);
+                            }
+
+                            if responsive.show_metadata {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(responsive.metadata_width, row_content),
+                                    Layout::right_to_left(Align::Center),
+                                    |ui| {
+                                        ui.add_space(4.0);
+                                        let modified_resp = ui.label(
+                                            egui::RichText::new(&modified_label)
+                                                .size(metrics.meta_pt)
+                                                .color(t.text_muted),
+                                        );
+                                        if entry.modified.is_some() {
+                                            modified_resp.on_hover_text(&entry.modified_str);
+                                        }
+                                        ui.add_space(10.0);
+                                        ui.label(
+                                            egui::RichText::new(size_text)
+                                                .size(metrics.meta_pt)
+                                                .color(t.text_muted),
+                                        );
+                                        if let Some(status) = compare_status {
+                                            let (symbol, hint) = compare_marker(status);
+                                            ui.label(
+                                                egui::RichText::new(symbol)
+                                                    .size(metrics.meta_pt)
+                                                    .strong()
+                                                    .color(t.text_secondary),
+                                            )
+                                            .on_hover_text(hint);
+                                        }
+                                    },
+                                );
+                            }
+                        });
+                    }
 
                     if (keyboard_context_menu_requested && is_cursor)
                         || accesskit_context_menu_requested
@@ -1416,10 +1534,19 @@ impl App {
                     }
                 }
 
+                if icons {
+                    ui.allocate_space(Vec2::new(
+                        ui.available_width(),
+                        (last_visible - first_visible).div_ceil(columns) as f32 * row_h,
+                    ));
+                }
                 // Space after visible rows
                 let after = total_rows.saturating_sub(last_visible);
                 if after > 0 {
-                    ui.allocate_space(Vec2::new(ui.available_width(), after as f32 * row_h));
+                    ui.allocate_space(Vec2::new(
+                        ui.available_width(),
+                        after.div_ceil(columns) as f32 * row_h,
+                    ));
                 }
 
                 // Apply the interactions recorded during the loop.
@@ -2214,6 +2341,7 @@ mod tests {
             crate::app::App::render_file_list(
                 ui,
                 panel,
+                &mut crate::image_cache::ImageCache::new(),
                 true,
                 &crate::theme::ThemeColors::dark(),
                 "left",
@@ -2323,5 +2451,30 @@ mod tests {
             map_ranges_to_display(name, &display, &[(2, 3)]),
             vec![(2, 3)]
         );
+    }
+    #[test]
+    fn icon_grid_keeps_keyboard_focus_and_reveals_distant_cursor() {
+        let temp = crate::testutil::TempDir::new();
+        for i in 0..150 {
+            temp.file(&format!("file-{i:03}.txt"), "text");
+        }
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.set_browser_mode(crate::panel::BrowserMode::Icons);
+        panel.set_cursor(130);
+        panel.set_scroll_to_cursor(true);
+        let ctx = egui::Context::default();
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        assert!(panel.scroll_anchor() <= 129);
+        assert!(ctx.memory(|memory| memory.focused().is_some()));
+        assert!(!panel.scroll_to_cursor());
+        let columns = ctx
+            .data(|data| data.get_temp::<usize>(egui::Id::new(("icon_columns", "left"))))
+            .unwrap();
+        assert!(columns > 1);
+        panel.set_cursor(131);
+        render_list_frame(&ctx, &mut panel, vec![key_press(egui::Key::Space)]);
+        assert_eq!(panel.cursor(), 131);
     }
 }

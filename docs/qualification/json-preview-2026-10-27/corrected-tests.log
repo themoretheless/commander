@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.99s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 7 tests
+test json_preview::tests::json_whitespace_formatting_keeps_order_duplicates_numbers_and_strings ... ok
+test session::tests::panel_views_keep_the_legacy_flat_json_schema ... ok
+test bookmarks::tests::round_trips_through_json_with_slots ... ok
+test persistence::tests::bounded_read_rejects_oversized_files_before_json_decode ... ok
+test json_preview::tests::rejects_invalid_incomplete_and_bounded_expansion ... ok
+test json_preview::tests::cache_reuses_layout_input_and_errors_keep_original_source ... ok
+test app::render::tests::json_formatted_source_round_trip_retains_tokens_and_search ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 2351 filtered out; finished in 0.09s
+

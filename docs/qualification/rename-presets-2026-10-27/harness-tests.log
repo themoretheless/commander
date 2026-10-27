@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.91s
+     Running unittests src/main.rs (target/debug/build/commander/47e9ce50b06c2e5d/out/commander-47e9ce50b06c2e5d)
+
+running 3 tests
+test visual_qa::tests::rect_contract_rejects_clipping_and_non_finite_values ... ok
+test visual_qa::tests::required_scenario_matrix_is_stable ... ok
+test visual_qa::tests::painted_glyph_probe_rejects_blank_regions_and_detects_ink ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2272 filtered out; finished in 0.00s
+

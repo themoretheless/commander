@@ -1,0 +1,54 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.74s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 46 tests
+test app::update::tests::close_guard_prompts_then_waits_for_cancelled_operations_to_settle ... ok
+test app::update::tests::a_failed_smart_folder_save_leaves_the_error_to_persistence_health ... ok
+test app::update::tests::disabled_background_cannot_activate_a_panel ... ok
+test app::update::tests::a_running_transfer_alone_leaves_the_panes_interactive ... ok
+test app::update::tests::confirmation_and_app_modals_both_activate_the_frame_trap ... ok
+test app::update::tests::command_shortcuts_follow_the_platform_modifier ... ok
+test app::update::tests::an_uncertain_trash_names_its_size_and_where_to_review ... ok
+test app::update::tests::fallback_menu_takes_focus_once_and_closes_when_focus_leaves ... ok
+test app::update::tests::fallback_menu_returns_focus_to_the_row_unless_the_pointer_moved_it ... ok
+test app::update::tests::clipped_labels_count_chars_and_mark_the_cut ... ok
+test app::update::tests::copied_path_labels_agree_with_their_count ... ok
+test app::update::tests::hidden_view_rejections_have_specific_non_modal_feedback ... ok
+test app::update::tests::delete_toasts_always_name_the_items ... ok
+test app::update::tests::only_the_frame_a_modal_closes_on_is_a_close_edge ... ok
+test app::update::tests::error_toasts_have_an_icon_and_interrupt_assistive_technology ... ok
+test app::update::tests::pane_split_keeps_its_ratio_across_resizes ... ok
+test app::update::tests::prior_modal_ownership_survives_poll_and_render_transitions ... ok
+test app::update::tests::keyboard_fallback_menu_opens_below_the_row_not_at_the_pointer ... ok
+test app::update::tests::hovering_a_toast_holds_the_stack ... ok
+test app::update::tests::selection_average_leaves_folders_out ... ok
+test app::update::tests::selection_hud_rises_above_the_floating_key_bar ... ok
+test app::update::tests::drag_announcement_is_recomputed_only_when_target_or_alt_changes ... ok
+test app::update::tests::only_the_pane_holding_an_open_tool_is_covered ... ok
+test app::update::tests::selection_hud_pluralizes_and_skips_an_empty_local_count ... ok
+test app::update::tests::switching_into_a_tool_covered_pane_is_refused ... ok
+test app::update::tests::shift_alone_does_not_float_the_key_bar ... ok
+test app::update::tests::delete_undo_attaches_only_its_own_trash_record ... ok
+test app::update::tests::trapped_frame_blocks_divider_and_auxiliary_actions ... ok
+test app::update::tests::tree_width_persists_resizes_but_not_window_caps ... ok
+test app::update::tests::trapped_frame_never_targets_or_executes_a_drop_and_clears_stale_drag ... ok
+test app::update::tests::opener_acceptance_is_quiet_and_failure_is_reduced ... ok
+test app::update::tests::only_the_newest_undoable_toast_offers_undo ... ok
+test app::update::tests::a_clashing_smart_folder_name_gets_a_suffix_instead_of_replacing ... ok
+test app::update::tests::type_ahead_capsule_spells_out_a_miss ... ok
+test app::update::tests::untrapped_frame_preserves_drop_and_divider_input ... ok
+test app::update::tests::clipboard_feedback_reports_success_only_after_committed_outcome ... ok
+test app::update::tests::toasts_stack_by_their_measured_height ... ok
+test app::update::tests::drag_overlay_names_the_work_that_would_cancel_a_drop ... ok
+test app::update::tests::undo_toasts_pluralize_and_name_the_destination ... ok
+test app::update::tests::undo_receipts_replay_the_recorded_action_and_need_a_jump_target ... ok
+test app::update::tests::a_folder_named_like_an_archive_opens_as_a_folder ... ok
+test app::update::tests::drag_rejections_follow_the_drag_effect_and_the_source_folder ... ok
+test app::update::tests::selection_headline_sums_and_names_the_extremes ... ok
+test app::update::tests::tree_invalidation_drops_the_changed_folder_its_descendants_and_parent ... ok
+test app::update::tests::move_drop_onto_the_sources_own_folder_is_cancelled_without_a_dialog ... ok
+test app::update::tests::move_drop_onto_another_folder_starts_the_transfer ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 2350 filtered out; finished in 0.01s
+

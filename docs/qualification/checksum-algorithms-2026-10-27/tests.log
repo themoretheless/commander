@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.44s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 17 tests
+test checksum::tests::summary_line_for_empty_and_failed_only_reports ... ok
+test checksum::tests::checksum_list_rejects_non_utf8_paths_without_lossy_export ... ok
+test checksum::tests::detailed_text_formats_ok_error_skipped_and_unknown_rows ... ok
+test checksum::tests::digest_copy_and_comparison_reject_incomplete_or_ambiguous_reports ... ok
+test checksum::tests::missing_paths_report_the_os_error_and_folders_explain_the_skip ... ok
+test checksum::tests::symlinks_are_skipped_without_following_them ... ok
+test checksum::tests::checksum_open_rejects_symlink_substitution_and_special_files ... ok
+test checksum::tests::blake3_hex_is_the_lowercase_digest_of_the_content ... ok
+test checksum::tests::sha256_list_escapes_carriage_return_and_rejects_unavailable_rows ... ok
+test checksum::tests::explicit_algorithm_comparison_never_guesses_from_equal_digest_lengths ... ok
+test checksum::tests::content_hash_matches_the_streaming_content_hash ... ok
+test checksum::tests::identical_files_share_hashes ... ok
+test checksum::tests::folders_are_skipped_not_failed ... ok
+test checksum::tests::growing_and_truncated_files_never_publish_digests ... ok
+test checksum::tests::cancellation_and_changed_file_never_publish_partial_digests ... ok
+test checksum::tests::sha256_list_round_trips_through_system_shasum_with_escaped_names ... ok
+test checksum::tests::sha256_known_vectors_and_expected_digest_comparison ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 2323 filtered out; finished in 0.03s
+

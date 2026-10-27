@@ -1,0 +1,49 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.91s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 12 tests
+test checksum::tests::summary_line_for_empty_and_failed_only_reports ... ok
+test checksum::tests::detailed_text_formats_ok_error_skipped_and_unknown_rows ... ok
+test checksum::tests::symlinks_are_skipped_without_following_them ... ok
+test checksum::tests::missing_paths_report_the_os_error_and_folders_explain_the_skip ... ok
+test checksum::tests::checksum_open_rejects_symlink_substitution_and_special_files ... ok
+test checksum::tests::blake3_hex_is_the_lowercase_digest_of_the_content ... ok
+test checksum::tests::folders_are_skipped_not_failed ... ok
+test checksum::tests::identical_files_share_hashes ... ok
+test checksum::tests::content_hash_matches_the_streaming_content_hash ... FAILED
+test checksum::tests::cancellation_and_changed_file_never_publish_partial_digests ... ok
+test checksum::tests::sha256_known_vectors_and_expected_digest_comparison ... ok
+test checksum::tests::sha256_list_round_trips_through_system_shasum_with_escaped_names ... FAILED
+
+failures:
+
+---- checksum::tests::content_hash_matches_the_streaming_content_hash stdout ----
+
+thread 'checksum::tests::content_hash_matches_the_streaming_content_hash' (80157876) panicked at src/checksum.rs:454:9:
+assertion `left == right` failed
+  left: Some(18203956701175770193)
+ right: Some(5867113652790927868)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- checksum::tests::sha256_list_round_trips_through_system_shasum_with_escaped_names stdout ----
+
+thread 'checksum::tests::sha256_list_round_trips_through_system_shasum_with_escaped_names' (80157882) panicked at src/checksum.rs:406:9:
+stdout=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/normal file: OK
+/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/back\slash: OK
+/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/line
+break: OK
+/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/carriage\rreturn: FAILED open or read
+/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/é: OK
+ stderr=shasum: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/carriage\rreturn: No such file or directory
+shasum: WARNING: 1 listed file could not be read
+ manifest="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/normal file\n\\ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/back\\\\slash\n\\ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/line\\nbreak\n\\ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/carriage\\rreturn\nba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-41563-7/é\n"
+
+
+failures:
+    checksum::tests::content_hash_matches_the_streaming_content_hash
+    checksum::tests::sha256_list_round_trips_through_system_shasum_with_escaped_names
+
+test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 2252 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin commander`

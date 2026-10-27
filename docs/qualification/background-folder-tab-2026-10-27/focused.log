@@ -1,0 +1,27 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.40s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 19 tests
+test workspace::tabs::tests::malformed_saved_tabs_keep_valid_siblings_and_active_binding ... ok
+test workspace::tabs::tests::grouped_closure_rejects_invalid_anchors_without_mutation ... ok
+test workspace::tabs::tests::swap_panels_moves_tab_groups_and_active_slots_together ... ok
+test workspace::tabs::tests::restore_is_lazy_bounded_and_retains_resolved_visible_path ... ok
+test workspace::tabs::tests::deduplication_keeps_active_state_and_first_other_path ... ok
+test workspace::tabs::tests::pending_modal_prevents_tab_changes_and_cannot_retarget_rename ... ok
+test workspace::tabs::tests::restored_tabs_round_trip_preserves_views_and_original_active_index ... ok
+test workspace::tabs::tests::tab_organization_commands_obey_boundaries_and_modal_guards ... ok
+test workspace::tabs::tests::background_open_inserts_next_to_current_tab_and_respects_cap_and_modal ... ok
+test workspace::tabs::tests::reopening_uses_normal_command_guards_and_history_moves_with_its_pane ... ok
+test workspace::tabs::tests::tabs_preserve_selection_filter_history_and_view_per_pane ... ok
+test workspace::tabs::tests::background_open_keeps_visible_state_and_lazily_loads_only_on_activation ... ok
+test workspace::tabs::tests::deduplicated_interleaved_tabs_reopen_in_original_order_and_keep_filters ... ok
+test workspace::tabs::tests::switching_clears_cross_pane_preview_and_revalidates_background_changes ... ok
+test workspace::tabs::tests::reopening_restores_runtime_state_and_revalidates_the_directory ... ok
+test workspace::tabs::tests::close_first_middle_last_and_wrap_preserve_slot_invariant ... ok
+test workspace::tabs::tests::closed_tab_history_is_bounded_and_can_restore_a_specific_entry ... ok
+test workspace::tabs::tests::grouped_closure_keeps_anchor_or_prefix_and_reopens_original_order ... ok
+test workspace::tabs::tests::reordering_keeps_visible_panel_and_all_slot_bindings ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 2327 filtered out; finished in 0.12s
+

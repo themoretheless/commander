@@ -1,0 +1,174 @@
+{
+  "schema": 1,
+  "scenario": "minimum_window",
+  "status": "captured",
+  "requested_viewport": [
+    900.0,
+    500.0
+  ],
+  "ui_scale": 1.0,
+  "theme": "light",
+  "high_contrast": false,
+  "reduced_motion": false,
+  "pixels_per_point": 2.0,
+  "image_size": [
+    1800,
+    1000
+  ],
+  "viewport": {
+    "min_x": 0.0,
+    "min_y": 0.0,
+    "max_x": 900.0,
+    "max_y": 500.0
+  },
+  "left_pane": {
+    "min_x": 200.0,
+    "min_y": 37.5,
+    "max_x": 547.0,
+    "max_y": 500.0
+  },
+  "right_pane": {
+    "min_x": 547.0,
+    "min_y": 37.5,
+    "max_x": 900.0,
+    "max_y": 500.0
+  },
+  "confirmation": null,
+  "left_row": {
+    "min_x": 200.0,
+    "min_y": 274.5,
+    "max_x": 546.0,
+    "max_y": 302.5
+  },
+  "modal_owner": null,
+  "background_enabled": true,
+  "modal_above_background": null,
+  "painted_glyphs": [
+    {
+      "name": "breadcrumb_chevron",
+      "rect": {
+        "min_x": 724.75,
+        "min_y": 52.0,
+        "max_x": 731.75,
+        "max_y": 63.0
+      }
+    },
+    {
+      "name": "sort_triangle",
+      "rect": {
+        "min_x": 589.90625,
+        "min_y": 202.0,
+        "max_x": 596.90625,
+        "max_y": 209.0
+      }
+    },
+    {
+      "name": "parent_up",
+      "rect": {
+        "min_x": 562.0,
+        "min_y": 251.5,
+        "max_x": 574.0,
+        "max_y": 263.5
+      }
+    },
+    {
+      "name": "file_document",
+      "rect": {
+        "min_x": 568.5,
+        "min_y": 366.0,
+        "max_x": 585.5,
+        "max_y": 385.0
+      }
+    },
+    {
+      "name": "navigation_triangle",
+      "rect": {
+        "min_x": 594.5,
+        "min_y": 52.0,
+        "max_x": 603.5,
+        "max_y": 63.0
+      }
+    }
+  ],
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "checks": [
+    {
+      "name": "framebuffer_dimensions",
+      "passed": true,
+      "detail": "1800x1000, expected about 1800x1000"
+    },
+    {
+      "name": "logical_viewport_dimensions",
+      "passed": true,
+      "detail": "900.0x500.0, requested 900x500"
+    },
+    {
+      "name": "nonzero_alpha",
+      "passed": true,
+      "detail": "1800000/1800000 pixels have non-zero alpha"
+    },
+    {
+      "name": "nonblank_frame",
+      "passed": true,
+      "detail": "62.25% pixels differ from the dominant color"
+    },
+    {
+      "name": "color_diversity",
+      "passed": true,
+      "detail": "74 quantized RGB buckets"
+    },
+    {
+      "name": "viewport_rect",
+      "passed": true,
+      "detail": "Some([[0.0 0.0] - [900.0 500.0]]) inside [[0.0 0.0] - [900.0 500.0]]"
+    },
+    {
+      "name": "left_pane_rect",
+      "passed": true,
+      "detail": "Some([[200.0 37.5] - [547.0 500.0]]) inside [[0.0 0.0] - [900.0 500.0]]"
+    },
+    {
+      "name": "right_pane_rect",
+      "passed": true,
+      "detail": "Some([[547.0 37.5] - [900.0 500.0]]) inside [[0.0 0.0] - [900.0 500.0]]"
+    },
+    {
+      "name": "left_row_rect",
+      "passed": true,
+      "detail": "Some([[200.0 274.5] - [546.0 302.5]]) inside [[0.0 0.0] - [900.0 500.0]]"
+    },
+    {
+      "name": "mandatory_painted_glyph_contract",
+      "passed": true,
+      "detail": "missing=[], rects=[(\"breadcrumb_chevron\", [[724.8 52.0] - [731.8 63.0]]), (\"sort_triangle\", [[589.9 202.0] - [596.9 209.0]]), (\"parent_up\", [[562.0 251.5] - [574.0 263.5]]), (\"file_document\", [[568.5 366.0] - [585.5 385.0]]), (\"toolbar_compare\", [[823.1 12.8] - [839.1 23.8]]), (\"navigation_triangle\", [[594.5 52.0] - [603.5 63.0]])]"
+    },
+    {
+      "name": "mandatory_painted_glyph_pixels",
+      "passed": true,
+      "detail": "breadcrumb_chevron=100/330, sort_triangle=112/210, parent_up=304/576, file_document=855/1292, navigation_triangle=218/396"
+    },
+    {
+      "name": "pane_non_overlap",
+      "passed": true,
+      "detail": "left=Some(ProbeRecord { rect: [[200.0 37.5] - [547.0 500.0]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: true, hovered: true }), right=Some(ProbeRecord { rect: [[547.0 37.5] - [900.0 500.0]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: true, hovered: false })"
+    },
+    {
+      "name": "row_runtime_hover",
+      "passed": true,
+      "detail": "left_row=Some(ProbeRecord { rect: [[200.0 274.5] - [546.0 302.5]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: true, hovered: true })"
+    },
+    {
+      "name": "native_effect_isolation",
+      "passed": true,
+      "detail": "NativeEffectCalls { context_menu: 0, deferred_menu: 0, clipboard: 0, opener: 0, trash: 0, free_space: 0 }"
+    }
+  ],
+  "error": null
+}

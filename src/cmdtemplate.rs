@@ -228,8 +228,22 @@ pub struct Templates {
 }
 
 impl Templates {
+    /// An explicit save updates metadata for the same command without moving its row.
+    pub fn save_template(&mut self, template: Template) -> bool {
+        if let Some(existing) = self.items.iter_mut().find(|item| item.raw == template.raw) {
+            if *existing == template {
+                return false;
+            }
+            *existing = template;
+        } else {
+            self.items.push(template);
+        }
+        true
+    }
+
     /// Append a template, unless one with the same command line already exists
     /// (de-duped by `raw`). Returns whether it was added.
+    #[cfg(test)]
     pub fn add(&mut self, template: Template) -> bool {
         if self.items.iter().any(|t| t.raw == template.raw) {
             return false;
@@ -304,6 +318,19 @@ mod tests {
         let p = tmp.file(name, "");
         let meta = std::fs::metadata(&p).unwrap();
         FileEntry::from_meta(p, &meta).unwrap()
+    }
+
+    #[test]
+    fn updating_template_metadata_preserves_order_and_does_not_duplicate_command() {
+        let mut store = Templates::default();
+        store.save_template(tmpl("Before", "file {paths}", &[]));
+        store.save_template(tmpl("After", "wc -l {paths}", &[]));
+        assert!(store.save_template(tmpl("Pictures", "file {paths}", &["png"])));
+        assert_eq!(store.items.len(), 2);
+        assert_eq!(store.items[0].name, "Pictures");
+        assert_eq!(store.items[0].exts, vec!["png"]);
+        assert_eq!(store.items[1].name, "After");
+        assert!(!store.save_template(tmpl("Pictures", "file {paths}", &["png"])));
     }
 
     #[test]

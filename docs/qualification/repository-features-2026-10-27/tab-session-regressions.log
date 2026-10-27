@@ -1,0 +1,18 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.76s
+     Running unittests src/main.rs (target/debug/build/commander/64b722dc4e709030/out/commander-64b722dc4e709030)
+
+running 10 tests
+test app::confirm_dialog::method_tabs::tests::each_method_explains_its_tradeoff ... ok
+test app::smoke::tests::method_tabs_smoke_renders_without_selection_change ... ok
+test workspace::tabs::tests::close_first_middle_last_and_wrap_preserve_slot_invariant ... ok
+test workspace::tabs::tests::malformed_saved_tabs_keep_valid_siblings_and_active_binding ... ok
+test workspace::tabs::tests::pending_modal_prevents_tab_changes_and_cannot_retarget_rename ... ok
+test workspace::tabs::tests::restore_is_lazy_bounded_and_retains_resolved_visible_path ... ok
+test workspace::tabs::tests::restored_tabs_round_trip_preserves_views_and_original_active_index ... ok
+test workspace::tabs::tests::swap_panels_moves_tab_groups_and_active_slots_together ... ok
+test workspace::tabs::tests::switching_clears_cross_pane_preview_and_revalidates_background_changes ... ok
+test workspace::tabs::tests::tabs_preserve_selection_filter_history_and_view_per_pane ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 2198 filtered out; finished in 0.04s
+

@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.01s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test workspace::tabs::tests::copy_tabs_command_keeps_selections_and_new_tabs_observe_later_files ... ok
+test workspace::tabs::tests::copy_tab_groups_preserves_order_views_active_slots_and_capacity_atomically ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2352 filtered out; finished in 0.13s
+

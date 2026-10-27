@@ -1,0 +1,108 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0308]: arguments to this function are incorrect
+   --> src/rename.rs:418:17
+    |
+418 |                 rename_one("Photo.JPG", index, &rule, None, false),
+    |                 ^^^^^^^^^^              -----  -----  ----  ----- expected `std::option::Option<&regex::Regex>`, found `bool`
+    |                                         |      |      |
+    |                                         |      |      expected `&rename::RenameRule`, found `std::option::Option<_>`
+    |                                         |      expected `usize`, found `&rename::RenameRule`
+    |                                         expected `bool`, found `usize`
+    |
+note: function defined here
+   --> src/rename.rs:186:4
+    |
+186 | fn rename_one(
+    |    ^^^^^^^^^^
+help: reorder these arguments
+    |
+418 -                 rename_one("Photo.JPG", index, &rule, None, false),
+418 +                 rename_one("Photo.JPG", false, index, &rule, None),
+    |
+
+error[E0308]: arguments to this function are incorrect
+   --> src/rename.rs:424:20
+    |
+424 |         assert_eq!(rename_one("folder", 1, &negative, None, true), "folder-14");
+    |                    ^^^^^^^^^^           -  ---------  ----  ---- expected `std::option::Option<&regex::Regex>`, found `bool`
+    |                                         |  |          |
+    |                                         |  |          expected `&rename::RenameRule`, found `std::option::Option<_>`
+    |                                         |  expected `usize`, found `&rename::RenameRule`
+    |                                         expected `bool`, found `{integer}`
+    |
+note: function defined here
+   --> src/rename.rs:186:4
+    |
+186 | fn rename_one(
+    |    ^^^^^^^^^^
+help: reorder these arguments
+    |
+424 -         assert_eq!(rename_one("folder", 1, &negative, None, true), "folder-14");
+424 +         assert_eq!(rename_one("folder", true, 1, &negative, None), "folder-14");
+    |
+
+error[E0308]: arguments to this function are incorrect
+   --> src/rename.rs:426:20
+    |
+426 |         assert_eq!(rename_one("a", 99, &negative, None, false), "a-12");
+    |                    ^^^^^^^^^^      --  ---------  ----  ----- expected `std::option::Option<&regex::Regex>`, found `bool`
+    |                                    |   |          |
+    |                                    |   |          expected `&rename::RenameRule`, found `std::option::Option<_>`
+    |                                    |   expected `usize`, found `&rename::RenameRule`
+    |                                    expected `bool`, found `{integer}`
+    |
+note: function defined here
+   --> src/rename.rs:186:4
+    |
+186 | fn rename_one(
+    |    ^^^^^^^^^^
+help: reorder these arguments
+    |
+426 -         assert_eq!(rename_one("a", 99, &negative, None, false), "a-12");
+426 +         assert_eq!(rename_one("a", false, 99, &negative, None), "a-12");
+    |
+
+error[E0308]: arguments to this function are incorrect
+   --> src/rename.rs:437:20
+    |
+437 |         assert_eq!(rename_one("x", 1, &rule, None, false), "x8589934590");
+    |                    ^^^^^^^^^^      -  -----  ----  ----- expected `std::option::Option<&regex::Regex>`, found `bool`
+    |                                    |  |      |
+    |                                    |  |      expected `&rename::RenameRule`, found `std::option::Option<_>`
+    |                                    |  expected `usize`, found `&rename::RenameRule`
+    |                                    expected `bool`, found `{integer}`
+    |
+note: function defined here
+   --> src/rename.rs:186:4
+    |
+186 | fn rename_one(
+    |    ^^^^^^^^^^
+help: reorder these arguments
+    |
+437 -         assert_eq!(rename_one("x", 1, &rule, None, false), "x8589934590");
+437 +         assert_eq!(rename_one("x", false, 1, &rule, None), "x8589934590");
+    |
+
+error[E0308]: arguments to this function are incorrect
+   --> src/rename.rs:449:17
+    |
+449 |                 rename_one("x", usize::MAX, &rule, None, false),
+    |                 ^^^^^^^^^^      ----------  -----  ----  ----- expected `std::option::Option<&regex::Regex>`, found `bool`
+    |                                 |           |      |
+    |                                 |           |      expected `&rename::RenameRule`, found `std::option::Option<_>`
+    |                                 |           expected `usize`, found `&rename::RenameRule`
+    |                                 expected `bool`, found `usize`
+    |
+note: function defined here
+   --> src/rename.rs:186:4
+    |
+186 | fn rename_one(
+    |    ^^^^^^^^^^
+help: reorder these arguments
+    |
+449 -                 rename_one("x", usize::MAX, &rule, None, false),
+449 +                 rename_one("x", false, usize::MAX, &rule, None),
+    |
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `commander` (bin "commander" test) due to 5 previous errors

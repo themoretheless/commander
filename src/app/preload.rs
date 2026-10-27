@@ -85,6 +85,16 @@ impl App {
         // Workspace synchronization now creates only image markers or pending
         // text identities; it never reads text on the UI thread.
         self.ws.sync_preview();
+        let pdf_identity: fn(&PanelState) -> Option<&crate::panel::PreviewIdentity> =
+            |panel| match &panel.preview {
+                Some(PreviewContent::Pdf(identity)) => Some(identity),
+                _ => None,
+            };
+        self.pdf_cache.retain(
+            ctx,
+            pdf_identity(&self.ws.left),
+            pdf_identity(&self.ws.right),
+        );
 
         let target_pane = if self.ws.right.preview.is_some() {
             PreviewPane::Right
@@ -92,6 +102,26 @@ impl App {
             PreviewPane::Left
         } else {
             self.image_cache.cancel_text_preview();
+            let source = self.ws.active_panel_ref();
+            if source.browser_mode() == crate::panel::BrowserMode::Icons {
+                let stamped: Vec<_> = prioritized_indices(
+                    source.filtered_count(),
+                    source.scroll_anchor(),
+                    source.page_rows(),
+                    source.cursor().saturating_sub(1),
+                )
+                .into_iter()
+                .filter_map(|index| source.filtered_get(index))
+                .filter(|entry| entry.is_image())
+                .take(60)
+                .map(|entry| (entry.path.clone(), (entry.size, entry.modified)))
+                .collect();
+                self.image_cache.invalidate_changed(&stamped);
+                let paths: Vec<_> = stamped.into_iter().map(|(path, _)| path).collect();
+                self.image_cache
+                    .set_preview_extent(128.0, 96.0, ctx.pixels_per_point());
+                self.image_cache.preload(ctx, &paths, &source.current_path);
+            }
             return;
         };
 
@@ -103,7 +133,9 @@ impl App {
             let text_identity = match target.preview.as_ref() {
                 Some(PreviewContent::Pending(identity))
                 | Some(PreviewContent::Text { identity, .. }) => Some(identity.clone()),
-                Some(PreviewContent::Image(_)) | Some(PreviewContent::Info(_)) => None,
+                Some(PreviewContent::Image(_))
+                | Some(PreviewContent::Pdf(_))
+                | Some(PreviewContent::Info(_)) => None,
                 None => unreachable!("preview pane was selected from a non-empty preview"),
             };
             (

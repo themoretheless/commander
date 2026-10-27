@@ -1,0 +1,183 @@
+{
+  "schema": 1,
+  "scenario": "folder_tabs",
+  "status": "captured",
+  "requested_viewport": [
+    1280.0,
+    760.0
+  ],
+  "ui_scale": 1.0,
+  "theme": "dark",
+  "high_contrast": false,
+  "reduced_motion": false,
+  "pixels_per_point": 2.0,
+  "image_size": [
+    2560,
+    1520
+  ],
+  "viewport": {
+    "min_x": 0.0,
+    "min_y": 0.0,
+    "max_x": 1280.0,
+    "max_y": 760.0
+  },
+  "left_pane": {
+    "min_x": 0.0,
+    "min_y": 37.5,
+    "max_x": 637.0,
+    "max_y": 760.0
+  },
+  "right_pane": {
+    "min_x": 637.0,
+    "min_y": 37.5,
+    "max_x": 1280.0,
+    "max_y": 760.0
+  },
+  "confirmation": null,
+  "left_row": {
+    "min_x": 0.0,
+    "min_y": 280.5,
+    "max_x": 636.0,
+    "max_y": 308.5
+  },
+  "modal_owner": null,
+  "background_enabled": true,
+  "modal_above_background": null,
+  "painted_glyphs": [
+    {
+      "name": "breadcrumb_chevron",
+      "rect": {
+        "min_x": 132.8125,
+        "min_y": 86.0,
+        "max_x": 139.8125,
+        "max_y": 97.0
+      }
+    },
+    {
+      "name": "sort_triangle",
+      "rect": {
+        "min_x": 76.0,
+        "min_y": 208.0,
+        "max_x": 83.0,
+        "max_y": 215.0
+      }
+    },
+    {
+      "name": "parent_up",
+      "rect": {
+        "min_x": 15.0,
+        "min_y": 257.5,
+        "max_x": 27.0,
+        "max_y": 269.5
+      }
+    },
+    {
+      "name": "file_document",
+      "rect": {
+        "min_x": 21.5,
+        "min_y": 314.0,
+        "max_x": 38.5,
+        "max_y": 333.0
+      }
+    },
+    {
+      "name": "toolbar_compare",
+      "rect": {
+        "min_x": 1203.0625,
+        "min_y": 12.75,
+        "max_x": 1219.0625,
+        "max_y": 23.75
+      }
+    },
+    {
+      "name": "navigation_triangle",
+      "rect": {
+        "min_x": 15.5,
+        "min_y": 86.0,
+        "max_x": 24.5,
+        "max_y": 97.0
+      }
+    }
+  ],
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "checks": [
+    {
+      "name": "framebuffer_dimensions",
+      "passed": true,
+      "detail": "2560x1520, expected about 2560x1520"
+    },
+    {
+      "name": "logical_viewport_dimensions",
+      "passed": true,
+      "detail": "1280.0x760.0, requested 1280x760"
+    },
+    {
+      "name": "nonzero_alpha",
+      "passed": true,
+      "detail": "3891200/3891200 pixels have non-zero alpha"
+    },
+    {
+      "name": "nonblank_frame",
+      "passed": true,
+      "detail": "36.30% pixels differ from the dominant color"
+    },
+    {
+      "name": "color_diversity",
+      "passed": true,
+      "detail": "67 quantized RGB buckets"
+    },
+    {
+      "name": "viewport_rect",
+      "passed": true,
+      "detail": "Some([[0.0 0.0] - [1280.0 760.0]]) inside [[0.0 0.0] - [1280.0 760.0]]"
+    },
+    {
+      "name": "left_pane_rect",
+      "passed": true,
+      "detail": "Some([[0.0 37.5] - [637.0 760.0]]) inside [[0.0 0.0] - [1280.0 760.0]]"
+    },
+    {
+      "name": "right_pane_rect",
+      "passed": true,
+      "detail": "Some([[637.0 37.5] - [1280.0 760.0]]) inside [[0.0 0.0] - [1280.0 760.0]]"
+    },
+    {
+      "name": "left_row_rect",
+      "passed": true,
+      "detail": "Some([[0.0 280.5] - [636.0 308.5]]) inside [[0.0 0.0] - [1280.0 760.0]]"
+    },
+    {
+      "name": "mandatory_painted_glyph_contract",
+      "passed": true,
+      "detail": "missing=[], rects=[(\"breadcrumb_chevron\", [[132.8 86.0] - [139.8 97.0]]), (\"sort_triangle\", [[76.0 208.0] - [83.0 215.0]]), (\"parent_up\", [[15.0 257.5] - [27.0 269.5]]), (\"file_document\", [[21.5 314.0] - [38.5 333.0]]), (\"toolbar_compare\", [[1203.1 12.8] - [1219.1 23.8]]), (\"navigation_triangle\", [[15.5 86.0] - [24.5 97.0]])]"
+    },
+    {
+      "name": "mandatory_painted_glyph_pixels",
+      "passed": true,
+      "detail": "breadcrumb_chevron=102/330, sort_triangle=112/196, parent_up=282/576, file_document=855/1292, toolbar_compare=274/759, navigation_triangle=218/396"
+    },
+    {
+      "name": "pane_non_overlap",
+      "passed": true,
+      "detail": "left=Some(ProbeRecord { rect: [[0.0 37.5] - [637.0 760.0]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: true, hovered: true }), right=Some(ProbeRecord { rect: [[637.0 37.5] - [1280.0 760.0]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: true, hovered: false })"
+    },
+    {
+      "name": "row_runtime_hover",
+      "passed": true,
+      "detail": "left_row=Some(ProbeRecord { rect: [[0.0 280.5] - [636.0 308.5]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: true, hovered: true })"
+    },
+    {
+      "name": "native_effect_isolation",
+      "passed": true,
+      "detail": "NativeEffectCalls { context_menu: 0, deferred_menu: 0, clipboard: 0, opener: 0, trash: 0, free_space: 0 }"
+    }
+  ],
+  "error": null
+}

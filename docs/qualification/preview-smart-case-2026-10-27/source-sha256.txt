@@ -1,0 +1,3 @@
+afc18cceb41d329ecd6fedc272cf0e9b61bbd64d94b76cffd9adb7da2758e591  README.md
+c9e726c2c556055b347b9ef7b7aec6cb4f5dff20ef6338244b286675d5c07242  src/preview_find.rs
+a9a7e2a4ff18fccdec0611282d2de750137e57ad618fa2115dc75b89e736b00b  src/visual_qa.rs

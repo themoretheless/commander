@@ -1,6 +1,7 @@
-//! Read-only, bounded ZIP browser. Archive parsing stays on a worker thread.
+//! Read-only, bounded ZIP/TAR browser. Archive parsing stays on a worker thread.
 
 use super::*;
+use crate::archive_order::{Field as ArchiveField, Order as ArchiveOrder};
 
 /// Indexes of the archive members matching the filter text. A listing holds
 /// up to 100k members and the sheet repaints on pointer moves and spinners,
@@ -12,38 +13,142 @@ use super::*;
 #[derive(Default)]
 pub struct MemberFilter {
     lower_paths: Option<Vec<String>>,
+    folder: Option<PathBuf>,
+    applied_folder: Option<Option<PathBuf>>,
+    reset_scroll: bool,
     needle: Option<String>,
+    // Real IDs index listing.members; navigation IDs index tree.directories
+    // after that range and are never admitted to selected/extraction.
     visible: Vec<usize>,
+    visible_set: std::collections::HashSet<usize>,
+    pub(crate) order: ArchiveOrder,
+    applied_order: Option<ArchiveOrder>,
     focused: Option<usize>,
     /// The cursor moved by key and its row should scroll into view.
     scroll_to_focused: bool,
 }
 
 impl MemberFilter {
+    pub(crate) fn navigate(&mut self, folder: Option<PathBuf>) {
+        self.folder = folder;
+        self.focused = None;
+        self.reset_scroll = true;
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub fn row_position(&self, index: usize) -> Option<usize> {
+        self.visible.iter().position(|&row| row == index)
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub fn current_folder(&self) -> Option<&std::path::Path> {
+        self.folder.as_deref()
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub fn first_visible_member(&self) -> Option<usize> {
+        self.visible.iter().copied().find(|&index| {
+            self.lower_paths
+                .as_ref()
+                .is_some_and(|paths| index < paths.len())
+        })
+    }
+
     fn visible(&mut self, listing: &crate::archive::ArchiveListing, filter: &str) -> &[usize] {
         let needle = filter.trim().to_lowercase();
-        if self.needle.as_deref() != Some(needle.as_str()) {
-            self.visible = if needle.is_empty() {
-                (0..listing.members.len()).collect()
-            } else {
-                let lower = self.lower_paths.get_or_insert_with(|| {
-                    listing
-                        .members
-                        .iter()
-                        .map(|member| member.path.to_string_lossy().to_lowercase())
-                        .collect()
-                });
-                lower
+        let changed = self.needle.as_deref() != Some(needle.as_str())
+            || self.applied_folder.as_ref() != Some(&self.folder);
+        let lower = self.lower_paths.get_or_insert_with(|| {
+            listing
+                .members
+                .iter()
+                .map(|member| member.path.to_string_lossy().to_lowercase())
+                .collect()
+        });
+        if changed {
+            self.visible = lower
+                .iter()
+                .enumerate()
+                .filter(|(index, path)| {
+                    (needle.is_empty() || path.contains(&needle))
+                        && self.folder.as_ref().is_none_or(|folder| {
+                            !listing.members[*index].is_dir
+                                && listing.members[*index].path.parent() == Some(folder.as_path())
+                        })
+                })
+                .map(|(index, _)| index)
+                .collect();
+            self.visible_set = self.visible.iter().copied().collect();
+            self.needle = Some(needle.clone());
+            self.applied_folder = Some(self.folder.clone());
+        }
+        if changed || self.applied_order != Some(self.order) {
+            // Rebuild on sorting too: synthetic navigation IDs must never enter
+            // the extraction member sort or selection.
+            self.visible.retain(|&index| index < listing.members.len());
+            self.order.apply(listing, lower, &mut self.visible);
+            if let (Some(folder), Ok(tree)) = (&self.folder, &listing.tree) {
+                let mut keyed: Vec<_> = tree
+                    .children(folder)
                     .iter()
-                    .enumerate()
-                    .filter(|(_, path)| path.contains(&needle))
-                    .map(|(index, _)| index)
-                    .collect()
-            };
-            self.needle = Some(needle);
+                    .copied()
+                    .map(|index| {
+                        (
+                            index,
+                            tree.directories[index]
+                                .path
+                                .to_string_lossy()
+                                .to_lowercase(),
+                        )
+                    })
+                    .filter(|(_, path)| needle.is_empty() || path.contains(&needle))
+                    .collect();
+                keyed.sort_by(|(left, a), (right, b)| {
+                    let cmp = self.order.compare_names(a, b);
+                    let cmp = if self.order.descending && self.order.field == ArchiveField::Name {
+                        cmp.reverse()
+                    } else {
+                        cmp
+                    };
+                    cmp.then_with(|| {
+                        tree.directories[*left]
+                            .path
+                            .cmp(&tree.directories[*right].path)
+                    })
+                });
+                let mut folders: Vec<_> = keyed
+                    .into_iter()
+                    .map(|(index, _)| index + listing.members.len())
+                    .collect();
+                folders.append(&mut self.visible);
+                self.visible = folders;
+            }
+            self.visible_set = self
+                .visible
+                .iter()
+                .copied()
+                .filter(|&index| index < listing.members.len())
+                .collect();
+            self.applied_order = Some(self.order);
+            self.scroll_to_focused |= self.focused.is_some();
         }
         &self.visible
     }
+}
+
+fn select_folder_contents(
+    listing: &crate::archive::ArchiveListing,
+    folder: &std::path::Path,
+    selected: &mut std::collections::BTreeSet<usize>,
+) {
+    selected.extend(
+        listing
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(_, member)| member.path.starts_with(folder))
+            .map(|(index, _)| index),
+    );
 }
 
 /// Inline extract errors shown at most; the rest are summarized as a count.
@@ -238,6 +343,8 @@ impl App {
         let mut extract_selected = false;
         let mut extract_all = false;
         let mut stop_extract = false;
+        let mut sort_requested = None;
+        let mut navigate: Option<Option<PathBuf>> = None;
         let dest = self.archive_extract_dest();
         {
             let state = self.ui.tools.archive.as_mut().unwrap();
@@ -291,7 +398,7 @@ impl App {
                     egui::TextEdit::singleline(&mut state.filter)
                         .id(filter_id)
                         .desired_width(f32::INFINITY)
-                        .hint_text("Filter archive members (Up/Down to move, Enter to select)")
+                        .hint_text("Filter archive members (arrows to move, Enter to open/select)")
                         .margin(egui::vec2(8.0, 6.0)),
                 );
                 let toggle_cursor =
@@ -358,11 +465,101 @@ impl App {
                 }
 
                 if let Some(listing) = &state.listing {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .selectable_label(state.member_filter.folder.is_none(), "All members")
+                            .clicked()
+                        {
+                            navigate = Some(None);
+                        }
+                        if ui
+                            .add_enabled(
+                                listing.tree.is_ok(),
+                                egui::Button::new("Folders")
+                                    .selected(state.member_filter.folder.is_some()),
+                            )
+                            .clicked()
+                        {
+                            navigate = Some(Some(PathBuf::new()));
+                        }
+                    });
+                    if let Err(error) = &listing.tree {
+                        ui.small(error);
+                    }
+                    if let Some(folder) = &state.member_filter.folder {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Select folder contents").on_hover_text("Add all listed members in this folder and its subfolders, including filtered-out members").clicked() {
+                                select_folder_contents(listing, folder, &mut state.selected);
+                            }
+                        });
+                        egui::ScrollArea::horizontal()
+                            .id_salt("archive-breadcrumbs")
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !folder.as_os_str().is_empty(),
+                                            egui::Button::new("Up"),
+                                        )
+                                        .clicked()
+                                    {
+                                        navigate = Some(Some(
+                                            folder
+                                                .parent()
+                                                .unwrap_or(std::path::Path::new(""))
+                                                .into(),
+                                        ));
+                                    }
+                                    if ui.button("Archive root").clicked() {
+                                        navigate = Some(Some(PathBuf::new()));
+                                    }
+                                    let mut prefix = PathBuf::new();
+                                    for part in folder.components() {
+                                        prefix.push(part.as_os_str());
+                                        if ui.button(part.as_os_str().to_string_lossy()).clicked() {
+                                            navigate = Some(Some(prefix.clone()));
+                                        }
+                                    }
+                                });
+                            });
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Sort:");
+                        let order = &mut state.member_filter.order;
+                        let previous = order.field;
+                        egui::ComboBox::from_id_salt("archive-sort")
+                            .selected_text(order.field.label())
+                            .show_ui(ui, |ui| {
+                                for field in ArchiveField::ALL {
+                                    if field.available(listing.kind) {
+                                        ui.selectable_value(&mut order.field, field, field.label());
+                                    }
+                                }
+                            });
+                        if previous != order.field {
+                            order.descending = order.field != ArchiveField::Name;
+                        }
+                        ui.checkbox(&mut order.descending, "Reverse");
+                        ui.checkbox(&mut order.natural, "Natural names").on_hover_text("Numbers in names sort by value: file2 before file10. Also breaks ties in other columns.");
+                        let browsing_folders = state.member_filter.folder.is_some();
+                        let mut folders_first = browsing_folders || order.folders_first;
+                        ui.add_enabled(
+                            !browsing_folders,
+                            egui::Checkbox::new(&mut folders_first, "Folders first"),
+                        );
+                        if !browsing_folders {
+                            order.folders_first = folders_first;
+                        }
+                    });
                     state.member_filter.visible(listing, &state.filter);
+                    let order = state.member_filter.order;
+                    let folder_mode = state.member_filter.folder.is_some();
                     let MemberFilter {
                         visible,
+                        visible_set,
                         focused,
                         scroll_to_focused,
+                        reset_scroll,
                         ..
                     } = &mut state.member_filter;
                     let visible: &[usize] = visible;
@@ -370,11 +567,16 @@ impl App {
                         *focused = step_member_cursor(visible, *focused, cursor_up, cursor_down);
                         *scroll_to_focused = true;
                     }
-                    if toggle_cursor
-                        && let Some(index) = *focused
-                        && !state.selected.remove(&index)
-                    {
-                        state.selected.insert(index);
+                    if toggle_cursor && let Some(index) = *focused {
+                        if index >= listing.members.len() {
+                            if let Ok(tree) = &listing.tree {
+                                navigate = Some(Some(
+                                    tree.directories[index - listing.members.len()].path.clone(),
+                                ));
+                            }
+                        } else if !state.selected.remove(&index) {
+                            state.selected.insert(index);
+                        }
                     }
                     let declared_bytes = listing
                         .declared_uncompressed_bytes
@@ -382,7 +584,7 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             egui::RichText::new(format!(
-                                "{} · {} of {} members  |  {} unpacked",
+                                "{} · {} rows · {} archive members | {} unpacked",
                                 listing.kind.label(),
                                 visible.len(),
                                 listing.declared_members,
@@ -417,7 +619,7 @@ impl App {
                         }
                         if listing.truncated {
                             ui.label(
-                                egui::RichText::new("Member cap reached")
+                                egui::RichText::new("Scan limit reached: partial listing")
                                     .size(11.0)
                                     .color(t.accent_warning),
                             );
@@ -425,38 +627,86 @@ impl App {
                     });
                     ui.add_space(4.0);
                     ui.separator();
+                    let show_modified = ui.available_width() >= 560.0;
+                    let tail_width = 230.0 + if show_modified { 126.0 } else { 0.0 };
+                    let name_width = (ui.available_width() - 8.0 - tail_width).max(40.0);
+                    let mut columns = vec![
+                        (ArchiveField::Name, name_width),
+                        (ArchiveField::Size, 72.0),
+                        (ArchiveField::Packed, 72.0),
+                        (ArchiveField::Ratio, 54.0),
+                    ];
+                    if show_modified {
+                        columns.push((ArchiveField::Modified, 120.0));
+                    }
                     ui.horizontal(|ui| {
-                        // Rows sit in a frame with a 4 pt inset; match it so
-                        // the header columns line up with the values.
                         ui.add_space(4.0);
-                        left_cell(
-                            ui,
-                            (ui.available_width() - 4.0 - 230.0).max(180.0),
-                            20.0,
-                            egui::Label::new(
-                                egui::RichText::new("Member")
-                                    .size(10.0)
-                                    .strong()
-                                    .color(t.text_muted),
-                            ),
-                        );
-                        for (label, width) in [("Size", 72.0), ("Packed", 72.0), ("Ratio", 54.0)] {
-                            ui.add_sized(
-                                [width, 20.0],
-                                egui::Label::new(
-                                    egui::RichText::new(label)
-                                        .size(10.0)
-                                        .strong()
-                                        .color(t.text_muted),
-                                ),
+                        for &(field, width) in &columns {
+                            let label = if order.field == field {
+                                format!(
+                                    "{} {}",
+                                    field.label(),
+                                    if order.descending { "v" } else { "^" }
+                                )
+                            } else {
+                                field.label().to_string()
+                            };
+                            let header = ui.add_enabled(
+                                field.available(listing.kind),
+                                egui::Button::new(
+                                    egui::RichText::new(label).size(10.0).color(t.text_muted),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(width, 20.0)),
                             );
+                            header.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    header.enabled(),
+                                    format!("Sort archive by {}", field.label()),
+                                )
+                            });
+                            if header
+                                .on_hover_text("Click to sort; click again to reverse")
+                                .clicked()
+                            {
+                                sort_requested = Some(field);
+                            }
                         }
                     });
                     ui.separator();
 
-                    let rows_height = (ui.available_height() - 38.0).max(120.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("archive-members")
+                    // Reserve both action rows and optional detail/status lines.
+                    // A fixed 38 pt reserve clipped the extraction buttons.
+                    let line_height = ui.text_style_height(&egui::TextStyle::Body);
+                    let button_height = ui
+                        .spacing()
+                        .interact_size
+                        .y
+                        .max(line_height + 2.0 * ui.spacing().button_padding.y);
+                    let has_details = focused
+                        .or_else(|| state.selected.iter().next().copied())
+                        .and_then(|index| listing.members.get(index))
+                        .is_some();
+                    let footer_height = 2.0 * button_height
+                        + 12.0
+                        + 4.0 * ui.spacing().item_spacing.y
+                        + if has_details {
+                            line_height + 3.0 * ui.spacing().item_spacing.y + 6.0
+                        } else {
+                            0.0
+                        }
+                        + if visible.is_empty() {
+                            line_height + ui.spacing().item_spacing.y
+                        } else {
+                            0.0
+                        };
+                    let rows_height = (ui.available_height() - footer_height).max(0.0);
+                    let mut member_scroll = egui::ScrollArea::vertical().id_salt("archive-members");
+                    if std::mem::take(reset_scroll) {
+                        member_scroll = member_scroll.vertical_scroll_offset(0.0);
+                    }
+                    member_scroll
                         .auto_shrink([false, false])
                         .max_height(rows_height)
                         .show_rows(ui, 30.0, visible.len(), |ui, rows| {
@@ -479,7 +729,16 @@ impl App {
                             }
                             for row in rows {
                                 let index = visible[row];
-                                let member = &listing.members[index];
+                                let synthetic = index >= listing.members.len();
+                                let member = if synthetic {
+                                    &listing
+                                        .tree
+                                        .as_ref()
+                                        .expect("folder IDs require tree")
+                                        .directories[index - listing.members.len()]
+                                } else {
+                                    &listing.members[index]
+                                };
                                 let selected = state.selected.contains(&index);
                                 let response = Frame::NONE
                                     .fill(if selected {
@@ -497,10 +756,24 @@ impl App {
                                     .inner_margin(Margin::symmetric(4, 3))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            let path = member.path.display().to_string();
+                                            let path = if folder_mode {
+                                                member
+                                                    .path
+                                                    .file_name()
+                                                    .unwrap_or_default()
+                                                    .to_string_lossy()
+                                                    .into_owned()
+                                            } else {
+                                                member.path.display().to_string()
+                                            };
+                                            let path = if synthetic {
+                                                format!("[Folder] {path}")
+                                            } else {
+                                                path
+                                            };
                                             left_cell(
                                                 ui,
-                                                (ui.available_width() - 230.0).max(180.0),
+                                                name_width,
                                                 22.0,
                                                 egui::Label::new(
                                                     egui::RichText::new(path)
@@ -516,6 +789,10 @@ impl App {
                                             };
                                             let packed = if member.is_dir {
                                                 String::new()
+                                            } else if listing.kind
+                                                != crate::archive::ArchiveKind::Zip
+                                            {
+                                                "n/a".to_string()
                                             } else {
                                                 format_size(member.compressed_size)
                                             };
@@ -529,9 +806,14 @@ impl App {
                                                             / member.compressed_size as f64
                                                     )
                                                 };
-                                            for (value, width) in
-                                                [(size, 72.0), (packed, 72.0), (ratio, 54.0)]
-                                            {
+                                            let modified =
+                                                crate::search::modified_label(member.modified);
+                                            let mut values =
+                                                vec![(size, 72.0), (packed, 72.0), (ratio, 54.0)];
+                                            if show_modified {
+                                                values.push((modified, 120.0));
+                                            }
+                                            for (value, width) in values {
                                                 ui.add_sized(
                                                     [width, 22.0],
                                                     egui::Label::new(
@@ -546,6 +828,16 @@ impl App {
                                     .response
                                     .interact(Sense::click());
                                 response.widget_info(|| {
+                                    if synthetic {
+                                        return egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            format!(
+                                                "Open archive folder {}",
+                                                member.path.display()
+                                            ),
+                                        );
+                                    }
                                     egui::WidgetInfo::selected(
                                         egui::WidgetType::SelectableLabel,
                                         true,
@@ -555,9 +847,17 @@ impl App {
                                 });
                                 if response.clicked() {
                                     *focused = Some(index);
-                                    if !state.selected.remove(&index) {
+                                    if synthetic {
+                                        navigate = Some(Some(member.path.clone()));
+                                    } else if !state.selected.remove(&index) {
                                         state.selected.insert(index);
                                     }
+                                }
+                                if response.double_clicked()
+                                    && member.is_dir
+                                    && listing.tree.is_ok()
+                                {
+                                    navigate = Some(Some(member.path.clone()));
                                 }
                             }
                         });
@@ -589,11 +889,11 @@ impl App {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(!visible.is_empty(), egui::Button::new("Select all"))
-                            .on_hover_text("Select every member the filter shows")
+                            .add_enabled(!visible_set.is_empty(), egui::Button::new(if folder_mode { "Select visible files" } else { "Select all" }))
+                            .on_hover_text("Add every visible real member; navigation folders are not extraction entries")
                             .clicked()
                         {
-                            state.selected.extend(visible.iter().copied());
+                            state.selected.extend(visible_set.iter().copied());
                         }
                         if ui
                             .add_enabled(!state.selected.is_empty(), egui::Button::new("Clear"))
@@ -607,13 +907,13 @@ impl App {
                     let dest_hint = format!("Extract into {}", dest.display());
                     ui.horizontal(|ui| {
                         let n = state.selected.len();
-                        let hidden = if state.filter.trim().is_empty() {
+                        let hidden = if state.filter.trim().is_empty() && !folder_mode {
                             0
                         } else {
                             state
                                 .selected
                                 .iter()
-                                .filter(|index| visible.binary_search(index).is_err())
+                                .filter(|index| !visible_set.contains(*index))
                                 .count()
                         };
                         if ui
@@ -639,7 +939,7 @@ impl App {
                         }
                         let all_hint = if listing.truncated {
                             format!(
-                                "{dest_hint}. Member cap reached: only the {} listed members \
+                                "{dest_hint}. Scan limit reached: only the {} listed members \
                                  are extracted",
                                 listing.members.len()
                             )
@@ -663,6 +963,20 @@ impl App {
                     });
                 }
             });
+        }
+
+        if let Some(folder) = navigate
+            && let Some(state) = self.ui.tools.archive.as_mut()
+        {
+            state.member_filter.navigate(folder);
+            ctx.request_repaint();
+        }
+
+        if let Some(field) = sort_requested
+            && let Some(state) = self.ui.tools.archive.as_mut()
+        {
+            state.member_filter.order.choose(field);
+            ctx.request_repaint();
         }
 
         if !window_open || escape_requested {
@@ -771,6 +1085,7 @@ mod tests {
 
     fn listing(paths: &[&str]) -> crate::archive::ArchiveListing {
         crate::archive::ArchiveListing {
+            tree: Err("Not indexed".into()),
             kind: crate::archive::ArchiveKind::Zip,
             members: paths
                 .iter()
@@ -794,14 +1109,114 @@ mod tests {
     }
 
     #[test]
+    fn selecting_folder_contents_includes_only_real_subtree_members() {
+        let listing = listing(&["a/deep/file", "a/direct", "a-not/sibling", "root"]);
+        let mut selected = [3].into_iter().collect();
+        super::select_folder_contents(&listing, std::path::Path::new("a"), &mut selected);
+        assert_eq!(selected, [0, 1, 3].into_iter().collect());
+        super::select_folder_contents(&listing, std::path::Path::new(""), &mut selected);
+        assert_eq!(selected, [0, 1, 2, 3].into_iter().collect());
+    }
+
+    #[test]
+    fn archive_folder_navigation_preserves_member_ids_and_hidden_selection() {
+        let mut listing = listing(&[
+            "a/deep/child.txt",
+            "a/one.txt",
+            "a/one.txt",
+            "root.txt",
+            "b/two.txt",
+        ]);
+        listing.tree = crate::archive_tree::Tree::build(&listing.members, || false);
+        let tree = listing.tree.as_ref().unwrap();
+        let mut filter = MemberFilter::default();
+        let selected: std::collections::BTreeSet<_> = [0, 2, 4].into_iter().collect();
+        filter.navigate(Some(Default::default()));
+        let root = filter.visible(&listing, "").to_vec();
+        assert_eq!(root.len(), 3, "two implicit folders and one root file");
+        assert!(
+            root[..2]
+                .iter()
+                .all(|&index| index >= listing.members.len())
+        );
+        assert_eq!(root[2], 3);
+        filter.navigate(Some("a".into()));
+        let a = filter.visible(&listing, "").to_vec();
+        assert_eq!(a.len(), 3);
+        assert_eq!(
+            tree.directories[a[0] - listing.members.len()].path,
+            std::path::Path::new("a/deep")
+        );
+        assert_eq!(&a[1..], &[1, 2], "duplicate archive members stay distinct");
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|index| !filter.visible_set.contains(index))
+                .count(),
+            2
+        );
+        filter.order.choose(crate::archive_order::Field::Size);
+        filter.visible(&listing, "one");
+        assert_eq!(filter.visible_set, [1, 2].into_iter().collect());
+        filter.navigate(Some("a/deep".into()));
+        assert_eq!(filter.visible(&listing, ""), [0]);
+        filter.navigate(None);
+        assert_eq!(filter.visible(&listing, "").len(), 5);
+        assert_eq!(selected, [0, 2, 4].into_iter().collect());
+        assert!(filter.visible(&listing, "missing").is_empty());
+    }
+
+    #[test]
+    fn natural_toggle_reorders_cached_members_without_changing_focus_or_selection() {
+        let listing = listing(&["file10", "file2", "file02", "file2"]);
+        let mut filter = MemberFilter::default();
+        let selected: std::collections::BTreeSet<_> = [0, 3].into_iter().collect();
+        assert_eq!(filter.visible(&listing, ""), [1, 3, 2, 0]);
+        filter.focused = Some(0);
+        filter.order.natural = false;
+        assert_eq!(filter.visible(&listing, ""), [2, 0, 1, 3]);
+        assert_eq!(filter.focused, Some(0));
+        assert!(filter.scroll_to_focused);
+        assert_eq!(filter.visible_set, [0, 1, 2, 3].into_iter().collect());
+        filter.visible(&listing, "2");
+        filter.order.natural = true;
+        assert_eq!(filter.visible(&listing, "2"), [1, 3, 2]);
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|index| !filter.visible_set.contains(index))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn navigation_folders_share_natural_name_order_and_reversal() {
+        let mut listing = listing(&["folder10/file", "folder2/file"]);
+        listing.tree = crate::archive_tree::Tree::build(&listing.members, || false);
+        let mut filter = MemberFilter::default();
+        filter.navigate(Some(Default::default()));
+        assert_eq!(filter.visible(&listing, ""), [3, 2]);
+        filter.order.descending = true;
+        assert_eq!(filter.visible(&listing, ""), [2, 3]);
+        filter.order.descending = false;
+        filter.order.natural = false;
+        assert_eq!(filter.visible(&listing, ""), [2, 3]);
+        assert!(
+            filter.visible_set.is_empty(),
+            "navigation IDs are never extraction IDs"
+        );
+    }
+
+    #[test]
     fn member_filter_matches_case_insensitively_and_tracks_the_text() {
         let listing = listing(&["src/Main.rs", "README.md", "src/lib.rs"]);
         let mut filter = MemberFilter::default();
-        assert_eq!(filter.visible(&listing, ""), [0, 1, 2]);
-        assert_eq!(filter.visible(&listing, "  SRC "), [0, 2]);
+        assert_eq!(filter.visible(&listing, ""), [1, 2, 0]);
+        assert_eq!(filter.visible(&listing, "  SRC "), [2, 0]);
         assert_eq!(filter.visible(&listing, "main"), [0]);
         assert_eq!(filter.visible(&listing, "nothing"), [] as [usize; 0]);
-        assert_eq!(filter.visible(&listing, ""), [0, 1, 2]);
+        assert_eq!(filter.visible(&listing, ""), [1, 2, 0]);
     }
 
     #[test]
@@ -813,6 +1228,38 @@ mod tests {
         let other = self::listing(&["b.txt", "a.txt"]);
         assert_eq!(filter.visible(&other, "a").as_ptr(), first);
         assert_eq!(filter.visible(&other, "a"), [0]);
+    }
+
+    #[test]
+    fn archive_sort_preserves_focus_and_selection_membership_after_filtering() {
+        let mut listing = listing(&["first.txt", "middle.txt", "last.txt"]);
+        listing.members[0].size = 2;
+        listing.members[1].size = 100;
+        listing.members[2].size = 50;
+        let mut filter = MemberFilter::default();
+        filter.visible(&listing, "");
+        filter.focused = Some(2);
+        let selected = std::collections::BTreeSet::from([1, 2]);
+        filter.order.choose(crate::archive_order::Field::Size);
+        assert_eq!(filter.visible(&listing, ""), [1, 2, 0]);
+        assert_eq!(filter.focused, Some(2));
+        assert!(filter.scroll_to_focused);
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|index| !filter.visible_set.contains(*index))
+                .count(),
+            0
+        );
+        assert_eq!(filter.visible(&listing, "last"), [2]);
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|index| !filter.visible_set.contains(*index))
+                .count(),
+            1
+        );
+        assert_eq!(filter.visible(&listing, ""), [1, 2, 0]);
     }
 
     #[test]

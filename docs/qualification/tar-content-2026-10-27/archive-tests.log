@@ -1,0 +1,58 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.22s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 50 tests
+test app::archive_dialog::tests::extract_labels_name_hidden_selection_and_capped_listings ... ok
+test app::archive_dialog::tests::many_extract_errors_toast_a_count_and_cap_the_inline_list ... ok
+test app::archive_dialog::tests::member_cursor_steps_through_visible_rows_only ... ok
+test app::archive_dialog::tests::member_filter_matches_case_insensitively_and_tracks_the_text ... ok
+test app::archive_dialog::tests::unchanged_filter_reuses_its_matches ... ok
+test app::update::tests::a_folder_named_like_an_archive_opens_as_a_folder ... ok
+test archive::tests::cancellation_stops_before_visiting_members ... ok
+test archive::tests::child_wait_kills_process_on_cancel ... ok
+test archive::tests::chunked_copy_stops_when_cancelled_mid_member ... ok
+test archive::tests::exhausted_budget_skips_the_archive_without_opening_it ... ok
+test archive::tests::extract_writes_selected_zip_members_without_clobber ... ok
+test archive::tests::failed_tar_extract_still_counts_the_members_it_wrote ... ok
+test archive::tests::listing_lines_stop_at_limit_and_on_cancel ... ok
+test archive::tests::listing_rejects_parent_traversal_members ... ok
+test archive::tests::member_budget_cap_truncates_mid_archive ... ok
+test archive::tests::member_visit_reads_text_and_skips_binary_content ... ok
+test archive::tests::plain_tar_extraction_keeps_existing_files_and_extracts_literal_names ... ok
+test archive::tests::supported_archive_detection_is_case_insensitive ... ok
+test archive::tests::suspicious_compression_ratio_is_not_decompressed_for_search ... ok
+test archive::tests::tar_content_search_does_not_follow_link_targets ... ok
+test archive::tests::tar_content_search_handles_plain_and_gzip_and_preserves_metadata ... ok
+test archive::tests::tar_extract_all_does_not_overflow_argument_list ... ok
+test archive::tests::tar_extract_handles_dot_slash_prefixed_members ... ok
+test archive::tests::tar_extract_reports_unknown_member_indexes ... ok
+test archive::tests::tar_extracts_glob_metacharacters_as_literal_member_names ... ok
+test archive::tests::tar_listing_keeps_member_sizes_and_edge_spaces ... ok
+test archive::tests::tar_listing_preserves_non_utf8_member_names ... ok
+test archive::tests::tar_listing_rejects_absolute_members ... ok
+test archive::tests::tar_lists_and_extracts_option_like_member_names ... ok
+test archive::tests::tar_member_paths_must_be_plain_relative_names ... ok
+test archive::tests::tar_stream_budget_includes_skipped_payloads_and_cancels_between_members ... ok
+test archive::tests::tar_stream_checks_cancellation_while_skipping_a_payload ... ok
+test archive::tests::verbose_tar_lines_parse_gnu_and_bsd_layouts ... ok
+test archive::tests::zip_extract_creates_only_symlinks_that_stay_inside_the_destination ... ok
+test archive::tests::zip_extract_does_not_write_through_dangling_symlink ... ok
+test archive::tests::zip_extract_keeps_unix_mode_and_mtime ... ok
+test archive::tests::zip_extract_names_unsafe_members ... ok
+test archive::tests::zip_extract_skips_unsafe_members_and_keeps_going ... ok
+test archive::tests::zip_members_carry_their_own_modified_time ... ok
+test command::tests::browse_archive_needs_a_highlighted_file ... ok
+test fs_util::tests::zip_archive_name_counts_up_instead_of_replacing ... ok
+test search::tests::archive_members_report_their_own_modified_time ... ok
+test search::tests::archives_that_will_not_open_are_counted ... ok
+test search::tests::exhausted_archive_budget_marks_the_results_capped ... ok
+test search::tests::filtered_content_search_reports_corrupt_tar_gz_archives ... ok
+test search::tests::indexed_provider_delegates_zip_paths_to_the_archive_provider ... ok
+test search::tests::live_provider_streams_archive_members_and_reveals_the_archive ... ok
+test ui_request::tests::dispatcher_preserves_all_rename_and_archive_payloads_in_order ... ok
+test workspace::tests::activate_supported_archives_request_the_read_only_archive_browser ... ok
+test workspace::tests::browse_archive_on_the_parent_row_explains_what_to_highlight ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 2163 filtered out; finished in 8.79s
+

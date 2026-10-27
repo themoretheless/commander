@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: `?` couldn't convert the error to `VisualQaCreationError`
+    --> src/visual_qa.rs:1019:48
+     |
+1015 | /             std::fs::write(
+1016 | |                 fixture.left.join("Design/inside.txt"),
+1017 | |                 "Folder opened in opposite pane",
+1018 | |             )
+     | |_____________- this has type `Result<_, std::io::Error>`
+1019 |               .map_err(|error| error.to_string())?;
+     |                ----------------------------------^ the trait `std::convert::From<std::string::String>` is not implemented for `VisualQaCreationError`
+     |                |
+     |                this can't be annotated with `?` because it has type `Result<_, std::string::String>`
+     |
+note: `VisualQaCreationError` needs to implement `From<std::string::String>`
+    --> src/visual_qa.rs:405:1
+     |
+ 405 | enum VisualQaCreationError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.96s
+     Running `target/debug/commander --visual-qa rename_options --output target/visual-qa`
+2026-10-27T23:31:57 INFO  commander::logging: logging initialized
+2026-10-27T23:31:57 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: rename_options
+2026-10-27T23:31:57 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

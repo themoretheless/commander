@@ -1,0 +1,7 @@
+{
+  "README.md": "141ba4503b86a7962ae8cdf6c82e2c265cfb8232d6bf146be5272357217f9dc6",
+  "src/command.rs": "0a3ec6df69def33afbd9d0960682c9e24685225ff6ec7a41f31094a5f070c36f",
+  "src/workspace.rs": "03650aa9fb6ac790bbde977b641c3b4cfa331935a0c72181daca7fe05b8ce892",
+  "src/workspace/tabs.rs": "62fe0a4c844aa4558015e9f55d9ec932fadde014a27155c00d702f32fd3af667",
+  "src/app/tabs.rs": "bfc57fb9e43ea313489cd71d5e7869840a0165e77314e976d9cab97dc5d9e787"
+}

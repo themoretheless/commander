@@ -1004,6 +1004,10 @@ fn every_fixed_ui_command_emits_the_expected_typed_request() {
         (Command::CopyPath, UiRequest::CopyPaths(PathStyle::FullPath)),
         (Command::CopyName, UiRequest::CopyPaths(PathStyle::NameOnly)),
         (
+            Command::CopyNameWithoutExtension,
+            UiRequest::CopyPaths(PathStyle::NameWithoutExtension),
+        ),
+        (
             Command::CopyParentPath,
             UiRequest::CopyPaths(PathStyle::ParentPath),
         ),
@@ -1335,19 +1339,19 @@ fn activate_file_emits_typed_open_intent() {
 }
 
 #[test]
-fn activate_zip_requests_the_read_only_archive_browser() {
-    let (left, right) = (TempDir::new(), TempDir::new());
-    let archive = left.file("bundle.zip", "placeholder");
-    let mut workspace = Workspace::new(left.path().to_path_buf(), right.path().to_path_buf());
-    workspace.left.refresh();
-
-    workspace.left.set_cursor(1);
-    workspace.execute(Command::Activate);
-
-    assert_eq!(
-        workspace.pending_ui_requests(),
-        vec![UiRequest::Archive(archive)]
-    );
+fn activate_supported_archives_request_the_read_only_archive_browser() {
+    for name in ["bundle.zip", "bundle.tar", "bundle.tgz"] {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        let archive = left.file(name, "placeholder");
+        let mut workspace = Workspace::new(left.path().to_path_buf(), right.path().to_path_buf());
+        workspace.left.refresh();
+        workspace.left.set_cursor(1);
+        workspace.execute(Command::Activate);
+        assert_eq!(
+            workspace.pending_ui_requests(),
+            vec![UiRequest::Archive(archive)]
+        );
+    }
 }
 
 #[test]
@@ -5118,7 +5122,7 @@ fn browse_archive_on_the_parent_row_explains_what_to_highlight() {
     assert_eq!(
         ws.drain_ui_requests(),
         vec![UiRequest::Notice {
-            message: "Highlight a ZIP or tar.gz archive first".to_string(),
+            message: "Highlight a ZIP, TAR or tar.gz archive first".to_string(),
             error: true,
         }]
     );
@@ -6353,4 +6357,625 @@ fn case_variant_without_an_on_disk_clash_is_not_a_conflict() {
     };
     let kept: Vec<&PathBuf> = tr.entries.iter().map(|e| &e.path).collect();
     assert_eq!(kept, vec![&lower]);
+}
+
+#[cfg(unix)]
+#[test]
+fn permission_request_keeps_the_selected_listing_identity() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let path = left.file("selected.txt", "bytes");
+    let mut ws = workspace(&left, &right);
+    ws.left.set_cursor(1);
+    ws.execute(Command::EditPermissions);
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(requests.as_slice(), [UiRequest::Permissions(targets)] if targets.len() == 1 && targets[0].path == path && matches!(targets[0].identity, crate::panel::ListingIdentity::Captured(_)))
+    );
+}
+
+#[test]
+fn hex_preview_uses_the_cursor_and_preserves_the_selection_and_file() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let bytes = left.file("bytes.bin", "abc");
+    let other = left.file("other.txt", "other");
+    let mut ws = workspace(&left, &right);
+    ws.left.toggle_select(other.clone());
+    ws.left.focus_child("bytes.bin".into());
+    ws.execute(Command::ViewHex);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::HexPreview(bytes.clone())]
+    );
+    assert!(ws.left.is_selected(&other));
+    assert_eq!(std::fs::read(bytes).unwrap(), b"abc");
+}
+
+#[test]
+fn targeted_batch_rename_preserves_bytes_and_undo_redo_and_refuses_collisions() {
+    use crate::rename::{RenameRule, ReplaceTarget};
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("txt-item.txt", "unchanged file bytes");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("txt-item.txt"));
+    let rule = RenameRule {
+        find: "txt".into(),
+        replace: "log".into(),
+        replace_target: ReplaceTarget::Extension,
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("txt-item.log")).unwrap(),
+        b"unchanged file bytes"
+    );
+    assert!(!left.path().join("log-item.log").exists());
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("txt-item.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("txt-item.log").is_file());
+    let _ = ws.perform_undo(|| {});
+    left.file("txt-item.log", "must survive collision");
+    ws.left.refresh();
+    ws.left.select_path(left.path().join("txt-item.txt"));
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("txt-item.log")).unwrap(),
+        b"must survive collision"
+    );
+    assert!(left.path().join("txt-item.txt").is_file());
+}
+
+#[test]
+fn matching_options_batch_rename_changes_only_first_casefolded_match_and_is_undoable() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("TXT-TXT.txt", "payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("TXT-TXT.txt"));
+    let rule = crate::rename::RenameRule {
+        find: "txt".into(),
+        replace: "doc".into(),
+        ignore_case: true,
+        first_only: true,
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("doc-TXT.txt")).unwrap(),
+        b"payload"
+    );
+    assert!(!left.path().join("doc-doc.doc").exists());
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("TXT-TXT.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("doc-TXT.txt").is_file());
+}
+
+#[test]
+fn capitalization_batch_rename_preserves_content_and_undo_redo() {
+    for (case, target) in [
+        (crate::rename::CaseMode::Capitalize, "Hello world.TXT"),
+        (crate::rename::CaseMode::TitleWords, "Hello World.TXT"),
+    ] {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        left.file("hELLO wORLD.TXT", "payload");
+        let mut ws = workspace(&left, &right);
+        ws.left.select_path(left.path().join("hELLO wORLD.TXT"));
+        let rule = crate::rename::RenameRule {
+            case,
+            ..Default::default()
+        };
+        assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+        assert_eq!(std::fs::read(left.path().join(target)).unwrap(), b"payload");
+        let _ = ws.perform_undo(|| {});
+        assert!(left.path().join("hELLO wORLD.TXT").is_file());
+        let _ = ws.perform_redo(|| {});
+        assert!(left.path().join(target).is_file());
+    }
+}
+
+#[test]
+fn selection_group_commands_compose_without_changing_the_other_pane() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("a.txt", "a");
+    left.file("b.TXT", "b");
+    left.file("c.bin", "c");
+    let folder = left.dir("folder.txt");
+    right.file("untouched.txt", "right");
+    let mut ws = workspace(&left, &right);
+    ws.right.toggle_select(right.path().join("untouched.txt"));
+    ws.left.focus_child("a.txt".into());
+    let cursor = ws.left.cursor_entry().unwrap().path.clone();
+    ws.execute(Command::SelectVisibleFiles);
+    assert_eq!(ws.left.selected_count(), 3);
+    assert!(!ws.left.is_selected(&folder));
+    ws.execute(Command::DeselectLikeCursor);
+    assert_eq!(ws.left.selected_count(), 1);
+    assert!(ws.left.is_selected(&left.path().join("c.bin")));
+    ws.execute(Command::SelectVisibleFolders);
+    assert_eq!(ws.left.selected_count(), 2);
+    assert!(ws.left.is_selected(&folder));
+    assert_eq!(ws.left.cursor_entry().unwrap().path, cursor);
+    assert_eq!(ws.right.selected_count(), 1);
+    assert!(ws.right.is_selected(&right.path().join("untouched.txt")));
+    ws.left.focus_child("folder.txt".into());
+    assert!(
+        !crate::command::availability(Command::DeselectLikeCursor, &ws.command_context()).enabled
+    );
+    ws.execute(Command::DeselectLikeCursor);
+    assert_eq!(ws.left.selected_count(), 2);
+}
+
+#[test]
+fn extension_case_only_rename_is_undoable_and_keeps_payload() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("Photo.JPG", "payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("Photo.JPG"));
+    let rule = crate::rename::RenameRule {
+        extension_case: crate::rename::ExtensionCase::Lower,
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("Photo.jpg")).unwrap(),
+        b"payload"
+    );
+    ws.left.refresh();
+    assert!(
+        ws.left
+            .entries()
+            .iter()
+            .any(|entry| entry.name == "Photo.jpg")
+    );
+    let _ = ws.perform_undo(|| {});
+    ws.left.refresh();
+    assert!(
+        ws.left
+            .entries()
+            .iter()
+            .any(|entry| entry.name == "Photo.JPG")
+    );
+    let _ = ws.perform_redo(|| {});
+    ws.left.refresh();
+    assert!(
+        ws.left
+            .entries()
+            .iter()
+            .any(|entry| entry.name == "Photo.jpg")
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("Photo.jpg")).unwrap(),
+        b"payload"
+    );
+}
+
+#[test]
+fn signed_numbering_renames_a_sequence_and_undo_redo_preserve_bytes() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        left.file(name, name);
+    }
+    let mut ws = workspace(&left, &right);
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        ws.left.select_path(left.path().join(name));
+    }
+    let rule = crate::rename::RenameRule {
+        numbering: Some(crate::rename::Numbering {
+            start: 1,
+            step: -1,
+            pad: 2,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 3);
+    for (old, new) in [
+        ("a.txt", "a01.txt"),
+        ("b.txt", "b00.txt"),
+        ("c.txt", "c-1.txt"),
+    ] {
+        assert!(!left.path().join(old).exists());
+        assert_eq!(
+            std::fs::read(left.path().join(new)).unwrap(),
+            old.as_bytes()
+        );
+    }
+    let _ = ws.perform_undo(|| {});
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        assert_eq!(
+            std::fs::read(left.path().join(name)).unwrap(),
+            name.as_bytes()
+        );
+    }
+    let _ = ws.perform_redo(|| {});
+    assert_eq!(
+        std::fs::read(left.path().join("c-1.txt")).unwrap(),
+        b"c.txt"
+    );
+}
+
+#[test]
+fn open_folder_other_pane_preserves_source_and_destination_back_history() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        let (left, right) = (TempDir::new(), TempDir::new());
+        left.dir("child");
+        right.dir("child");
+        left.file("selected.txt", "left");
+        right.file("selected.txt", "right");
+        let mut ws = workspace(&left, &right);
+        ws.active = side;
+        ws.nav_lock = true;
+        let original_source = ws.active_panel_ref().current_path.clone();
+        let original_target = ws.inactive_panel().current_path.clone();
+        ws.active_panel().focus_child("selected.txt".into());
+        ws.execute(Command::TogglePreview);
+        assert!(ws.inactive_panel().preview.is_some());
+        ws.active_panel()
+            .select_path(original_source.join("selected.txt"));
+        ws.active_panel().set_search_query("child");
+        ws.active_panel().focus_child("child".into());
+        let source_cursor = ws.active_panel_ref().cursor_entry().unwrap().path.clone();
+        ws.execute(Command::OpenFolderOtherPane);
+        assert_eq!(ws.active, side);
+        assert_eq!(ws.active_panel_ref().current_path, original_source);
+        assert_eq!(ws.active_panel_ref().search_query(), "child");
+        assert_eq!(
+            ws.active_panel_ref().cursor_entry().unwrap().path,
+            source_cursor
+        );
+        assert!(
+            ws.active_panel_ref()
+                .is_selected(&original_source.join("selected.txt"))
+        );
+        assert_eq!(
+            ws.inactive_panel().current_path,
+            original_source.join("child")
+        );
+        assert!(ws.inactive_panel().preview.is_none());
+        assert!(ws.nav_lock);
+        ws.active = side.other();
+        ws.execute(Command::JumpBack);
+        assert_eq!(ws.active_panel_ref().current_path, original_target);
+        ws.execute(Command::JumpForward);
+        assert_eq!(
+            ws.active_panel_ref().current_path,
+            original_source.join("child")
+        );
+    }
+}
+
+#[test]
+fn open_folder_other_pane_requires_a_directory_and_closed_confirmation() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.dir("child");
+    left.file("file.txt", "untouched");
+    let mut ws = workspace(&left, &right);
+    let target = ws.right.current_path.clone();
+    ws.left.focus_child("file.txt".into());
+    assert!(
+        !crate::command::availability(Command::OpenFolderOtherPane, &ws.command_context()).enabled
+    );
+    ws.execute(Command::OpenFolderOtherPane);
+    assert_eq!(ws.right.current_path, target);
+    ws.left.set_cursor(0);
+    ws.execute(Command::OpenFolderOtherPane);
+    assert_eq!(ws.right.current_path, target);
+    ws.left.focus_child("child".into());
+    assert!(
+        crate::command::availability(Command::OpenFolderOtherPane, &ws.command_context()).enabled
+    );
+    ws.execute(Command::RequestDelete);
+    assert!(ws.pending_op.is_some());
+    assert!(
+        !crate::command::availability(Command::OpenFolderOtherPane, &ws.command_context()).enabled
+    );
+    ws.execute(Command::OpenFolderOtherPane);
+    assert_eq!(ws.right.current_path, target);
+    assert!(left.path().join("child").is_dir());
+}
+
+#[test]
+fn open_folder_other_pane_works_at_tab_capacity_and_preserves_inactive_tabs() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.dir("child");
+    let mut ws = workspace(&left, &right);
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        for _ in 1..crate::workspace::tabs::MAX_TABS {
+            assert!(ws.new_background_tab(side, right.path().to_path_buf()));
+        }
+    }
+    ws.left.focus_child("child".into());
+    let before = ws.tab_snapshot(ActivePanel::Right);
+    let source = ws.tab_snapshot(ActivePanel::Left);
+    assert!(
+        crate::command::availability(Command::OpenFolderOtherPane, &ws.command_context()).enabled
+    );
+    ws.execute(Command::OpenFolderOtherPane);
+    let after = ws.tab_snapshot(ActivePanel::Right);
+    assert_eq!(after.active, before.active);
+    assert_eq!(after.entries.len(), before.entries.len());
+    for index in 0..before.entries.len() {
+        if index != before.active {
+            assert_eq!(after.entries[index], before.entries[index]);
+        }
+    }
+    assert_eq!(after.entries[after.active].path, left.path().join("child"));
+    assert_eq!(ws.tab_snapshot(ActivePanel::Left), source);
+}
+
+#[test]
+fn home_and_root_commands_keep_other_pane_and_restore_back_history() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        for command in [Command::GoHome, Command::GoRoot] {
+            let (left, right) = (TempDir::new(), TempDir::new());
+            left.file("keep.txt", "left");
+            right.file("keep.txt", "right");
+            let mut ws = workspace(&left, &right);
+            ws.active = side;
+            ws.nav_lock = true;
+            let original = ws.active_panel_ref().current_path.clone();
+            let opposite = ws.inactive_panel().current_path.clone();
+            ws.active_panel().set_search_query("keep");
+            ws.active_panel().focus_child("keep.txt".into());
+            ws.active_panel().select_path(original.join("keep.txt"));
+            let target = if command == Command::GoHome {
+                dirs::home_dir().unwrap()
+            } else {
+                original.ancestors().last().unwrap().to_path_buf()
+            };
+            ws.execute(command);
+            assert_eq!(ws.active, side);
+            assert_eq!(ws.active_panel_ref().current_path, target);
+            assert_eq!(ws.inactive_panel().current_path, opposite);
+            assert!(ws.nav_lock);
+            ws.execute(Command::JumpBack);
+            assert_eq!(ws.active_panel_ref().current_path, original);
+            assert_eq!(ws.active_panel_ref().search_query(), "keep");
+            assert_eq!(
+                ws.active_panel_ref().cursor_entry().unwrap().name,
+                "keep.txt"
+            );
+            assert!(
+                ws.active_panel_ref()
+                    .is_selected(&original.join("keep.txt"))
+            );
+        }
+    }
+}
+
+#[test]
+fn home_and_root_commands_respect_confirmation_and_leave_tabs_intact() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("keep.txt", "payload");
+    let mut ws = workspace(&left, &right);
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        for _ in 1..crate::workspace::tabs::MAX_TABS {
+            assert!(ws.new_background_tab(side, right.path().to_path_buf()));
+        }
+    }
+    ws.left.focus_child("keep.txt".into());
+    ws.execute(Command::RequestDelete);
+    assert!(ws.pending_op.is_some());
+    let before = ws.tab_snapshot(ActivePanel::Left);
+    let other = ws.tab_snapshot(ActivePanel::Right);
+    for command in [Command::GoHome, Command::GoRoot] {
+        assert!(!crate::command::availability(command, &ws.command_context()).enabled);
+        ws.execute(command);
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
+        assert_eq!(ws.tab_snapshot(ActivePanel::Right), other);
+    }
+    ws.dismiss_pending_op();
+    for command in [Command::GoHome, Command::GoRoot] {
+        assert!(crate::command::availability(command, &ws.command_context()).enabled);
+        ws.execute(command);
+        let after = ws.tab_snapshot(ActivePanel::Left);
+        assert_eq!(after.active, before.active);
+        assert_eq!(after.entries.len(), before.entries.len());
+        for i in 0..before.entries.len() {
+            if i != before.active {
+                assert_eq!(after.entries[i], before.entries[i]);
+            }
+        }
+        assert_eq!(ws.tab_snapshot(ActivePanel::Right), other);
+        ws.execute(Command::JumpBack);
+    }
+    assert_eq!(
+        std::fs::read(left.path().join("keep.txt")).unwrap(),
+        b"payload"
+    );
+}
+
+#[test]
+fn number_position_before_name_preserves_payloads_and_undo_redo() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("a.txt", "first");
+    left.file("b.txt", "second");
+    let mut ws = workspace(&left, &right);
+    for name in ["a.txt", "b.txt"] {
+        ws.left.select_path(left.path().join(name));
+    }
+    let rule = crate::rename::RenameRule {
+        prefix: "_".into(),
+        suffix: "_x".into(),
+        number_position: crate::rename::NumberPosition::BeforeName,
+        numbering: Some(crate::rename::Numbering {
+            start: 2,
+            step: -1,
+            pad: 2,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 2);
+    assert_eq!(
+        std::fs::read(left.path().join("02_a_x.txt")).unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("01_b_x.txt")).unwrap(),
+        b"second"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert_eq!(std::fs::read(left.path().join("a.txt")).unwrap(), b"first");
+    assert_eq!(std::fs::read(left.path().join("b.txt")).unwrap(), b"second");
+    let _ = ws.perform_redo(|| {});
+    assert_eq!(
+        std::fs::read(left.path().join("02_a_x.txt")).unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("01_b_x.txt")).unwrap(),
+        b"second"
+    );
+}
+
+#[test]
+fn copy_name_without_extension_uses_selected_paths_and_cursor_fallback_without_mutation() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("archive.tar.gz", "archive");
+    left.file("Photo.JPG", "photo");
+    let mut ws = workspace(&left, &right);
+    ws.left.focus_child("archive.tar.gz".into());
+    assert!(
+        crate::command::availability(Command::CopyNameWithoutExtension, &ws.command_context())
+            .enabled
+    );
+    ws.execute(Command::CopyNameWithoutExtension);
+    assert!(ws.drain_ui_requests().into_iter().any(|request| matches!(
+        request,
+        UiRequest::CopyPaths(crate::clipboard::PathStyle::NameWithoutExtension)
+    )));
+    let entries = ws.left.selected_or_cursor().unwrap();
+    assert_eq!(
+        crate::clipboard::format(
+            &entries
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>(),
+            crate::clipboard::PathStyle::NameWithoutExtension,
+            None
+        ),
+        "archive.tar"
+    );
+    ws.left.select_path(left.path().join("Photo.JPG"));
+    ws.execute(Command::CopyNameWithoutExtension);
+    assert!(ws.drain_ui_requests().into_iter().any(|request| matches!(
+        request,
+        UiRequest::CopyPaths(crate::clipboard::PathStyle::NameWithoutExtension)
+    )));
+    let entries = ws.left.selected_or_cursor().unwrap();
+    assert_eq!(
+        crate::clipboard::format(
+            &entries
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>(),
+            crate::clipboard::PathStyle::NameWithoutExtension,
+            None
+        ),
+        "Photo"
+    );
+    assert_eq!(ws.left.cursor_entry().unwrap().name, "archive.tar.gz");
+    assert!(ws.left.is_selected(&left.path().join("Photo.JPG")));
+    assert_eq!(
+        std::fs::read(left.path().join("Photo.JPG")).unwrap(),
+        b"photo"
+    );
+    ws.left.clear_selection();
+    ws.left.set_cursor(0);
+    assert!(
+        !crate::command::availability(Command::CopyNameWithoutExtension, &ws.command_context())
+            .enabled
+    );
+    ws.execute(Command::CopyNameWithoutExtension);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::CopyPaths(
+            crate::clipboard::PathStyle::NameWithoutExtension
+        )]
+    );
+    assert!(ws.left.selected_or_cursor().unwrap().is_empty());
+}
+
+#[test]
+fn same_stem_commands_use_cursor_file_and_leave_other_pane_unchanged() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let pdf = left.file("report.pdf", "pdf");
+    let doc = left.file("report.docx", "doc");
+    let unrelated = left.file("notes.txt", "notes");
+    let other = right.file("report.txt", "other");
+    let mut ws = workspace(&left, &right);
+    ws.right.toggle_select(other.clone());
+    ws.left.toggle_select(unrelated.clone());
+    ws.left.focus_child("report.pdf".into());
+    for command in [Command::SelectSameStem, Command::DeselectSameStem] {
+        assert!(crate::command::availability(command, &ws.command_context()).enabled);
+    }
+    ws.execute(Command::SelectSameStem);
+    assert!(
+        ws.left.is_selected(&pdf) && ws.left.is_selected(&doc) && ws.left.is_selected(&unrelated)
+    );
+    ws.execute(Command::DeselectSameStem);
+    assert!(!ws.left.is_selected(&pdf) && !ws.left.is_selected(&doc));
+    assert!(ws.left.is_selected(&unrelated) && ws.right.is_selected(&other));
+    assert_eq!(ws.active, ActivePanel::Left);
+    ws.left.set_cursor(0);
+    for command in [Command::SelectSameStem, Command::DeselectSameStem] {
+        assert!(!crate::command::availability(command, &ws.command_context()).enabled);
+    }
+}
+
+#[test]
+fn file_edge_commands_keep_selection_other_pane_and_repeat_target() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let a = left.file("a.txt", "a");
+    let z = left.file("z.txt", "z");
+    left.dir("folder");
+    right.file("other.txt", "other");
+    let mut ws = workspace(&left, &right);
+    let other_cursor = ws.right.cursor();
+    ws.execute(Command::SelectVisibleFiles);
+    for command in [Command::CursorFirstFile, Command::CursorLastFile] {
+        assert!(crate::command::availability(command, &ws.command_context()).enabled);
+        ws.execute(command);
+        assert_eq!(ws.last_command, Some(Command::SelectVisibleFiles));
+    }
+    assert_eq!(ws.left.cursor_entry().unwrap().path, z);
+    ws.execute(Command::CursorFirstFile);
+    assert_eq!(ws.left.cursor_entry().unwrap().path, a);
+    assert!(ws.left.is_selected(&a) && ws.left.is_selected(&z));
+    assert_eq!(ws.right.cursor(), other_cursor);
+    assert_eq!(ws.active, ActivePanel::Left);
+    ws.left.set_search_query("folder");
+    assert!(!crate::command::availability(Command::CursorFirstFile, &ws.command_context()).enabled);
+    assert!(!crate::command::availability(Command::CursorLastFile, &ws.command_context()).enabled);
+}
+
+#[test]
+fn kind_inversion_commands_preserve_the_other_panel_and_gate_missing_kinds() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let file = left.file("a.txt", "a");
+    let folder = left.dir("folder");
+    let other = right.file("other.txt", "other");
+    let mut ws = workspace(&left, &right);
+    ws.right.toggle_select(other.clone());
+    ws.left.toggle_select(folder.clone());
+    ws.execute(Command::InvertVisibleFiles);
+    assert!(ws.left.is_selected(&file) && ws.left.is_selected(&folder));
+    ws.execute(Command::InvertVisibleFolders);
+    assert!(ws.left.is_selected(&file) && !ws.left.is_selected(&folder));
+    assert!(ws.right.is_selected(&other));
+    assert_eq!(ws.active, ActivePanel::Left);
+    ws.left.set_search_query("a.txt");
+    assert!(
+        crate::command::availability(Command::InvertVisibleFiles, &ws.command_context()).enabled
+    );
+    assert!(
+        !crate::command::availability(Command::InvertVisibleFolders, &ws.command_context()).enabled
+    );
+    ws.left.set_search_query("folder");
+    assert!(
+        !crate::command::availability(Command::InvertVisibleFiles, &ws.command_context()).enabled
+    );
+    assert!(
+        crate::command::availability(Command::InvertVisibleFolders, &ws.command_context()).enabled
+    );
 }

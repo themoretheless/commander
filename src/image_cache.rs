@@ -158,7 +158,7 @@ pub enum PreviewError {
     NotRegular,
     Unreadable,
     Binary,
-    UnsupportedEncoding,
+    InvalidUnicode,
     InvalidUtf8,
     Changed,
     Cancelled,
@@ -176,7 +176,7 @@ impl PreviewError {
             Self::NotRegular => "Only regular files can be previewed as text.",
             Self::Unreadable => "Commander cannot read this file.",
             Self::Binary => "This file appears to contain binary data.",
-            Self::UnsupportedEncoding => "UTF-16 text preview is not supported.",
+            Self::InvalidUnicode => "This file contains malformed UTF-16 or UTF-32 text.",
             Self::InvalidUtf8 => "This file is not valid UTF-8 text.",
             // Retry reuses the listing's size and mtime, so it keeps failing
             // until the folder is refreshed (watched folders do this alone).
@@ -564,11 +564,62 @@ impl TextPreviewProvider for FsTextPreviewProvider {
     }
 }
 
+/// Decode only Unicode signatures, never guess byte order from a filename or
+/// a NUL pattern. Input and decoded UTF-8 both retain the existing byte bound.
 fn decode_text_bytes(mut bytes: Vec<u8>) -> Result<Arc<str>, PreviewError> {
-    if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
-        return Err(PreviewError::UnsupportedEncoding);
+    if bytes.len() > MAX_TEXT_PREVIEW_BYTES as usize {
+        return Err(PreviewError::TooLarge);
     }
-    if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+    let signature = if bytes.starts_with(&[0xff, 0xfe, 0, 0]) {
+        Some((4, true))
+    } else if bytes.starts_with(&[0, 0, 0xfe, 0xff]) {
+        Some((4, false))
+    } else if bytes.starts_with(&[0xff, 0xfe]) {
+        Some((2, true))
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        Some((2, false))
+    } else {
+        None
+    };
+    if let Some((unit, little_endian)) = signature {
+        let body = &bytes[unit..];
+        if !body.len().is_multiple_of(unit) {
+            return Err(PreviewError::InvalidUnicode);
+        }
+        let mut text = String::new();
+        let mut push = |character: char| -> Result<(), PreviewError> {
+            if text.len().saturating_add(character.len_utf8()) > MAX_TEXT_PREVIEW_BYTES as usize {
+                return Err(PreviewError::TooLarge);
+            }
+            text.push(character);
+            Ok(())
+        };
+        if unit == 2 {
+            let units = body.as_chunks::<2>().0.iter().map(|pair| {
+                let pair = *pair;
+                if little_endian {
+                    u16::from_le_bytes(pair)
+                } else {
+                    u16::from_be_bytes(pair)
+                }
+            });
+            for character in char::decode_utf16(units) {
+                push(character.map_err(|_| PreviewError::InvalidUnicode)?)?;
+            }
+        } else {
+            for quad in body.as_chunks::<4>().0 {
+                let quad = *quad;
+                let value = if little_endian {
+                    u32::from_le_bytes(quad)
+                } else {
+                    u32::from_be_bytes(quad)
+                };
+                push(char::from_u32(value).ok_or(PreviewError::InvalidUnicode)?)?;
+            }
+        }
+        bytes = text.into_bytes();
+    }
+    if signature.is_none() && bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
         bytes.drain(..3);
     }
     if bytes.contains(&0) {
@@ -592,7 +643,11 @@ fn decode_text_bytes(mut bytes: Vec<u8>) -> Result<Arc<str>, PreviewError> {
         // A stray Latin-1/CP1252 byte in otherwise UTF-8 text (a pasted
         // "café") shows as U+FFFD instead of rejecting the whole preview.
         Err(error) if mostly_utf8(error.as_bytes()) => {
-            Ok(Arc::from(String::from_utf8_lossy(error.as_bytes())))
+            let text = String::from_utf8_lossy(error.as_bytes());
+            if text.len() > MAX_TEXT_PREVIEW_BYTES as usize {
+                return Err(PreviewError::TooLarge);
+            }
+            Ok(Arc::from(text))
         }
         Err(_) => Err(PreviewError::InvalidUtf8),
     }
@@ -3253,6 +3308,146 @@ mod tests {
         assert_eq!(executor.pending_count(), 0);
     }
 
+    fn unicode_fixture(text: &str, unit: usize, little: bool) -> Vec<u8> {
+        let mut bytes = match (unit, little) {
+            (2, true) => vec![0xff, 0xfe],
+            (2, false) => vec![0xfe, 0xff],
+            (4, true) => vec![0xff, 0xfe, 0, 0],
+            (4, false) => vec![0, 0, 0xfe, 0xff],
+            _ => unreachable!(),
+        };
+        if unit == 2 {
+            for value in text.encode_utf16() {
+                bytes.extend_from_slice(&if little {
+                    value.to_le_bytes()
+                } else {
+                    value.to_be_bytes()
+                });
+            }
+        } else {
+            for value in text.chars().map(u32::from) {
+                bytes.extend_from_slice(&if little {
+                    value.to_le_bytes()
+                } else {
+                    value.to_be_bytes()
+                });
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn unicode_boms_decode_both_byte_orders_and_preserve_text_exactly() {
+        let text = "ASCII / café / ёж / 日本語 / 🦀\r\n\tline\n\u{feff}inside";
+        for unit in [2, 4] {
+            for little in [true, false] {
+                assert_eq!(
+                    decode_text_bytes(unicode_fixture(text, unit, little))
+                        .unwrap()
+                        .as_ref(),
+                    text
+                );
+                assert_eq!(
+                    decode_text_bytes(unicode_fixture("", unit, little))
+                        .unwrap()
+                        .as_ref(),
+                    ""
+                );
+                // Only the first signature is consumed; a second U+FEFF is content.
+                assert_eq!(
+                    decode_text_bytes(unicode_fixture("\u{feff}second", unit, little))
+                        .unwrap()
+                        .as_ref(),
+                    "\u{feff}second"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_unicode_is_rejected_without_replacement_characters() {
+        for bytes in [
+            vec![0xff, 0xfe, 0x61],
+            vec![0xfe, 0xff, 0],
+            vec![0xff, 0xfe, 0x00, 0xd8], // isolated high surrogate
+            vec![0xfe, 0xff, 0xdc, 0x00], // isolated low surrogate
+            vec![0xff, 0xfe, 0, 0, 0x61], // partial UTF-32 unit
+            vec![0, 0, 0xfe, 0xff, 0, 0, 0xd8, 0], // surrogate scalar
+            vec![0xff, 0xfe, 0, 0, 0, 0, 0x11, 0], // scalar > U+10FFFF
+        ] {
+            assert_eq!(decode_text_bytes(bytes), Err(PreviewError::InvalidUnicode));
+        }
+    }
+
+    #[test]
+    fn unicode_binary_policy_and_decoded_output_budget_are_retained() {
+        for unit in [2, 4] {
+            for little in [true, false] {
+                assert_eq!(
+                    decode_text_bytes(unicode_fixture("a\0b", unit, little)),
+                    Err(PreviewError::Binary)
+                );
+                assert_eq!(
+                    decode_text_bytes(unicode_fixture("\u{1}\u{2}a", unit, little)),
+                    Err(PreviewError::Binary)
+                );
+            }
+        }
+        let limit = super::MAX_TEXT_PREVIEW_BYTES as usize;
+        let oversized_output = unicode_fixture(&"漢".repeat(limit / 3 + 1), 2, true);
+        assert!(oversized_output.len() < limit);
+        assert_eq!(
+            decode_text_bytes(oversized_output),
+            Err(PreviewError::TooLarge)
+        );
+        let mut lossy = vec![b'a'; limit];
+        lossy[limit - 1] = 0xff;
+        assert_eq!(decode_text_bytes(lossy), Err(PreviewError::TooLarge));
+        let exact = "漢".repeat(limit / 3) + "a";
+        assert_eq!(exact.len(), limit);
+        assert_eq!(
+            decode_text_bytes(unicode_fixture(&exact, 2, false))
+                .unwrap()
+                .len(),
+            limit
+        );
+        assert_eq!(
+            decode_text_bytes(vec![b'a'; limit + 1]),
+            Err(PreviewError::TooLarge)
+        );
+        assert_eq!(
+            decode_text_bytes(vec![b'a', 0, b'b', 0]),
+            Err(PreviewError::Binary)
+        );
+    }
+
+    #[test]
+    fn filesystem_provider_decodes_unicode_on_the_existing_bounded_read_path() {
+        let temp = TempDir::new();
+        let provider = FsTextPreviewProvider::default();
+        for unit in [2, 4] {
+            for little in [true, false] {
+                let path = temp.path().join(format!("unicode-{unit}-{little}.txt"));
+                let text = "Hello café / ёж / 🦀\n";
+                std::fs::write(&path, unicode_fixture(text, unit, little)).unwrap();
+                let metadata = std::fs::metadata(&path).unwrap();
+                let request = PreviewIdentity {
+                    path,
+                    size: metadata.len(),
+                    modified: metadata.modified().ok(),
+                };
+                let expected =
+                    super::TextPreviewProvider::fingerprint(&provider, &request).unwrap();
+                assert_eq!(
+                    super::TextPreviewProvider::read(&provider, &request, &expected, &|| false)
+                        .unwrap()
+                        .as_ref(),
+                    text
+                );
+            }
+        }
+    }
+
     #[test]
     fn early_size_regular_file_and_encoding_policies_are_typed() {
         let (mut pipeline, executor, _provider, _clock, ctx) = pipeline_harness();
@@ -3278,8 +3473,10 @@ mod tests {
             "hello"
         );
         assert_eq!(
-            decode_text_bytes(vec![0xff, 0xfe, b'a', 0]),
-            Err(PreviewError::UnsupportedEncoding)
+            decode_text_bytes(vec![0xff, 0xfe, b'a', 0])
+                .unwrap()
+                .as_ref(),
+            "a"
         );
         assert_eq!(
             decode_text_bytes(b"a\0b".to_vec()),

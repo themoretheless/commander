@@ -3,51 +3,199 @@
 //! is no I/O and no UI here, so the whole transform is unit-tested directly on
 //! fabricated name lists.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-/// Case transform applied to the name stem (the extension is left untouched).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// Case transform applied to the stem; `ExtensionCase` controls the suffix independently.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum CaseMode {
     #[default]
     Keep,
     Lower,
     Upper,
+    /// Uppercase the first Unicode scalar and lowercase the remainder.
+    Capitalize,
+    /// Capitalize Unicode word segments while preserving their separators.
+    TitleWords,
 }
 
-/// Optional sequential counter appended to each stem, numbered by input order.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum ExtensionCase {
+    #[default]
+    Keep,
+    Lower,
+    Upper,
+}
+impl ExtensionCase {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Keep => "Keep",
+            Self::Lower => "lower",
+            Self::Upper => "UPPER",
+        }
+    }
+    fn is_keep(&self) -> bool {
+        *self == Self::Keep
+    }
+}
+
+/// Unicode normalization applied to the complete final name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum NameNormalization {
+    #[default]
+    Keep,
+    Nfc,
+    Nfd,
+    Nfkc,
+    Nfkd,
+}
+impl NameNormalization {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Keep => "Keep",
+            Self::Nfc => "NFC",
+            Self::Nfd => "NFD",
+            Self::Nfkc => "NFKC",
+            Self::Nfkd => "NFKD",
+        }
+    }
+    fn is_keep(&self) -> bool {
+        *self == Self::Keep
+    }
+    fn apply(self, name: String) -> String {
+        use unicode_normalization::UnicodeNormalization;
+        match self {
+            Self::Keep => name,
+            Self::Nfc => name.nfc().collect(),
+            Self::Nfd => name.nfd().collect(),
+            Self::Nfkc => name.nfkc().collect(),
+            Self::Nfkd => name.nfkd().collect(),
+        }
+    }
+}
+
+/// Which original name component receives find/replace. Structural edits
+/// still apply to the resulting stem, independently of this setting.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
+pub enum ReplaceTarget {
+    #[default]
+    WholeName,
+    Stem,
+    Extension,
+}
+impl ReplaceTarget {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WholeName => "Whole name",
+            Self::Stem => "Name stem",
+            Self::Extension => "Extension",
+        }
+    }
+    fn is_whole_name(&self) -> bool {
+        *self == Self::WholeName
+    }
+}
+
+/// Place the counter around the decorated stem, or replace that stem entirely.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum NumberPosition {
+    BeforeName,
+    CounterOnly,
+    #[default]
+    AfterName,
+}
+impl NumberPosition {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BeforeName => "Before name",
+            Self::CounterOnly => "Counter only",
+            Self::AfterName => "After name",
+        }
+    }
+    fn is_after(&self) -> bool {
+        *self == Self::AfterName
+    }
+}
+
+/// Optional signed counter on each decorated stem, numbered by input order.
+/// Padding includes a possible minus sign; zero step repeats the same value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Numbering {
-    pub start: u32,
-    pub step: u32,
+    pub start: i64,
+    pub step: i64,
     pub pad: usize,
 }
 
 /// A composable rename rule. Operations apply in a fixed, documented order:
-/// find/replace over the whole name, then split off the extension, then
-/// case, prefix, suffix, and finally the optional counter on the stem.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+/// find/replace over the chosen name component, then split off the extension, then
+/// independent stem/extension case, prefix, suffix, and the counter on the stem.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RenameRule {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub remove_prefix: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub remove_suffix: String,
     pub find: String,
     /// In regex mode, `$1`/`${name}`-style capture-group references are
     /// expanded (see [`regex::Regex::replace_all`]).
     pub replace: String,
     /// Treat `find` as a regular expression instead of a literal substring.
     pub regex: bool,
+    /// Case-insensitive matching uses the regex engine's Unicode simple folding.
+    #[serde(skip_serializing_if = "is_false")]
+    pub ignore_case: bool,
+    /// Replace only the leftmost occurrence in the selected name component.
+    #[serde(skip_serializing_if = "is_false")]
+    pub first_only: bool,
+    /// Trim Unicode whitespace from the final complete name.
+    #[serde(skip_serializing_if = "is_false")]
+    pub trim_spaces: bool,
+    /// Collapse identical consecutive non-alphanumeric graphemes in the final name.
+    #[serde(skip_serializing_if = "is_false")]
+    pub collapse_repeats: bool,
+    #[serde(skip_serializing_if = "NameNormalization::is_keep")]
+    pub normalization: NameNormalization,
+    /// Limit final stem graphemes, keeping the final extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem_limit: Option<usize>,
+    #[serde(skip_serializing_if = "ReplaceTarget::is_whole_name")]
+    pub replace_target: ReplaceTarget,
     pub prefix: String,
     pub suffix: String,
     pub case: CaseMode,
+    /// Independent transform of the resulting last extension; directories have none.
+    #[serde(skip_serializing_if = "ExtensionCase::is_keep")]
+    pub extension_case: ExtensionCase,
     pub numbering: Option<Numbering>,
+    #[serde(skip_serializing_if = "NumberPosition::is_after")]
+    pub number_position: NumberPosition,
 }
 
-/// The pattern error to show the user when `rule` is in regex mode with a
-/// non-empty, invalid pattern. Planning itself never fails on a bad pattern
-/// (see [`rename_one`]); this is the side channel the UI checks separately.
-pub fn regex_error(rule: &RenameRule) -> Option<String> {
-    if rule.regex && !rule.find.is_empty() {
-        regex::Regex::new(&rule.find).err().map(|e| e.to_string())
-    } else {
-        None
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn compile_find(rule: &RenameRule) -> Result<Option<regex::Regex>, regex::Error> {
+    if rule.find.is_empty() || !(rule.regex || rule.ignore_case) {
+        return Ok(None);
     }
+    let pattern = if rule.regex {
+        std::borrow::Cow::Borrowed(rule.find.as_str())
+    } else {
+        std::borrow::Cow::Owned(regex::escape(&rule.find))
+    };
+    regex::RegexBuilder::new(&pattern)
+        .case_insensitive(rule.ignore_case)
+        .build()
+        .map(Some)
+}
+
+/// Compiler errors for regex or escaped case-insensitive literal matching.
+/// Invalid patterns remain no-ops in the pure planner; callers gate application
+/// on this error channel before any filesystem mutation.
+pub fn regex_error(rule: &RenameRule) -> Option<String> {
+    compile_find(rule).err().map(|error| error.to_string())
 }
 
 /// Outcome of planning one entry.
@@ -86,12 +234,28 @@ fn apply_case(stem: &str, mode: CaseMode) -> String {
         CaseMode::Keep => stem.to_string(),
         CaseMode::Lower => stem.to_lowercase(),
         CaseMode::Upper => stem.to_uppercase(),
+        CaseMode::Capitalize => capitalize(stem),
+        CaseMode::TitleWords => {
+            use unicode_segmentation::UnicodeSegmentation;
+            stem.split_word_bounds().map(capitalize).collect()
+        }
+    }
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first
+            .to_uppercase()
+            .chain(chars.flat_map(char::to_lowercase))
+            .collect(),
+        None => String::new(),
     }
 }
 
 /// Compute the proposed new name for a single entry at position `index`.
 /// `compiled` is the pre-compiled pattern for regex mode (`None` when not in
-/// regex mode, or when the pattern failed to compile — see [`regex_error`]).
+/// regex/ignore-case mode, or when compilation failed — see [`regex_error`]).
 fn rename_one(
     name: &str,
     is_dir: bool,
@@ -99,34 +263,128 @@ fn rename_one(
     rule: &RenameRule,
     compiled: Option<&regex::Regex>,
 ) -> String {
-    // 1) find/replace over the full name (may touch the extension).
-    let replaced = if rule.find.is_empty() {
-        name.to_string()
-    } else if rule.regex {
-        match compiled {
-            // $1 / ${name} capture-group references in `replace` are
-            // expanded automatically by `replace_all`.
-            Some(re) => re.replace_all(name, rule.replace.as_str()).into_owned(),
-            // Invalid pattern: no-op here, `regex_error` surfaces it.
-            None => name.to_string(),
+    let name = name.strip_prefix(&rule.remove_prefix).unwrap_or(name);
+    let name = name.strip_suffix(&rule.remove_suffix).unwrap_or(name);
+    let replace = |part: &str| {
+        if rule.find.is_empty() {
+            part.to_string()
+        } else if rule.regex || rule.ignore_case {
+            compiled.map_or_else(
+                || part.to_string(),
+                |regex| {
+                    if rule.regex {
+                        if rule.first_only {
+                            regex.replace(part, rule.replace.as_str()).into_owned()
+                        } else {
+                            regex.replace_all(part, rule.replace.as_str()).into_owned()
+                        }
+                    } else {
+                        // Literal replacement never expands $1/${name}, even when
+                        // the escaped matcher uses Unicode case-insensitive search.
+                        if rule.first_only {
+                            regex
+                                .replace(part, regex::NoExpand(&rule.replace))
+                                .into_owned()
+                        } else {
+                            regex
+                                .replace_all(part, regex::NoExpand(&rule.replace))
+                                .into_owned()
+                        }
+                    }
+                },
+            )
+        } else if rule.first_only {
+            part.replacen(&rule.find, &rule.replace, 1)
+        } else {
+            part.replace(&rule.find, &rule.replace)
         }
-    } else {
-        name.replace(&rule.find, &rule.replace)
     };
-    // 2) split off the extension; structural edits operate on the stem. A
-    // folder has no extension: `v1.2` + suffix `_old` is `v1.2_old`.
-    let (stem, ext) = if is_dir {
-        (replaced.as_str(), "")
-    } else {
-        split_ext(&replaced)
+    let original_parts = || if is_dir { (name, "") } else { split_ext(name) };
+    let (stem, ext) = match rule.replace_target {
+        ReplaceTarget::WholeName => {
+            let replaced = replace(name);
+            let (stem, ext) = if is_dir {
+                (replaced.as_str(), "")
+            } else {
+                split_ext(&replaced)
+            };
+            (stem.to_string(), ext.to_string())
+        }
+        ReplaceTarget::Stem => {
+            let (stem, ext) = original_parts();
+            (replace(stem), ext.to_string())
+        }
+        ReplaceTarget::Extension => {
+            let (stem, ext) = original_parts();
+            if is_dir {
+                (stem.to_string(), ext.to_string())
+            } else {
+                let raw = ext.strip_prefix('.').unwrap_or(ext);
+                let replaced = replace(raw);
+                let extension = if replaced == raw {
+                    ext.to_string()
+                } else if replaced.is_empty() {
+                    String::new()
+                } else {
+                    format!(".{replaced}")
+                };
+                (stem.to_string(), extension)
+            }
+        }
     };
-    let mut stem = apply_case(stem, rule.case);
+    let ext = match rule.extension_case {
+        ExtensionCase::Keep => ext,
+        ExtensionCase::Lower => ext.to_lowercase(),
+        ExtensionCase::Upper => ext.to_uppercase(),
+    };
+    let mut stem = apply_case(&stem, rule.case);
     stem = format!("{}{}{}", rule.prefix, stem, rule.suffix);
     if let Some(n) = rule.numbering {
-        let value = u64::from(n.start) + index as u64 * u64::from(n.step);
-        stem = format!("{stem}{value:0width$}", width = n.pad);
+        // Widen before arithmetic: all i64 values and usize indices fit this sum.
+        let value = i128::from(n.start) + index as i128 * i128::from(n.step);
+        stem = match rule.number_position {
+            NumberPosition::CounterOnly => format!("{value:0width$}", width = n.pad),
+            NumberPosition::BeforeName => format!("{value:0width$}{stem}", width = n.pad),
+            NumberPosition::AfterName => format!("{stem}{value:0width$}", width = n.pad),
+        };
     }
-    format!("{stem}{ext}")
+    let name = format!("{stem}{ext}");
+    let name = if rule.collapse_repeats {
+        collapse_repeats(&name)
+    } else {
+        name
+    };
+    let name = if rule.trim_spaces {
+        name.trim().to_owned()
+    } else {
+        name
+    };
+    let name = rule.normalization.apply(name);
+    if let Some(limit) = rule.stem_limit {
+        use unicode_segmentation::UnicodeSegmentation;
+        let (stem, ext) = if is_dir {
+            (name.as_str(), "")
+        } else {
+            split_ext(&name)
+        };
+        let shortened: String = stem.graphemes(true).take(limit).collect();
+        format!("{shortened}{ext}")
+    } else {
+        name
+    }
+}
+
+fn collapse_repeats(name: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut previous = None;
+    let mut result = String::with_capacity(name.len());
+    for grapheme in name.graphemes(true) {
+        if previous != Some(grapheme) || grapheme.chars().any(char::is_alphanumeric) {
+            result.push_str(grapheme);
+        }
+        previous = Some(grapheme);
+    }
+    result
 }
 
 fn is_valid_name(name: &str) -> bool {
@@ -182,9 +440,7 @@ pub fn plan_batch_rename_with(
     let existing_lower: HashSet<String> = existing.iter().map(|name| folding.key(name)).collect();
 
     // Compiled once for the whole batch, not per name.
-    let compiled = (rule.regex && !rule.find.is_empty())
-        .then(|| regex::Regex::new(&rule.find).ok())
-        .flatten();
+    let compiled = compile_find(rule).ok().flatten();
     let targets: Vec<String> = names
         .iter()
         .enumerate()
@@ -252,6 +508,703 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn number_position_composes_with_decorations_extensions_and_legacy_rules() {
+        let mut rule = RenameRule {
+            prefix: "_".into(),
+            suffix: "_end".into(),
+            case: CaseMode::Upper,
+            extension_case: ExtensionCase::Lower,
+            numbering: Some(Numbering {
+                start: 3,
+                step: -2,
+                pad: 3,
+            }),
+            number_position: NumberPosition::BeforeName,
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("Photo.JPG", false, 0, &rule, None),
+            "003_PHOTO_end.jpg"
+        );
+        assert_eq!(
+            rename_one("Photo.JPG", false, 2, &rule, None),
+            "-01_PHOTO_end.jpg"
+        );
+        assert_eq!(rename_one("a.b", true, 0, &rule, None), "003_A.B_end");
+        rule.number_position = NumberPosition::AfterName;
+        assert_eq!(
+            rename_one("Photo.JPG", false, 0, &rule, None),
+            "_PHOTO_end003.jpg"
+        );
+        assert!(
+            !serde_json::to_string(&rule)
+                .unwrap()
+                .contains("number_position")
+        );
+        let restored: RenameRule =
+            serde_json::from_str(r#"{"numbering":{"start":3,"step":1,"pad":2}}"#).unwrap();
+        assert_eq!(restored.number_position, NumberPosition::AfterName);
+        assert_eq!(rename_one("x.txt", false, 0, &restored, None), "x03.txt");
+        rule.numbering = None;
+        rule.number_position = NumberPosition::BeforeName;
+        assert_eq!(
+            rename_one("Photo.JPG", false, 0, &rule, None),
+            "_PHOTO_end.jpg"
+        );
+    }
+
+    #[test]
+    fn stem_limit_preserves_extension_and_whole_graphemes_and_checks_collisions() {
+        let rule = RenameRule {
+            stem_limit: Some(2),
+            ..Default::default()
+        };
+        for (input, expected) in [
+            ("abcdef.txt", "ab.txt"),
+            ("e\u{301}👩‍💻rest.jpg", "e\u{301}👩‍💻.jpg"),
+            ("a.txt", "a.txt"),
+            (".hidden", ".h"),
+            ("archive.tar.gz", "ar.gz"),
+        ] {
+            assert_eq!(rename_one(input, false, 0, &rule, None), expected);
+        }
+        assert_eq!(rename_one("folder.name", true, 0, &rule, None), "fo");
+        let decorated = RenameRule {
+            prefix: "XY".into(),
+            ..rule.clone()
+        };
+        assert_eq!(
+            rename_one("abcdef.txt", false, 0, &decorated, None),
+            "XY.txt"
+        );
+        let plans = plan_files(
+            &["abc.txt".into(), "abd.txt".into()],
+            &HashSet::new(),
+            &rule,
+        );
+        assert!(
+            plans
+                .iter()
+                .all(|plan| plan.status == PlanStatus::Collision)
+        );
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.stem_limit, None);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("stem_limit")
+        );
+        assert_eq!(
+            rename_one("abcdef.txt", false, 0, &legacy, None),
+            "abcdef.txt"
+        );
+    }
+
+    #[test]
+    fn remove_affixes_is_exact_once_before_extension_and_other_transforms() {
+        let rule = RenameRule {
+            remove_prefix: "backup_".into(),
+            remove_suffix: ".old".into(),
+            extension_case: ExtensionCase::Upper,
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("backup_photo.jpg.old", false, 0, &rule, None),
+            "photo.JPG"
+        );
+        assert_eq!(
+            rename_one("backup_backup_photo.jpg.old.old", false, 0, &rule, None),
+            "backup_photo.jpg.OLD"
+        );
+        assert_eq!(
+            rename_one("BACKUP_photo.jpg.OLD", false, 0, &rule, None),
+            "BACKUP_photo.jpg.OLD"
+        );
+        assert_eq!(rename_one("backup_目录.old", true, 0, &rule, None), "目录");
+        let decorated = RenameRule {
+            prefix: "new_".into(),
+            suffix: "_done".into(),
+            ..rule.clone()
+        };
+        assert_eq!(
+            rename_one("backup_photo.jpg.old", false, 0, &decorated, None),
+            "new_photo_done.JPG"
+        );
+        let names = vec![
+            "backup_photo.jpg.old".into(),
+            "photo.JPG".into(),
+            "backup_.old".into(),
+        ];
+        let plans = plan_files(&names, &HashSet::new(), &rule);
+        assert_eq!(plans[0].status, PlanStatus::Collision);
+        assert_eq!(plans[2].status, PlanStatus::Invalid);
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(legacy.remove_prefix.is_empty() && legacy.remove_suffix.is_empty());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("remove_"));
+    }
+
+    #[test]
+    fn normalization_forms_apply_after_decoration_and_reject_invalid_results() {
+        for (normalization, input, expected) in [
+            (NameNormalization::Nfc, "cafe\u{301}.txt", "café.txt"),
+            (NameNormalization::Nfd, "café.txt", "cafe\u{301}.txt"),
+            (NameNormalization::Nfkc, "Ｆｉｌｅ①.txt", "File1.txt"),
+            (NameNormalization::Nfkd, "é①.txt", "e\u{301}1.txt"),
+        ] {
+            let rule = RenameRule {
+                normalization,
+                ..Default::default()
+            };
+            assert_eq!(rename_one(input, false, 0, &rule, None), expected);
+            assert_eq!(rename_one(input, true, 0, &rule, None), expected);
+            assert_eq!(rename_one(expected, false, 0, &rule, None), expected);
+        }
+        let rule = RenameRule {
+            suffix: "\u{301}".into(),
+            normalization: NameNormalization::Nfc,
+            ..Default::default()
+        };
+        assert_eq!(rename_one("cafe", false, 0, &rule, None), "café");
+        let rule = RenameRule {
+            normalization: NameNormalization::Nfkc,
+            ..Default::default()
+        };
+        let names = vec![
+            "a／b.txt".into(),
+            "．．".into(),
+            "Ｆｉｌｅ.txt".into(),
+            "File.txt".into(),
+        ];
+        let plans = plan_files(&names, &HashSet::new(), &rule);
+        assert_eq!(plans[0].status, PlanStatus::Invalid);
+        assert_eq!(plans[1].status, PlanStatus::Invalid);
+        assert_eq!(plans[2].status, PlanStatus::Collision);
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.normalization, NameNormalization::Keep);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("normalization")
+        );
+        assert_eq!(
+            rename_one("cafe\u{301}.txt", false, 0, &legacy, None),
+            "cafe\u{301}.txt"
+        );
+    }
+
+    #[test]
+    fn collapse_repeats_preserves_letters_and_unicode_clusters_and_checks_collisions() {
+        let rule = RenameRule {
+            collapse_repeats: true,
+            ..Default::default()
+        };
+        for (name, expected) in [
+            ("book___final--v22..txt", "book_final-v22.txt"),
+            ("a  b__--c", "a b_-c"),
+            ("éé_e\u{301}e\u{301}__文件11", "éé_e\u{301}e\u{301}_文件11"),
+            ("a👩‍💻👩‍💻b", "a👩‍💻b"),
+        ] {
+            assert_eq!(rename_one(name, false, 0, &rule, None), expected);
+            assert_eq!(rename_one(name, true, 0, &rule, None), expected);
+        }
+        let decorated = RenameRule {
+            prefix: "__".into(),
+            suffix: "__".into(),
+            trim_spaces: true,
+            ..rule.clone()
+        };
+        assert_eq!(
+            rename_one("_folder_ ", true, 0, &decorated, None),
+            "_folder_ _"
+        );
+        let names = vec!["a__b.txt".into(), "a_b.txt".into(), "...".into()];
+        let plans = plan_files(&names, &HashSet::new(), &rule);
+        assert_eq!(plans[0].status, PlanStatus::Collision);
+        assert_eq!(plans[2].status, PlanStatus::Invalid);
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.collapse_repeats);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("collapse_repeats")
+        );
+        assert_eq!(rename_one("a__b", false, 0, &legacy, None), "a__b");
+    }
+
+    #[test]
+    fn trim_spaces_cleans_final_names_and_reports_invalid_or_colliding_results() {
+        let rule = RenameRule {
+            trim_spaces: true,
+            ..Default::default()
+        };
+        for (name, expected) in [
+            (" Photo.JPG ", "Photo.JPG"),
+            ("\u{2003}a b.txt\t", "a b.txt"),
+            ("folder name ", "folder name"),
+        ] {
+            assert_eq!(rename_one(name, false, 0, &rule, None), expected);
+            assert_eq!(rename_one(name, true, 0, &rule, None), expected);
+        }
+        let decorated = RenameRule {
+            prefix: "  ".into(),
+            suffix: "  ".into(),
+            ..rule.clone()
+        };
+        assert_eq!(rename_one("folder", true, 0, &decorated, None), "folder");
+        let names = vec![" a.txt ".into(), "a.txt".into(), "   ".into()];
+        let plans = plan_files(&names, &HashSet::new(), &rule);
+        assert_eq!(plans[0].status, PlanStatus::Collision);
+        assert_eq!(plans[2].status, PlanStatus::Invalid);
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.trim_spaces);
+        assert_eq!(rename_one(" a.txt ", false, 0, &legacy, None), " a.txt ");
+    }
+
+    #[test]
+    fn counter_only_replaces_decorated_stem_and_retains_extension() {
+        let mut rule = RenameRule {
+            prefix: "ignored_".into(),
+            suffix: "_ignored".into(),
+            number_position: NumberPosition::CounterOnly,
+            extension_case: ExtensionCase::Lower,
+            numbering: Some(Numbering {
+                start: 1,
+                step: -1,
+                pad: 3,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(rename_one("Photo.JPG", false, 0, &rule, None), "001.jpg");
+        assert_eq!(rename_one("Photo.JPG", false, 2, &rule, None), "-01.jpg");
+        assert_eq!(rename_one("folder.with.dots", true, 0, &rule, None), "001");
+        assert_eq!(rename_one("LICENSE", false, 0, &rule, None), "001");
+        let names = vec!["a.txt".to_string(), "b.txt".to_string()];
+        rule.numbering.as_mut().unwrap().step = 0;
+        let plans = plan_files(&names, &HashSet::new(), &rule);
+        assert!(
+            plans
+                .iter()
+                .all(|plan| plan.status == PlanStatus::Collision)
+        );
+        rule.numbering = None;
+        assert_eq!(
+            rename_one("Photo.JPG", false, 0, &rule, None),
+            "ignored_Photo_ignored.jpg"
+        );
+    }
+
+    #[test]
+    fn signed_numbering_descends_crosses_zero_and_pads_the_sign() {
+        let rule = RenameRule {
+            numbering: Some(Numbering {
+                start: 3,
+                step: -2,
+                pad: 3,
+            }),
+            ..Default::default()
+        };
+        for (index, expected) in [
+            "Photo003.JPG",
+            "Photo001.JPG",
+            "Photo-01.JPG",
+            "Photo-03.JPG",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                rename_one("Photo.JPG", false, index, &rule, None),
+                *expected
+            );
+        }
+        let mut negative = rule.clone();
+        negative.numbering.as_mut().unwrap().start = -12;
+        assert_eq!(rename_one("folder", true, 1, &negative, None), "folder-14");
+        negative.numbering.as_mut().unwrap().step = 0;
+        assert_eq!(rename_one("a", false, 99, &negative, None), "a-12");
+    }
+
+    #[test]
+    fn signed_numbering_widens_arithmetic_and_accepts_legacy_unsigned_values() {
+        let legacy: Numbering =
+            serde_json::from_str(r#"{"start":4294967295,"step":4294967295,"pad":0}"#).unwrap();
+        let rule = RenameRule {
+            numbering: Some(legacy),
+            ..Default::default()
+        };
+        assert_eq!(rename_one("x", false, 1, &rule, None), "x8589934590");
+        for (start, step) in [(i64::MAX, i64::MAX), (i64::MIN, i64::MIN)] {
+            let rule = RenameRule {
+                numbering: Some(Numbering {
+                    start,
+                    step,
+                    pad: 0,
+                }),
+                ..Default::default()
+            };
+            let expected = i128::from(start) + usize::MAX as i128 * i128::from(step);
+            assert_eq!(
+                rename_one("x", false, usize::MAX, &rule, None),
+                format!("x{expected}")
+            );
+        }
+    }
+
+    #[test]
+    fn extension_case_changes_only_the_last_extension_after_find_replace() {
+        for (source, lower, upper) in [
+            ("Photo.JPG", "Photo.jpg", "Photo.JPG"),
+            ("archive.TAR.GZ", "archive.TAR.gz", "archive.TAR.GZ"),
+            (".ENV", ".ENV", ".ENV"),
+            ("config.É", "config.é", "config.É"),
+            ("file.ß", "file.ß", "file.SS"),
+            ("plain", "plain", "plain"),
+            ("trailing.", "trailing.", "trailing."),
+        ] {
+            for (mode, expected) in [(ExtensionCase::Lower, lower), (ExtensionCase::Upper, upper)] {
+                let rule = RenameRule {
+                    extension_case: mode,
+                    ..Default::default()
+                };
+                assert_eq!(rename_one(source, false, 0, &rule, None), expected);
+                assert_eq!(
+                    rename_one(source, true, 0, &rule, None),
+                    source,
+                    "directories have no extension"
+                );
+            }
+        }
+        let rule = RenameRule {
+            find: "JPG".into(),
+            replace: "PNG".into(),
+            extension_case: ExtensionCase::Lower,
+            case: CaseMode::Upper,
+            prefix: "p_".into(),
+            numbering: Some(Numbering {
+                start: 2,
+                step: 1,
+                pad: 1,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("Photo.JPG", false, 0, &rule, None),
+            "p_PHOTO2.png"
+        );
+        let rule = RenameRule {
+            replace_target: ReplaceTarget::Extension,
+            ..rule
+        };
+        assert_eq!(
+            rename_one("Photo.JPG", false, 0, &rule, None),
+            "p_PHOTO2.png"
+        );
+    }
+
+    #[test]
+    fn extension_case_defaults_preserve_legacy_json_and_collisions_are_blocked() {
+        let legacy: RenameRule = serde_json::from_str(r#"{"case":"Lower"}"#).unwrap();
+        assert_eq!(legacy.extension_case, ExtensionCase::Keep);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("extension_case")
+        );
+        let rule = RenameRule {
+            extension_case: ExtensionCase::Lower,
+            ..Default::default()
+        };
+        let plan = plan_files(
+            &names(&["a.TXT", "a.txt"]),
+            &existing(&["a.TXT", "a.txt"]),
+            &rule,
+        );
+        assert_eq!(plan[0].status, PlanStatus::Collision);
+        assert_eq!(plan[1].status, PlanStatus::Unchanged);
+        assert!(!plan_is_applicable(&plan));
+        assert!(serde_json::from_str::<RenameRule>(r#"{"extension_case":"TitleWords"}"#).is_err());
+    }
+
+    #[test]
+    fn capitalization_modes_use_unicode_and_preserve_word_separators() {
+        for (input, capital, title) in [
+            ("hELLO wORLD", "Hello world", "Hello World"),
+            ("пРИВЕТ-мИР_тЕСТ", "Привет-мир_тест", "Привет-Мир_тест"),
+            (
+                "e\u{301}COLE café",
+                "E\u{301}cole café",
+                "E\u{301}cole Café",
+            ),
+            ("ßETA TEST", "SSeta test", "SSeta Test"),
+            (
+                "hello  WORLD\tAGAIN",
+                "Hello  world\tagain",
+                "Hello  World\tAgain",
+            ),
+            ("", "", ""),
+        ] {
+            assert_eq!(apply_case(input, CaseMode::Capitalize), capital, "{input}");
+            assert_eq!(apply_case(input, CaseMode::TitleWords), title, "{input}");
+        }
+    }
+
+    #[test]
+    fn capitalization_keeps_extension_and_existing_transform_order() {
+        for (mode, expected) in [
+            (CaseMode::Capitalize, "PRE_Hello world_END07.TXT"),
+            (CaseMode::TitleWords, "PRE_Hello World_END07.TXT"),
+        ] {
+            let rule = RenameRule {
+                find: "OLD".into(),
+                replace: "hELLO".into(),
+                case: mode,
+                prefix: "PRE_".into(),
+                suffix: "_END".into(),
+                numbering: Some(Numbering {
+                    start: 7,
+                    step: 1,
+                    pad: 2,
+                }),
+                ..Default::default()
+            };
+            let plans = plan_files(
+                &names(&["OLD wORLD.TXT"]),
+                &existing(&["OLD wORLD.TXT"]),
+                &rule,
+            );
+            assert_eq!(plans[0].to, expected);
+            assert_eq!(plans[0].status, PlanStatus::Ok);
+            assert_eq!(
+                rename_one(
+                    "hELLO.wORLD",
+                    true,
+                    0,
+                    &RenameRule {
+                        case: mode,
+                        ..Default::default()
+                    },
+                    None
+                ),
+                "Hello.world"
+            );
+        }
+    }
+    #[test]
+    fn first_only_and_ignore_case_compose_without_expanding_literal_replacements() {
+        let input = names(&["Aa-aA-aa.txt"]);
+        let existing = existing(&["Aa-aA-aa.txt"]);
+        let mut rule = RenameRule {
+            find: "aa".into(),
+            replace: "x".into(),
+            ..Default::default()
+        };
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "Aa-aA-x.txt");
+        rule.ignore_case = true;
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "x-x-x.txt");
+        rule.first_only = true;
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "x-aA-aa.txt");
+        rule.ignore_case = false;
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "Aa-aA-x.txt");
+        rule.ignore_case = true;
+        rule.replace = "$1${name}".into();
+        assert_eq!(
+            plan_files(&input, &existing, &rule)[0].to,
+            "$1${name}-aA-aa.txt"
+        );
+        rule.first_only = false;
+        assert_eq!(
+            plan_files(&input, &existing, &rule)[0].to,
+            "$1${name}-$1${name}-$1${name}.txt"
+        );
+        rule.regex = true;
+        rule.first_only = true;
+        rule.find = "(aa)".into();
+        rule.replace = "$1_$1".into();
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "Aa-aA-aa.txt");
+        // Explicit braces disambiguate a capture reference from a longer name.
+        rule.replace = "${1}_${1}".into();
+        assert_eq!(
+            plan_files(&input, &existing, &rule)[0].to,
+            "Aa_Aa-aA-aa.txt"
+        );
+    }
+
+    #[test]
+    fn matching_options_use_unicode_simple_folding_and_respect_component_scope() {
+        let input = names(&["Ёж-ёж.ЁЖ"]);
+        let existing = existing(&["Ёж-ёж.ЁЖ"]);
+        let mut rule = RenameRule {
+            find: "ёж".into(),
+            replace: "ёжик".into(),
+            ignore_case: true,
+            first_only: true,
+            ..Default::default()
+        };
+        rule.replace_target = ReplaceTarget::Extension;
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "Ёж-ёж.ёжик");
+        rule.replace_target = ReplaceTarget::Stem;
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "ёжик-ёж.ЁЖ");
+        rule.replace_target = ReplaceTarget::WholeName;
+        rule.first_only = false;
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "ёжик-ёжик.ёжик");
+        let input = names(&["Straße.txt"]);
+        rule.find = "STRASSE".into();
+        rule.replace = "Road".into();
+        assert_eq!(
+            plan_files(&input, &HashSet::new(), &rule)[0].to,
+            "Straße.txt"
+        );
+    }
+
+    #[test]
+    fn first_only_handles_zero_width_regex_but_empty_find_keeps_legacy_noop() {
+        let input = names(&["ёж.txt"]);
+        let existing = existing(&["ёж.txt"]);
+        let mut rule = RenameRule {
+            find: "(?:)".into(),
+            replace: "-".into(),
+            regex: true,
+            replace_target: ReplaceTarget::Stem,
+            first_only: true,
+            ..Default::default()
+        };
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "-ёж.txt");
+        rule.first_only = false;
+        assert_eq!(plan_files(&input, &existing, &rule)[0].to, "-ё-ж-.txt");
+        rule.find.clear();
+        rule.first_only = true;
+        rule.ignore_case = true;
+        assert_eq!(
+            plan_files(&input, &existing, &rule)[0].status,
+            PlanStatus::Unchanged
+        );
+        let old: RenameRule = serde_json::from_str(r#"{"find":"a","replace":"b"}"#).unwrap();
+        assert!(!old.ignore_case && !old.first_only);
+        let encoded = serde_json::to_value(old).unwrap();
+        assert!(encoded.get("ignore_case").is_none() && encoded.get("first_only").is_none());
+    }
+
+    #[test]
+    fn replacement_target_distinguishes_whole_stem_and_extension() {
+        let input = names(&["txt-report.txt"]);
+        let existing = existing(&["txt-report.txt"]);
+        let mut rule = RenameRule {
+            find: "txt".into(),
+            replace: "log".into(),
+            ..Default::default()
+        };
+        for (target, expected) in [
+            (ReplaceTarget::WholeName, "log-report.log"),
+            (ReplaceTarget::Stem, "log-report.txt"),
+            (ReplaceTarget::Extension, "txt-report.log"),
+        ] {
+            rule.replace_target = target;
+            let plan = plan_files(&input, &existing, &rule);
+            assert_eq!(plan[0].to, expected);
+            assert_eq!(plan[0].status, PlanStatus::Ok);
+        }
+        rule.replace_target = ReplaceTarget::Stem;
+        rule.replace = "log.md".into();
+        assert_eq!(
+            plan_files(&input, &existing, &rule)[0].to,
+            "log.md-report.txt"
+        );
+    }
+
+    #[test]
+    fn extension_target_supports_removal_creation_and_identity_without_affecting_folders() {
+        let input = names(&[
+            "report.txt",
+            ".gitignore",
+            "archive.tar.gz",
+            "trailing.",
+            "plain",
+            "folder.v1",
+        ]);
+        let existing: HashSet<_> = input.iter().cloned().collect();
+        let dirs = names(&["folder.v1"]).into_iter().collect();
+        let mut rule = RenameRule {
+            replace_target: ReplaceTarget::Extension,
+            ..Default::default()
+        };
+        let plans = plan_batch_rename(&input, &existing, &rule, &dirs);
+        assert!(
+            plans
+                .iter()
+                .all(|plan| plan.status == PlanStatus::Unchanged)
+        );
+        rule.find = "txt".into();
+        rule.replace = String::new();
+        assert_eq!(
+            plan_batch_rename(&input, &existing, &rule, &dirs)[0].to,
+            "report"
+        );
+        rule.find = "^$".into();
+        rule.replace = "txt".into();
+        rule.regex = true;
+        let plans = plan_batch_rename(&input, &existing, &rule, &dirs);
+        assert_eq!(plans[1].to, ".gitignore.txt");
+        assert_eq!(plans[3].to, "trailing.txt");
+        assert_eq!(plans[4].to, "plain.txt");
+        assert_eq!(plans[5].to, "folder.v1");
+        rule.find = "gz".into();
+        rule.replace = "zip".into();
+        rule.prefix = "x_".into();
+        let plans = plan_batch_rename(&input, &existing, &rule, &dirs);
+        assert_eq!(plans[2].to, "x_archive.tar.zip");
+        assert_eq!(plans[5].to, "x_folder.v1");
+    }
+
+    #[test]
+    fn targeted_regex_groups_structural_edits_and_collisions_use_the_same_planner() {
+        let input = names(&["item12.JPG"]);
+        let mut rule = RenameRule {
+            find: r"item(\d+)".into(),
+            replace: "photo-$1".into(),
+            regex: true,
+            replace_target: ReplaceTarget::Stem,
+            suffix: "_end".into(),
+            case: CaseMode::Upper,
+            numbering: Some(Numbering {
+                start: 1,
+                step: 1,
+                pad: 2,
+            }),
+            ..Default::default()
+        };
+        let plans = plan_files(&input, &existing(&["item12.JPG"]), &rule);
+        assert_eq!(plans[0].to, "PHOTO-12_end01.JPG");
+        rule = RenameRule {
+            find: "JPG".into(),
+            replace: "png".into(),
+            replace_target: ReplaceTarget::Extension,
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_files(&input, &existing(&["item12.JPG", "item12.png"]), &rule)[0].status,
+            PlanStatus::Collision
+        );
+        rule.replace = "../png".into();
+        assert_eq!(
+            plan_files(&input, &existing(&["item12.JPG"]), &rule)[0].status,
+            PlanStatus::Invalid
+        );
+    }
+
+    #[test]
+    fn missing_target_deserializes_to_legacy_whole_name_and_unknown_targets_fail() {
+        let rule: RenameRule = serde_json::from_str(r#"{"find":"txt","replace":"log"}"#).unwrap();
+        assert_eq!(rule.replace_target, ReplaceTarget::WholeName);
+        assert!(
+            serde_json::to_value(&rule)
+                .unwrap()
+                .get("replace_target")
+                .is_none()
+        );
+        assert!(serde_json::from_str::<RenameRule>(r#"{"replace_target":"Unexpected"}"#).is_err());
     }
 
     #[test]

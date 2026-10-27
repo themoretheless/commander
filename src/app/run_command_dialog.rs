@@ -228,6 +228,8 @@ impl App {
         self.command_templates_mut();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.run_command = Some(RunCommandState {
+            template_name: String::new(),
+            template_extensions: String::new(),
             line: String::new(),
             scroll_nonce,
             opening: RunCommandOpeningContext::capture(&self.ws),
@@ -261,22 +263,22 @@ impl App {
         let sel_count = opening.selection.len();
         // Templates whose extension filter accepts the selection, with their
         // position in the store for the row menu.
-        let matching: Vec<(usize, String, String)> = self
+        let matching: Vec<(usize, String, String, Vec<String>)> = self
             .command_templates_mut()
             .items
             .iter()
             .enumerate()
             .filter(|(_, t)| t.matches(&opening.selection))
-            .map(|(index, t)| (index, t.name.clone(), t.raw.clone()))
+            .map(|(index, t)| (index, t.name.clone(), t.raw.clone(), t.exts.clone()))
             .collect();
-        let shown: Vec<usize> = matching.iter().map(|(index, _, _)| *index).collect();
+        let shown: Vec<usize> = matching.iter().map(|(index, _, _, _)| *index).collect();
         let mut template_edit: Option<TemplateEdit> = None;
 
         let mut run: Option<String> = None; // expanded command line to execute
         let mut cancel = false;
         let mut stop = false;
         let mut fill: Option<String> = None; // template raw chosen from the list
-        let mut save_template: Option<String> = None; // raw line to persist
+        let mut save_template: Option<crate::cmdtemplate::Template> = None; // raw line to persist
 
         let state = self.ui.modals.run_command.as_mut().unwrap();
         egui::Window::new("Run command")
@@ -321,6 +323,26 @@ impl App {
                     resp.request_focus();
                 }
 
+                ui.menu_button("Command recipes", |ui| {
+                    for recipe in crate::command_recipes::RECIPES {
+                        if ui.button(recipe.name).clicked() {
+                            fill=Some(recipe.command.to_string());
+                            state.template_name=recipe.name.to_string();
+                            state.template_extensions=recipe.extensions.join(", ");
+                            ui.close();
+                        }
+                        ui.small(format!("Requires: {}",recipe.requires));
+                    }
+                });
+                ui.collapsing("Template name and file types", |ui| {
+                    ui.label("Name (optional)");
+                    ui.text_edit_singleline(&mut state.template_name);
+                    ui.label("Extensions (comma separated; empty or * means all)");
+                    ui.text_edit_singleline(&mut state.template_extensions);
+                });
+                let template_draft=crate::command_recipes::template(&state.line,&state.template_name,&state.template_extensions);
+                if let Err(message)=&template_draft
+                    && !state.template_extensions.trim().is_empty() { ui.small(*message); }
                 // Live expansion preview, placeholders tinted.
                 ui.add_space(6.0);
                 let segs = preview_segments(&state.line, &sctx);
@@ -350,7 +372,7 @@ impl App {
                         .id_salt((TEMPLATES_SCROLL_ID, state.scroll_nonce))
                         .max_height(160.0)
                         .show(ui, |ui| {
-                            for (pos, (index, name, raw)) in matching.iter().enumerate() {
+                            for (pos, (index, name, raw, extensions)) in matching.iter().enumerate() {
                                 let row = ui
                                     .add(
                                         super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new(template_row_label(name, raw)) .size(12.0)),
@@ -358,6 +380,8 @@ impl App {
                                     .on_hover_text("Click to use; right-click to move or delete");
                                 if row.clicked() {
                                     fill = Some(raw.clone());
+                                    state.template_name = name.clone();
+                                    state.template_extensions = extensions.join(", ");
                                 }
                                 let (up, down) = template_neighbours(&shown, pos);
                                 row.context_menu(|ui| {
@@ -395,13 +419,13 @@ impl App {
                     ui.add_space(8.0);
                     if ui
                         .add_enabled(
-                            has_line,
-                            super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new("Save as template") .size(13.0)),
+                            template_draft.is_ok(),
+                            super::dialog_button(t, super::ButtonRole::Secondary, egui::RichText::new("Save/update template") .size(13.0)),
                         )
                         .on_hover_text("Save this command line as a reusable template")
                         .clicked()
                     {
-                        save_template = Some(state.line.clone());
+                        save_template = template_draft.ok();
                     }
                     ui.add_space(8.0);
                     if ui
@@ -552,24 +576,10 @@ impl App {
             }
             return;
         }
-        if let Some(line) = save_template {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                // Name the template after its leading word; an empty extension
-                // filter means it applies to any selection. The user can refine
-                // the name/filter in the JSON store.
-                let name = trimmed
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("Command")
-                    .to_string();
-                let added = self
-                    .command_templates_mut()
-                    .add(crate::cmdtemplate::Template {
-                        name: name.clone(),
-                        raw: trimmed.to_string(),
-                        exts: Vec::new(),
-                    });
+        if let Some(template) = save_template {
+            {
+                let name = template.name.clone();
+                let added = self.command_templates_mut().save_template(template);
                 let saved_ok = if added {
                     crate::cmdtemplate::save(self.command_templates_mut())
                 } else {

@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.58s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 4 tests
+test name_list::tests::literal_names_preserve_spaces_globs_unicode_and_deduplicate ... ok
+test cmdtemplate::tests::empty_selection_expands_path_and_name_lists_to_nothing ... ok
+test panel::tests::name_list_preview_and_apply_are_literal_filtered_and_atomic_on_error ... ok
+test name_list::tests::invalid_or_oversized_lists_fail_instead_of_truncating ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2347 filtered out; finished in 0.01s
+

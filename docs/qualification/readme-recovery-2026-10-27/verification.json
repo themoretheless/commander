@@ -1,0 +1,30 @@
+{
+  "baseline_matches_git_head": true,
+  "pre_corruption_snapshot_sha256": "49e90057a13f5546afbe8ea70180649a607206129ba5a4d1d524739c1f268c65",
+  "matches_prior_qualification_hash": true,
+  "corrected_misapplied_source_writes": [
+    "Unicode-preview README write",
+    "Hex-preview README write"
+  ],
+  "ci_scenarios": [
+    "desktop_base",
+    "icons_grid",
+    "image_preview",
+    "pdf_preview",
+    "permissions",
+    "rename_presets",
+    "checksums",
+    "hex_preview",
+    "hex_search",
+    "folder_tabs",
+    "code_preview",
+    "unicode_preview",
+    "archive_browser",
+    "minimum_window",
+    "zoom_200_accessible",
+    "confirmation_owner",
+    "pane_tool"
+  ],
+  "missing_local_links": [],
+  "restored_readme_sha256": "57bca50f6561e2d4d9a0170e202cd63a0e01ef036e6b96c40665bcf9e2b799cf"
+}

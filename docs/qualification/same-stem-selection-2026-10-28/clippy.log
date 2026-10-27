@@ -1,0 +1,16 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0624]: method `filtered_iter` is private
+    --> src/workspace/tests.rs:6910:10
+     |
+6910 |         .filtered_iter()
+     |          ^^^^^^^^^^^^^ private method
+     |
+    ::: src/panel.rs:1997:5
+     |
+1997 |     fn filtered_iter(&self) -> impl Iterator<Item = &FileEntry> {
+     |     ----------------------------------------------------------- private method defined here
+
+For more information about this error, try `rustc --explain E0624`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

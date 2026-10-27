@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on build directory
+    Checking serde_core v1.0.229
+    Checking csv-core v0.1.13
+    Checking ryu v1.0.23
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Checking csv v1.4.0
+    Checking serde_json v1.0.151
+    Checking serde v1.0.229
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 30.33s

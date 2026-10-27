@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.59s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 6 tests
+test preview_find::tests::enter_and_shift_enter_navigate_only_the_focused_search_field ... ok
+test preview_find::tests::finding_a_distant_match_scrolls_the_preview_into_view ... ok
+test preview_find::tests::formatted_search_indexes_visible_text_and_skips_hidden_html ... ok
+test preview_find::tests::literal_unicode_search_uses_character_offsets ... ok
+test preview_find::tests::match_budget_is_explicit_and_navigation_wraps ... ok
+test preview_find::tests::query_edits_and_content_changes_reset_results_but_reflow_keeps_current ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 2201 filtered out; finished in 0.05s
+

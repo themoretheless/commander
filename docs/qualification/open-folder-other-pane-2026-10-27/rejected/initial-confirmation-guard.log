@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.08s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 3 tests
+test workspace::tests::open_folder_other_pane_works_at_tab_capacity_and_preserves_inactive_tabs ... ok
+test workspace::tests::open_folder_other_pane_requires_a_directory_and_closed_confirmation ... FAILED
+test workspace::tests::open_folder_other_pane_preserves_source_and_destination_back_history ... ok
+
+failures:
+
+---- workspace::tests::open_folder_other_pane_requires_a_directory_and_closed_confirmation stdout ----
+
+thread 'workspace::tests::open_folder_other_pane_requires_a_directory_and_closed_confirmation' (81042737) panicked at src/workspace/tests.rs:6668:5:
+assertion `left == right` failed
+  left: "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-83941-1/child"
+ right: "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-test-83941-4"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    workspace::tests::open_folder_other_pane_requires_a_directory_and_closed_confirmation
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 2372 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--bin commander`

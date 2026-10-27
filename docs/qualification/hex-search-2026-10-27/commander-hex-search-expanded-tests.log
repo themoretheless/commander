@@ -1,0 +1,30 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.20s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 22 tests
+test encrypted_bundle::tests::hex_decode_rejects_odd_length_and_non_hex_digits ... ok
+test hex_preview::tests::offsets_are_strict_and_checked_without_integer_wrap ... ok
+test hex_search::tests::cancellation_short_reads_and_invalid_lengths_are_explicit_errors ... ok
+test hex_search::tests::interrupted_and_fragmented_reads_preserve_the_search_stream ... ok
+test hex_search::tests::parser_accepts_case_and_spacing_but_not_ambiguous_patterns ... ok
+test hex_preview::tests::cancellation_and_replacement_never_publish_a_partial_page ... ok
+test hex_preview::tests::symlinks_directories_and_fifo_are_not_opened_as_files ... ok
+test hex_search::tests::streaming_search_agrees_with_a_naive_oracle_on_varied_binary_data ... ok
+test hex_search::tests::matches_cross_page_and_read_chunk_boundaries_in_both_directions ... ok
+test hex_search::tests::repeated_prefixes_overlapping_matches_empty_and_eof_are_correct ... ok
+test hex_preview::tests::empty_files_eof_and_out_of_range_are_distinct ... ok
+test hex_preview::tests::sparse_files_beyond_four_gib_use_u64_seeking_and_bounded_memory ... ok
+test hex_preview::tests::pages_preserve_all_bytes_and_absolute_offsets ... ok
+test hex_preview::tests::byte_search_handles_overlap_and_its_last_completion_cannot_survive_cancel ... ok
+test hex_preview::tests::admission_failure_does_not_leave_a_spinner_or_a_stale_page ... ok
+test checksum::tests::blake3_hex_is_the_lowercase_digest_of_the_content ... ok
+test hex_preview::tests::cancelled_completion_cannot_replace_a_newer_page_and_abandonment_is_terminal ... ok
+test hex_preview::tests::viewer_has_one_pending_read_and_closing_cancels_only_its_task ... ok
+test hex_preview::tests::ascii_column_never_emits_controls_and_hex_is_exact ... ok
+test hex_preview::tests::file_replacement_during_search_does_not_publish_match_or_no_match ... ok
+test hex_preview::tests::byte_search_moves_both_directions_keeps_the_page_on_no_match_and_does_not_wrap ... ok
+test workspace::tests::hex_preview_uses_the_cursor_and_preserves_the_selection_and_file ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 2288 filtered out; finished in 0.02s
+

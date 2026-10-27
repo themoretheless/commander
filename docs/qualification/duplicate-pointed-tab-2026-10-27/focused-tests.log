@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.75s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test workspace::tabs::tests::duplicate_pointed_tab_rejects_invalid_index_and_full_capacity_atomically ... ok
+test workspace::tabs::tests::duplicate_pointed_tab_copies_its_view_lazily_and_keeps_the_live_panel ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2396 filtered out; finished in 0.02s
+

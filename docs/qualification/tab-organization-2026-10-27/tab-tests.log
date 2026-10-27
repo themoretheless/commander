@@ -1,0 +1,66 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 39s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 57 tests
+test accessibility::tests::every_focus_region_has_a_unique_stable_id ... ok
+test accessibility::tests::two_hundred_percent_scale_keeps_control_and_row_geometry_stable ... ok
+test app::confirm_dialog::method_tabs::tests::each_method_explains_its_tradeoff ... ok
+test app::file_list::tests::unlistable_folder_wins_over_the_filter_empty_state ... ok
+test app::keys::tests::workspace_tab_is_mapped_and_consumed_once ... ok
+test app::queue_dialog::tests::new_failure_keeps_the_open_panel_on_the_users_tab ... ok
+test app::render::tests::column_headers_tab_in_visual_order ... ok
+test app::render::tests::csv_preview_offers_table_and_source_controls ... ok
+test app::smoke::tests::method_tabs_smoke_renders_without_selection_change ... ok
+test command::tests::sync_needs_only_one_writable_pane ... ok
+test density::tests::comfortable_is_the_default ... ok
+test density::tests::labels_are_stable_for_toolbar_copy ... ok
+test display_name::tests::tiny_budgets_are_stable ... ok
+test document_preview::tests::html_is_static_decodes_entities_and_hides_executable_content ... ok
+test feature_flags::tests::cohort_buckets_are_stable_and_bounded ... ok
+test filesystem_policy::tests::portability_audit_allows_c1_controls_on_windows ... ok
+test filesystem_policy::tests::portability_audit_flags_every_reserved_device_name ... ok
+test filesystem_policy::tests::portability_audit_flags_names_over_255_bytes_for_posix ... ok
+test filesystem_policy::tests::portability_audit_reports_reserved_and_lossy_names ... ok
+test fs_util::tests::content_hash_is_a_stable_blake3_prefix ... ok
+test image_cache::tests::decoder_errors_are_classified_for_stable_ui_copy ... ok
+test listing_export::tests::markdown_is_a_table_and_escapes_pipes ... ok
+test listing_export::tests::text_escapes_embedded_newline_and_tab ... ok
+test listing_export::tests::text_is_tab_separated ... ok
+test native_menu::model::tests::model_has_stable_order_accessible_labels_and_submenus ... ok
+test operation::tests::idempotency_keys_are_stable_per_step_and_distinct_across_steps ... ok
+test operation_journal::tests::container_rollback_keeps_an_uninspectable_quarantine_record ... ok
+test operation_journal::tests::terminal_completion_proof_is_structural_immutable_and_stale_safe ... ok
+test opqueue::tests::enqueue_assigns_unique_stable_ids_and_pending_state ... ok
+test opqueue::tests::runnable_reports_the_next_startable_job ... ok
+test panel::tests::equal_sort_keys_use_path_as_a_stable_tie_breaker ... ok
+test pathname::tests::directory_error_copy_remains_stable ... ok
+test pathname::tests::new_name_error_copy_remains_stable ... ok
+test search::tests::stable_refresh_keeps_prior_identities_and_ranks_new_hits ... ok
+test search::tests::time_pivot_has_stable_age_buckets ... ok
+test session::tests::tab_session_recovers_records_and_keeps_legacy_active_folders ... ok
+test table_preview::tests::bounds_rows_columns_and_unicode_bytes ... ok
+test table_preview::tests::formulas_are_plain_text_and_empty_files_have_no_rows ... ok
+test table_preview::tests::quoted_multiline_unicode_and_ragged_rows ... ok
+test table_preview::tests::tsv_preserves_empty_cells_and_escaped_quotes ... ok
+test toasts::tests::ids_are_unique_and_stable_when_older_toasts_are_pruned ... ok
+test transfer_tuning::tests::legacy_rule_migrates_once_without_overwriting_a_stable_rule ... ok
+test transfer_tuning::tests::stable_rule_key_survives_a_changed_runtime_device_number ... ok
+test undo::tests::preview_reports_an_uninspectable_source_instead_of_missing ... ok
+test verified_hash::tests::repeated_hash_uses_the_stable_identity_cache ... ok
+test workload::tests::immutable_snapshots_serialize_and_stale_generations_are_rejected ... ok
+test workspace::tabs::tests::close_first_middle_last_and_wrap_preserve_slot_invariant ... ok
+test workspace::tabs::tests::deduplication_keeps_active_state_and_first_other_path ... ok
+test workspace::tabs::tests::malformed_saved_tabs_keep_valid_siblings_and_active_binding ... ok
+test workspace::tabs::tests::pending_modal_prevents_tab_changes_and_cannot_retarget_rename ... ok
+test workspace::tabs::tests::reordering_keeps_visible_panel_and_all_slot_bindings ... ok
+test workspace::tabs::tests::restore_is_lazy_bounded_and_retains_resolved_visible_path ... ok
+test workspace::tabs::tests::restored_tabs_round_trip_preserves_views_and_original_active_index ... ok
+test workspace::tabs::tests::swap_panels_moves_tab_groups_and_active_slots_together ... ok
+test workspace::tabs::tests::switching_clears_cross_pane_preview_and_revalidates_background_changes ... ok
+test workspace::tabs::tests::tab_organization_commands_obey_boundaries_and_modal_guards ... ok
+test workspace::tabs::tests::tabs_preserve_selection_filter_history_and_view_per_pane ... ok
+
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 2144 filtered out; finished in 0.22s
+

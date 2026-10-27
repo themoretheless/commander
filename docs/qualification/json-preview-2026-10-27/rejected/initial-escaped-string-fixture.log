@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.08s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 3 tests
+test json_preview::tests::json_whitespace_formatting_keeps_order_duplicates_numbers_and_strings ... FAILED
+test json_preview::tests::rejects_invalid_incomplete_and_bounded_expansion ... ok
+test json_preview::tests::cache_reuses_layout_input_and_errors_keep_original_source ... ok
+
+failures:
+
+---- json_preview::tests::json_whitespace_formatting_keeps_order_duplicates_numbers_and_strings stdout ----
+
+thread 'json_preview::tests::json_whitespace_formatting_keeps_order_duplicates_numbers_and_strings' (80847324) panicked at src/json_preview.rs:141:36:
+called `Result::unwrap()` on an `Err` value: "Could not format loaded JSON: key must be a string at line 1 column 76"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    json_preview::tests::json_whitespace_formatting_keeps_order_duplicates_numbers_and_strings
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 2354 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin commander`

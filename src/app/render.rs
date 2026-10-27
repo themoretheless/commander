@@ -6,6 +6,7 @@ pub struct PanelRenderOutcome {
     pub tree_toggle: bool,
     /// A row asked for its context menu: the request, or why it has none.
     pub context_menu_request: Option<Result<ui_state::ContextMenuCandidate, String>>,
+    pub copy_preview_text: Option<std::sync::Arc<str>>,
 }
 
 fn file_name_of(path: &std::path::Path) -> String {
@@ -56,8 +57,12 @@ fn text_preview_path_changed(
 struct TextPreviewLayoutKey {
     content: std::sync::Arc<str>,
     wrap_width: f32,
+    text_scale: f32,
     pixels_per_point: f32,
     color: Color32,
+    format: Option<crate::document_preview::DocumentKind>,
+    syntax: Option<&'static str>,
+    dark: bool,
 }
 
 impl TextPreviewLayoutKey {
@@ -65,7 +70,11 @@ impl TextPreviewLayoutKey {
         std::sync::Arc::ptr_eq(&self.content, &other.content)
             && self.wrap_width.to_bits() == other.wrap_width.to_bits()
             && self.pixels_per_point.to_bits() == other.pixels_per_point.to_bits()
+            && self.text_scale.to_bits() == other.text_scale.to_bits()
             && self.color == other.color
+            && self.format == other.format
+            && self.syntax == other.syntax
+            && self.dark == other.dark
     }
 }
 
@@ -86,12 +95,25 @@ fn text_preview_galley(
     {
         return galley;
     }
-    let job = egui::text::LayoutJob::simple(
-        key.content.to_string(),
-        egui::FontId::monospace(12.0),
-        key.color,
-        key.wrap_width,
-    );
+    let mut job = match key.format {
+        Some(kind) => {
+            crate::document_preview::layout(&key.content, kind, key.color, key.wrap_width)
+        }
+        None if key.syntax.is_some() => crate::code_preview::highlight(
+            ui,
+            &key.content,
+            key.syntax.unwrap(),
+            key.wrap_width,
+            key.dark,
+        ),
+        None => egui::text::LayoutJob::simple(
+            key.content.to_string(),
+            egui::FontId::monospace(12.0),
+            key.color,
+            key.wrap_width,
+        ),
+    };
+    crate::preview_typography::scale_job(&mut job, key.text_scale);
     let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
     ui.ctx()
         .data_mut(|data| data.insert_temp(memory_id, (key, galley.clone())));
@@ -151,6 +173,8 @@ fn render_text_preview(
     t: &ThemeColors,
     panel_side: &str,
     close_preview: &mut bool,
+    copy_preview_text: &mut Option<std::sync::Arc<str>>,
+    high_contrast: bool,
 ) {
     let load_state = image_cache.text_preview_load_state(path);
     Frame::NONE
@@ -177,6 +201,85 @@ fn render_text_preview(
                     });
                 });
             });
+            let kind = crate::document_preview::kind(path);
+            let json = crate::json_preview::is_json(path);
+            let table_delimiter = crate::table_preview::delimiter(path);
+            let source_key = egui::Id::new(("document_source", panel_side));
+            let mut source = ui
+                .ctx()
+                .data(|data| data.get_temp::<bool>(source_key).unwrap_or(false));
+            if kind.is_some() || table_delimiter.is_some() || json {
+                ui.horizontal(|ui| {
+                    let formatted_mode = ui.selectable_value(
+                        &mut source,
+                        false,
+                        if table_delimiter.is_some() {
+                            "Table"
+                        } else {
+                            "Formatted"
+                        },
+                    );
+                    let source_mode = ui.selectable_value(&mut source, true, "Source");
+                    #[cfg(feature = "visual-qa")]
+                    if json {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(
+                                egui::Id::new(("json-preview-mode", panel_side, false)),
+                                formatted_mode.rect,
+                            );
+                            data.insert_temp(
+                                egui::Id::new(("json-preview-mode", panel_side, true)),
+                                source_mode.rect,
+                            );
+                        });
+                    }
+                    #[cfg(not(feature = "visual-qa"))]
+                    let _ = (formatted_mode, source_mode);
+                });
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(source_key, source));
+            }
+            let wrap_key = egui::Id::new(("text_preview_wrap", panel_side));
+            let syntax_key = egui::Id::new(("text_preview_syntax", panel_side));
+            let numbers_key = egui::Id::new(("text_preview_numbers", panel_side));
+            let mut whitespace = false;
+            let plain_source = (kind.is_none() && table_delimiter.is_none()) || source;
+            let mut numbers = ui
+                .ctx()
+                .data(|data| data.get_temp::<bool>(numbers_key).unwrap_or(true));
+            let mut wrap = ui
+                .ctx()
+                .data(|data| data.get_temp::<bool>(wrap_key).unwrap_or(true));
+            let mut syntax = ui
+                .ctx()
+                .data(|data| data.get_temp::<bool>(syntax_key).unwrap_or(true));
+            let language = crate::code_preview::language(path);
+            let within_budget =
+                content.is_none_or(|text| text.len() <= crate::code_preview::SYNTAX_BYTE_LIMIT);
+            if (kind.is_none() && table_delimiter.is_none()) || source {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.checkbox(&mut wrap, "Wrap lines");
+                    ui.checkbox(&mut numbers, "Line numbers");
+                    whitespace = crate::preview_whitespace::toolbar(ui, text_preview_scroll_id(panel_side).with("whitespace"));
+                    if language.is_some() {
+                        ui.add_enabled(
+                            !high_contrast && within_budget,
+                            egui::Checkbox::new(&mut syntax, "Syntax colors"),
+                        );
+                    }
+                });
+                if language.is_some() && !within_budget {
+                    ui.small(
+                        "Syntax colors are limited to 64 KiB; the loaded text remains visible.",
+                    );
+                }
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(wrap_key, wrap);
+                    data.insert_temp(syntax_key, syntax);
+                    data.insert_temp(numbers_key, numbers);
+                });
+            }
             ui.add(egui::Separator::default().spacing(4.0));
 
             // `PreviewContent::Text` owns its body, so show it whenever it is
@@ -184,6 +287,61 @@ fn render_text_preview(
             // cancelled or retargeted by the other pane, which would otherwise
             // leave this pane on a spinner forever.
             if let Some(content) = content {
+                if let Some(delimiter) = table_delimiter.filter(|_| !source) {
+                    crate::table_preview::render(ui, content, delimiter, panel_side);
+                    return;
+                }
+                let formatted_json = (json && !source)
+                    .then(|| crate::json_preview::formatted(ui, content, panel_side));
+                let content = formatted_json.as_ref().unwrap_or(content);
+                let text_scale =
+                    crate::preview_typography::toolbar(ui, text_preview_scroll_id(panel_side));
+                let lines_id = text_preview_scroll_id(panel_side).with("lines");
+                let mut lines = plain_source
+                    .then(|| crate::preview_lines::PreviewLines::load(ui, lines_id, content));
+                let gutter = if numbers {
+                    lines.as_ref().map_or(0.0, |lines| lines.gutter_width(ui))
+                } else {
+                    0.0
+                };
+                if let Some(lines) = &mut lines {
+                    lines.toolbar(ui, lines_id);
+                }
+                let galley = text_preview_galley(
+                    ui,
+                    text_preview_scroll_id(panel_side),
+                    TextPreviewLayoutKey {
+                        content: content.clone(),
+                        wrap_width: if wrap || (!source && kind.is_some()) {
+                            (ui.available_width() - gutter).max(24.0)
+                        } else {
+                            f32::INFINITY
+                        },
+                        text_scale,
+                        pixels_per_point: ui.ctx().pixels_per_point(),
+                        color: t.text_secondary,
+                        format: if source { None } else { kind },
+                        syntax: if syntax && within_budget && !high_contrast {
+                            language
+                        } else {
+                            None
+                        },
+                        dark: t.is_dark(),
+                    },
+                );
+                if let Some(lines) = &mut lines {
+                    lines.update_layout(&galley);
+                }
+                let find_id = text_preview_scroll_id(panel_side).with("find");
+                let mut find =
+                    crate::preview_find::PreviewFind::toolbar(ui, find_id, path, &galley);
+                let copy = ui.add_enabled(!galley.text().is_empty(), egui::Button::new("Copy displayed text"))
+                    .on_hover_text("Copy the entire displayed preview text, including portions outside the viewport; loaded text only");
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("copy-preview-text", panel_side)), copy.rect));
+                if copy.clicked() {
+                    *copy_preview_text = Some(std::sync::Arc::from(galley.text()));
+                }
                 // The preview follows the cursor, and each newly shown file
                 // opens at its top.
                 let scroll_id = text_preview_scroll_id(panel_side);
@@ -208,21 +366,34 @@ fn render_text_preview(
                 }
                 let output = scroll.auto_shrink([false; 2]).show(ui, |ui| {
                     ui.style_mut().interaction.selectable_labels = true;
-                    let galley = text_preview_galley(
-                        ui,
-                        scroll_id,
-                        TextPreviewLayoutKey {
-                            content: content.clone(),
-                            wrap_width: ui.available_width(),
-                            pixels_per_point: ui.ctx().pixels_per_point(),
-                            color: t.text_secondary,
-                        },
-                    );
-                    ui.add(egui::Label::new(galley));
+                    let response = ui
+                        .horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            if gutter > 0.0 {
+                                ui.allocate_space(Vec2::new(gutter, 0.0));
+                            }
+                            ui.add(egui::Label::new(galley.clone()))
+                        })
+                        .inner;
+                    find.decorate(ui, response.rect.min, t.text_primary);
+                    let whitespace_counts = if whitespace {
+                        crate::preview_whitespace::paint(ui, &galley, response.rect.min, t.text_muted)
+                    } else { [0, 0] };
+                    #[cfg(feature = "visual-qa")]
+                    ui.ctx().data_mut(|data| data.insert_temp(scroll_id.with("whitespace-counts"), whitespace_counts));
+                    #[cfg(not(feature = "visual-qa"))]
+                    let _ = whitespace_counts;
+                    if let Some(lines) = &mut lines {
+                        lines.paint_and_reveal(ui, response.rect.min, gutter, t.text_muted);
+                    }
                 });
                 ui.ctx().data_mut(|data| {
                     data.insert_temp(scroll_id.with("keyboard_offset"), output.state.offset);
                 });
+                find.save(ui, find_id);
+                if let Some(lines) = lines {
+                    lines.save(ui, lines_id);
+                }
                 return;
             }
 
@@ -583,8 +754,13 @@ fn column_headers(
     show_metadata: bool,
 ) -> Option<SortColumn> {
     let mut clicked = None;
-    if crate::app::glyphs::sort_header(ui, "Name", order_for(SortColumn::Name), color).clicked() {
-        clicked = Some(SortColumn::Name);
+    let (name_label, name_column) = if order_for(SortColumn::Stem).is_some() {
+        ("Name (no extension)", SortColumn::Stem)
+    } else {
+        ("Name", SortColumn::Name)
+    };
+    if crate::app::glyphs::sort_header(ui, name_label, order_for(name_column), color).clicked() {
+        clicked = Some(name_column);
     }
     if !show_metadata {
         return clicked;
@@ -704,6 +880,7 @@ impl App {
         close_preview_on_escape: bool,
         t: &ThemeColors,
         image_cache: &mut crate::image_cache::ImageCache,
+        pdf_cache: &mut crate::pdf_preview::Cache,
         panel_side: &str,
         tree_open: bool,
         size_bars: bool,
@@ -714,10 +891,12 @@ impl App {
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
         nav_locked: bool,
+        high_contrast: bool,
     ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
         let mut context_menu_request = None;
+        let mut copy_preview_text = None;
 
         // The mouse's side buttons step through this pane's history while
         // the pointer is over it, like the Back/Forward buttons.
@@ -1006,6 +1185,9 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
+                            for (mode, label) in [(crate::panel::BrowserMode::List, "List"), (crate::panel::BrowserMode::Icons, "Icons")] {
+                                if ui.selectable_label(panel.browser_mode() == mode, label).clicked() { panel.set_browser_mode(mode); }
+                            }
                             let mut query = panel.search_query().to_string();
                             let text_filter_active = !query.trim().is_empty();
                             let clear_width = if text_filter_active { 30.0 } else { 0.0 };
@@ -1048,9 +1230,10 @@ impl App {
                     .fill(header_bg)
                     .inner_margin(Margin::symmetric(10, 4))
                     .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
                         ui.horizontal(|ui| {
                             // Measured before the "ACTIVE" tag, like the rows.
-                            let show_metadata = header_shows_metadata(ui.available_width());
+                            let show_metadata = panel.browser_mode() == crate::panel::BrowserMode::List && header_shows_metadata(ui.available_width());
                             if is_active {
                                 ui.label(
                                     egui::RichText::new("ACTIVE")
@@ -1100,31 +1283,11 @@ impl App {
                             );
                             let close_button = close_preview_button;
                             if let Some(texture) = image_cache.get(&path) {
-                                let tex_size = texture.size_vec2();
                                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                     close_preview |= close_button(ui);
                                 });
-                                let image_extent = ui.available_size();
-                                ui.centered_and_justified(|ui| {
-                                    let scale = (image_extent.x / tex_size.x)
-                                        .min(image_extent.y / tex_size.y)
-                                        .min(1.0);
-                                    let display_size =
-                                        egui::vec2(tex_size.x * scale, tex_size.y * scale);
-                                    // Images only sense hover by default; the
-                                    // click-to-close needs an explicit sense.
-                                    let resp = ui.add(
-                                        egui::Image::from_texture(egui::load::SizedTexture::new(
-                                            texture.id(),
-                                            display_size,
-                                        ))
-                                        .alt_text(file_name_of(&path))
-                                        .sense(Sense::click()),
-                                    );
-                                    if resp.clicked() {
-                                        close_preview = true;
-                                    }
-                                });
+                                let (target, _) = crate::image_preview::render(ui, texture, &path, panel_side);
+                                image_cache.set_preview_extent(target.x, target.y, ui.ctx().pixels_per_point());
                             } else {
                                 match image_cache.load_state(&path) {
                                     crate::image_cache::PreviewLoadState::Disabled => {
@@ -1180,6 +1343,16 @@ impl App {
                                 }
                             }
                         }
+                        PreviewContent::Pdf(identity) => {
+                            Frame::NONE.fill(t.bg_panel).inner_margin(Margin::same(8)).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if close_preview_button(ui) { close_preview = true; }
+                                    if ui.button("Open externally").clicked() { opener(crate::ports::OpenRequest::OpenPath(identity.path.clone())); }
+                                    ui.add(egui::Label::new(file_name_of(&identity.path)).truncate());
+                                });
+                                pdf_cache.render(ui, identity, panel_side);
+                            });
+                        }
                         PreviewContent::Pending(identity) => render_text_preview(
                             ui,
                             &identity.path,
@@ -1188,6 +1361,8 @@ impl App {
                             t,
                             panel_side,
                             &mut close_preview,
+                            &mut copy_preview_text,
+                            high_contrast,
                         ),
                         PreviewContent::Text { identity, content } => render_text_preview(
                             ui,
@@ -1197,6 +1372,8 @@ impl App {
                             t,
                             panel_side,
                             &mut close_preview,
+                            &mut copy_preview_text,
+                            high_contrast,
                         ),
                         PreviewContent::Info(card) => {
                             Frame::NONE
@@ -1281,6 +1458,7 @@ impl App {
                     context_menu_request = Self::render_file_list(
                         list_ui,
                         panel,
+                        image_cache,
                         is_active,
                         t,
                         panel_side,
@@ -1298,6 +1476,7 @@ impl App {
         PanelRenderOutcome {
             tree_toggle,
             context_menu_request,
+            copy_preview_text,
         }
     }
 }
@@ -1307,26 +1486,174 @@ mod tests {
     use super::*;
 
     #[test]
+    fn copy_displayed_text_uses_current_galley_and_defers_clipboard_io() {
+        for (path, raw, source) in [
+            ("/p.json", r#"{"a":1}"#, false),
+            ("/p.json", r#"{"a":1}"#, true),
+            ("/p.md", "# Heading\n\nHello **world**.\n", false),
+            ("/p.txt", "first\nsecond\tёж\n", false),
+            ("/empty.txt", "", false),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new(("document_source", "right")), source)
+            });
+            let content: std::sync::Arc<str> = raw.into();
+            let mut cache = crate::image_cache::ImageCache::new();
+            let mut copied = None;
+            let mut displayed = String::new();
+            for frame in 0..3 {
+                let mut input = egui::RawInput::default();
+                if frame > 0 {
+                    let rect = ctx
+                        .data(|data| {
+                            data.get_temp::<egui::Rect>(egui::Id::new((
+                                "copy-preview-text",
+                                "right",
+                            )))
+                        })
+                        .unwrap();
+                    input.events = vec![
+                        egui::Event::PointerMoved(rect.center()),
+                        egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: frame == 1,
+                            modifiers: Default::default(),
+                        },
+                    ];
+                }
+                let output = crate::testutil::take_egui_output(ctx.run_ui(input, |ui| {
+                    render_text_preview(
+                        ui,
+                        std::path::Path::new(path),
+                        Some(&content),
+                        &mut cache,
+                        &ThemeColors::high_contrast_dark(),
+                        "right",
+                        &mut false,
+                        &mut copied,
+                        true,
+                    );
+                }));
+                assert!(
+                    !output
+                        .platform_output
+                        .commands
+                        .iter()
+                        .any(|command| matches!(command, egui::OutputCommand::CopyText(_))),
+                    "render must use the deferred port bridge"
+                );
+                displayed = ctx
+                    .data(|data| {
+                        data.get_temp::<(TextPreviewLayoutKey, std::sync::Arc<egui::Galley>)>(
+                            text_preview_scroll_id("right").with("galley"),
+                        )
+                    })
+                    .unwrap()
+                    .1
+                    .text()
+                    .to_owned();
+            }
+            if raw.is_empty() {
+                assert!(copied.is_none());
+            } else {
+                assert_eq!(copied.as_deref(), Some(displayed.as_str()));
+                if path.ends_with(".json") && !source {
+                    assert_eq!(copied.as_deref(), Some("{\n  \"a\": 1\n}"));
+                }
+                if path.ends_with(".md") {
+                    assert!(!copied.as_deref().unwrap().contains("**world**"));
+                }
+                if source || path.ends_with(".txt") {
+                    assert_eq!(copied.as_deref(), Some(raw));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn json_formatted_source_round_trip_retains_tokens_and_search() {
+        let ctx = egui::Context::default();
+        let raw: std::sync::Arc<str> =
+            r#"{"message":"one","message":"two","n":9007199254740993123456789}"#.into();
+        let mut cache = crate::image_cache::ImageCache::new();
+        let find_id = text_preview_scroll_id("right").with("find");
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                find_id,
+                crate::preview_find::PreviewFind::with_query("message"),
+            )
+        });
+        for source in [false, true, false] {
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new(("document_source", "right")), source)
+            });
+            crate::testutil::discard_egui_output(ctx.run_ui(Default::default(), |ui| {
+                render_text_preview(
+                    ui,
+                    std::path::Path::new("/preview.json"),
+                    Some(&raw),
+                    &mut cache,
+                    &ThemeColors::high_contrast_dark(),
+                    "right",
+                    &mut false,
+                    &mut None,
+                    true,
+                );
+            }));
+            let (_, galley) = ctx
+                .data(|data| {
+                    data.get_temp::<(TextPreviewLayoutKey, std::sync::Arc<egui::Galley>)>(
+                        text_preview_scroll_id("right").with("galley"),
+                    )
+                })
+                .unwrap();
+            if source {
+                assert_eq!(galley.text(), raw.as_ref());
+            } else {
+                assert!(galley.text().lines().count() > 1);
+                assert!(galley.text().contains("9007199254740993123456789"));
+                assert_eq!(galley.text().matches("\"message\"").count(), 2);
+            }
+            assert_eq!(
+                ctx.data(|data| data.get_temp::<crate::preview_find::PreviewFind>(find_id))
+                    .unwrap()
+                    .match_count(),
+                2
+            );
+        }
+    }
+
+    #[test]
     fn text_preview_layout_is_reused_until_content_or_width_changes() {
         let ctx = egui::Context::default();
         let content: std::sync::Arc<str> = std::sync::Arc::from("line one\nline two");
-        let key = |content: &std::sync::Arc<str>, wrap_width: f32| TextPreviewLayoutKey {
-            content: content.clone(),
-            wrap_width,
-            pixels_per_point: 1.0,
-            color: Color32::WHITE,
+        let key = |content: &std::sync::Arc<str>, wrap_width: f32, text_scale: f32| {
+            TextPreviewLayoutKey {
+                content: content.clone(),
+                wrap_width,
+                text_scale,
+                pixels_per_point: 1.0,
+                color: Color32::WHITE,
+                format: None,
+                syntax: None,
+                dark: false,
+            }
         };
         let scroll_id = text_preview_scroll_id("left");
         let mut galleys = Vec::new();
-        for (text, width) in [
-            (&content, 300.0),
-            (&content, 300.0),
-            (&content, 200.0),
-            (&std::sync::Arc::from("line one\nline two"), 200.0),
+        for (text, width, scale) in [
+            (&content, 300.0, 1.0),
+            (&content, 300.0, 1.0),
+            (&content, 200.0, 1.0),
+            (&std::sync::Arc::from("line one\nline two"), 200.0, 1.0),
+            (&content, 300.0, 2.0),
+            (&content, 300.0, 2.0),
         ] {
             let _ =
                 crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
-                    galleys.push(text_preview_galley(ui, scroll_id, key(text, width)));
+                    galleys.push(text_preview_galley(ui, scroll_id, key(text, width, scale)));
                 }));
         }
         assert!(std::sync::Arc::ptr_eq(&galleys[0], &galleys[1]));
@@ -1337,9 +1664,113 @@ mod tests {
         // Equal text in a new allocation is a reloaded file: lay it out again
         // (epaint's own cache may still hand back an equal galley).
         let reloaded: std::sync::Arc<str> = std::sync::Arc::from("line one\nline two");
-        assert!(!key(&content, 200.0).same_layout(&key(&reloaded, 200.0)));
-        assert!(key(&content, 200.0).same_layout(&key(&content, 200.0)));
+        assert!(!key(&content, 200.0, 1.0).same_layout(&key(&reloaded, 200.0, 1.0)));
+        assert!(key(&content, 200.0, 1.0).same_layout(&key(&content, 200.0, 1.0)));
         assert_eq!(galleys[3].text(), "line one\nline two");
+        assert_eq!(galleys[4].text(), galleys[0].text());
+        assert!(galleys[4].size().y > galleys[0].size().y * 1.5);
+        assert!(!std::sync::Arc::ptr_eq(&galleys[0], &galleys[4]));
+        assert!(std::sync::Arc::ptr_eq(&galleys[4], &galleys[5]));
+    }
+
+    #[test]
+    fn high_contrast_code_preview_disables_syntax_but_keeps_wrap_control_available() {
+        let mut cache = crate::image_cache::ImageCache::new();
+        let content: std::sync::Arc<str> = std::sync::Arc::from("fn main() {}\n");
+        let nodes = accesskit_nodes(|ui| {
+            render_text_preview(
+                ui,
+                std::path::Path::new("/preview.rs"),
+                Some(&content),
+                &mut cache,
+                &ThemeColors::high_contrast_dark(),
+                "right",
+                &mut false,
+                &mut None,
+                true,
+            );
+        });
+        assert!(node_labelled(&nodes, "Syntax colors").is_disabled());
+        assert!(!node_labelled(&nodes, "Wrap lines").is_disabled());
+    }
+
+    #[test]
+    fn source_preview_exposes_line_controls_but_formatted_documents_do_not() {
+        let mut cache = crate::image_cache::ImageCache::new();
+        let content: std::sync::Arc<str> = "first\nsecond\n".into();
+        for (path, expected) in [("/source.rs", true), ("/notes.md", false)] {
+            let nodes = accesskit_nodes(|ui| {
+                render_text_preview(
+                    ui,
+                    std::path::Path::new(path),
+                    Some(&content),
+                    &mut cache,
+                    &ThemeColors::high_contrast_dark(),
+                    "right",
+                    &mut false,
+                    &mut None,
+                    true,
+                );
+            });
+            assert_eq!(
+                nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Line numbers")),
+                expected
+            );
+            assert_eq!(
+                nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Go to line number")),
+                expected
+            );
+            if expected {
+                assert!(!node_labelled(&nodes, "Go to line").is_disabled());
+            }
+        }
+    }
+
+    #[test]
+    fn csv_preview_offers_table_and_source_controls() {
+        let mut cache = crate::image_cache::ImageCache::new();
+        let content: std::sync::Arc<str> = std::sync::Arc::from("name,value\nёж,=SUM(A1:A2)\n");
+        let nodes = accesskit_nodes(|ui| {
+            render_text_preview(
+                ui,
+                std::path::Path::new("/preview.csv"),
+                Some(&content),
+                &mut cache,
+                &ThemeColors::high_contrast_dark(),
+                "right",
+                &mut false,
+                &mut None,
+                true,
+            );
+        });
+        node_labelled(&nodes, "Table");
+        node_labelled(&nodes, "Source");
+        assert!(
+            !nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Wrap lines"))
+        );
+        let source_nodes = accesskit_nodes(|ui| {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new(("document_source", "right")), true)
+            });
+            render_text_preview(
+                ui,
+                std::path::Path::new("/preview.csv"),
+                Some(&content),
+                &mut cache,
+                &ThemeColors::high_contrast_dark(),
+                "right",
+                &mut false,
+                &mut None,
+                true,
+            );
+        });
+        assert!(!node_labelled(&source_nodes, "Wrap lines").is_disabled());
     }
 
     fn accesskit_nodes(

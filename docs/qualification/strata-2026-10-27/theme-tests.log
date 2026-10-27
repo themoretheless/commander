@@ -1,0 +1,21 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.08s
+     Running unittests src/main.rs (target/debug/build/commander/64b722dc4e709030/out/commander-64b722dc4e709030)
+
+running 13 tests
+test app::tree::tests::tree_folder_icons_are_legible_in_every_theme ... ok
+test file_color::tests::every_stub_clears_three_to_one_in_every_theme ... ok
+test file_color::tests::hued_kinds_stay_legible_on_the_real_theme_rows ... ok
+test session::tests::a_session_saved_before_system_theme_keeps_its_fixed_theme ... ok
+test theme::tests::every_palette_knows_whether_it_is_dark ... ok
+test theme::tests::folder_icons_read_on_every_theme ... ok
+test theme::tests::following_the_system_tracks_its_appearance ... ok
+test theme::tests::frames_and_open_widgets_follow_the_palette ... ok
+test theme::tests::high_contrast_semantic_snapshots_cover_required_states ... ok
+test theme::tests::high_contrast_text_roles_clear_wcag_normal_text_ratio ... ok
+test theme::tests::standard_themes_keep_text_legible_and_button_text_readable ... ok
+test theme_catalog::tests::accessibility_overrides_catalog_and_missing_ids_fall_back ... ok
+test theme_catalog::tests::bundled_catalog_has_unique_ids_and_valid_colors ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 2180 filtered out; finished in 0.01s
+

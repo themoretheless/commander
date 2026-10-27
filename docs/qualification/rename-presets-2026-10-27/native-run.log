@@ -1,0 +1,7 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.48s
+     Running `target/debug/commander --visual-qa rename_presets --output target/visual-qa-rename-presets`
+2026-10-27T18:24:16 INFO  commander::logging: logging initialized
+2026-10-27T18:24:16 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: rename_presets
+2026-10-27T18:24:16 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

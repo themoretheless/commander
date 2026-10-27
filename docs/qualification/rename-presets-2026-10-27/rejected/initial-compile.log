@@ -1,0 +1,32 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0423]: cannot find value `FsPersist` in module `crate::persistence`
+   --> src/session.rs:537:43
+    |
+537 |           let persist = crate::persistence::FsPersist;
+    |                                             ^^^^^^^^^
+    |
+   ::: src/persistence.rs:180:1
+    |
+180 | / pub struct FsPersist {
+181 | |     _instance: (),
+182 | | }
+    | |_- `crate::persistence::FsPersist` defined here
+    |
+    = note: a struct named `crate::persistence::FsPersist` exists in another namespace
+note: similarly named function `fs_persist` defined here
+   --> src/persistence.rs:410:1
+    |
+410 | pub fn fs_persist() -> Arc<dyn Persist> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: use struct literal syntax instead
+    |
+537 |         let persist = crate::persistence::FsPersist { _instance: val };
+    |                                                     ++++++++++++++++++
+help: a function with a similar name exists
+    |
+537 -         let persist = crate::persistence::FsPersist;
+537 +         let persist = crate::persistence::fs_persist;
+    |
+
+For more information about this error, try `rustc --explain E0423`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

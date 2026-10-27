@@ -301,6 +301,20 @@ impl App {
         }
         ui.checkbox(&mut self.show_size_bars, "Show size bars");
         ui.checkbox(&mut self.show_key_bar, "Always show key bar");
+        ui.horizontal(|ui| {
+            ui.label("View (this panel)");
+            for (mode, label) in [
+                (crate::panel::BrowserMode::List, "List"),
+                (crate::panel::BrowserMode::Icons, "Icons"),
+            ] {
+                if ui
+                    .selectable_label(self.ws.active_panel_ref().browser_mode() == mode, label)
+                    .clicked()
+                {
+                    self.ws.active_panel().set_browser_mode(mode);
+                }
+            }
+        });
         let density_label = format!(
             "Row density (this panel): {}",
             crate::density::label(self.ws.active_panel_ref().density())
@@ -335,10 +349,43 @@ impl App {
                 .on_hover_text("Follow the system light/dark appearance")
                 .clicked()
             {
+                self.theme_palette = None;
                 self.follow_system_theme = true;
                 self.follow_system_appearance(ctx);
+                self.apply_current_palette(ctx);
             }
         });
+        let mut palette = self.theme_palette.clone();
+        egui::ComboBox::from_id_salt("theme_palette")
+            .selected_text(
+                palette
+                    .as_deref()
+                    .and_then(crate::theme_catalog::find)
+                    .map_or("Commander defaults", |p| p.name.as_str()),
+            )
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut palette, None, "Commander defaults");
+                for item in crate::theme_catalog::palettes() {
+                    ui.selectable_value(&mut palette, Some(item.id.clone()), &item.name);
+                }
+            });
+        if palette != self.theme_palette {
+            self.theme_palette = palette;
+            self.follow_system_theme = false;
+            if let Some(colors) = self
+                .theme_palette
+                .as_deref()
+                .and_then(crate::theme_catalog::find)
+                .map(|p| p.colors())
+            {
+                self.theme_mode = if colors.is_dark() {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                };
+            }
+            self.apply_current_palette(ctx);
+        }
         let text_size = ui.label("Text size");
         let mut scale = self.ui_scale;
         if ui
@@ -374,6 +421,7 @@ impl App {
     /// Use `mode` from now on, no longer following the system appearance.
     fn set_theme(&mut self, ctx: &egui::Context, mode: ThemeMode) {
         self.follow_system_theme = false;
+        self.theme_palette = None;
         self.apply_theme_mode(ctx, mode);
     }
 
@@ -391,8 +439,26 @@ impl App {
 
     fn apply_theme_mode(&mut self, ctx: &egui::Context, mode: ThemeMode) {
         self.theme_mode = mode;
-        self.colors = ThemeColors::for_preferences(mode, self.accessibility_preferences);
-        apply_theme(ctx, mode, self.accessibility_preferences);
+        self.apply_current_palette(ctx);
+    }
+
+    pub(super) fn apply_current_palette(&mut self, ctx: &egui::Context) {
+        let preferences = self.accessibility_preferences;
+        self.colors = crate::theme_catalog::resolve(
+            self.theme_palette.as_deref(),
+            self.theme_mode,
+            preferences,
+        );
+        let theme = if self.colors.is_dark() {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        };
+        ctx.set_style_of(
+            theme,
+            crate::theme::theme_style_with_colors(self.theme_mode, preferences, self.colors),
+        );
+        ctx.set_theme(theme);
     }
 
     /// Re-reads Reduce Motion / Increase Contrast when the window regains
@@ -405,8 +471,7 @@ impl App {
             .poll(focused, self.accessibility_preferences)
         {
             self.accessibility_preferences = fresh;
-            self.colors = ThemeColors::for_preferences(self.theme_mode, fresh);
-            apply_theme(ctx, self.theme_mode, fresh);
+            self.apply_current_palette(ctx);
         }
         if self.accessibility_watch.refreshing() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));

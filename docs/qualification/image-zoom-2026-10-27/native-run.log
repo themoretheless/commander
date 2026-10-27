@@ -1,0 +1,6 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.81s
+     Running `target/debug/commander --visual-qa image_preview --output target/visual-qa-image-zoom`
+2026-10-27T16:03:22 INFO  commander::logging: logging initialized
+2026-10-27T16:03:22 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: image_preview
+2026-10-27T16:03:22 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

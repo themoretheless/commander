@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.89s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 2 tests
+test panel::sort::tests::stem_sort_strips_final_extension_and_keeps_ties_ascending ... ok
+test panel::sort::tests::stem_sort_respects_natural_order_and_directory_dots ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2429 filtered out; finished in 0.00s
+

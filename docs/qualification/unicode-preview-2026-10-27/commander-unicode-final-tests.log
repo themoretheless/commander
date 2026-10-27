@@ -1,0 +1,57 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.33s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 49 tests
+test image_cache::tests::decoders_outliving_their_timeout_hold_preload_slots ... ok
+test image_cache::tests::changed_text_preview_tells_the_user_to_refresh_first ... ok
+test image_cache::tests::capacity_refusals_do_not_trip_the_decoder_breaker ... ok
+test image_cache::tests::empty_and_capacity_errors_get_accurate_failure_kinds ... ok
+test image_cache::tests::decoder_errors_are_classified_for_stable_ui_copy ... ok
+test image_cache::tests::fingerprint_matches_request_only_when_path_size_and_known_mtime_agree ... ok
+test image_cache::tests::ansi_colored_text_is_not_rejected_as_binary ... ok
+test image_cache::tests::control_character_threshold_allows_exactly_one_in_twenty ... ok
+test image_cache::tests::mixed_case_video_extensions_are_recognized ... ok
+test image_cache::tests::interrupted_reads_are_retried ... ok
+test image_cache::tests::oversized_text_fails_at_once_and_the_rest_debounces ... ok
+test image_cache::tests::malformed_unicode_is_rejected_without_replacement_characters ... ok
+test image_cache::tests::preview_target_floors_clamps_and_survives_non_finite_extents ... ok
+test image_cache::tests::chunked_read_observes_cancellation_between_chunks ... ok
+test image_cache::tests::busy_failures_expire_but_decode_failures_stay ... ok
+test image_cache::tests::filesystem_provider_decodes_unicode_on_the_existing_bounded_read_path ... ok
+test image_cache::tests::retry_clears_negative_and_pending_cache_entries ... ok
+test image_cache::tests::rgba_allocation_checks_both_dimension_products ... ok
+test image_cache::tests::eviction_drops_other_folders_first_then_least_recently_used ... ok
+test image_cache::tests::rgba_conversion_rejects_incomplete_and_wrapping_buffers ... ok
+test image_cache::tests::stale_generation_cannot_release_or_fill_a_newer_slot ... ok
+test image_cache::tests::same_size_rewrite_with_restored_mtime_changes_the_fingerprint ... ok
+test image_cache::tests::removing_an_entry_keeps_the_byte_total_in_sync ... ok
+test image_cache::tests::rewrite_during_chunked_read_is_rejected_without_sleeping ... ok
+test image_cache::tests::a_hung_retiring_worker_fails_the_waiting_request_after_the_timeout ... ok
+test image_cache::tests::latest_wins_cancels_a_to_b_to_a_without_queueing_stale_reads ... ok
+test image_cache::tests::explicit_failure_retry_and_close_have_complete_lifecycles ... ok
+test image_cache::tests::panic_scheduler_failure_and_timeout_are_terminal_failures ... ok
+test image_cache::tests::first_open_is_debounced_async_and_cache_hits_keep_arc_content ... ok
+test image_cache::tests::early_size_regular_file_and_encoding_policies_are_typed ... ok
+test image_cache::tests::retry_of_a_ready_preview_rereads_instead_of_serving_the_cache ... ok
+test image_cache::tests::text_preview_store_replaces_an_old_file_fingerprint ... ok
+test image_cache::tests::timeout_copy_avoids_internal_jargon ... ok
+test image_cache::tests::unicode_boms_decode_both_byte_orders_and_preserve_text_exactly ... ok
+test image_cache::tests::timeout_waits_for_the_retiring_worker_before_retry_submission ... ok
+test image_cache::tests::unpremultiply_restores_straight_alpha_and_skips_opaque_and_clear ... ok
+test image_cache::tests::standard_decoder_rejects_undecodable_formats_for_negative_cache ... ok
+test image_cache::tests::text_preview_store_is_bounded_and_uses_lru_order ... ok
+test image_cache::tests::video_failures_name_the_cause_and_spot_unsupported_formats ... ok
+test image_cache::tests::symlinked_text_file_fingerprints_and_reads_its_target ... ok
+test image_cache::tests::an_in_place_edit_drops_the_stale_texture_failure_and_decode ... ok
+test image_cache::tests::growing_the_pane_keeps_the_smaller_texture_until_the_redecode_lands ... ok
+test image_cache::tests::standard_decoder_streams_a_small_png ... ok
+test image_cache::tests::standard_decoder_applies_exif_orientation_from_jpeg ... ok
+test image_cache::tests::standard_decoder_downsamples_to_preview_target ... ok
+test image_cache::tests::isolated_executor_refuses_a_second_job_and_recovers_after_a_panic ... ok
+test image_cache::tests::unicode_binary_policy_and_decoded_output_budget_are_retained ... ok
+test image_cache::tests::oriented_thumbnail_matches_rotating_the_full_image_first ... ok
+test image_cache::tests::decode_timeout_keeps_the_permit_until_the_decoder_returns ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 2240 filtered out; finished in 0.06s
+

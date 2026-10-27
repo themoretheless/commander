@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: can't compare `&TextureId` with `TextureId`
+   --> src/image_preview.rs:373:33
+    |
+373 |             .find(|(id, _)| *id == texture.id())
+    |                                 ^^ no implementation for `&TextureId == TextureId`
+    |
+    = help: the trait `PartialEq<TextureId>` is not implemented for `&TextureId`
+help: consider dereferencing here
+    |
+373 |             .find(|(id, _)| **id == texture.id())
+    |                             +
+
+error[E0609]: no field `options` on type `&&smallvec::SmallVec<[ImageDelta; 1]>`
+   --> src/image_preview.rs:376:26
+    |
+376 |         assert_eq!(delta.options, egui::TextureOptions::NEAREST_REPEAT);
+    |                          ^^^^^^^ unknown field
+
+error[E0609]: no field `image` on type `&&smallvec::SmallVec<[ImageDelta; 1]>`
+   --> src/image_preview.rs:377:52
+    |
+377 |         let egui::ImageData::Color(image) = &delta.image;
+    |                                                    ^^^^^ unknown field
+
+Some errors have detailed explanations: E0277, E0609.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander" test) due to 3 previous errors

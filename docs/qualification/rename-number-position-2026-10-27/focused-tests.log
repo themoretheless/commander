@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.50s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 3 tests
+test rename::tests::number_position_composes_with_decorations_extensions_and_legacy_rules ... ok
+test rename_presets::tests::number_position_round_trips_in_named_presets ... ok
+test app::batch_rename_dialog::tests::number_position_rebuilds_cached_plan_before_submission ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2381 filtered out; finished in 0.00s
+

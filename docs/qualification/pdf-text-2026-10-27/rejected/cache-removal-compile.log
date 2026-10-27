@@ -1,0 +1,46 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: the trait bound `TextLayout: std::default::Default` is not satisfied
+   --> src/pdf_preview.rs:418:40
+    |
+418 |                     data.remove_temp::<TextLayout>(id);
+    |                          -----------   ^^^^^^^^^^ unsatisfied trait bound
+    |                          |
+    |                          required by a bound introduced by this call
+    |
+help: the trait `std::default::Default` is not implemented for `TextLayout`
+   --> src/pdf_preview.rs:656:1
+    |
+656 | struct TextLayout {
+    | ^^^^^^^^^^^^^^^^^
+note: required by a bound in `IdTypeMap::remove_temp`
+   --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/util/id_type_map.rs:579:37
+    |
+579 |     pub fn remove_temp<T: 'static + Default>(&mut self, id: Id) -> Option<T> {
+    |                                     ^^^^^^^ required by this bound in `IdTypeMap::remove_temp`
+
+error[E0277]: the trait bound `panel::preview::PreviewIdentity: std::default::Default` is not satisfied
+   --> src/pdf_preview.rs:420:40
+    |
+420 |                     data.remove_temp::<(PreviewIdentity, usize)>(id.with("page"));
+    |                          -----------   ^^^^^^^^^^^^^^^^^^^^^^^^ the trait `std::default::Default` is not implemented for `panel::preview::PreviewIdentity`
+    |                          |
+    |                          required by a bound introduced by this call
+    |
+    = help: the following other types implement trait `std::default::Default`:
+              (T₁, T₂, …, Tₙ) up to tuples of arity 12
+            and 5 others
+    = note: required for `(panel::preview::PreviewIdentity, usize)` to implement `std::default::Default`
+note: required by a bound in `IdTypeMap::remove_temp`
+   --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/util/id_type_map.rs:579:37
+    |
+579 |     pub fn remove_temp<T: 'static + Default>(&mut self, id: Id) -> Option<T> {
+    |                                     ^^^^^^^ required by this bound in `IdTypeMap::remove_temp`
+help: consider annotating `panel::preview::PreviewIdentity` with `#[derive(Default)]`
+   --> src/panel/preview.rs:9:1
+    |
+  9 + #[derive(Default)]
+ 10 | pub struct PreviewIdentity {
+    |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

@@ -1,0 +1,96 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: `CGColorSpaceCreateWithName` redeclared with a different signature
+    --> src/pdf_preview.rs:165:9
+     |
+ 165 |         fn CGColorSpaceCreateWithName(name: Ref) -> Ref;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this signature doesn't match the previous declaration
+     |
+    ::: src/image_cache.rs:1929:9
+     |
+1929 |         fn CGColorSpaceCreateWithName(name: *const std::ffi::c_void) -> *mut objc::runtime::Object;
+     |         ------------------------------------------------------------------------------------------- `CGColorSpaceCreateWithName` previously declared here
+     |
+     = note: expected `unsafe extern "C" fn(*const c_void) -> *mut objc::runtime::Object`
+                found `unsafe extern "C" fn(*const c_void) -> *const c_void`
+     = note: `#[warn(clashing_extern_declarations)]` on by default
+
+warning: `CGColorSpaceRelease` redeclared with a different signature
+    --> src/pdf_preview.rs:166:9
+     |
+ 166 |         fn CGColorSpaceRelease(space: Ref);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this signature doesn't match the previous declaration
+     |
+    ::: src/image_cache.rs:1964:5
+     |
+1964 |     fn CGColorSpaceRelease(space: *mut objc::runtime::Object);
+     |     ---------------------------------------------------------- `CGColorSpaceRelease` previously declared here
+     |
+     = note: expected `unsafe extern "C" fn(*mut objc::runtime::Object)`
+                found `unsafe extern "C" fn(*const c_void)`
+
+warning: `CGBitmapContextCreate` redeclared with a different signature
+    --> src/pdf_preview.rs:167:9
+     |
+ 167 | /         fn CGBitmapContextCreate(
+ 168 | |             data: *mut u8,
+ 169 | |             width: usize,
+ 170 | |             height: usize,
+...    |
+ 174 | |             info: u32,
+ 175 | |         ) -> Ref;
+     | |_________________^ this signature doesn't match the previous declaration
+     |
+    ::: src/image_cache.rs:1949:5
+     |
+1949 | /     fn CGBitmapContextCreate(
+1950 | |         data: *mut u8,
+1951 | |         width: usize,
+1952 | |         height: usize,
+...    |
+1956 | |         bitmap_info: u32,
+1957 | |     ) -> *mut objc::runtime::Object;
+     | |____________________________________- `CGBitmapContextCreate` previously declared here
+     |
+     = note: expected `unsafe extern "C" fn(*mut u8, usize, usize, usize, usize, *mut objc::runtime::Object, u32) -> *mut objc::runtime::Object`
+                found `unsafe extern "C" fn(*mut u8, usize, usize, usize, usize, *const c_void, u32) -> *const c_void`
+
+warning: `CGContextRelease` redeclared with a different signature
+    --> src/pdf_preview.rs:176:9
+     |
+ 176 |         fn CGContextRelease(context: Ref);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this signature doesn't match the previous declaration
+     |
+    ::: src/image_cache.rs:1963:5
+     |
+1963 |     fn CGContextRelease(ctx: *mut objc::runtime::Object);
+     |     ----------------------------------------------------- `CGContextRelease` previously declared here
+     |
+     = note: expected `unsafe extern "C" fn(*mut objc::runtime::Object)`
+                found `unsafe extern "C" fn(*const c_void)`
+
+warning: `commander` (bin "commander" test) generated 4 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.00s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 3 tests
+test pdf_preview::tests::bounded_dimensions_reject_invalid_input ... ok
+test pdf_preview::tests::worker_refuses_stale_oversized_and_cancelled_sources ... ok
+test pdf_preview::tests::native_pdf_pages_preserve_crop_rotation_and_upright_pixel_order ... FAILED
+
+failures:
+
+---- pdf_preview::tests::native_pdf_pages_preserve_crop_rotation_and_upright_pixel_order stdout ----
+
+thread 'pdf_preview::tests::native_pdf_pages_preserve_crop_rotation_and_upright_pixel_order' (79866185) panicked at src/pdf_preview.rs:548:9:
+assertion `left == right` failed: red is at the page top
+  left: [255, 255, 255, 255]
+ right: [255, 0, 0, 255]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    pdf_preview::tests::native_pdf_pages_preserve_crop_rotation_and_upright_pixel_order
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 2246 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `--bin commander`

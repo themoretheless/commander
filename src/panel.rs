@@ -10,6 +10,31 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
+/// Restrict group selection without changing the panel's visible-row filter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SelectionTarget {
+    #[default]
+    Both,
+    Files,
+    Folders,
+}
+impl SelectionTarget {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Both => "Files and folders",
+            Self::Files => "Files",
+            Self::Folders => "Folders",
+        }
+    }
+    const fn accepts(self, is_dir: bool) -> bool {
+        match self {
+            Self::Both => true,
+            Self::Files => !is_dir,
+            Self::Folders => is_dir,
+        }
+    }
+}
+
 mod dir_size_cache;
 mod drag;
 mod facet;
@@ -33,6 +58,7 @@ pub use facet::{FacetSet, KindFacet, facet_matches, filter_is_active};
 use listing::ListingState;
 use listing_job::{ListingJobController, PendingFocus};
 // Re-export preview/visit public API under `crate::panel::...` for stable paths.
+use crate::natural_sort::compare as natural_cmp;
 #[allow(unused_imports)]
 pub use preview::{
     InfoCard, MEASURING, PreviewContent, PreviewIdentity, format_mode,
@@ -41,10 +67,9 @@ pub use preview::{
 use selection::{Focus, SelectionState};
 pub use size_index::SizeSnapshot;
 use size_index::{SizeIndex, SizeScanInput};
-use sort::natural_cmp;
 use sort::sort_entries;
 use sort::sort_entries_with_sizes;
-pub use view::ViewConfig;
+pub use view::{BrowserMode, ViewConfig};
 use view::{ViewSettings, ViewState};
 #[allow(unused_imports)]
 pub use visit::{
@@ -400,15 +425,58 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 /// Parse a select-by-mask line into `(term, is_subtract)` pairs. Terms are
-/// comma-separated; a leading `!` or `-` marks subtraction. Terms are
+/// comma- or semicolon-separated; a leading `!` or `-` marks subtraction. Terms are
 /// lowercased for case-insensitive matching.
 pub fn parse_mask(mask: &str) -> Vec<(String, bool)> {
-    mask.split(',')
+    parse_mask_case(mask, false)
+}
+
+fn fold_mask_accents(text: &str) -> String {
+    use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+    let mut result = String::with_capacity(text.len());
+    for ch in text.nfd().filter(|ch| !is_combining_mark(*ch)) {
+        match ch {
+            'œ' => result.push_str("oe"),
+            'Œ' => result.push_str("OE"),
+            'æ' => result.push_str("ae"),
+            'Æ' => result.push_str("AE"),
+            'ß' => result.push_str("ss"),
+            'ẞ' => result.push_str("SS"),
+            'ﬀ' => result.push_str("ff"),
+            'ﬁ' => result.push_str("fi"),
+            'ﬂ' => result.push_str("fl"),
+            'ﬃ' => result.push_str("ffi"),
+            'ﬄ' => result.push_str("ffl"),
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
+fn parse_mask_case(mask: &str, case_sensitive: bool) -> Vec<(String, bool)> {
+    parse_mask_folding(mask, case_sensitive, false)
+}
+
+fn parse_mask_folding(
+    mask: &str,
+    case_sensitive: bool,
+    ignore_accents: bool,
+) -> Vec<(String, bool)> {
+    let case = |term: &str| {
+        let folded = ignore_accents.then(|| fold_mask_accents(term));
+        let term = folded.as_deref().unwrap_or(term);
+        if case_sensitive {
+            term.to_string()
+        } else {
+            term.to_lowercase()
+        }
+    };
+    mask.split([',', ';'])
         .map(str::trim)
         .map(
             |t| match t.strip_prefix('!').or_else(|| t.strip_prefix('-')) {
-                Some(rest) => (rest.trim().to_lowercase(), true),
-                None => (t.to_lowercase(), false),
+                Some(rest) => (case(rest.trim()), true),
+                None => (case(t), false),
             },
         )
         // A bare `!`/`-` leaves an empty term, which would match every
@@ -442,10 +510,38 @@ fn term_matches(term: &str, name_lower: &str, ext: &str) -> bool {
 
 /// What a parsed mask does to `entry`: `Some(false)` deselects (subtraction
 /// wins), `Some(true)` selects, `None` leaves it as is.
-fn mask_verdict(terms: &[(String, bool)], entry: &FileEntry) -> Option<bool> {
+fn mask_verdict(
+    terms: &[(String, bool)],
+    entry: &FileEntry,
+    case_sensitive: bool,
+    ignore_accents: bool,
+    extensionless_star: bool,
+) -> Option<bool> {
+    let name = if case_sensitive {
+        &entry.name
+    } else {
+        &entry.name_lower
+    };
+    let ext = if case_sensitive {
+        if entry.is_dir {
+            ""
+        } else {
+            Path::new(&entry.name)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+        }
+    } else {
+        &entry.extension
+    };
+    let folded_name = ignore_accents.then(|| fold_mask_accents(name));
+    let folded_ext = ignore_accents.then(|| fold_mask_accents(ext));
+    let name = folded_name.as_deref().unwrap_or(name);
+    let ext = folded_ext.as_deref().unwrap_or(ext);
     let hits = |subtracting: bool| {
         terms.iter().any(|(term, subtract)| {
-            *subtract == subtracting && term_matches(term, &entry.name_lower, &entry.extension)
+            *subtract == subtracting
+                && ((extensionless_star && term == "*.*") || term_matches(term, name, ext))
         })
     };
     if hits(true) {
@@ -499,6 +595,7 @@ impl PartialEq for SelectionViewKey {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SortColumn {
     Name,
+    Stem,
     Size,
     Modified,
     Extension,
@@ -536,8 +633,11 @@ pub struct StaleCursor {
 
 pub struct PanelState {
     pub current_path: PathBuf,
+    pub(crate) tab_title: Option<String>,
+    pub(crate) tab_close_protected: bool,
     listing: ListingState,
     selection: SelectionState,
+    saved_selection: Option<(PathBuf, HashSet<PathBuf>)>,
     pub preview: Option<PreviewContent>,
     /// Per-pane directory history (back/forward); a vim-style jump trail that
     /// truncates its forward tail on a new navigation.
@@ -573,8 +673,11 @@ impl PanelState {
     pub(crate) fn new_with_view(path: PathBuf, config: ViewConfig) -> Self {
         Self {
             current_path: path.clone(),
+            tab_title: None,
+            tab_close_protected: false,
             listing: ListingState::new(path.clone()),
             selection: SelectionState::new(path.clone()),
+            saved_selection: None,
             preview: None,
             history: {
                 let mut h = crate::jumplist::JumpList::new();
@@ -605,6 +708,20 @@ impl PanelState {
     pub fn set_notify(&mut self, notify: Notify) {
         self.watcher.set_notify(notify);
         self.watcher.ensure_binding(&self.current_path);
+    }
+
+    pub(crate) fn prepare_tab_activation(&mut self) {
+        self.listing.begin_loading(self.current_path.clone());
+        self.selection.set_scroll_to_cursor(true);
+    }
+
+    pub(crate) fn suspend_for_tab(&mut self) {
+        self.watcher = DirectoryWatcherState::default();
+        self.listing_job = ListingJobController::default();
+        self.pending_view_config = None;
+        self.view_apply_outcome = None;
+        self.sizes.suspend();
+        self.drag.clear();
     }
 
     pub fn has_notify(&self) -> bool {
@@ -679,6 +796,52 @@ impl PanelState {
         self.selection.insert_selected(path)
     }
 
+    /// Save/restore only against a complete listing for the current binding.
+    pub fn can_save_selection(&self) -> bool {
+        self.listing.binding() == self.current_path
+            && matches!(
+                self.listing.status(),
+                DirStatus::Listed | DirStatus::Empty | DirStatus::HiddenOnly(_)
+            )
+    }
+
+    pub fn can_restore_selection(&self) -> bool {
+        self.can_save_selection()
+            && self
+                .saved_selection
+                .as_ref()
+                .is_some_and(|(path, _)| path == &self.current_path)
+    }
+
+    pub fn save_selection(&mut self) -> bool {
+        if !self.can_save_selection() {
+            return false;
+        }
+        self.saved_selection = Some((self.current_path.clone(), self.selection.selected().clone()));
+        true
+    }
+
+    /// Replace this folder's picks, retaining selections in other folders.
+    /// Deleted/unlisted paths cannot be resurrected by the memory buffer.
+    pub fn restore_saved_selection(&mut self) -> bool {
+        if !self.can_restore_selection() {
+            return false;
+        }
+        let (_, saved) = self
+            .saved_selection
+            .as_ref()
+            .expect("checked saved selection");
+        let restored = self
+            .listing
+            .entries()
+            .iter()
+            .filter(|entry| saved.contains(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.selection.replace_selected(restored);
+        true
+    }
+
     pub fn clear_selection(&mut self) {
         self.selection.clear_selected();
     }
@@ -726,6 +889,54 @@ impl PanelState {
         let mut entries = self.selected_entries();
         entries.extend(self.selected_elsewhere_entries());
         Ok(drop_nested_picks(entries))
+    }
+
+    /// Non-recursive metadata operations keep every explicitly selected path.
+    /// Do not use `picked_entries`: it drops nested picks and probes selections
+    /// from other folders synchronously. Foreign observations belong to the
+    /// metadata worker and are reviewed before any commit.
+    pub(crate) fn permission_targets(
+        &self,
+    ) -> Result<Vec<crate::permissions::Target>, StaleCursor> {
+        if self.selection_is_empty() && self.selected_elsewhere_count() == 0 {
+            return self.selected_or_cursor().map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| crate::permissions::Target {
+                        path: entry.path,
+                        identity: entry.identity,
+                        capture_on_worker: false,
+                    })
+                    .collect()
+            });
+        }
+        let current: std::collections::HashMap<_, _> = self
+            .entries()
+            .iter()
+            .map(|entry| (&entry.path, &entry.identity))
+            .collect();
+        let mut targets: Vec<_> = self
+            .selection
+            .selected()
+            .iter()
+            .map(|path| crate::permissions::Target {
+                path: path.clone(),
+                identity: current
+                    .get(path)
+                    .map_or(ListingIdentity::Unavailable, |identity| (*identity).clone()),
+                capture_on_worker: false,
+            })
+            .collect();
+        for (_, paths) in self.selection.selected_elsewhere() {
+            targets.extend(paths.iter().map(|path| crate::permissions::Target {
+                path: path.clone(),
+                identity: ListingIdentity::Unavailable,
+                capture_on_worker: true,
+            }));
+        }
+        targets.sort_by(|a, b| a.path.cmp(&b.path));
+        targets.dedup_by(|a, b| a.path == b.path);
+        Ok(targets)
     }
 
     /// The same operation inputs as [`Self::picked_entries`], excluding a
@@ -863,6 +1074,15 @@ impl PanelState {
         self.watcher.ensure_binding(&path);
         self.commit_snapshot(ticket, true);
         ViewApplyOutcome::Applied
+    }
+
+    pub const fn browser_mode(&self) -> BrowserMode {
+        self.view.config().mode()
+    }
+
+    pub const fn set_browser_mode(&mut self, mode: BrowserMode) {
+        self.view.commit_config(self.view.config().with_mode(mode));
+        self.selection.set_scroll_to_cursor(true);
     }
 
     pub const fn density(&self) -> crate::density::Density {
@@ -1324,6 +1544,18 @@ impl PanelState {
         self.sort_entries();
     }
 
+    /// Keep a name-ordered folder group ahead of independently sorted files.
+    pub fn toggle_folders_by_name(&mut self) {
+        self.view.toggle_folders_by_name();
+        self.sort_entries();
+    }
+
+    /// Use original Unicode names rather than folded keys, then re-sort.
+    pub fn toggle_case_sensitive_name_sort(&mut self) {
+        self.view.toggle_case_sensitive_name_sort();
+        self.sort_entries();
+    }
+
     /// Toggle natural vs plain A-Z name ordering, then re-sort in place.
     pub fn toggle_natural_sort(&mut self) {
         self.view.toggle_natural_sort();
@@ -1449,6 +1681,24 @@ impl PanelState {
         added
     }
 
+    /// Focus the first/last visible non-directory in current display order.
+    pub fn jump_to_file_edge(&mut self, last: bool) -> bool {
+        let row = {
+            let mut rows = self
+                .filtered_iter()
+                .enumerate()
+                .filter(|(_, entry)| !entry.is_dir)
+                .map(|(index, _)| index + 1);
+            if last { rows.last() } else { rows.next() }
+        };
+        let Some(row) = row else {
+            return false;
+        };
+        self.set_cursor(row);
+        self.set_scroll_to_cursor(true);
+        true
+    }
+
     /// Select every filtered file sharing the cursor file's extension. Does
     /// nothing if the cursor is on `..`, a folder, or an extension-less file.
     /// Returns how many entries were added.
@@ -1458,6 +1708,51 @@ impl PanelState {
             _ => return 0,
         };
         self.select_filtered_where(|entry| !entry.is_dir && entry.extension == ext)
+    }
+
+    /// Change visible files sharing the cursor's final-extension-free name.
+    /// Match case-insensitively, like the existing same-extension action.
+    pub fn change_same_stem_as_cursor(&mut self, select: bool) -> usize {
+        let stem = match self.cursor_entry() {
+            Some(entry) if !entry.is_dir => Path::new(&entry.name_lower)
+                .file_stem()
+                .map(|stem| stem.to_owned()),
+            _ => return 0,
+        };
+        let Some(stem) = stem else {
+            return 0;
+        };
+        let mut changed = 0;
+        self.update_filtered_selection(|entry, selection| {
+            if !entry.is_dir && Path::new(&entry.name_lower).file_stem() == Some(stem.as_os_str()) {
+                changed += usize::from(if select {
+                    selection.insert_selected(entry.path.clone())
+                } else {
+                    selection.remove_selected(&entry.path)
+                });
+            }
+        });
+        changed
+    }
+
+    /// Add one kind from the current filtered view; existing picks are retained.
+    pub fn select_visible_kind(&mut self, folders: bool) -> usize {
+        self.select_filtered_where(|entry| entry.is_dir == folders)
+    }
+
+    /// Subtract only visible matching files, leaving hidden picks and folders intact.
+    pub fn deselect_same_extension_as_cursor(&mut self) -> usize {
+        let ext = match self.cursor_entry() {
+            Some(entry) if !entry.is_dir && !entry.extension.is_empty() => entry.extension.clone(),
+            _ => return 0,
+        };
+        let mut removed = 0;
+        self.update_filtered_selection(|entry, selection| {
+            if !entry.is_dir && entry.extension == ext {
+                removed += usize::from(selection.remove_selected(&entry.path));
+            }
+        });
+        removed
     }
 
     /// Select the zero-byte files in the filtered view (folders excluded).
@@ -1486,33 +1781,179 @@ impl PanelState {
     /// add terms select matching entries, `!`/`-` terms deselect them
     /// (subtraction wins per entry). Returns how many entries were added.
     pub fn select_by_mask(&mut self, mask: &str) -> usize {
-        let terms = parse_mask(mask);
+        self.select_by_mask_target(mask, SelectionTarget::Both)
+    }
+
+    pub fn select_by_mask_target(&mut self, mask: &str, target: SelectionTarget) -> usize {
+        self.select_by_mask_options(mask, target, false)
+    }
+
+    pub fn select_by_mask_options(
+        &mut self,
+        mask: &str,
+        target: SelectionTarget,
+        case_sensitive: bool,
+    ) -> usize {
+        self.select_by_mask_folding(mask, target, case_sensitive, false)
+    }
+
+    pub fn select_by_mask_folding(
+        &mut self,
+        mask: &str,
+        target: SelectionTarget,
+        case_sensitive: bool,
+        ignore_accents: bool,
+    ) -> usize {
+        self.select_by_mask_compatibility(mask, target, case_sensitive, ignore_accents, false)
+    }
+
+    pub fn select_by_mask_compatibility(
+        &mut self,
+        mask: &str,
+        target: SelectionTarget,
+        case_sensitive: bool,
+        ignore_accents: bool,
+        extensionless_star: bool,
+    ) -> usize {
+        let terms = if ignore_accents {
+            parse_mask_folding(mask, case_sensitive, true)
+        } else if case_sensitive {
+            parse_mask_case(mask, true)
+        } else {
+            parse_mask(mask)
+        };
         if terms.is_empty() {
             return 0;
         }
         let mut added = 0;
-        self.update_filtered_selection(|entry, selection| match mask_verdict(&terms, entry) {
-            Some(false) => {
-                selection.remove_selected(&entry.path);
+        self.update_filtered_selection(|entry, selection| {
+            if !target.accepts(entry.is_dir) {
+                return;
             }
-            Some(true) => added += usize::from(selection.insert_selected(entry.path.clone())),
-            None => {}
+            match mask_verdict(
+                &terms,
+                entry,
+                case_sensitive,
+                ignore_accents,
+                extensionless_star,
+            ) {
+                Some(false) => {
+                    selection.remove_selected(&entry.path);
+                }
+                Some(true) => added += usize::from(selection.insert_selected(entry.path.clone())),
+                None => {}
+            }
         });
         added
+    }
+
+    /// Add exact UTF-8 basenames from a pasted list, over the current view only.
+    pub fn select_by_names(&mut self, text: &str) -> Result<usize, String> {
+        self.select_by_names_target(text, SelectionTarget::Both)
+    }
+
+    pub fn select_by_names_target(
+        &mut self,
+        text: &str,
+        target: SelectionTarget,
+    ) -> Result<usize, String> {
+        let names = crate::name_list::parse(text)?;
+        Ok(self.select_filtered_where(|entry| {
+            target.accepts(entry.is_dir)
+                && entry
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| names.contains(name))
+        }))
+    }
+
+    pub fn names_match_count(&self, text: &str) -> Result<usize, String> {
+        self.names_match_count_target(text, SelectionTarget::Both)
+    }
+
+    pub fn names_match_count_target(
+        &self,
+        text: &str,
+        target: SelectionTarget,
+    ) -> Result<usize, String> {
+        let names = crate::name_list::parse(text)?;
+        Ok(self
+            .filtered_iter()
+            .filter(|entry| {
+                target.accepts(entry.is_dir)
+                    && !self.is_selected(&entry.path)
+                    && entry
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| names.contains(name))
+            })
+            .count())
     }
 
     /// How many filtered entries would change selection state if `mask` were
     /// applied. A subtraction-only mask therefore reports zero until it has a
     /// selected match, which keeps the preview aligned with the actual action.
     pub fn mask_match_count(&self, mask: &str) -> usize {
-        let terms = parse_mask(mask);
+        self.mask_match_count_target(mask, SelectionTarget::Both)
+    }
+
+    pub fn mask_match_count_target(&self, mask: &str, target: SelectionTarget) -> usize {
+        self.mask_match_count_options(mask, target, false)
+    }
+
+    pub fn mask_match_count_options(
+        &self,
+        mask: &str,
+        target: SelectionTarget,
+        case_sensitive: bool,
+    ) -> usize {
+        self.mask_match_count_folding(mask, target, case_sensitive, false)
+    }
+
+    pub fn mask_match_count_folding(
+        &self,
+        mask: &str,
+        target: SelectionTarget,
+        case_sensitive: bool,
+        ignore_accents: bool,
+    ) -> usize {
+        self.mask_match_count_compatibility(mask, target, case_sensitive, ignore_accents, false)
+    }
+
+    pub fn mask_match_count_compatibility(
+        &self,
+        mask: &str,
+        target: SelectionTarget,
+        case_sensitive: bool,
+        ignore_accents: bool,
+        extensionless_star: bool,
+    ) -> usize {
+        let terms = if ignore_accents {
+            parse_mask_folding(mask, case_sensitive, true)
+        } else if case_sensitive {
+            parse_mask_case(mask, true)
+        } else {
+            parse_mask(mask)
+        };
         if terms.is_empty() {
             return 0;
         }
         let mut changes = 0;
         self.visit_filtered(|_, entry| {
+            if !target.accepts(entry.is_dir) {
+                return true;
+            }
             let selected = self.selection.selected().contains(&entry.path);
-            let next = mask_verdict(&terms, entry).unwrap_or(selected);
+            let next = mask_verdict(
+                &terms,
+                entry,
+                case_sensitive,
+                ignore_accents,
+                extensionless_star,
+            )
+            .unwrap_or(selected);
             changes += usize::from(next != selected);
             true
         });
@@ -1725,6 +2166,18 @@ impl PanelState {
         });
     }
 
+    /// Invert one visible kind, retaining the other kind and filtered-out picks.
+    pub fn invert_visible_kind(&mut self, folders: bool) -> usize {
+        let mut changed = 0;
+        self.update_filtered_selection(|entry, selection| {
+            if entry.is_dir == folders {
+                selection.toggle_selected(entry.path.clone());
+                changed += 1;
+            }
+        });
+        changed
+    }
+
     /// Add `paths` to the current selection, keeping any existing picks.
     /// Used by relationship-based selectors (e.g. "select files also in the
     /// other panel") so selections compose instead of replacing each other.
@@ -1833,6 +2286,160 @@ impl PanelState {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn selection_targets_restrict_both_mask_directions_and_name_list_counts() {
+        let root = crate::testutil::TempDir::new();
+        for name in ["keep-file.txt", "keep.bin", "outside.txt"] {
+            root.file(name, "x");
+        }
+        root.dir("keep-folder.txt");
+        for (target, count) in [
+            (SelectionTarget::Both, 3),
+            (SelectionTarget::Files, 2),
+            (SelectionTarget::Folders, 1),
+        ] {
+            let mut panel = PanelState::new(root.path().into());
+            panel.refresh();
+            panel.toggle_select(root.path().join("outside.txt"));
+            panel.set_search_query("keep");
+            let names = "keep-file.txt\nkeep.bin\nkeep-folder.txt\noutside.txt";
+            assert_eq!(
+                panel.names_match_count_target(names, target).unwrap(),
+                count
+            );
+            assert_eq!(panel.select_by_names_target(names, target).unwrap(), count);
+            assert_eq!(panel.names_match_count_target(names, target).unwrap(), 0);
+            assert_eq!(panel.mask_match_count_target("!keep*", target), count);
+            assert_eq!(panel.select_by_mask_target("!keep*", target), 0);
+            assert_eq!(panel.selected_count(), 1);
+            assert!(panel.is_selected(&root.path().join("outside.txt")));
+            assert_eq!(panel.mask_match_count_target("keep*", target), count);
+            assert_eq!(panel.select_by_mask_target("keep*", target), count);
+            assert_eq!(panel.mask_match_count_target("keep*", target), 0);
+            panel.select_by_mask("keep*");
+            assert_eq!(panel.selected_count(), 4);
+            panel.select_by_mask_target("!keep*", target);
+            assert_eq!(panel.selected_count(), 4 - count);
+            for entry in panel.filtered_iter() {
+                assert_eq!(
+                    panel.is_selected(&entry.path),
+                    !target.accepts(entry.is_dir)
+                );
+            }
+            let before = panel.selected_count();
+            assert!(
+                panel
+                    .select_by_names_target("keep.bin\n../invalid", target)
+                    .is_err()
+            );
+            assert_eq!(panel.selected_count(), before);
+        }
+    }
+
+    #[test]
+    fn name_list_preview_and_apply_are_literal_filtered_and_atomic_on_error() {
+        let root = crate::testutil::TempDir::new();
+        for name in ["exact.txt", "exact.TXT", "*.rs", "match.rs", " trailing "] {
+            root.file(name, "x");
+        }
+        root.dir("folder");
+        let mut panel = PanelState::new(root.path().into());
+        panel.refresh();
+        panel.toggle_select(root.path().join("match.rs"));
+        panel.set_search_query("exact");
+        let text = "exact.txt\nexact.txt\n*.rs\nfolder\n";
+        assert_eq!(panel.names_match_count(text).unwrap(), 1);
+        assert_eq!(panel.select_by_names(text).unwrap(), 1);
+        assert_eq!(panel.names_match_count(text).unwrap(), 0);
+        assert!(panel.is_selected(&root.path().join("match.rs")));
+        assert!(!panel.is_selected(&root.path().join("exact.TXT")));
+        assert!(!panel.is_selected(&root.path().join("*.rs")));
+        panel.set_search_query("");
+        assert_eq!(panel.names_match_count(text).unwrap(), 2);
+        assert_eq!(panel.select_by_names(text).unwrap(), 2);
+        assert!(panel.is_selected(&root.path().join("*.rs")));
+        assert!(panel.is_selected(&root.path().join("folder")));
+        let before = panel.selected_count();
+        assert!(panel.select_by_names(" trailing \n../invalid").is_err());
+        assert_eq!(panel.selected_count(), before);
+        assert!(!panel.is_selected(&root.path().join(" trailing ")));
+    }
+
+    #[test]
+    fn selection_kind_and_extension_subtraction_respect_filtered_rows() {
+        let root = crate::testutil::TempDir::new();
+        for name in [
+            "keep-a.txt",
+            "keep-b.TXT",
+            "keep.bin",
+            "other.txt",
+            "README",
+        ] {
+            root.file(name, "data");
+        }
+        let folder = root.dir("keep-folder.txt");
+        let mut panel = PanelState::new(root.path().into());
+        panel.refresh();
+        panel.toggle_select(root.path().join("other.txt"));
+        panel.set_search_query("keep");
+        panel.focus_child("keep-a.txt".into());
+        assert_eq!(panel.select_visible_kind(true), 1);
+        assert_eq!(panel.select_visible_kind(false), 3);
+        assert_eq!(panel.select_visible_kind(false), 0);
+        assert_eq!(panel.selected_count(), 5);
+        assert_eq!(panel.deselect_same_extension_as_cursor(), 2);
+        assert_eq!(panel.deselect_same_extension_as_cursor(), 0);
+        assert!(panel.is_selected(&folder));
+        assert!(panel.is_selected(&root.path().join("other.txt")));
+        assert!(panel.is_selected(&root.path().join("keep.bin")));
+        assert_eq!(panel.selected_count(), 3);
+        panel.set_search_query("");
+        for name in ["README", "keep-folder.txt"] {
+            panel.focus_child(name.into());
+            assert_eq!(panel.deselect_same_extension_as_cursor(), 0);
+        }
+        panel.set_cursor(0);
+        assert_eq!(panel.deselect_same_extension_as_cursor(), 0);
+        assert_eq!(panel.selected_count(), 3);
+    }
+
+    #[test]
+    fn permission_targets_keep_explicit_parent_child_and_missing_foreign_picks() {
+        let temp = TempDir::new();
+        let folder = temp.dir("parent");
+        let child = folder.join("child.txt");
+        fs::write(&child, "bytes").unwrap();
+        let mut panel = PanelState::new(temp.path().into());
+        panel.refresh();
+        panel.toggle_select(folder.clone());
+        panel.navigate_to(folder.clone());
+        panel.refresh();
+        panel.toggle_select(child.clone());
+        let targets = panel.permission_targets().unwrap();
+        assert_eq!(
+            targets.len(),
+            2,
+            "non-recursive edits must retain nested picks"
+        );
+        let parent = targets.iter().find(|target| target.path == folder).unwrap();
+        assert!(parent.capture_on_worker);
+        let child_target = targets.iter().find(|target| target.path == child).unwrap();
+        assert!(!child_target.capture_on_worker);
+        assert!(matches!(
+            child_target.identity,
+            ListingIdentity::Captured(_)
+        ));
+        // A vanished foreign selection stays visible to the inspection worker.
+        fs::remove_file(&child).unwrap();
+        fs::remove_dir(&folder).unwrap();
+        let targets = panel.permission_targets().unwrap();
+        assert_eq!(targets.len(), 2);
+        let plan = crate::permissions::inspect(targets, &|| false).unwrap();
+        assert!(!plan.ready());
+        assert_eq!(plan.rows().len(), 2);
+        assert!(plan.rows().iter().all(|row| row.error.is_some()));
+    }
 
     /// In-memory entry for pure sort/filter/selection tests.
     fn entry(name: &str, is_dir: bool, size: u64) -> FileEntry {
@@ -2406,6 +3013,72 @@ mod tests {
         assert!(!p.is_selected(&alpha));
         assert!(!p.is_selected(&album));
         assert!(p.is_selected(&zebra));
+    }
+
+    #[test]
+    fn saved_selection_restores_filtered_picks_and_prunes_missing_entries() {
+        let root = crate::testutil::TempDir::new();
+        let a = root.file("alpha.txt", "a");
+        let b = root.file("beta.txt", "b");
+        let c = root.file("gamma.txt", "c");
+        let mut panel = PanelState::new(root.path().into());
+        panel.refresh();
+        assert!(!panel.can_restore_selection());
+        panel.replace_selection([a.clone(), b.clone()]);
+        panel.set_search_query("alpha");
+        assert!(panel.save_selection());
+        panel.replace_selection([c.clone()]);
+        assert!(panel.restore_saved_selection());
+        assert_eq!(
+            panel.selected_paths(),
+            &HashSet::from([a.clone(), b.clone()])
+        );
+        std::fs::remove_file(&b).unwrap();
+        panel.refresh();
+        panel.replace_selection([c]);
+        assert!(panel.restore_saved_selection());
+        assert_eq!(panel.selected_paths(), &HashSet::from([a]));
+        panel.clear_selection();
+        assert!(panel.save_selection());
+        panel.select_all();
+        assert!(panel.restore_saved_selection());
+        assert!(panel.selection_is_empty());
+    }
+
+    #[test]
+    fn saved_selection_is_folder_bound_preserves_elsewhere_and_rejects_incomplete_reads() {
+        let root = crate::testutil::TempDir::new();
+        let a = root.file("alpha.txt", "a");
+        let child = root.dir("child");
+        let b = root.file("child/beta.txt", "b");
+        let mut panel = PanelState::new(root.path().into());
+        panel.refresh();
+        panel.replace_selection([a.clone()]);
+        assert!(panel.save_selection());
+        panel.navigate_to(child);
+        panel.refresh();
+        panel.replace_selection([b]);
+        assert!(!panel.can_restore_selection());
+        assert!(!panel.restore_saved_selection());
+        panel.navigate_to(root.path().into());
+        panel.refresh();
+        panel.clear_selection();
+        let elsewhere = panel.selected_elsewhere_count();
+        assert_eq!(elsewhere, 1);
+        assert!(panel.restore_saved_selection());
+        assert!(panel.is_selected(&a));
+        assert_eq!(panel.selected_elsewhere_count(), elsewhere);
+        for status in [DirStatus::Partial, DirStatus::Denied, DirStatus::Gone] {
+            panel.apply_directory_read(DirectoryRead::Incomplete(status));
+            assert!(!panel.can_save_selection());
+            assert!(!panel.save_selection());
+            assert!(!panel.restore_saved_selection());
+            assert!(panel.is_selected(&a));
+        }
+        panel.refresh();
+        panel.clear_selection();
+        assert!(panel.restore_saved_selection());
+        assert!(panel.is_selected(&a));
     }
 
     #[test]
@@ -3516,6 +4189,350 @@ mod tests {
         // A bare subtraction marker is not an (empty) term.
         assert!(parse_mask("-").is_empty());
         assert_eq!(parse_mask("*.jpg, !"), vec![("*.jpg".to_string(), false)]);
+    }
+
+    #[test]
+    fn kind_inversion_is_reversible_and_preserves_hidden_picks_and_other_kind() {
+        for folders in [false, true] {
+            let mut panel = panel_with(vec![
+                entry("a.txt", false, 1),
+                entry("b.txt", false, 1),
+                entry("dir-a", true, 0),
+                entry("dir-b", true, 0),
+            ]);
+            panel.select_by_names("a.txt\ndir-a").unwrap();
+            let before = selected_names(&panel);
+            assert_eq!(panel.invert_visible_kind(folders), 2);
+            let expected = if folders {
+                HashSet::from(["a.txt".to_string(), "dir-b".to_string()])
+            } else {
+                HashSet::from(["b.txt".to_string(), "dir-a".to_string()])
+            };
+            assert_eq!(selected_names(&panel), expected);
+            assert_eq!(panel.invert_visible_kind(folders), 2);
+            assert_eq!(selected_names(&panel), before);
+            panel.select_by_names("b.txt\ndir-b").unwrap();
+            panel.set_search_query("a");
+            assert_eq!(panel.invert_visible_kind(folders), 1);
+            let after = selected_names(&panel);
+            assert_eq!(after.len(), 3);
+            assert!(after.contains("b.txt") && after.contains("dir-b"));
+            assert!(after.contains(if folders { "a.txt" } else { "dir-a" }));
+            panel.set_search_query("nothing-matches");
+            assert_eq!(panel.invert_visible_kind(folders), 0);
+            assert_eq!(selected_names(&panel), after);
+        }
+    }
+
+    #[test]
+    fn file_edge_navigation_skips_directories_and_respects_sort_filter_and_selection() {
+        for folders_first in [true, false] {
+            for reversed in [false, true] {
+                let mut panel = panel_with(vec![
+                    entry("a.txt", false, 1),
+                    entry("bdir", true, 0),
+                    entry("z.txt", false, 1),
+                ]);
+                if !folders_first {
+                    panel.toggle_folders_first();
+                }
+                if reversed {
+                    panel.reverse_sort();
+                }
+                panel.select_by_names("z.txt").unwrap();
+                assert!(panel.jump_to_file_edge(false));
+                assert_eq!(
+                    panel.cursor_entry().unwrap().name,
+                    if reversed { "z.txt" } else { "a.txt" }
+                );
+                assert!(panel.scroll_to_cursor());
+                assert!(panel.jump_to_file_edge(true));
+                assert_eq!(
+                    panel.cursor_entry().unwrap().name,
+                    if reversed { "a.txt" } else { "z.txt" }
+                );
+                assert_eq!(selected_names(&panel), HashSet::from(["z.txt".to_string()]));
+                panel.set_search_query("a.txt");
+                assert!(panel.jump_to_file_edge(true));
+                assert_eq!(panel.cursor_entry().unwrap().name, "a.txt");
+                panel.set_search_query("bdir");
+                let before = panel.cursor();
+                assert!(!panel.jump_to_file_edge(false));
+                assert!(!panel.jump_to_file_edge(true));
+                assert_eq!(panel.cursor(), before);
+                assert_eq!(panel.selected_count(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn same_stem_actions_keep_unrelated_and_filtered_out_picks() {
+        let mut panel = panel_with(vec![
+            entry("report.pdf", false, 1),
+            entry("report.docx", false, 1),
+            entry("report", false, 1),
+            entry("Report.TXT", false, 1),
+            entry("report.dir", true, 0),
+            entry("other.txt", false, 1),
+        ]);
+        panel.select_by_names("other.txt").unwrap();
+        let row = panel
+            .filtered_iter()
+            .position(|entry| entry.name == "report.pdf")
+            .unwrap()
+            + 1;
+        panel.set_cursor(row);
+        assert_eq!(panel.change_same_stem_as_cursor(true), 4);
+        assert_eq!(panel.change_same_stem_as_cursor(true), 0);
+        assert_eq!(panel.selected_count(), 5);
+        panel.set_search_query("pdf");
+        assert_eq!(panel.change_same_stem_as_cursor(false), 1);
+        assert_eq!(panel.selected_count(), 4);
+        panel.set_search_query("");
+        assert!(selected_names(&panel).contains("other.txt"));
+        panel.set_cursor(0);
+        assert_eq!(panel.change_same_stem_as_cursor(true), 0);
+        let folder_row = panel
+            .filtered_iter()
+            .position(|entry| entry.is_dir)
+            .unwrap()
+            + 1;
+        panel.set_cursor(folder_row);
+        assert_eq!(panel.change_same_stem_as_cursor(false), 0);
+    }
+
+    #[test]
+    fn same_stem_uses_only_the_last_extension() {
+        let mut panel = panel_with(vec![
+            entry("archive.tar.gz", false, 1),
+            entry("archive.tar.xz", false, 1),
+            entry("archive.zip", false, 1),
+        ]);
+        let row = panel
+            .filtered_iter()
+            .position(|entry| entry.name == "archive.tar.gz")
+            .unwrap()
+            + 1;
+        panel.set_cursor(row);
+        assert_eq!(panel.change_same_stem_as_cursor(true), 2);
+        assert!(!selected_names(&panel).contains("archive.zip"));
+    }
+
+    #[test]
+    fn extensionless_star_option_changes_only_star_dot_star_terms() {
+        for (target, expected) in [
+            (SelectionTarget::Both, 3),
+            (SelectionTarget::Files, 2),
+            (SelectionTarget::Folders, 1),
+        ] {
+            let mut panel = panel_with(vec![
+                entry("README", false, 1),
+                entry("doc.txt", false, 1),
+                entry("folder", true, 0),
+            ]);
+            assert_eq!(
+                panel.mask_match_count_target("*.*", target),
+                usize::from(target != SelectionTarget::Folders)
+            );
+            assert_eq!(
+                panel.mask_match_count_compatibility("*.*", target, true, true, true),
+                expected
+            );
+            assert_eq!(
+                panel.select_by_mask_compatibility("*.*", target, true, true, true),
+                expected
+            );
+            assert_eq!(
+                panel.mask_match_count_compatibility("*.*", target, true, true, true),
+                0
+            );
+            assert_eq!(
+                panel.mask_match_count_compatibility("!*.*", target, false, false, true),
+                expected
+            );
+            panel.select_by_mask_compatibility("!*.*", target, false, false, true);
+            assert_eq!(panel.selected_count(), 0);
+            assert_eq!(
+                panel.select_by_mask_compatibility("*.txt", target, false, false, true),
+                usize::from(target != SelectionTarget::Folders)
+            );
+        }
+        let mut panel = panel_with(vec![entry("README", false, 1), entry("Café", false, 1)]);
+        assert_eq!(
+            panel.select_by_mask_compatibility(
+                "*.*;!*cafe*",
+                SelectionTarget::Files,
+                false,
+                true,
+                true
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn accent_ignoring_masks_fold_both_sides_but_keep_case_and_exclusions() {
+        for (mask, expected) in [
+            ("*cafe*", 3),
+            ("*coeur*", 1),
+            ("*café*", 3),
+            ("*strasse*", 1),
+        ] {
+            let mut panel = panel_with(vec![
+                entry("café.txt", false, 1),
+                entry("cafe\u{301}.txt", false, 1),
+                entry("CAFÉ.txt", false, 1),
+                entry("cœur.txt", false, 1),
+                entry("Straße.txt", false, 1),
+            ]);
+            assert_eq!(
+                panel.mask_match_count_folding(mask, SelectionTarget::Files, false, true),
+                expected
+            );
+            assert_eq!(
+                panel.select_by_mask_folding(mask, SelectionTarget::Files, false, true),
+                expected
+            );
+            assert_eq!(
+                panel.mask_match_count_folding(mask, SelectionTarget::Files, false, true),
+                0
+            );
+        }
+        let mut panel = panel_with(vec![
+            entry("café.txt", false, 1),
+            entry("CAFÉ.txt", false, 1),
+            entry("cafe-dir", true, 0),
+        ]);
+        assert_eq!(
+            panel.select_by_mask_folding("*cafe*;!*dir*", SelectionTarget::Both, true, true),
+            1
+        );
+        assert_eq!(
+            panel.mask_match_count_folding("!*café*", SelectionTarget::Both, true, true),
+            1
+        );
+        assert_eq!(
+            panel.select_by_mask_folding("*CAFE*", SelectionTarget::Files, true, true),
+            1
+        );
+        let mut strict = panel_with(vec![entry("café.txt", false, 1)]);
+        assert_eq!(strict.select_by_mask("*cafe*"), 0);
+        assert!(parse_mask_folding("\u{301}", false, true).is_empty());
+    }
+
+    #[test]
+    fn sensitive_masks_preserve_case_for_globs_extensions_and_subtraction() {
+        for mask in ["*.JPG", "JPG", ".JPG"] {
+            let mut panel = panel_with(vec![
+                entry("a.JPG", false, 1),
+                entry("b.jpg", false, 1),
+                entry("RAW.JPG", false, 1),
+                entry("é.JPG", false, 1),
+            ]);
+            panel.mutate_entries_for_test(|entries| {
+                for entry in entries {
+                    entry.extension = "jpg".into();
+                }
+            });
+            assert_eq!(
+                panel.mask_match_count_options(mask, SelectionTarget::Files, true),
+                3
+            );
+            assert_eq!(
+                panel.select_by_mask_options(mask, SelectionTarget::Files, true),
+                3
+            );
+            assert_eq!(
+                panel.mask_match_count_options(mask, SelectionTarget::Files, true),
+                0
+            );
+            assert_eq!(
+                panel.mask_match_count_options("!*raw*", SelectionTarget::Files, true),
+                0
+            );
+            assert_eq!(
+                panel.mask_match_count_options("!*RAW*", SelectionTarget::Files, true),
+                1
+            );
+            panel.select_by_mask_options("!*RAW*", SelectionTarget::Files, true);
+            assert_eq!(panel.selected_count(), 2);
+            assert_eq!(
+                panel.mask_match_count_target(mask, SelectionTarget::Files),
+                2
+            );
+        }
+        let mut panel = panel_with(vec![entry("Étage", true, 0), entry("étage", true, 0)]);
+        assert_eq!(
+            panel.select_by_mask_options("É*", SelectionTarget::Folders, true),
+            1
+        );
+        assert_eq!(
+            panel.mask_match_count_options("*", SelectionTarget::Files, true),
+            0
+        );
+        assert_eq!(
+            panel.select_by_mask_options("é*", SelectionTarget::Folders, true),
+            1
+        );
+    }
+
+    #[test]
+    fn semicolon_masks_mix_delimiters_and_keep_preview_application_in_sync() {
+        assert_eq!(
+            parse_mask("*.JPG; *.PNG, !*raw*; -tmp"),
+            parse_mask("*.JPG, *.PNG, !*raw*, -tmp")
+        );
+        assert!(parse_mask(";;, ! ; -").is_empty());
+        for target in [
+            SelectionTarget::Both,
+            SelectionTarget::Files,
+            SelectionTarget::Folders,
+        ] {
+            let mut panel = panel_with(vec![
+                entry("a.jpg", false, 1),
+                entry("b.png", false, 1),
+                entry("raw.jpg", false, 1),
+                entry("folder.png", true, 0),
+                entry("notes.txt", false, 1),
+            ]);
+            panel.select_by_mask("*raw*");
+            let before: HashSet<_> = panel.selected_paths().iter().cloned().collect();
+            let expected_changes = panel.mask_match_count_target("*.jpg;*.png,!*raw*", target);
+            panel.select_by_mask_target("*.jpg;*.png,!*raw*", target);
+            let after: HashSet<_> = panel.selected_paths().iter().cloned().collect();
+            assert_eq!(
+                before.symmetric_difference(&after).count(),
+                expected_changes
+            );
+            assert_eq!(
+                after.len(),
+                match target {
+                    SelectionTarget::Both => 3,
+                    SelectionTarget::Files => 2,
+                    SelectionTarget::Folders => 2,
+                }
+            );
+            assert_eq!(
+                panel.mask_match_count_target("*.jpg;*.png,!*raw*", target),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn exact_names_still_select_literal_mask_delimiters() {
+        let mut panel = panel_with(vec![
+            entry("semi;colon.txt", false, 1),
+            entry("comma,name.txt", false, 1),
+            entry("other.txt", false, 1),
+        ]);
+        assert_eq!(
+            panel
+                .select_by_names("semi;colon.txt\ncomma,name.txt")
+                .unwrap(),
+            2
+        );
+        assert_eq!(panel.selected_count(), 2);
     }
 
     #[test]
@@ -5291,5 +6308,21 @@ mod tests {
         assert!(PanelState::subdirs(&temp.path().join("missing"), true).is_empty());
         let file = temp.file("plain.txt", "x");
         assert!(PanelState::subdirs(&file, true).is_empty());
+    }
+    #[test]
+    fn browser_mode_follows_folder_memory_without_losing_selection() {
+        let temp = crate::testutil::TempDir::new();
+        let child = temp.dir("child");
+        let file = temp.file("selected.txt", "text");
+        let mut panel = PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.toggle_select(file.clone());
+        panel.set_browser_mode(BrowserMode::Icons);
+        assert!(panel.is_selected(&file));
+        panel.navigate_to(child);
+        panel.set_browser_mode(BrowserMode::List);
+        panel.go_up();
+        assert_eq!(panel.browser_mode(), BrowserMode::Icons);
+        assert!(panel.is_selected(&file));
     }
 }

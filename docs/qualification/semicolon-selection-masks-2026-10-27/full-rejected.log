@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0502]: cannot borrow `panel` as mutable because it is also borrowed as immutable
+    --> src/panel.rs:3874:13
+     |
+3872 |             let before: HashSet<_> = panel.selected_paths().into_iter().collect();
+     |                                      ----- immutable borrow occurs here
+3873 |             let expected_changes = panel.mask_match_count_target("*.jpg;*.png,!*raw*", target);
+3874 |             panel.select_by_mask_target("*.jpg;*.png,!*raw*", target);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+3877 |                 before.symmetric_difference(&after).count(),
+     |                 ------ immutable borrow later used here
+
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0592]: duplicate definitions with name `match_count`
+  --> src/preview_find.rs:65:5
+   |
+52 |     pub fn match_count(&self) -> usize {
+   |     ---------------------------------- other definition for `match_count`
+...
+65 |     pub fn match_count(&self) -> usize {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `match_count`
+
+For more information about this error, try `rustc --explain E0592`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

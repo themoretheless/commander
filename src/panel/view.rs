@@ -3,16 +3,27 @@ use std::path::{Path, PathBuf};
 
 use super::{FacetSet, SortColumn, SortOrder};
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BrowserMode {
+    #[default]
+    List,
+    Icons,
+}
+
 const DEFAULT_VIEW_MEMORY_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ViewConfig {
     sort_col: SortColumn,
     sort_order: SortOrder,
     show_hidden: bool,
     folders_first: bool,
+    folders_by_name: bool,
     natural_name_sort: bool,
+    case_sensitive_name_sort: bool,
     density: crate::density::Density,
+    mode: BrowserMode,
 }
 
 impl Default for ViewConfig {
@@ -22,13 +33,24 @@ impl Default for ViewConfig {
             sort_order: SortOrder::Asc,
             show_hidden: false,
             folders_first: true,
+            folders_by_name: false,
             natural_name_sort: true,
+            case_sensitive_name_sort: false,
             density: crate::density::Density::default(),
+            mode: BrowserMode::List,
         }
     }
 }
 
 impl ViewConfig {
+    pub(crate) const fn mode(self) -> BrowserMode {
+        self.mode
+    }
+    pub(crate) const fn with_mode(mut self, mode: BrowserMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     pub(crate) const fn sort_column(self) -> SortColumn {
         self.sort_col
     }
@@ -45,8 +67,27 @@ impl ViewConfig {
         self.folders_first
     }
 
+    pub(crate) const fn folders_by_name(self) -> bool {
+        self.folders_by_name
+    }
+    pub(crate) const fn with_folders_by_name(mut self, enabled: bool) -> Self {
+        self.folders_by_name = enabled;
+        if enabled {
+            self.folders_first = true;
+        }
+        self
+    }
+
     pub(crate) const fn natural_name_sort(self) -> bool {
         self.natural_name_sort
+    }
+
+    pub(crate) const fn case_sensitive_name_sort(self) -> bool {
+        self.case_sensitive_name_sort
+    }
+    pub(crate) const fn with_case_sensitive_name_sort(mut self, enabled: bool) -> Self {
+        self.case_sensitive_name_sort = enabled;
+        self
     }
 
     pub(crate) const fn density(self) -> crate::density::Density {
@@ -66,6 +107,9 @@ impl ViewConfig {
 
     pub(crate) const fn with_folders_first(mut self, folders_first: bool) -> Self {
         self.folders_first = folders_first;
+        if !folders_first {
+            self.folders_by_name = false;
+        }
         self
     }
 
@@ -166,7 +210,17 @@ impl ViewState {
     }
 
     pub(super) const fn toggle_folders_first(&mut self) {
-        self.config.folders_first = !self.config.folders_first;
+        self.config = self.config.with_folders_first(!self.config.folders_first);
+    }
+
+    pub(super) const fn toggle_case_sensitive_name_sort(&mut self) {
+        self.config.case_sensitive_name_sort = !self.config.case_sensitive_name_sort;
+    }
+
+    pub(super) const fn toggle_folders_by_name(&mut self) {
+        self.config = self
+            .config
+            .with_folders_by_name(!self.config.folders_by_name);
     }
 
     pub(super) const fn toggle_natural_sort(&mut self) {

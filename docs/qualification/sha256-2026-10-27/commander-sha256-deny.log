@@ -1,0 +1,3225 @@
+warning[duplicate]: found 3 duplicate entries for crate 'accesskit_consumer'
+  ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:5:1
+  │  
+5 │ ╭ accesskit_consumer 0.35.0 registry+https://github.com/rust-lang/crates.io-index
+6 │ │ accesskit_consumer 0.36.0 registry+https://github.com/rust-lang/crates.io-index
+7 │ │ accesskit_consumer 0.38.0 registry+https://github.com/rust-lang/crates.io-index
+  │ ╰───────────────────────────────────────────────────────────────────────────────┘ lock entries
+  │  
+  ├ accesskit_consumer v0.35.0
+    └── accesskit_windows v0.32.1
+        └── accesskit_winit v0.32.2
+            └── egui-winit v0.36.2
+                └── eframe v0.36.2
+                    └── commander v0.2.0
+  ├ accesskit_consumer v0.36.0
+    └── accesskit_atspi_common v0.18.1
+        └── accesskit_unix v0.21.1
+            └── accesskit_winit v0.32.2
+                └── egui-winit v0.36.2
+                    └── eframe v0.36.2
+                        └── commander v0.2.0
+  ├ accesskit_consumer v0.38.0
+    └── accesskit_macos v0.26.3
+        └── accesskit_winit v0.32.2
+            └── egui-winit v0.36.2
+                └── eframe v0.36.2
+                    └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'bitflags'
+   ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:45:1
+   │  
+45 │ ╭ bitflags 1.3.2 registry+https://github.com/rust-lang/crates.io-index
+46 │ │ bitflags 2.13.2 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰─────────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ bitflags v1.3.2
+     ├── core-graphics v0.23.2
+     │   └── winit v0.30.13
+     │       ├── accesskit_winit v0.32.2
+     │       │   └── egui-winit v0.36.2
+     │       │       └── eframe v0.36.2
+     │       │           └── commander v0.2.0
+     │       ├── eframe v0.36.2 (*)
+     │       ├── egui-wgpu v0.36.2
+     │       │   └── eframe v0.36.2 (*)
+     │       ├── egui-winit v0.36.2 (*)
+     │       └── glutin-winit v0.5.0
+     │           └── eframe v0.36.2 (*)
+     ├── core-graphics-types v0.1.3
+     │   └── core-graphics v0.23.2 (*)
+     ├── png v0.17.16
+     │   └── tiny-skia v0.11.4
+     │       ├── resvg v0.45.1
+     │       │   └── egui_extras v0.36.2
+     │       │       └── commander v0.2.0 (*)
+     │       └── sctk-adwaita v0.10.1
+     │           └── winit v0.30.13 (*)
+     └── redox_syscall v0.4.1
+         └── winit v0.30.13 (*)
+   ├ bitflags v2.13.2
+     ├── android-activity v0.6.1
+     │   └── winit v0.30.13
+     │       ├── accesskit_winit v0.32.2
+     │       │   └── egui-winit v0.36.2
+     │       │       └── eframe v0.36.2
+     │       │           └── commander v0.2.0
+     │       ├── eframe v0.36.2 (*)
+     │       ├── egui-wgpu v0.36.2
+     │       │   └── eframe v0.36.2 (*)
+     │       ├── egui-winit v0.36.2 (*)
+     │       └── glutin-winit v0.5.0
+     │           └── eframe v0.36.2 (*)
+     ├── calloop v0.13.0
+     │   ├── calloop-wayland-source v0.3.0
+     │   │   └── smithay-client-toolkit v0.19.2
+     │   │       ├── sctk-adwaita v0.10.1
+     │   │       │   └── winit v0.30.13 (*)
+     │   │       └── winit v0.30.13 (*)
+     │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   └── winit v0.30.13 (*)
+     ├── calloop v0.14.4
+     │   ├── calloop-wayland-source v0.4.1
+     │   │   └── smithay-client-toolkit v0.20.0
+     │   │       └── smithay-clipboard v0.7.3
+     │   │           └── egui-winit v0.36.2 (*)
+     │   └── smithay-client-toolkit v0.20.0 (*)
+     ├── dispatch2 v0.3.1
+     │   └── glutin v0.32.3
+     │       ├── eframe v0.36.2 (*)
+     │       └── glutin-winit v0.5.0 (*)
+     ├── egui v0.36.2
+     │   ├── commander v0.2.0 (*)
+     │   ├── eframe v0.36.2 (*)
+     │   ├── egui-wgpu v0.36.2 (*)
+     │   ├── egui-winit v0.36.2 (*)
+     │   ├── egui_extras v0.36.2
+     │   │   └── commander v0.2.0 (*)
+     │   └── egui_glow v0.36.2
+     │       └── eframe v0.36.2 (*)
+     ├── glutin v0.32.3 (*)
+     ├── harfrust v0.12.0
+     │   └── epaint v0.36.2
+     │       ├── egui v0.36.2 (*)
+     │       └── egui-wgpu v0.36.2 (*)
+     ├── inotify v0.11.5
+     │   └── notify v8.2.0
+     │       └── commander v0.2.0 (*)
+     ├── kqueue-sys v1.1.2
+     │   └── kqueue v1.2.1
+     │       └── notify v8.2.0 (*)
+     ├── libredox v0.1.23
+     │   ├── orbclient v0.3.55
+     │   │   └── winit v0.30.13 (*)
+     │   └── redox_users v0.5.2
+     │       └── dirs-sys v0.5.0
+     │           └── dirs v7.0.0
+     │               └── commander v0.2.0 (*)
+     ├── naga v30.0.1
+     │   ├── wgpu-core v30.0.1
+     │   │   └── wgpu v30.0.1
+     │   │       ├── eframe v0.36.2 (*)
+     │   │       └── egui-wgpu v0.36.2 (*)
+     │   ├── wgpu-hal v30.0.1
+     │   │   ├── wgpu v30.0.1 (*)
+     │   │   ├── wgpu-core v30.0.1 (*)
+     │   │   ├── wgpu-core-deps-apple v30.0.1
+     │   │   │   └── wgpu-core v30.0.1 (*)
+     │   │   ├── wgpu-core-deps-emscripten v30.0.1
+     │   │   │   └── wgpu-core v30.0.1 (*)
+     │   │   ├── wgpu-core-deps-wasm v30.0.1
+     │   │   │   └── wgpu-core v30.0.1 (*)
+     │   │   └── wgpu-core-deps-windows-linux-android v30.0.1
+     │   │       └── wgpu-core v30.0.1 (*)
+     │   └── wgpu-naga-bridge v30.0.1
+     │       ├── wgpu-core v30.0.1 (*)
+     │       └── wgpu-hal v30.0.1 (*)
+     ├── ndk v0.9.0
+     │   ├── android-activity v0.6.1 (*)
+     │   └── winit v0.30.13 (*)
+     ├── nix v0.31.3
+     │   └── zip v9.0.5
+     │       └── commander v0.2.0 (*)
+     ├── notify v8.2.0 (*)
+     ├── notify-types v2.1.0
+     │   └── notify v8.2.0 (*)
+     ├── objc2-app-kit v0.2.2
+     │   ├── accesskit_macos v0.26.3
+     │   │   └── accesskit_winit v0.32.2 (*)
+     │   └── winit v0.30.13 (*)
+     ├── objc2-app-kit v0.3.2
+     │   ├── arboard v3.6.1
+     │   │   ├── commander v0.2.0 (*)
+     │   │   └── egui-winit v0.36.2 (*)
+     │   ├── eframe v0.36.2 (*)
+     │   ├── glutin v0.32.3 (*)
+     │   └── webbrowser v1.2.4
+     │       └── egui-winit v0.36.2 (*)
+     ├── objc2-core-foundation v0.3.2
+     │   ├── arboard v3.6.1 (*)
+     │   ├── glutin v0.32.3 (*)
+     │   ├── objc2-app-kit v0.3.2 (*)
+     │   ├── objc2-core-graphics v0.3.2
+     │   │   ├── arboard v3.6.1 (*)
+     │   │   ├── objc2-app-kit v0.3.2 (*)
+     │   │   ├── objc2-quartz-core v0.3.2
+     │   │   │   ├── raw-window-metal v1.1.0
+     │   │   │   │   └── wgpu-hal v30.0.1 (*)
+     │   │   │   └── wgpu-hal v30.0.1 (*)
+     │   │   └── wgpu-hal v30.0.1 (*)
+     │   ├── objc2-foundation v0.3.2
+     │   │   ├── arboard v3.6.1 (*)
+     │   │   ├── eframe v0.36.2 (*)
+     │   │   ├── egui-winit v0.36.2 (*)
+     │   │   ├── glutin v0.32.3 (*)
+     │   │   ├── objc2-app-kit v0.3.2 (*)
+     │   │   ├── objc2-metal v0.3.2
+     │   │   │   ├── objc2-quartz-core v0.3.2 (*)
+     │   │   │   └── wgpu-hal v30.0.1 (*)
+     │   │   ├── objc2-quartz-core v0.3.2 (*)
+     │   │   ├── objc2-ui-kit v0.3.2
+     │   │   │   └── egui-winit v0.36.2 (*)
+     │   │   ├── raw-window-metal v1.1.0 (*)
+     │   │   ├── trash v5.2.8
+     │   │   │   └── commander v0.2.0 (*)
+     │   │   ├── webbrowser v1.2.4 (*)
+     │   │   └── wgpu-hal v30.0.1 (*)
+     │   ├── objc2-quartz-core v0.3.2 (*)
+     │   ├── objc2-ui-kit v0.3.2 (*)
+     │   ├── raw-window-metal v1.1.0 (*)
+     │   └── wgpu-hal v30.0.1 (*)
+     ├── objc2-core-graphics v0.3.2 (*)
+     ├── objc2-foundation v0.2.2
+     │   ├── accesskit_macos v0.26.3 (*)
+     │   ├── objc2-app-kit v0.2.2 (*)
+     │   ├── objc2-ui-kit v0.2.2
+     │   │   └── winit v0.30.13 (*)
+     │   └── winit v0.30.13 (*)
+     ├── objc2-foundation v0.3.2 (*)
+     ├── objc2-metal v0.3.2 (*)
+     ├── objc2-quartz-core v0.3.2 (*)
+     ├── objc2-ui-kit v0.2.2 (*)
+     ├── objc2-ui-kit v0.3.2 (*)
+     ├── png v0.18.1
+     │   └── image v0.25.10
+     │       ├── arboard v3.6.1 (*)
+     │       ├── commander v0.2.0 (*)
+     │       ├── eframe v0.36.2 (*)
+     │       └── egui_extras v0.36.2 (*)
+     ├── pulldown-cmark v0.13.5
+     │   └── commander v0.2.0 (*)
+     ├── redox_syscall v0.5.18
+     │   └── parking_lot_core v0.9.12
+     │       └── parking_lot v0.12.5
+     │           ├── arboard v3.6.1 (*)
+     │           ├── eframe v0.36.2 (*)
+     │           ├── epaint v0.36.2 (*)
+     │           ├── wgpu v30.0.1 (*)
+     │           ├── wgpu-core v30.0.1 (*)
+     │           └── wgpu-hal v30.0.1 (*)
+     ├── redox_syscall v0.9.4
+     │   └── libredox v0.1.23 (*)
+     ├── rustix v0.38.44
+     │   ├── calloop v0.13.0 (*)
+     │   ├── calloop-wayland-source v0.3.0 (*)
+     │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   └── winit v0.30.13 (*)
+     ├── rustix v1.1.4
+     │   ├── async-io v2.6.0
+     │   │   ├── async-process v2.5.0
+     │   │   │   └── zbus v5.19.0
+     │   │   │       ├── accesskit_unix v0.21.1
+     │   │   │       │   └── accesskit_winit v0.32.2 (*)
+     │   │   │       ├── atspi-common v0.13.0
+     │   │   │       │   ├── accesskit_atspi_common v0.18.1
+     │   │   │       │   │   └── accesskit_unix v0.21.1 (*)
+     │   │   │       │   ├── atspi v0.29.0
+     │   │   │       │   │   └── accesskit_unix v0.21.1 (*)
+     │   │   │       │   └── atspi-proxies v0.13.0
+     │   │   │       │       └── atspi v0.29.0 (*)
+     │   │   │       └── atspi-proxies v0.13.0 (*)
+     │   │   ├── async-signal v0.2.14
+     │   │   │   └── async-process v2.5.0 (*)
+     │   │   └── zbus v5.19.0 (*)
+     │   ├── async-process v2.5.0 (*)
+     │   ├── async-signal v0.2.14 (*)
+     │   ├── calloop v0.14.4 (*)
+     │   ├── calloop-wayland-source v0.4.1 (*)
+     │   ├── gethostname v1.1.0
+     │   │   └── x11rb v0.13.2
+     │   │       ├── arboard v3.6.1 (*)
+     │   │       └── winit v0.30.13 (*)
+     │   ├── polling v3.11.0
+     │   │   ├── async-io v2.6.0 (*)
+     │   │   ├── calloop v0.13.0 (*)
+     │   │   └── calloop v0.14.4 (*)
+     │   ├── smithay-client-toolkit v0.20.0 (*)
+     │   ├── tempfile v3.27.0
+     │   │   └── uds_windows v1.2.1
+     │   │       └── zbus v5.19.0 (*)
+     │   ├── wayland-backend v0.3.17
+     │   │   ├── calloop-wayland-source v0.3.0 (*)
+     │   │   ├── calloop-wayland-source v0.4.1 (*)
+     │   │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   │   ├── smithay-client-toolkit v0.20.0 (*)
+     │   │   ├── smithay-clipboard v0.7.3 (*)
+     │   │   ├── wayland-client v0.31.15
+     │   │   │   ├── calloop-wayland-source v0.3.0 (*)
+     │   │   │   ├── calloop-wayland-source v0.4.1 (*)
+     │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   │   │   ├── smithay-client-toolkit v0.20.0 (*)
+     │   │   │   ├── wayland-cursor v0.31.14
+     │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+     │   │   │   ├── wayland-protocols v0.32.13
+     │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   │   │   │   ├── smithay-client-toolkit v0.20.0 (*)
+     │   │   │   │   ├── wayland-protocols-experimental v20250721.0.1
+     │   │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+     │   │   │   │   ├── wayland-protocols-misc v0.3.12
+     │   │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+     │   │   │   │   ├── wayland-protocols-plasma v0.3.12
+     │   │   │   │   │   └── winit v0.30.13 (*)
+     │   │   │   │   ├── wayland-protocols-wlr v0.3.12
+     │   │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+     │   │   │   │   └── winit v0.30.13 (*)
+     │   │   │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+     │   │   │   ├── wayland-protocols-misc v0.3.12 (*)
+     │   │   │   ├── wayland-protocols-plasma v0.3.12 (*)
+     │   │   │   ├── wayland-protocols-wlr v0.3.12 (*)
+     │   │   │   └── winit v0.30.13 (*)
+     │   │   ├── wayland-csd-frame v0.3.0
+     │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+     │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+     │   │   ├── wayland-protocols v0.32.13 (*)
+     │   │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+     │   │   ├── wayland-protocols-misc v0.3.12 (*)
+     │   │   ├── wayland-protocols-plasma v0.3.12 (*)
+     │   │   ├── wayland-protocols-wlr v0.3.12 (*)
+     │   │   └── winit v0.30.13 (*)
+     │   ├── wayland-client v0.31.15 (*)
+     │   ├── wayland-cursor v0.31.14 (*)
+     │   ├── x11rb v0.13.2 (*)
+     │   ├── xattr v1.6.1
+     │   │   └── tar v0.4.46
+     │   │       └── commander v0.2.0 (*)
+     │   └── zbus v5.19.0 (*)
+     ├── smithay-client-toolkit v0.19.2 (*)
+     ├── smithay-client-toolkit v0.20.0 (*)
+     ├── spirv v0.4.0+sdk-1.4.341.0
+     │   └── naga v30.0.1 (*)
+     ├── wayland-client v0.31.15 (*)
+     ├── wayland-csd-frame v0.3.0 (*)
+     ├── wayland-protocols v0.32.13 (*)
+     ├── wayland-protocols-experimental v20250721.0.1 (*)
+     ├── wayland-protocols-misc v0.3.12 (*)
+     ├── wayland-protocols-plasma v0.3.12 (*)
+     ├── wayland-protocols-wlr v0.3.12 (*)
+     ├── wgpu v30.0.1 (*)
+     ├── wgpu-core v30.0.1 (*)
+     ├── wgpu-hal v30.0.1 (*)
+     ├── wgpu-types v30.0.1
+     │   ├── wgpu v30.0.1 (*)
+     │   ├── wgpu-core v30.0.1 (*)
+     │   ├── wgpu-hal v30.0.1 (*)
+     │   └── wgpu-naga-bridge v30.0.1 (*)
+     ├── winit v0.30.13 (*)
+     └── xkbcommon-dl v0.4.2
+         └── winit v0.30.13 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'block-buffer'
+   ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:49:1
+   │  
+49 │ ╭ block-buffer 0.10.4 registry+https://github.com/rust-lang/crates.io-index
+50 │ │ block-buffer 0.12.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰─────────────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ block-buffer v0.10.4
+     └── digest v0.10.7
+         └── blake2 v0.10.6
+             └── argon2 v0.5.3
+                 └── commander v0.2.0
+   ├ block-buffer v0.12.1
+     └── digest v0.11.3
+         └── sha2 v0.11.1
+             └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'block2'
+   ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:51:1
+   │  
+51 │ ╭ block2 0.5.1 registry+https://github.com/rust-lang/crates.io-index
+52 │ │ block2 0.6.2 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰──────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ block2 v0.5.1
+     ├── objc2-foundation v0.2.2
+     │   ├── accesskit_macos v0.26.3
+     │   │   └── accesskit_winit v0.32.2
+     │   │       └── egui-winit v0.36.2
+     │   │           └── eframe v0.36.2
+     │   │               └── commander v0.2.0
+     │   ├── objc2-app-kit v0.2.2
+     │   │   ├── accesskit_macos v0.26.3 (*)
+     │   │   └── winit v0.30.13
+     │   │       ├── accesskit_winit v0.32.2 (*)
+     │   │       ├── eframe v0.36.2 (*)
+     │   │       ├── egui-wgpu v0.36.2
+     │   │       │   └── eframe v0.36.2 (*)
+     │   │       ├── egui-winit v0.36.2 (*)
+     │   │       └── glutin-winit v0.5.0
+     │   │           └── eframe v0.36.2 (*)
+     │   ├── objc2-ui-kit v0.2.2
+     │   │   └── winit v0.30.13 (*)
+     │   └── winit v0.30.13 (*)
+     └── winit v0.30.13 (*)
+   ├ block2 v0.6.2
+     ├── objc2-foundation v0.3.2
+     │   ├── arboard v3.6.1
+     │   │   ├── commander v0.2.0
+     │   │   └── egui-winit v0.36.2
+     │   │       └── eframe v0.36.2
+     │   │           └── commander v0.2.0 (*)
+     │   ├── eframe v0.36.2 (*)
+     │   ├── egui-winit v0.36.2 (*)
+     │   ├── glutin v0.32.3
+     │   │   ├── eframe v0.36.2 (*)
+     │   │   └── glutin-winit v0.5.0
+     │   │       └── eframe v0.36.2 (*)
+     │   ├── objc2-app-kit v0.3.2
+     │   │   ├── arboard v3.6.1 (*)
+     │   │   ├── eframe v0.36.2 (*)
+     │   │   ├── glutin v0.32.3 (*)
+     │   │   └── webbrowser v1.2.4
+     │   │       └── egui-winit v0.36.2 (*)
+     │   ├── objc2-metal v0.3.2
+     │   │   ├── objc2-quartz-core v0.3.2
+     │   │   │   ├── raw-window-metal v1.1.0
+     │   │   │   │   └── wgpu-hal v30.0.1
+     │   │   │   │       ├── wgpu v30.0.1
+     │   │   │   │       │   ├── eframe v0.36.2 (*)
+     │   │   │   │       │   └── egui-wgpu v0.36.2
+     │   │   │   │       │       └── eframe v0.36.2 (*)
+     │   │   │   │       ├── wgpu-core v30.0.1
+     │   │   │   │       │   └── wgpu v30.0.1 (*)
+     │   │   │   │       ├── wgpu-core-deps-apple v30.0.1
+     │   │   │   │       │   └── wgpu-core v30.0.1 (*)
+     │   │   │   │       ├── wgpu-core-deps-emscripten v30.0.1
+     │   │   │   │       │   └── wgpu-core v30.0.1 (*)
+     │   │   │   │       ├── wgpu-core-deps-wasm v30.0.1
+     │   │   │   │       │   └── wgpu-core v30.0.1 (*)
+     │   │   │   │       └── wgpu-core-deps-windows-linux-android v30.0.1
+     │   │   │   │           └── wgpu-core v30.0.1 (*)
+     │   │   │   └── wgpu-hal v30.0.1 (*)
+     │   │   └── wgpu-hal v30.0.1 (*)
+     │   ├── objc2-quartz-core v0.3.2 (*)
+     │   ├── objc2-ui-kit v0.3.2
+     │   │   └── egui-winit v0.36.2 (*)
+     │   ├── raw-window-metal v1.1.0 (*)
+     │   ├── trash v5.2.8
+     │   │   └── commander v0.2.0 (*)
+     │   ├── webbrowser v1.2.4 (*)
+     │   └── wgpu-hal v30.0.1 (*)
+     ├── objc2-metal v0.3.2 (*)
+     └── wgpu-hal v30.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'calloop'
+   ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:59:1
+   │  
+59 │ ╭ calloop 0.13.0 registry+https://github.com/rust-lang/crates.io-index
+60 │ │ calloop 0.14.4 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰────────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ calloop v0.13.0
+     ├── calloop-wayland-source v0.3.0
+     │   └── smithay-client-toolkit v0.19.2
+     │       ├── sctk-adwaita v0.10.1
+     │       │   └── winit v0.30.13
+     │       │       ├── accesskit_winit v0.32.2
+     │       │       │   └── egui-winit v0.36.2
+     │       │       │       └── eframe v0.36.2
+     │       │       │           └── commander v0.2.0
+     │       │       ├── eframe v0.36.2 (*)
+     │       │       ├── egui-wgpu v0.36.2
+     │       │       │   └── eframe v0.36.2 (*)
+     │       │       ├── egui-winit v0.36.2 (*)
+     │       │       └── glutin-winit v0.5.0
+     │       │           └── eframe v0.36.2 (*)
+     │       └── winit v0.30.13 (*)
+     ├── smithay-client-toolkit v0.19.2 (*)
+     └── winit v0.30.13 (*)
+   ├ calloop v0.14.4
+     ├── calloop-wayland-source v0.4.1
+     │   └── smithay-client-toolkit v0.20.0
+     │       └── smithay-clipboard v0.7.3
+     │           └── egui-winit v0.36.2
+     │               └── eframe v0.36.2
+     │                   └── commander v0.2.0
+     └── smithay-client-toolkit v0.20.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'calloop-wayland-source'
+   ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:61:1
+   │  
+61 │ ╭ calloop-wayland-source 0.3.0 registry+https://github.com/rust-lang/crates.io-index
+62 │ │ calloop-wayland-source 0.4.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰──────────────────────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ calloop-wayland-source v0.3.0
+     └── smithay-client-toolkit v0.19.2
+         ├── sctk-adwaita v0.10.1
+         │   └── winit v0.30.13
+         │       ├── accesskit_winit v0.32.2
+         │       │   └── egui-winit v0.36.2
+         │       │       └── eframe v0.36.2
+         │       │           └── commander v0.2.0
+         │       ├── eframe v0.36.2 (*)
+         │       ├── egui-wgpu v0.36.2
+         │       │   └── eframe v0.36.2 (*)
+         │       ├── egui-winit v0.36.2 (*)
+         │       └── glutin-winit v0.5.0
+         │           └── eframe v0.36.2 (*)
+         └── winit v0.30.13 (*)
+   ├ calloop-wayland-source v0.4.1
+     └── smithay-client-toolkit v0.20.0
+         └── smithay-clipboard v0.7.3
+             └── egui-winit v0.36.2
+                 └── eframe v0.36.2
+                     └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'cpufeatures'
+   ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:84:1
+   │  
+84 │ ╭ cpufeatures 0.2.17 registry+https://github.com/rust-lang/crates.io-index
+85 │ │ cpufeatures 0.3.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰───────────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ cpufeatures v0.2.17
+     ├── argon2 v0.5.3
+     │   └── commander v0.2.0
+     ├── chacha20 v0.9.1
+     │   └── chacha20poly1305 v0.10.1
+     │       └── commander v0.2.0 (*)
+     └── poly1305 v0.8.0
+         └── chacha20poly1305 v0.10.1 (*)
+   ├ cpufeatures v0.3.1
+     ├── blake3 v1.8.7
+     │   └── commander v0.2.0
+     └── sha2 v0.11.1
+         └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'crypto-common'
+   ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:94:1
+   │  
+94 │ ╭ crypto-common 0.1.7 registry+https://github.com/rust-lang/crates.io-index
+95 │ │ crypto-common 0.2.2 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰─────────────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ crypto-common v0.1.7
+     ├── aead v0.5.2
+     │   └── chacha20poly1305 v0.10.1
+     │       └── commander v0.2.0
+     ├── cipher v0.4.4
+     │   ├── chacha20 v0.9.1
+     │   │   └── chacha20poly1305 v0.10.1 (*)
+     │   └── chacha20poly1305 v0.10.1 (*)
+     ├── digest v0.10.7
+     │   └── blake2 v0.10.6
+     │       └── argon2 v0.5.3
+     │           └── commander v0.2.0 (*)
+     └── universal-hash v0.5.1
+         └── poly1305 v0.8.0
+             └── chacha20poly1305 v0.10.1 (*)
+   ├ crypto-common v0.2.2
+     └── digest v0.11.3
+         └── sha2 v0.11.1
+             └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'digest'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:100:1
+    │  
+100 │ ╭ digest 0.10.7 registry+https://github.com/rust-lang/crates.io-index
+101 │ │ digest 0.11.3 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ digest v0.10.7
+      └── blake2 v0.10.6
+          └── argon2 v0.5.3
+              └── commander v0.2.0
+    ├ digest v0.11.3
+      └── sha2 v0.11.1
+          └── commander v0.2.0
+
+warning[duplicate]: found 3 duplicate entries for crate 'getrandom'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:157:1
+    │  
+157 │ ╭ getrandom 0.2.17 registry+https://github.com/rust-lang/crates.io-index
+158 │ │ getrandom 0.3.4 registry+https://github.com/rust-lang/crates.io-index
+159 │ │ getrandom 0.4.3 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ getrandom v0.2.17
+      ├── rand_core v0.6.4
+      │   ├── crypto-common v0.1.7
+      │   │   ├── aead v0.5.2
+      │   │   │   └── chacha20poly1305 v0.10.1
+      │   │   │       └── commander v0.2.0
+      │   │   ├── cipher v0.4.4
+      │   │   │   ├── chacha20 v0.9.1
+      │   │   │   │   └── chacha20poly1305 v0.10.1 (*)
+      │   │   │   └── chacha20poly1305 v0.10.1 (*)
+      │   │   ├── digest v0.10.7
+      │   │   │   └── blake2 v0.10.6
+      │   │   │       └── argon2 v0.5.3
+      │   │   │           └── commander v0.2.0 (*)
+      │   │   └── universal-hash v0.5.1
+      │   │       └── poly1305 v0.8.0
+      │   │           └── chacha20poly1305 v0.10.1 (*)
+      │   ├── password-hash v0.5.0
+      │   │   └── argon2 v0.5.3 (*)
+      │   ├── rand v0.8.8
+      │   │   └── commander v0.2.0 (*)
+      │   └── rand_chacha v0.3.1
+      │       └── rand v0.8.8 (*)
+      └── redox_users v0.5.2
+          └── dirs-sys v0.5.0
+              └── dirs v7.0.0
+                  └── commander v0.2.0 (*)
+    ├ getrandom v0.3.4
+      └── ahash v0.8.12
+          ├── eframe v0.36.2
+          │   └── commander v0.2.0
+          ├── egui v0.36.2
+          │   ├── commander v0.2.0 (*)
+          │   ├── eframe v0.36.2 (*)
+          │   ├── egui-wgpu v0.36.2
+          │   │   └── eframe v0.36.2 (*)
+          │   ├── egui-winit v0.36.2
+          │   │   └── eframe v0.36.2 (*)
+          │   ├── egui_extras v0.36.2
+          │   │   └── commander v0.2.0 (*)
+          │   └── egui_glow v0.36.2
+          │       └── eframe v0.36.2 (*)
+          ├── egui-wgpu v0.36.2 (*)
+          ├── egui_extras v0.36.2 (*)
+          ├── epaint v0.36.2
+          │   ├── egui v0.36.2 (*)
+          │   └── egui-wgpu v0.36.2 (*)
+          └── winit v0.30.13
+              ├── accesskit_winit v0.32.2
+              │   └── egui-winit v0.36.2 (*)
+              ├── eframe v0.36.2 (*)
+              ├── egui-wgpu v0.36.2 (*)
+              ├── egui-winit v0.36.2 (*)
+              └── glutin-winit v0.5.0
+                  └── eframe v0.36.2 (*)
+    ├ getrandom v0.4.3
+      ├── jobserver v0.1.35
+      │   └── cc v1.4.5
+      │       ├── (build) android-activity v0.6.1
+      │       │   └── winit v0.30.13
+      │       │       ├── accesskit_winit v0.32.2
+      │       │       │   └── egui-winit v0.36.2
+      │       │       │       └── eframe v0.36.2
+      │       │       │           └── commander v0.2.0
+      │       │       ├── eframe v0.36.2 (*)
+      │       │       ├── egui-wgpu v0.36.2
+      │       │       │   └── eframe v0.36.2 (*)
+      │       │       ├── egui-winit v0.36.2 (*)
+      │       │       └── glutin-winit v0.5.0
+      │       │           └── eframe v0.36.2 (*)
+      │       ├── (build) blake3 v1.8.7
+      │       │   └── commander v0.2.0 (*)
+      │       ├── (build) iana-time-zone-haiku v0.1.2
+      │       │   └── iana-time-zone v0.1.65
+      │       │       └── chrono v0.4.45
+      │       │           ├── commander v0.2.0 (*)
+      │       │           └── trash v5.2.8
+      │       │               └── commander v0.2.0 (*)
+      │       └── (build) wayland-backend v0.3.17
+      │           ├── calloop-wayland-source v0.3.0
+      │           │   └── smithay-client-toolkit v0.19.2
+      │           │       ├── sctk-adwaita v0.10.1
+      │           │       │   └── winit v0.30.13 (*)
+      │           │       └── winit v0.30.13 (*)
+      │           ├── calloop-wayland-source v0.4.1
+      │           │   └── smithay-client-toolkit v0.20.0
+      │           │       └── smithay-clipboard v0.7.3
+      │           │           └── egui-winit v0.36.2 (*)
+      │           ├── smithay-client-toolkit v0.19.2 (*)
+      │           ├── smithay-client-toolkit v0.20.0 (*)
+      │           ├── smithay-clipboard v0.7.3 (*)
+      │           ├── wayland-client v0.31.15
+      │           │   ├── calloop-wayland-source v0.3.0 (*)
+      │           │   ├── calloop-wayland-source v0.4.1 (*)
+      │           │   ├── smithay-client-toolkit v0.19.2 (*)
+      │           │   ├── smithay-client-toolkit v0.20.0 (*)
+      │           │   ├── wayland-cursor v0.31.14
+      │           │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │           │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │           │   ├── wayland-protocols v0.32.13
+      │           │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │           │   │   ├── smithay-client-toolkit v0.20.0 (*)
+      │           │   │   ├── wayland-protocols-experimental v20250721.0.1
+      │           │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │           │   │   ├── wayland-protocols-misc v0.3.12
+      │           │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │           │   │   ├── wayland-protocols-plasma v0.3.12
+      │           │   │   │   └── winit v0.30.13 (*)
+      │           │   │   ├── wayland-protocols-wlr v0.3.12
+      │           │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │           │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │           │   │   └── winit v0.30.13 (*)
+      │           │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+      │           │   ├── wayland-protocols-misc v0.3.12 (*)
+      │           │   ├── wayland-protocols-plasma v0.3.12 (*)
+      │           │   ├── wayland-protocols-wlr v0.3.12 (*)
+      │           │   └── winit v0.30.13 (*)
+      │           ├── wayland-csd-frame v0.3.0
+      │           │   ├── smithay-client-toolkit v0.19.2 (*)
+      │           │   └── smithay-client-toolkit v0.20.0 (*)
+      │           ├── wayland-protocols v0.32.13 (*)
+      │           ├── wayland-protocols-experimental v20250721.0.1 (*)
+      │           ├── wayland-protocols-misc v0.3.12 (*)
+      │           ├── wayland-protocols-plasma v0.3.12 (*)
+      │           ├── wayland-protocols-wlr v0.3.12 (*)
+      │           └── winit v0.30.13 (*)
+      └── tempfile v3.27.0
+          └── uds_windows v1.2.1
+              └── zbus v5.19.0
+                  ├── accesskit_unix v0.21.1
+                  │   └── accesskit_winit v0.32.2 (*)
+                  ├── atspi-common v0.13.0
+                  │   ├── accesskit_atspi_common v0.18.1
+                  │   │   └── accesskit_unix v0.21.1 (*)
+                  │   ├── atspi v0.29.0
+                  │   │   └── accesskit_unix v0.21.1 (*)
+                  │   └── atspi-proxies v0.13.0
+                  │       └── atspi v0.29.0 (*)
+                  └── atspi-proxies v0.13.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'hashbrown'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:172:1
+    │  
+172 │ ╭ hashbrown 0.16.1 registry+https://github.com/rust-lang/crates.io-index
+173 │ │ hashbrown 0.17.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ hashbrown v0.16.1
+      ├── accesskit_consumer v0.35.0
+      │   └── accesskit_windows v0.32.1
+      │       └── accesskit_winit v0.32.2
+      │           └── egui-winit v0.36.2
+      │               └── eframe v0.36.2
+      │                   └── commander v0.2.0
+      ├── accesskit_consumer v0.36.0
+      │   └── accesskit_atspi_common v0.18.1
+      │       └── accesskit_unix v0.21.1
+      │           └── accesskit_winit v0.32.2 (*)
+      ├── accesskit_consumer v0.38.0
+      │   └── accesskit_macos v0.26.3
+      │       └── accesskit_winit v0.32.2 (*)
+      ├── accesskit_macos v0.26.3 (*)
+      ├── accesskit_windows v0.32.1 (*)
+      └── gpu-allocator v0.28.0
+          └── wgpu-hal v30.0.1
+              ├── wgpu v30.0.1
+              │   ├── eframe v0.36.2 (*)
+              │   └── egui-wgpu v0.36.2
+              │       └── eframe v0.36.2 (*)
+              ├── wgpu-core v30.0.1
+              │   └── wgpu v30.0.1 (*)
+              ├── wgpu-core-deps-apple v30.0.1
+              │   └── wgpu-core v30.0.1 (*)
+              ├── wgpu-core-deps-emscripten v30.0.1
+              │   └── wgpu-core v30.0.1 (*)
+              ├── wgpu-core-deps-wasm v30.0.1
+              │   └── wgpu-core v30.0.1 (*)
+              └── wgpu-core-deps-windows-linux-android v30.0.1
+                  └── wgpu-core v30.0.1 (*)
+    ├ hashbrown v0.17.1
+      ├── indexmap v2.14.2
+      │   ├── naga v30.0.1
+      │   │   ├── wgpu-core v30.0.1
+      │   │   │   └── wgpu v30.0.1
+      │   │   │       ├── eframe v0.36.2
+      │   │   │       │   └── commander v0.2.0
+      │   │   │       └── egui-wgpu v0.36.2
+      │   │   │           └── eframe v0.36.2 (*)
+      │   │   ├── wgpu-hal v30.0.1
+      │   │   │   ├── wgpu v30.0.1 (*)
+      │   │   │   ├── wgpu-core v30.0.1 (*)
+      │   │   │   ├── wgpu-core-deps-apple v30.0.1
+      │   │   │   │   └── wgpu-core v30.0.1 (*)
+      │   │   │   ├── wgpu-core-deps-emscripten v30.0.1
+      │   │   │   │   └── wgpu-core v30.0.1 (*)
+      │   │   │   ├── wgpu-core-deps-wasm v30.0.1
+      │   │   │   │   └── wgpu-core v30.0.1 (*)
+      │   │   │   └── wgpu-core-deps-windows-linux-android v30.0.1
+      │   │   │       └── wgpu-core v30.0.1 (*)
+      │   │   └── wgpu-naga-bridge v30.0.1
+      │   │       ├── wgpu-core v30.0.1 (*)
+      │   │       └── wgpu-hal v30.0.1 (*)
+      │   ├── naga-types v30.0.1
+      │   │   ├── naga v30.0.1 (*)
+      │   │   ├── wgpu-core v30.0.1 (*)
+      │   │   ├── wgpu-hal v30.0.1 (*)
+      │   │   └── wgpu-types v30.0.1
+      │   │       ├── wgpu v30.0.1 (*)
+      │   │       ├── wgpu-core v30.0.1 (*)
+      │   │       ├── wgpu-hal v30.0.1 (*)
+      │   │       └── wgpu-naga-bridge v30.0.1 (*)
+      │   ├── toml_edit v0.25.15+spec-1.1.0
+      │   │   └── proc-macro-crate v3.5.0
+      │   │       ├── num_enum_derive v0.7.6
+      │   │       │   └── num_enum v0.7.6
+      │   │       │       ├── android-activity v0.6.1
+      │   │       │       │   └── winit v0.30.13
+      │   │       │       │       ├── accesskit_winit v0.32.2
+      │   │       │       │       │   └── egui-winit v0.36.2
+      │   │       │       │       │       └── eframe v0.36.2 (*)
+      │   │       │       │       ├── eframe v0.36.2 (*)
+      │   │       │       │       ├── egui-wgpu v0.36.2 (*)
+      │   │       │       │       ├── egui-winit v0.36.2 (*)
+      │   │       │       │       └── glutin-winit v0.5.0
+      │   │       │       │           └── eframe v0.36.2 (*)
+      │   │       │       └── ndk v0.9.0
+      │   │       │           ├── android-activity v0.6.1 (*)
+      │   │       │           └── winit v0.30.13 (*)
+      │   │       ├── zbus_macros v5.19.0
+      │   │       │   └── zbus v5.19.0
+      │   │       │       ├── accesskit_unix v0.21.1
+      │   │       │       │   └── accesskit_winit v0.32.2 (*)
+      │   │       │       ├── atspi-common v0.13.0
+      │   │       │       │   ├── accesskit_atspi_common v0.18.1
+      │   │       │       │   │   └── accesskit_unix v0.21.1 (*)
+      │   │       │       │   ├── atspi v0.29.0
+      │   │       │       │   │   └── accesskit_unix v0.21.1 (*)
+      │   │       │       │   └── atspi-proxies v0.13.0
+      │   │       │       │       └── atspi v0.29.0 (*)
+      │   │       │       └── atspi-proxies v0.13.0 (*)
+      │   │       └── zvariant_derive v5.15.0
+      │   │           └── zvariant v5.15.0
+      │   │               ├── accesskit_atspi_common v0.18.1 (*)
+      │   │               ├── atspi-common v0.13.0 (*)
+      │   │               ├── zbus v5.19.0 (*)
+      │   │               ├── zbus-lockstep v0.5.2
+      │   │               │   ├── atspi-common v0.13.0 (*)
+      │   │               │   └── zbus-lockstep-macros v0.5.2
+      │   │               │       └── atspi-common v0.13.0 (*)
+      │   │               ├── zbus-lockstep-macros v0.5.2 (*)
+      │   │               ├── zbus_macros v5.19.0 (*)
+      │   │               ├── zbus_names v4.3.4
+      │   │               │   ├── atspi-common v0.13.0 (*)
+      │   │               │   ├── zbus v5.19.0 (*)
+      │   │               │   ├── zbus_macros v5.19.0 (*)
+      │   │               │   └── zbus_xml v5.2.1
+      │   │               │       ├── zbus-lockstep v0.5.2 (*)
+      │   │               │       └── zbus-lockstep-macros v0.5.2 (*)
+      │   │               └── zbus_xml v5.2.1 (*)
+      │   ├── wgpu-core v30.0.1 (*)
+      │   └── zip v9.0.5
+      │       └── commander v0.2.0 (*)
+      ├── naga v30.0.1 (*)
+      ├── naga-types v30.0.1 (*)
+      ├── vello_cpu v0.1.0
+      │   └── epaint v0.36.2
+      │       ├── egui v0.36.2
+      │       │   ├── commander v0.2.0 (*)
+      │       │   ├── eframe v0.36.2 (*)
+      │       │   ├── egui-wgpu v0.36.2 (*)
+      │       │   ├── egui-winit v0.36.2 (*)
+      │       │   ├── egui_extras v0.36.2
+      │       │   │   └── commander v0.2.0 (*)
+      │       │   └── egui_glow v0.36.2
+      │       │       └── eframe v0.36.2 (*)
+      │       └── egui-wgpu v0.36.2 (*)
+      ├── wgpu v30.0.1 (*)
+      ├── wgpu-core v30.0.1 (*)
+      └── wgpu-hal v30.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'jni-sys'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:203:1
+    │  
+203 │ ╭ jni-sys 0.3.1 registry+https://github.com/rust-lang/crates.io-index
+204 │ │ jni-sys 0.4.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ jni-sys v0.3.1
+      ├── ndk v0.9.0
+      │   ├── android-activity v0.6.1
+      │   │   └── winit v0.30.13
+      │   │       ├── accesskit_winit v0.32.2
+      │   │       │   └── egui-winit v0.36.2
+      │   │       │       └── eframe v0.36.2
+      │   │       │           └── commander v0.2.0
+      │   │       ├── eframe v0.36.2 (*)
+      │   │       ├── egui-wgpu v0.36.2
+      │   │       │   └── eframe v0.36.2 (*)
+      │   │       ├── egui-winit v0.36.2 (*)
+      │   │       └── glutin-winit v0.5.0
+      │   │           └── eframe v0.36.2 (*)
+      │   └── winit v0.30.13 (*)
+      └── ndk-sys v0.6.0+11769913
+          ├── android-activity v0.6.1 (*)
+          ├── ndk v0.9.0 (*)
+          └── wgpu-hal v30.0.1
+              ├── wgpu v30.0.1
+              │   ├── eframe v0.36.2 (*)
+              │   └── egui-wgpu v0.36.2 (*)
+              ├── wgpu-core v30.0.1
+              │   └── wgpu v30.0.1 (*)
+              ├── wgpu-core-deps-apple v30.0.1
+              │   └── wgpu-core v30.0.1 (*)
+              ├── wgpu-core-deps-emscripten v30.0.1
+              │   └── wgpu-core v30.0.1 (*)
+              ├── wgpu-core-deps-wasm v30.0.1
+              │   └── wgpu-core v30.0.1 (*)
+              └── wgpu-core-deps-windows-linux-android v30.0.1
+                  └── wgpu-core v30.0.1 (*)
+    ├ jni-sys v0.4.1
+      ├── jni v0.22.4
+      │   ├── android-activity v0.6.1
+      │   │   └── winit v0.30.13
+      │   │       ├── accesskit_winit v0.32.2
+      │   │       │   └── egui-winit v0.36.2
+      │   │       │       └── eframe v0.36.2
+      │   │       │           └── commander v0.2.0
+      │   │       ├── eframe v0.36.2 (*)
+      │   │       ├── egui-wgpu v0.36.2
+      │   │       │   └── eframe v0.36.2 (*)
+      │   │       ├── egui-winit v0.36.2 (*)
+      │   │       └── glutin-winit v0.5.0
+      │   │           └── eframe v0.36.2 (*)
+      │   └── webbrowser v1.2.4
+      │       └── egui-winit v0.36.2 (*)
+      └── jni-sys v0.3.1
+          ├── ndk v0.9.0
+          │   ├── android-activity v0.6.1 (*)
+          │   └── winit v0.30.13 (*)
+          └── ndk-sys v0.6.0+11769913
+              ├── android-activity v0.6.1 (*)
+              ├── ndk v0.9.0 (*)
+              └── wgpu-hal v30.0.1
+                  ├── wgpu v30.0.1
+                  │   ├── eframe v0.36.2 (*)
+                  │   └── egui-wgpu v0.36.2 (*)
+                  ├── wgpu-core v30.0.1
+                  │   └── wgpu v30.0.1 (*)
+                  ├── wgpu-core-deps-apple v30.0.1
+                  │   └── wgpu-core v30.0.1 (*)
+                  ├── wgpu-core-deps-emscripten v30.0.1
+                  │   └── wgpu-core v30.0.1 (*)
+                  ├── wgpu-core-deps-wasm v30.0.1
+                  │   └── wgpu-core v30.0.1 (*)
+                  └── wgpu-core-deps-windows-linux-android v30.0.1
+                      └── wgpu-core v30.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'kurbo'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:213:1
+    │  
+213 │ ╭ kurbo 0.11.3 registry+https://github.com/rust-lang/crates.io-index
+214 │ │ kurbo 0.13.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ kurbo v0.11.3
+      ├── svgtypes v0.15.3
+      │   ├── resvg v0.45.1
+      │   │   └── egui_extras v0.36.2
+      │   │       └── commander v0.2.0
+      │   └── usvg v0.45.1
+      │       └── resvg v0.45.1 (*)
+      └── usvg v0.45.1 (*)
+    ├ kurbo v0.13.1
+      └── peniko v0.6.1
+          └── vello_common v0.1.0
+              └── vello_cpu v0.1.0
+                  └── epaint v0.36.2
+                      ├── egui v0.36.2
+                      │   ├── commander v0.2.0
+                      │   ├── eframe v0.36.2
+                      │   │   └── commander v0.2.0 (*)
+                      │   ├── egui-wgpu v0.36.2
+                      │   │   └── eframe v0.36.2 (*)
+                      │   ├── egui-winit v0.36.2
+                      │   │   └── eframe v0.36.2 (*)
+                      │   ├── egui_extras v0.36.2
+                      │   │   └── commander v0.2.0 (*)
+                      │   └── egui_glow v0.36.2
+                      │       └── eframe v0.36.2 (*)
+                      └── egui-wgpu v0.36.2 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'linux-raw-sys'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:220:1
+    │  
+220 │ ╭ linux-raw-sys 0.4.15 registry+https://github.com/rust-lang/crates.io-index
+221 │ │ linux-raw-sys 0.12.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ linux-raw-sys v0.4.15
+      └── rustix v0.38.44
+          ├── calloop v0.13.0
+          │   ├── calloop-wayland-source v0.3.0
+          │   │   └── smithay-client-toolkit v0.19.2
+          │   │       ├── sctk-adwaita v0.10.1
+          │   │       │   └── winit v0.30.13
+          │   │       │       ├── accesskit_winit v0.32.2
+          │   │       │       │   └── egui-winit v0.36.2
+          │   │       │       │       └── eframe v0.36.2
+          │   │       │       │           └── commander v0.2.0
+          │   │       │       ├── eframe v0.36.2 (*)
+          │   │       │       ├── egui-wgpu v0.36.2
+          │   │       │       │   └── eframe v0.36.2 (*)
+          │   │       │       ├── egui-winit v0.36.2 (*)
+          │   │       │       └── glutin-winit v0.5.0
+          │   │       │           └── eframe v0.36.2 (*)
+          │   │       └── winit v0.30.13 (*)
+          │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   └── winit v0.30.13 (*)
+          ├── calloop-wayland-source v0.3.0 (*)
+          ├── smithay-client-toolkit v0.19.2 (*)
+          └── winit v0.30.13 (*)
+    ├ linux-raw-sys v0.12.1
+      └── rustix v1.1.4
+          ├── async-io v2.6.0
+          │   ├── async-process v2.5.0
+          │   │   └── zbus v5.19.0
+          │   │       ├── accesskit_unix v0.21.1
+          │   │       │   └── accesskit_winit v0.32.2
+          │   │       │       └── egui-winit v0.36.2
+          │   │       │           └── eframe v0.36.2
+          │   │       │               └── commander v0.2.0
+          │   │       ├── atspi-common v0.13.0
+          │   │       │   ├── accesskit_atspi_common v0.18.1
+          │   │       │   │   └── accesskit_unix v0.21.1 (*)
+          │   │       │   ├── atspi v0.29.0
+          │   │       │   │   └── accesskit_unix v0.21.1 (*)
+          │   │       │   └── atspi-proxies v0.13.0
+          │   │       │       └── atspi v0.29.0 (*)
+          │   │       └── atspi-proxies v0.13.0 (*)
+          │   ├── async-signal v0.2.14
+          │   │   └── async-process v2.5.0 (*)
+          │   └── zbus v5.19.0 (*)
+          ├── async-process v2.5.0 (*)
+          ├── async-signal v0.2.14 (*)
+          ├── calloop v0.14.4
+          │   ├── calloop-wayland-source v0.4.1
+          │   │   └── smithay-client-toolkit v0.20.0
+          │   │       └── smithay-clipboard v0.7.3
+          │   │           └── egui-winit v0.36.2 (*)
+          │   └── smithay-client-toolkit v0.20.0 (*)
+          ├── calloop-wayland-source v0.4.1 (*)
+          ├── gethostname v1.1.0
+          │   └── x11rb v0.13.2
+          │       ├── arboard v3.6.1
+          │       │   ├── commander v0.2.0 (*)
+          │       │   └── egui-winit v0.36.2 (*)
+          │       └── winit v0.30.13
+          │           ├── accesskit_winit v0.32.2 (*)
+          │           ├── eframe v0.36.2 (*)
+          │           ├── egui-wgpu v0.36.2
+          │           │   └── eframe v0.36.2 (*)
+          │           ├── egui-winit v0.36.2 (*)
+          │           └── glutin-winit v0.5.0
+          │               └── eframe v0.36.2 (*)
+          ├── polling v3.11.0
+          │   ├── async-io v2.6.0 (*)
+          │   ├── calloop v0.13.0
+          │   │   ├── calloop-wayland-source v0.3.0
+          │   │   │   └── smithay-client-toolkit v0.19.2
+          │   │   │       ├── sctk-adwaita v0.10.1
+          │   │   │       │   └── winit v0.30.13 (*)
+          │   │   │       └── winit v0.30.13 (*)
+          │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   │   └── winit v0.30.13 (*)
+          │   └── calloop v0.14.4 (*)
+          ├── smithay-client-toolkit v0.20.0 (*)
+          ├── tempfile v3.27.0
+          │   └── uds_windows v1.2.1
+          │       └── zbus v5.19.0 (*)
+          ├── wayland-backend v0.3.17
+          │   ├── calloop-wayland-source v0.3.0 (*)
+          │   ├── calloop-wayland-source v0.4.1 (*)
+          │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   ├── smithay-client-toolkit v0.20.0 (*)
+          │   ├── smithay-clipboard v0.7.3 (*)
+          │   ├── wayland-client v0.31.15
+          │   │   ├── calloop-wayland-source v0.3.0 (*)
+          │   │   ├── calloop-wayland-source v0.4.1 (*)
+          │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   │   ├── smithay-client-toolkit v0.20.0 (*)
+          │   │   ├── wayland-cursor v0.31.14
+          │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │   │   ├── wayland-protocols v0.32.13
+          │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   │   │   ├── smithay-client-toolkit v0.20.0 (*)
+          │   │   │   ├── wayland-protocols-experimental v20250721.0.1
+          │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │   │   │   ├── wayland-protocols-misc v0.3.12
+          │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │   │   │   ├── wayland-protocols-plasma v0.3.12
+          │   │   │   │   └── winit v0.30.13 (*)
+          │   │   │   ├── wayland-protocols-wlr v0.3.12
+          │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │   │   │   └── winit v0.30.13 (*)
+          │   │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+          │   │   ├── wayland-protocols-misc v0.3.12 (*)
+          │   │   ├── wayland-protocols-plasma v0.3.12 (*)
+          │   │   ├── wayland-protocols-wlr v0.3.12 (*)
+          │   │   └── winit v0.30.13 (*)
+          │   ├── wayland-csd-frame v0.3.0
+          │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │   ├── wayland-protocols v0.32.13 (*)
+          │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+          │   ├── wayland-protocols-misc v0.3.12 (*)
+          │   ├── wayland-protocols-plasma v0.3.12 (*)
+          │   ├── wayland-protocols-wlr v0.3.12 (*)
+          │   └── winit v0.30.13 (*)
+          ├── wayland-client v0.31.15 (*)
+          ├── wayland-cursor v0.31.14 (*)
+          ├── x11rb v0.13.2 (*)
+          ├── xattr v1.6.1
+          │   └── tar v0.4.46
+          │       └── commander v0.2.0 (*)
+          └── zbus v5.19.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'miniz_oxide'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:232:1
+    │  
+232 │ ╭ miniz_oxide 0.8.9 registry+https://github.com/rust-lang/crates.io-index
+233 │ │ miniz_oxide 0.9.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ miniz_oxide v0.8.9
+      ├── png v0.17.16
+      │   └── tiny-skia v0.11.4
+      │       ├── resvg v0.45.1
+      │       │   └── egui_extras v0.36.2
+      │       │       └── commander v0.2.0
+      │       └── sctk-adwaita v0.10.1
+      │           └── winit v0.30.13
+      │               ├── accesskit_winit v0.32.2
+      │               │   └── egui-winit v0.36.2
+      │               │       └── eframe v0.36.2
+      │               │           └── commander v0.2.0 (*)
+      │               ├── eframe v0.36.2 (*)
+      │               ├── egui-wgpu v0.36.2
+      │               │   └── eframe v0.36.2 (*)
+      │               ├── egui-winit v0.36.2 (*)
+      │               └── glutin-winit v0.5.0
+      │                   └── eframe v0.36.2 (*)
+      └── png v0.18.1
+          └── image v0.25.10
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0 (*)
+              │   └── egui-winit v0.36.2 (*)
+              ├── commander v0.2.0 (*)
+              ├── eframe v0.36.2 (*)
+              └── egui_extras v0.36.2 (*)
+    ├ miniz_oxide v0.9.1
+      └── flate2 v1.1.10
+          ├── commander v0.2.0
+          ├── png v0.17.16
+          │   └── tiny-skia v0.11.4
+          │       ├── resvg v0.45.1
+          │       │   └── egui_extras v0.36.2
+          │       │       └── commander v0.2.0 (*)
+          │       └── sctk-adwaita v0.10.1
+          │           └── winit v0.30.13
+          │               ├── accesskit_winit v0.32.2
+          │               │   └── egui-winit v0.36.2
+          │               │       └── eframe v0.36.2
+          │               │           └── commander v0.2.0 (*)
+          │               ├── eframe v0.36.2 (*)
+          │               ├── egui-wgpu v0.36.2
+          │               │   └── eframe v0.36.2 (*)
+          │               ├── egui-winit v0.36.2 (*)
+          │               └── glutin-winit v0.5.0
+          │                   └── eframe v0.36.2 (*)
+          ├── png v0.18.1
+          │   └── image v0.25.10
+          │       ├── arboard v3.6.1
+          │       │   ├── commander v0.2.0 (*)
+          │       │   └── egui-winit v0.36.2 (*)
+          │       ├── commander v0.2.0 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       └── egui_extras v0.36.2 (*)
+          ├── tiff v0.11.3
+          │   └── image v0.25.10 (*)
+          ├── usvg v0.45.1
+          │   └── resvg v0.45.1 (*)
+          └── zip v9.0.5
+              └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'objc2'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:250:1
+    │  
+250 │ ╭ objc2 0.5.2 registry+https://github.com/rust-lang/crates.io-index
+251 │ │ objc2 0.6.4 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ objc2 v0.5.2
+      ├── accesskit_macos v0.26.3
+      │   └── accesskit_winit v0.32.2
+      │       └── egui-winit v0.36.2
+      │           └── eframe v0.36.2
+      │               └── commander v0.2.0
+      ├── block2 v0.5.1
+      │   ├── objc2-foundation v0.2.2
+      │   │   ├── accesskit_macos v0.26.3 (*)
+      │   │   ├── objc2-app-kit v0.2.2
+      │   │   │   ├── accesskit_macos v0.26.3 (*)
+      │   │   │   └── winit v0.30.13
+      │   │   │       ├── accesskit_winit v0.32.2 (*)
+      │   │   │       ├── eframe v0.36.2 (*)
+      │   │   │       ├── egui-wgpu v0.36.2
+      │   │   │       │   └── eframe v0.36.2 (*)
+      │   │   │       ├── egui-winit v0.36.2 (*)
+      │   │   │       └── glutin-winit v0.5.0
+      │   │   │           └── eframe v0.36.2 (*)
+      │   │   ├── objc2-ui-kit v0.2.2
+      │   │   │   └── winit v0.30.13 (*)
+      │   │   └── winit v0.30.13 (*)
+      │   └── winit v0.30.13 (*)
+      ├── objc2-app-kit v0.2.2 (*)
+      ├── objc2-foundation v0.2.2 (*)
+      ├── objc2-ui-kit v0.2.2 (*)
+      └── winit v0.30.13 (*)
+    ├ objc2 v0.6.4
+      ├── arboard v3.6.1
+      │   ├── commander v0.2.0
+      │   └── egui-winit v0.36.2
+      │       └── eframe v0.36.2
+      │           └── commander v0.2.0 (*)
+      ├── block2 v0.6.2
+      │   ├── objc2-foundation v0.3.2
+      │   │   ├── arboard v3.6.1 (*)
+      │   │   ├── eframe v0.36.2 (*)
+      │   │   ├── egui-winit v0.36.2 (*)
+      │   │   ├── glutin v0.32.3
+      │   │   │   ├── eframe v0.36.2 (*)
+      │   │   │   └── glutin-winit v0.5.0
+      │   │   │       └── eframe v0.36.2 (*)
+      │   │   ├── objc2-app-kit v0.3.2
+      │   │   │   ├── arboard v3.6.1 (*)
+      │   │   │   ├── eframe v0.36.2 (*)
+      │   │   │   ├── glutin v0.32.3 (*)
+      │   │   │   └── webbrowser v1.2.4
+      │   │   │       └── egui-winit v0.36.2 (*)
+      │   │   ├── objc2-metal v0.3.2
+      │   │   │   ├── objc2-quartz-core v0.3.2
+      │   │   │   │   ├── raw-window-metal v1.1.0
+      │   │   │   │   │   └── wgpu-hal v30.0.1
+      │   │   │   │   │       ├── wgpu v30.0.1
+      │   │   │   │   │       │   ├── eframe v0.36.2 (*)
+      │   │   │   │   │       │   └── egui-wgpu v0.36.2
+      │   │   │   │   │       │       └── eframe v0.36.2 (*)
+      │   │   │   │   │       ├── wgpu-core v30.0.1
+      │   │   │   │   │       │   └── wgpu v30.0.1 (*)
+      │   │   │   │   │       ├── wgpu-core-deps-apple v30.0.1
+      │   │   │   │   │       │   └── wgpu-core v30.0.1 (*)
+      │   │   │   │   │       ├── wgpu-core-deps-emscripten v30.0.1
+      │   │   │   │   │       │   └── wgpu-core v30.0.1 (*)
+      │   │   │   │   │       ├── wgpu-core-deps-wasm v30.0.1
+      │   │   │   │   │       │   └── wgpu-core v30.0.1 (*)
+      │   │   │   │   │       └── wgpu-core-deps-windows-linux-android v30.0.1
+      │   │   │   │   │           └── wgpu-core v30.0.1 (*)
+      │   │   │   │   └── wgpu-hal v30.0.1 (*)
+      │   │   │   └── wgpu-hal v30.0.1 (*)
+      │   │   ├── objc2-quartz-core v0.3.2 (*)
+      │   │   ├── objc2-ui-kit v0.3.2
+      │   │   │   └── egui-winit v0.36.2 (*)
+      │   │   ├── raw-window-metal v1.1.0 (*)
+      │   │   ├── trash v5.2.8
+      │   │   │   └── commander v0.2.0 (*)
+      │   │   ├── webbrowser v1.2.4 (*)
+      │   │   └── wgpu-hal v30.0.1 (*)
+      │   ├── objc2-metal v0.3.2 (*)
+      │   └── wgpu-hal v30.0.1 (*)
+      ├── dispatch2 v0.3.1
+      │   └── glutin v0.32.3 (*)
+      ├── eframe v0.36.2 (*)
+      ├── egui-winit v0.36.2 (*)
+      ├── glutin v0.32.3 (*)
+      ├── objc2-app-kit v0.3.2 (*)
+      ├── objc2-core-foundation v0.3.2
+      │   ├── arboard v3.6.1 (*)
+      │   ├── glutin v0.32.3 (*)
+      │   ├── objc2-app-kit v0.3.2 (*)
+      │   ├── objc2-core-graphics v0.3.2
+      │   │   ├── arboard v3.6.1 (*)
+      │   │   ├── objc2-app-kit v0.3.2 (*)
+      │   │   ├── objc2-quartz-core v0.3.2 (*)
+      │   │   └── wgpu-hal v30.0.1 (*)
+      │   ├── objc2-foundation v0.3.2 (*)
+      │   ├── objc2-quartz-core v0.3.2 (*)
+      │   ├── objc2-ui-kit v0.3.2 (*)
+      │   ├── raw-window-metal v1.1.0 (*)
+      │   └── wgpu-hal v30.0.1 (*)
+      ├── objc2-core-graphics v0.3.2 (*)
+      ├── objc2-foundation v0.3.2 (*)
+      ├── objc2-metal v0.3.2 (*)
+      ├── objc2-quartz-core v0.3.2 (*)
+      ├── objc2-ui-kit v0.3.2 (*)
+      ├── raw-window-metal v1.1.0 (*)
+      ├── trash v5.2.8 (*)
+      ├── webbrowser v1.2.4 (*)
+      └── wgpu-hal v30.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'objc2-app-kit'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:252:1
+    │  
+252 │ ╭ objc2-app-kit 0.2.2 registry+https://github.com/rust-lang/crates.io-index
+253 │ │ objc2-app-kit 0.3.2 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ objc2-app-kit v0.2.2
+      ├── accesskit_macos v0.26.3
+      │   └── accesskit_winit v0.32.2
+      │       └── egui-winit v0.36.2
+      │           └── eframe v0.36.2
+      │               └── commander v0.2.0
+      └── winit v0.30.13
+          ├── accesskit_winit v0.32.2 (*)
+          ├── eframe v0.36.2 (*)
+          ├── egui-wgpu v0.36.2
+          │   └── eframe v0.36.2 (*)
+          ├── egui-winit v0.36.2 (*)
+          └── glutin-winit v0.5.0
+              └── eframe v0.36.2 (*)
+    ├ objc2-app-kit v0.3.2
+      ├── arboard v3.6.1
+      │   ├── commander v0.2.0
+      │   └── egui-winit v0.36.2
+      │       └── eframe v0.36.2
+      │           └── commander v0.2.0 (*)
+      ├── eframe v0.36.2 (*)
+      ├── glutin v0.32.3
+      │   ├── eframe v0.36.2 (*)
+      │   └── glutin-winit v0.5.0
+      │       └── eframe v0.36.2 (*)
+      └── webbrowser v1.2.4
+          └── egui-winit v0.36.2 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'objc2-foundation'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:257:1
+    │  
+257 │ ╭ objc2-foundation 0.2.2 registry+https://github.com/rust-lang/crates.io-index
+258 │ │ objc2-foundation 0.3.2 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ objc2-foundation v0.2.2
+      ├── accesskit_macos v0.26.3
+      │   └── accesskit_winit v0.32.2
+      │       └── egui-winit v0.36.2
+      │           └── eframe v0.36.2
+      │               └── commander v0.2.0
+      ├── objc2-app-kit v0.2.2
+      │   ├── accesskit_macos v0.26.3 (*)
+      │   └── winit v0.30.13
+      │       ├── accesskit_winit v0.32.2 (*)
+      │       ├── eframe v0.36.2 (*)
+      │       ├── egui-wgpu v0.36.2
+      │       │   └── eframe v0.36.2 (*)
+      │       ├── egui-winit v0.36.2 (*)
+      │       └── glutin-winit v0.5.0
+      │           └── eframe v0.36.2 (*)
+      ├── objc2-ui-kit v0.2.2
+      │   └── winit v0.30.13 (*)
+      └── winit v0.30.13 (*)
+    ├ objc2-foundation v0.3.2
+      ├── arboard v3.6.1
+      │   ├── commander v0.2.0
+      │   └── egui-winit v0.36.2
+      │       └── eframe v0.36.2
+      │           └── commander v0.2.0 (*)
+      ├── eframe v0.36.2 (*)
+      ├── egui-winit v0.36.2 (*)
+      ├── glutin v0.32.3
+      │   ├── eframe v0.36.2 (*)
+      │   └── glutin-winit v0.5.0
+      │       └── eframe v0.36.2 (*)
+      ├── objc2-app-kit v0.3.2
+      │   ├── arboard v3.6.1 (*)
+      │   ├── eframe v0.36.2 (*)
+      │   ├── glutin v0.32.3 (*)
+      │   └── webbrowser v1.2.4
+      │       └── egui-winit v0.36.2 (*)
+      ├── objc2-metal v0.3.2
+      │   ├── objc2-quartz-core v0.3.2
+      │   │   ├── raw-window-metal v1.1.0
+      │   │   │   └── wgpu-hal v30.0.1
+      │   │   │       ├── wgpu v30.0.1
+      │   │   │       │   ├── eframe v0.36.2 (*)
+      │   │   │       │   └── egui-wgpu v0.36.2
+      │   │   │       │       └── eframe v0.36.2 (*)
+      │   │   │       ├── wgpu-core v30.0.1
+      │   │   │       │   └── wgpu v30.0.1 (*)
+      │   │   │       ├── wgpu-core-deps-apple v30.0.1
+      │   │   │       │   └── wgpu-core v30.0.1 (*)
+      │   │   │       ├── wgpu-core-deps-emscripten v30.0.1
+      │   │   │       │   └── wgpu-core v30.0.1 (*)
+      │   │   │       ├── wgpu-core-deps-wasm v30.0.1
+      │   │   │       │   └── wgpu-core v30.0.1 (*)
+      │   │   │       └── wgpu-core-deps-windows-linux-android v30.0.1
+      │   │   │           └── wgpu-core v30.0.1 (*)
+      │   │   └── wgpu-hal v30.0.1 (*)
+      │   └── wgpu-hal v30.0.1 (*)
+      ├── objc2-quartz-core v0.3.2 (*)
+      ├── objc2-ui-kit v0.3.2
+      │   └── egui-winit v0.36.2 (*)
+      ├── raw-window-metal v1.1.0 (*)
+      ├── trash v5.2.8
+      │   └── commander v0.2.0 (*)
+      ├── webbrowser v1.2.4 (*)
+      └── wgpu-hal v30.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'objc2-ui-kit'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:261:1
+    │  
+261 │ ╭ objc2-ui-kit 0.2.2 registry+https://github.com/rust-lang/crates.io-index
+262 │ │ objc2-ui-kit 0.3.2 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ objc2-ui-kit v0.2.2
+      └── winit v0.30.13
+          ├── accesskit_winit v0.32.2
+          │   └── egui-winit v0.36.2
+          │       └── eframe v0.36.2
+          │           └── commander v0.2.0
+          ├── eframe v0.36.2 (*)
+          ├── egui-wgpu v0.36.2
+          │   └── eframe v0.36.2 (*)
+          ├── egui-winit v0.36.2 (*)
+          └── glutin-winit v0.5.0
+              └── eframe v0.36.2 (*)
+    ├ objc2-ui-kit v0.3.2
+      └── egui-winit v0.36.2
+          └── eframe v0.36.2
+              └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'phf'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:277:1
+    │  
+277 │ ╭ phf 0.11.3 registry+https://github.com/rust-lang/crates.io-index
+278 │ │ phf 0.13.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ phf v0.11.3
+      └── (build) mime_guess2 v2.3.1
+          └── egui_extras v0.36.2
+              └── commander v0.2.0
+    ├ phf v0.13.1
+      └── accesskit_atspi_common v0.18.1
+          └── accesskit_unix v0.21.1
+              └── accesskit_winit v0.32.2
+                  └── egui-winit v0.36.2
+                      └── eframe v0.36.2
+                          └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'phf_shared'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:281:1
+    │  
+281 │ ╭ phf_shared 0.11.3 registry+https://github.com/rust-lang/crates.io-index
+282 │ │ phf_shared 0.13.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ phf_shared v0.11.3
+      ├── (build) mime_guess2 v2.3.1
+      │   └── egui_extras v0.36.2
+      │       └── commander v0.2.0
+      └── phf v0.11.3
+          └── (build) mime_guess2 v2.3.1 (*)
+    ├ phf_shared v0.13.1
+      ├── phf v0.13.1
+      │   └── accesskit_atspi_common v0.18.1
+      │       └── accesskit_unix v0.21.1
+      │           └── accesskit_winit v0.32.2
+      │               └── egui-winit v0.36.2
+      │                   └── eframe v0.36.2
+      │                       └── commander v0.2.0
+      ├── phf_generator v0.13.1
+      │   └── phf_macros v0.13.1
+      │       └── phf v0.13.1 (*)
+      └── phf_macros v0.13.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'png'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:290:1
+    │  
+290 │ ╭ png 0.17.16 registry+https://github.com/rust-lang/crates.io-index
+291 │ │ png 0.18.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ png v0.17.16
+      └── tiny-skia v0.11.4
+          ├── resvg v0.45.1
+          │   └── egui_extras v0.36.2
+          │       └── commander v0.2.0
+          └── sctk-adwaita v0.10.1
+              └── winit v0.30.13
+                  ├── accesskit_winit v0.32.2
+                  │   └── egui-winit v0.36.2
+                  │       └── eframe v0.36.2
+                  │           └── commander v0.2.0 (*)
+                  ├── eframe v0.36.2 (*)
+                  ├── egui-wgpu v0.36.2
+                  │   └── eframe v0.36.2 (*)
+                  ├── egui-winit v0.36.2 (*)
+                  └── glutin-winit v0.5.0
+                      └── eframe v0.36.2 (*)
+    ├ png v0.18.1
+      └── image v0.25.10
+          ├── arboard v3.6.1
+          │   ├── commander v0.2.0
+          │   └── egui-winit v0.36.2
+          │       └── eframe v0.36.2
+          │           └── commander v0.2.0 (*)
+          ├── commander v0.2.0 (*)
+          ├── eframe v0.36.2 (*)
+          └── egui_extras v0.36.2
+              └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'r-efi'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:309:1
+    │  
+309 │ ╭ r-efi 5.3.0 registry+https://github.com/rust-lang/crates.io-index
+310 │ │ r-efi 6.0.0 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ r-efi v5.3.0
+      └── getrandom v0.3.4
+          └── ahash v0.8.12
+              ├── eframe v0.36.2
+              │   └── commander v0.2.0
+              ├── egui v0.36.2
+              │   ├── commander v0.2.0 (*)
+              │   ├── eframe v0.36.2 (*)
+              │   ├── egui-wgpu v0.36.2
+              │   │   └── eframe v0.36.2 (*)
+              │   ├── egui-winit v0.36.2
+              │   │   └── eframe v0.36.2 (*)
+              │   ├── egui_extras v0.36.2
+              │   │   └── commander v0.2.0 (*)
+              │   └── egui_glow v0.36.2
+              │       └── eframe v0.36.2 (*)
+              ├── egui-wgpu v0.36.2 (*)
+              ├── egui_extras v0.36.2 (*)
+              ├── epaint v0.36.2
+              │   ├── egui v0.36.2 (*)
+              │   └── egui-wgpu v0.36.2 (*)
+              └── winit v0.30.13
+                  ├── accesskit_winit v0.32.2
+                  │   └── egui-winit v0.36.2 (*)
+                  ├── eframe v0.36.2 (*)
+                  ├── egui-wgpu v0.36.2 (*)
+                  ├── egui-winit v0.36.2 (*)
+                  └── glutin-winit v0.5.0
+                      └── eframe v0.36.2 (*)
+    ├ r-efi v6.0.0
+      └── getrandom v0.4.3
+          ├── jobserver v0.1.35
+          │   └── cc v1.4.5
+          │       ├── (build) android-activity v0.6.1
+          │       │   └── winit v0.30.13
+          │       │       ├── accesskit_winit v0.32.2
+          │       │       │   └── egui-winit v0.36.2
+          │       │       │       └── eframe v0.36.2
+          │       │       │           └── commander v0.2.0
+          │       │       ├── eframe v0.36.2 (*)
+          │       │       ├── egui-wgpu v0.36.2
+          │       │       │   └── eframe v0.36.2 (*)
+          │       │       ├── egui-winit v0.36.2 (*)
+          │       │       └── glutin-winit v0.5.0
+          │       │           └── eframe v0.36.2 (*)
+          │       ├── (build) blake3 v1.8.7
+          │       │   └── commander v0.2.0 (*)
+          │       ├── (build) iana-time-zone-haiku v0.1.2
+          │       │   └── iana-time-zone v0.1.65
+          │       │       └── chrono v0.4.45
+          │       │           ├── commander v0.2.0 (*)
+          │       │           └── trash v5.2.8
+          │       │               └── commander v0.2.0 (*)
+          │       └── (build) wayland-backend v0.3.17
+          │           ├── calloop-wayland-source v0.3.0
+          │           │   └── smithay-client-toolkit v0.19.2
+          │           │       ├── sctk-adwaita v0.10.1
+          │           │       │   └── winit v0.30.13 (*)
+          │           │       └── winit v0.30.13 (*)
+          │           ├── calloop-wayland-source v0.4.1
+          │           │   └── smithay-client-toolkit v0.20.0
+          │           │       └── smithay-clipboard v0.7.3
+          │           │           └── egui-winit v0.36.2 (*)
+          │           ├── smithay-client-toolkit v0.19.2 (*)
+          │           ├── smithay-client-toolkit v0.20.0 (*)
+          │           ├── smithay-clipboard v0.7.3 (*)
+          │           ├── wayland-client v0.31.15
+          │           │   ├── calloop-wayland-source v0.3.0 (*)
+          │           │   ├── calloop-wayland-source v0.4.1 (*)
+          │           │   ├── smithay-client-toolkit v0.19.2 (*)
+          │           │   ├── smithay-client-toolkit v0.20.0 (*)
+          │           │   ├── wayland-cursor v0.31.14
+          │           │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │           │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │           │   ├── wayland-protocols v0.32.13
+          │           │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │           │   │   ├── smithay-client-toolkit v0.20.0 (*)
+          │           │   │   ├── wayland-protocols-experimental v20250721.0.1
+          │           │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │           │   │   ├── wayland-protocols-misc v0.3.12
+          │           │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │           │   │   ├── wayland-protocols-plasma v0.3.12
+          │           │   │   │   └── winit v0.30.13 (*)
+          │           │   │   ├── wayland-protocols-wlr v0.3.12
+          │           │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+          │           │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+          │           │   │   └── winit v0.30.13 (*)
+          │           │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+          │           │   ├── wayland-protocols-misc v0.3.12 (*)
+          │           │   ├── wayland-protocols-plasma v0.3.12 (*)
+          │           │   ├── wayland-protocols-wlr v0.3.12 (*)
+          │           │   └── winit v0.30.13 (*)
+          │           ├── wayland-csd-frame v0.3.0
+          │           │   ├── smithay-client-toolkit v0.19.2 (*)
+          │           │   └── smithay-client-toolkit v0.20.0 (*)
+          │           ├── wayland-protocols v0.32.13 (*)
+          │           ├── wayland-protocols-experimental v20250721.0.1 (*)
+          │           ├── wayland-protocols-misc v0.3.12 (*)
+          │           ├── wayland-protocols-plasma v0.3.12 (*)
+          │           ├── wayland-protocols-wlr v0.3.12 (*)
+          │           └── winit v0.30.13 (*)
+          └── tempfile v3.27.0
+              └── uds_windows v1.2.1
+                  └── zbus v5.19.0
+                      ├── accesskit_unix v0.21.1
+                      │   └── accesskit_winit v0.32.2 (*)
+                      ├── atspi-common v0.13.0
+                      │   ├── accesskit_atspi_common v0.18.1
+                      │   │   └── accesskit_unix v0.21.1 (*)
+                      │   ├── atspi v0.29.0
+                      │   │   └── accesskit_unix v0.21.1 (*)
+                      │   └── atspi-proxies v0.13.0
+                      │       └── atspi v0.29.0 (*)
+                      └── atspi-proxies v0.13.0 (*)
+
+warning[duplicate]: found 3 duplicate entries for crate 'redox_syscall'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:320:1
+    │  
+320 │ ╭ redox_syscall 0.4.1 registry+https://github.com/rust-lang/crates.io-index
+321 │ │ redox_syscall 0.5.18 registry+https://github.com/rust-lang/crates.io-index
+322 │ │ redox_syscall 0.9.4 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ redox_syscall v0.4.1
+      └── winit v0.30.13
+          ├── accesskit_winit v0.32.2
+          │   └── egui-winit v0.36.2
+          │       └── eframe v0.36.2
+          │           └── commander v0.2.0
+          ├── eframe v0.36.2 (*)
+          ├── egui-wgpu v0.36.2
+          │   └── eframe v0.36.2 (*)
+          ├── egui-winit v0.36.2 (*)
+          └── glutin-winit v0.5.0
+              └── eframe v0.36.2 (*)
+    ├ redox_syscall v0.5.18
+      └── parking_lot_core v0.9.12
+          └── parking_lot v0.12.5
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              ├── eframe v0.36.2 (*)
+              ├── epaint v0.36.2
+              │   ├── egui v0.36.2
+              │   │   ├── commander v0.2.0 (*)
+              │   │   ├── eframe v0.36.2 (*)
+              │   │   ├── egui-wgpu v0.36.2
+              │   │   │   └── eframe v0.36.2 (*)
+              │   │   ├── egui-winit v0.36.2 (*)
+              │   │   ├── egui_extras v0.36.2
+              │   │   │   └── commander v0.2.0 (*)
+              │   │   └── egui_glow v0.36.2
+              │   │       └── eframe v0.36.2 (*)
+              │   └── egui-wgpu v0.36.2 (*)
+              ├── wgpu v30.0.1
+              │   ├── eframe v0.36.2 (*)
+              │   └── egui-wgpu v0.36.2 (*)
+              ├── wgpu-core v30.0.1
+              │   └── wgpu v30.0.1 (*)
+              └── wgpu-hal v30.0.1
+                  ├── wgpu v30.0.1 (*)
+                  ├── wgpu-core v30.0.1 (*)
+                  ├── wgpu-core-deps-apple v30.0.1
+                  │   └── wgpu-core v30.0.1 (*)
+                  ├── wgpu-core-deps-emscripten v30.0.1
+                  │   └── wgpu-core v30.0.1 (*)
+                  ├── wgpu-core-deps-wasm v30.0.1
+                  │   └── wgpu-core v30.0.1 (*)
+                  └── wgpu-core-deps-windows-linux-android v30.0.1
+                      └── wgpu-core v30.0.1 (*)
+    ├ redox_syscall v0.9.4
+      └── libredox v0.1.23
+          ├── orbclient v0.3.55
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2
+          │       │           └── commander v0.2.0
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0
+          │           └── eframe v0.36.2 (*)
+          └── redox_users v0.5.2
+              └── dirs-sys v0.5.0
+                  └── dirs v7.0.0
+                      └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'rustc-hash'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:331:1
+    │  
+331 │ ╭ rustc-hash 1.1.0 registry+https://github.com/rust-lang/crates.io-index
+332 │ │ rustc-hash 2.1.3 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ rustc-hash v1.1.0
+      ├── naga v30.0.1
+      │   ├── wgpu-core v30.0.1
+      │   │   └── wgpu v30.0.1
+      │   │       ├── eframe v0.36.2
+      │   │       │   └── commander v0.2.0
+      │   │       └── egui-wgpu v0.36.2
+      │   │           └── eframe v0.36.2 (*)
+      │   ├── wgpu-hal v30.0.1
+      │   │   ├── wgpu v30.0.1 (*)
+      │   │   ├── wgpu-core v30.0.1 (*)
+      │   │   ├── wgpu-core-deps-apple v30.0.1
+      │   │   │   └── wgpu-core v30.0.1 (*)
+      │   │   ├── wgpu-core-deps-emscripten v30.0.1
+      │   │   │   └── wgpu-core v30.0.1 (*)
+      │   │   ├── wgpu-core-deps-wasm v30.0.1
+      │   │   │   └── wgpu-core v30.0.1 (*)
+      │   │   └── wgpu-core-deps-windows-linux-android v30.0.1
+      │   │       └── wgpu-core v30.0.1 (*)
+      │   └── wgpu-naga-bridge v30.0.1
+      │       ├── wgpu-core v30.0.1 (*)
+      │       └── wgpu-hal v30.0.1 (*)
+      ├── naga-types v30.0.1
+      │   ├── naga v30.0.1 (*)
+      │   ├── wgpu-core v30.0.1 (*)
+      │   ├── wgpu-hal v30.0.1 (*)
+      │   └── wgpu-types v30.0.1
+      │       ├── wgpu v30.0.1 (*)
+      │       ├── wgpu-core v30.0.1 (*)
+      │       ├── wgpu-hal v30.0.1 (*)
+      │       └── wgpu-naga-bridge v30.0.1 (*)
+      └── wgpu-core v30.0.1 (*)
+    ├ rustc-hash v2.1.3
+      └── type-map v0.5.1
+          └── egui-wgpu v0.36.2
+              └── eframe v0.36.2
+                  └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'rustix'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:334:1
+    │  
+334 │ ╭ rustix 0.38.44 registry+https://github.com/rust-lang/crates.io-index
+335 │ │ rustix 1.1.4 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ rustix v0.38.44
+      ├── calloop v0.13.0
+      │   ├── calloop-wayland-source v0.3.0
+      │   │   └── smithay-client-toolkit v0.19.2
+      │   │       ├── sctk-adwaita v0.10.1
+      │   │       │   └── winit v0.30.13
+      │   │       │       ├── accesskit_winit v0.32.2
+      │   │       │       │   └── egui-winit v0.36.2
+      │   │       │       │       └── eframe v0.36.2
+      │   │       │       │           └── commander v0.2.0
+      │   │       │       ├── eframe v0.36.2 (*)
+      │   │       │       ├── egui-wgpu v0.36.2
+      │   │       │       │   └── eframe v0.36.2 (*)
+      │   │       │       ├── egui-winit v0.36.2 (*)
+      │   │       │       └── glutin-winit v0.5.0
+      │   │       │           └── eframe v0.36.2 (*)
+      │   │       └── winit v0.30.13 (*)
+      │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   └── winit v0.30.13 (*)
+      ├── calloop-wayland-source v0.3.0 (*)
+      ├── smithay-client-toolkit v0.19.2 (*)
+      └── winit v0.30.13 (*)
+    ├ rustix v1.1.4
+      ├── async-io v2.6.0
+      │   ├── async-process v2.5.0
+      │   │   └── zbus v5.19.0
+      │   │       ├── accesskit_unix v0.21.1
+      │   │       │   └── accesskit_winit v0.32.2
+      │   │       │       └── egui-winit v0.36.2
+      │   │       │           └── eframe v0.36.2
+      │   │       │               └── commander v0.2.0
+      │   │       ├── atspi-common v0.13.0
+      │   │       │   ├── accesskit_atspi_common v0.18.1
+      │   │       │   │   └── accesskit_unix v0.21.1 (*)
+      │   │       │   ├── atspi v0.29.0
+      │   │       │   │   └── accesskit_unix v0.21.1 (*)
+      │   │       │   └── atspi-proxies v0.13.0
+      │   │       │       └── atspi v0.29.0 (*)
+      │   │       └── atspi-proxies v0.13.0 (*)
+      │   ├── async-signal v0.2.14
+      │   │   └── async-process v2.5.0 (*)
+      │   └── zbus v5.19.0 (*)
+      ├── async-process v2.5.0 (*)
+      ├── async-signal v0.2.14 (*)
+      ├── calloop v0.14.4
+      │   ├── calloop-wayland-source v0.4.1
+      │   │   └── smithay-client-toolkit v0.20.0
+      │   │       └── smithay-clipboard v0.7.3
+      │   │           └── egui-winit v0.36.2 (*)
+      │   └── smithay-client-toolkit v0.20.0 (*)
+      ├── calloop-wayland-source v0.4.1 (*)
+      ├── gethostname v1.1.0
+      │   └── x11rb v0.13.2
+      │       ├── arboard v3.6.1
+      │       │   ├── commander v0.2.0 (*)
+      │       │   └── egui-winit v0.36.2 (*)
+      │       └── winit v0.30.13
+      │           ├── accesskit_winit v0.32.2 (*)
+      │           ├── eframe v0.36.2 (*)
+      │           ├── egui-wgpu v0.36.2
+      │           │   └── eframe v0.36.2 (*)
+      │           ├── egui-winit v0.36.2 (*)
+      │           └── glutin-winit v0.5.0
+      │               └── eframe v0.36.2 (*)
+      ├── polling v3.11.0
+      │   ├── async-io v2.6.0 (*)
+      │   ├── calloop v0.13.0
+      │   │   ├── calloop-wayland-source v0.3.0
+      │   │   │   └── smithay-client-toolkit v0.19.2
+      │   │   │       ├── sctk-adwaita v0.10.1
+      │   │   │       │   └── winit v0.30.13 (*)
+      │   │   │       └── winit v0.30.13 (*)
+      │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   └── winit v0.30.13 (*)
+      │   └── calloop v0.14.4 (*)
+      ├── smithay-client-toolkit v0.20.0 (*)
+      ├── tempfile v3.27.0
+      │   └── uds_windows v1.2.1
+      │       └── zbus v5.19.0 (*)
+      ├── wayland-backend v0.3.17
+      │   ├── calloop-wayland-source v0.3.0 (*)
+      │   ├── calloop-wayland-source v0.4.1 (*)
+      │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   ├── smithay-client-toolkit v0.20.0 (*)
+      │   ├── smithay-clipboard v0.7.3 (*)
+      │   ├── wayland-client v0.31.15
+      │   │   ├── calloop-wayland-source v0.3.0 (*)
+      │   │   ├── calloop-wayland-source v0.4.1 (*)
+      │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   ├── smithay-client-toolkit v0.20.0 (*)
+      │   │   ├── wayland-cursor v0.31.14
+      │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   ├── wayland-protocols v0.32.13
+      │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   ├── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   ├── wayland-protocols-experimental v20250721.0.1
+      │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   ├── wayland-protocols-misc v0.3.12
+      │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   ├── wayland-protocols-plasma v0.3.12
+      │   │   │   │   └── winit v0.30.13 (*)
+      │   │   │   ├── wayland-protocols-wlr v0.3.12
+      │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   └── winit v0.30.13 (*)
+      │   │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+      │   │   ├── wayland-protocols-misc v0.3.12 (*)
+      │   │   ├── wayland-protocols-plasma v0.3.12 (*)
+      │   │   ├── wayland-protocols-wlr v0.3.12 (*)
+      │   │   └── winit v0.30.13 (*)
+      │   ├── wayland-csd-frame v0.3.0
+      │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   ├── wayland-protocols v0.32.13 (*)
+      │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+      │   ├── wayland-protocols-misc v0.3.12 (*)
+      │   ├── wayland-protocols-plasma v0.3.12 (*)
+      │   ├── wayland-protocols-wlr v0.3.12 (*)
+      │   └── winit v0.30.13 (*)
+      ├── wayland-client v0.31.15 (*)
+      ├── wayland-cursor v0.31.14 (*)
+      ├── x11rb v0.13.2 (*)
+      ├── xattr v1.6.1
+      │   └── tar v0.4.46
+      │       └── commander v0.2.0 (*)
+      └── zbus v5.19.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'smithay-client-toolkit'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:361:1
+    │  
+361 │ ╭ smithay-client-toolkit 0.19.2 registry+https://github.com/rust-lang/crates.io-index
+362 │ │ smithay-client-toolkit 0.20.0 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ smithay-client-toolkit v0.19.2
+      ├── sctk-adwaita v0.10.1
+      │   └── winit v0.30.13
+      │       ├── accesskit_winit v0.32.2
+      │       │   └── egui-winit v0.36.2
+      │       │       └── eframe v0.36.2
+      │       │           └── commander v0.2.0
+      │       ├── eframe v0.36.2 (*)
+      │       ├── egui-wgpu v0.36.2
+      │       │   └── eframe v0.36.2 (*)
+      │       ├── egui-winit v0.36.2 (*)
+      │       └── glutin-winit v0.5.0
+      │           └── eframe v0.36.2 (*)
+      └── winit v0.30.13 (*)
+    ├ smithay-client-toolkit v0.20.0
+      └── smithay-clipboard v0.7.3
+          └── egui-winit v0.36.2
+              └── eframe v0.36.2
+                  └── commander v0.2.0
+
+warning[duplicate]: found 2 duplicate entries for crate 'syn'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:371:1
+    │  
+371 │ ╭ syn 2.0.119 registry+https://github.com/rust-lang/crates.io-index
+372 │ │ syn 3.0.5 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ syn v2.0.119
+      ├── async-recursion v1.1.1
+      │   └── zbus v5.19.0
+      │       ├── accesskit_unix v0.21.1
+      │       │   └── accesskit_winit v0.32.2
+      │       │       └── egui-winit v0.36.2
+      │       │           └── eframe v0.36.2
+      │       │               └── commander v0.2.0
+      │       ├── atspi-common v0.13.0
+      │       │   ├── accesskit_atspi_common v0.18.1
+      │       │   │   └── accesskit_unix v0.21.1 (*)
+      │       │   ├── atspi v0.29.0
+      │       │   │   └── accesskit_unix v0.21.1 (*)
+      │       │   └── atspi-proxies v0.13.0
+      │       │       └── atspi v0.29.0 (*)
+      │       └── atspi-proxies v0.13.0 (*)
+      ├── enum-map-derive v0.17.0
+      │   └── enum-map v2.7.3
+      │       └── egui_extras v0.36.2
+      │           └── commander v0.2.0 (*)
+      ├── enumflags2_derive v0.7.12
+      │   └── enumflags2 v0.7.12
+      │       ├── atspi-common v0.13.0 (*)
+      │       ├── zbus v5.19.0 (*)
+      │       └── zvariant v5.15.0
+      │           ├── accesskit_atspi_common v0.18.1 (*)
+      │           ├── atspi-common v0.13.0 (*)
+      │           ├── zbus v5.19.0 (*)
+      │           ├── zbus-lockstep v0.5.2
+      │           │   ├── atspi-common v0.13.0 (*)
+      │           │   └── zbus-lockstep-macros v0.5.2
+      │           │       └── atspi-common v0.13.0 (*)
+      │           ├── zbus-lockstep-macros v0.5.2 (*)
+      │           ├── zbus_macros v5.19.0
+      │           │   └── zbus v5.19.0 (*)
+      │           ├── zbus_names v4.3.4
+      │           │   ├── atspi-common v0.13.0 (*)
+      │           │   ├── zbus v5.19.0 (*)
+      │           │   ├── zbus_macros v5.19.0 (*)
+      │           │   └── zbus_xml v5.2.1
+      │           │       ├── zbus-lockstep v0.5.2 (*)
+      │           │       └── zbus-lockstep-macros v0.5.2 (*)
+      │           └── zbus_xml v5.2.1 (*)
+      ├── jni-macros v0.22.4
+      │   └── jni v0.22.4
+      │       ├── android-activity v0.6.1
+      │       │   └── winit v0.30.13
+      │       │       ├── accesskit_winit v0.32.2 (*)
+      │       │       ├── eframe v0.36.2 (*)
+      │       │       ├── egui-wgpu v0.36.2
+      │       │       │   └── eframe v0.36.2 (*)
+      │       │       ├── egui-winit v0.36.2 (*)
+      │       │       └── glutin-winit v0.5.0
+      │       │           └── eframe v0.36.2 (*)
+      │       └── webbrowser v1.2.4
+      │           └── egui-winit v0.36.2 (*)
+      ├── jni-sys-macros v0.4.1
+      │   └── jni-sys v0.4.1
+      │       ├── jni v0.22.4 (*)
+      │       └── jni-sys v0.3.1
+      │           ├── ndk v0.9.0
+      │           │   ├── android-activity v0.6.1 (*)
+      │           │   └── winit v0.30.13 (*)
+      │           └── ndk-sys v0.6.0+11769913
+      │               ├── android-activity v0.6.1 (*)
+      │               ├── ndk v0.9.0 (*)
+      │               └── wgpu-hal v30.0.1
+      │                   ├── wgpu v30.0.1
+      │                   │   ├── eframe v0.36.2 (*)
+      │                   │   └── egui-wgpu v0.36.2 (*)
+      │                   ├── wgpu-core v30.0.1
+      │                   │   └── wgpu v30.0.1 (*)
+      │                   ├── wgpu-core-deps-apple v30.0.1
+      │                   │   └── wgpu-core v30.0.1 (*)
+      │                   ├── wgpu-core-deps-emscripten v30.0.1
+      │                   │   └── wgpu-core v30.0.1 (*)
+      │                   ├── wgpu-core-deps-wasm v30.0.1
+      │                   │   └── wgpu-core v30.0.1 (*)
+      │                   └── wgpu-core-deps-windows-linux-android v30.0.1
+      │                       └── wgpu-core v30.0.1 (*)
+      ├── num_enum_derive v0.7.6
+      │   └── num_enum v0.7.6
+      │       ├── android-activity v0.6.1 (*)
+      │       └── ndk v0.9.0 (*)
+      ├── phf_macros v0.13.1
+      │   └── phf v0.13.1
+      │       └── accesskit_atspi_common v0.18.1 (*)
+      ├── pin-project-internal v1.1.13
+      │   └── pin-project v1.1.13
+      │       └── winit v0.30.13 (*)
+      ├── synstructure v0.13.2
+      │   ├── yoke-derive v0.8.2
+      │   │   └── yoke v0.8.3
+      │   │       ├── icu_collections v2.3.0
+      │   │       │   ├── icu_normalizer v2.3.0
+      │   │       │   │   └── idna_adapter v1.2.2
+      │   │       │   │       └── idna v1.1.0
+      │   │       │   │           └── url v2.5.8
+      │   │       │   │               └── webbrowser v1.2.4 (*)
+      │   │       │   └── icu_properties v2.3.0
+      │   │       │       └── idna_adapter v1.2.2 (*)
+      │   │       ├── icu_provider v2.3.1
+      │   │       │   ├── icu_normalizer v2.3.0 (*)
+      │   │       │   └── icu_properties v2.3.0 (*)
+      │   │       ├── zerotrie v0.2.5
+      │   │       │   ├── icu_properties v2.3.0 (*)
+      │   │       │   └── icu_provider v2.3.1 (*)
+      │   │       └── zerovec v0.11.8
+      │   │           ├── icu_collections v2.3.0 (*)
+      │   │           ├── icu_locale_core v2.3.0
+      │   │           │   ├── icu_properties v2.3.0 (*)
+      │   │           │   └── icu_provider v2.3.1 (*)
+      │   │           ├── icu_normalizer v2.3.0 (*)
+      │   │           ├── icu_properties v2.3.0 (*)
+      │   │           ├── icu_provider v2.3.1 (*)
+      │   │           ├── potential_utf v0.1.6
+      │   │           │   └── icu_collections v2.3.0 (*)
+      │   │           └── tinystr v0.8.4
+      │   │               └── icu_locale_core v2.3.0 (*)
+      │   └── zerofrom-derive v0.1.7
+      │       └── zerofrom v0.1.8
+      │           ├── icu_collections v2.3.0 (*)
+      │           ├── icu_provider v2.3.1 (*)
+      │           ├── yoke v0.8.3 (*)
+      │           ├── zerotrie v0.2.5 (*)
+      │           └── zerovec v0.11.8 (*)
+      ├── thiserror-impl v1.0.69
+      │   └── thiserror v1.0.69
+      │       ├── calloop v0.13.0
+      │       │   ├── calloop-wayland-source v0.3.0
+      │       │   │   └── smithay-client-toolkit v0.19.2
+      │       │   │       ├── sctk-adwaita v0.10.1
+      │       │   │       │   └── winit v0.30.13 (*)
+      │       │   │       └── winit v0.30.13 (*)
+      │       │   ├── smithay-client-toolkit v0.19.2 (*)
+      │       │   └── winit v0.30.13 (*)
+      │       ├── ndk v0.9.0 (*)
+      │       └── smithay-client-toolkit v0.19.2 (*)
+      ├── tracing-attributes v0.1.31
+      │   └── tracing v0.1.44
+      │       ├── calloop v0.14.4
+      │       │   ├── calloop-wayland-source v0.4.1
+      │       │   │   └── smithay-client-toolkit v0.20.0
+      │       │   │       └── smithay-clipboard v0.7.3
+      │       │   │           └── egui-winit v0.36.2 (*)
+      │       │   └── smithay-client-toolkit v0.20.0 (*)
+      │       ├── winit v0.30.13 (*)
+      │       └── zbus v5.19.0 (*)
+      ├── windows-implement v0.60.2
+      │   └── windows-core v0.62.2
+      │       ├── accesskit_windows v0.32.1
+      │       │   └── accesskit_winit v0.32.2 (*)
+      │       ├── iana-time-zone v0.1.65
+      │       │   └── chrono v0.4.45
+      │       │       ├── commander v0.2.0 (*)
+      │       │       └── trash v5.2.8
+      │       │           └── commander v0.2.0 (*)
+      │       ├── wgpu-hal v30.0.1 (*)
+      │       ├── windows v0.62.2
+      │       │   ├── accesskit_windows v0.32.1 (*)
+      │       │   ├── gpu-allocator v0.28.0
+      │       │   │   └── wgpu-hal v30.0.1 (*)
+      │       │   ├── trash v5.2.8 (*)
+      │       │   └── wgpu-hal v30.0.1 (*)
+      │       ├── windows-collections v0.3.2
+      │       │   └── windows v0.62.2 (*)
+      │       ├── windows-future v0.3.2
+      │       │   └── windows v0.62.2 (*)
+      │       └── windows-numerics v0.3.1
+      │           └── windows v0.62.2 (*)
+      ├── windows-interface v0.59.3
+      │   └── windows-core v0.62.2 (*)
+      ├── yoke-derive v0.8.2 (*)
+      ├── zbus-lockstep-macros v0.5.2 (*)
+      ├── zerocopy-derive v0.8.57
+      │   └── zerocopy v0.8.57
+      │       ├── ahash v0.8.12
+      │       │   ├── eframe v0.36.2 (*)
+      │       │   ├── egui v0.36.2
+      │       │   │   ├── commander v0.2.0 (*)
+      │       │   │   ├── eframe v0.36.2 (*)
+      │       │   │   ├── egui-wgpu v0.36.2 (*)
+      │       │   │   ├── egui-winit v0.36.2 (*)
+      │       │   │   ├── egui_extras v0.36.2 (*)
+      │       │   │   └── egui_glow v0.36.2
+      │       │   │       └── eframe v0.36.2 (*)
+      │       │   ├── egui-wgpu v0.36.2 (*)
+      │       │   ├── egui_extras v0.36.2 (*)
+      │       │   ├── epaint v0.36.2
+      │       │   │   ├── egui v0.36.2 (*)
+      │       │   │   └── egui-wgpu v0.36.2 (*)
+      │       │   └── winit v0.30.13 (*)
+      │       ├── half v2.7.1
+      │       │   ├── naga v30.0.1
+      │       │   │   ├── wgpu-core v30.0.1 (*)
+      │       │   │   ├── wgpu-hal v30.0.1 (*)
+      │       │   │   └── wgpu-naga-bridge v30.0.1
+      │       │   │       ├── wgpu-core v30.0.1 (*)
+      │       │   │       └── wgpu-hal v30.0.1 (*)
+      │       │   └── tiff v0.11.3
+      │       │       └── image v0.25.10
+      │       │           ├── arboard v3.6.1
+      │       │           │   ├── commander v0.2.0 (*)
+      │       │           │   └── egui-winit v0.36.2 (*)
+      │       │           ├── commander v0.2.0 (*)
+      │       │           ├── eframe v0.36.2 (*)
+      │       │           └── egui_extras v0.36.2 (*)
+      │       └── ppv-lite86 v0.2.21
+      │           └── rand_chacha v0.3.1
+      │               └── rand v0.8.8
+      │                   └── commander v0.2.0 (*)
+      └── zerofrom-derive v0.1.7 (*)
+    ├ syn v3.0.5
+      ├── async-trait v0.1.92
+      │   └── zbus v5.19.0
+      │       ├── accesskit_unix v0.21.1
+      │       │   └── accesskit_winit v0.32.2
+      │       │       └── egui-winit v0.36.2
+      │       │           └── eframe v0.36.2
+      │       │               └── commander v0.2.0
+      │       ├── atspi-common v0.13.0
+      │       │   ├── accesskit_atspi_common v0.18.1
+      │       │   │   └── accesskit_unix v0.21.1 (*)
+      │       │   ├── atspi v0.29.0
+      │       │   │   └── accesskit_unix v0.21.1 (*)
+      │       │   └── atspi-proxies v0.13.0
+      │       │       └── atspi v0.29.0 (*)
+      │       └── atspi-proxies v0.13.0 (*)
+      ├── bytemuck_derive v1.12.0
+      │   └── bytemuck v1.25.2
+      │       ├── color v0.3.3
+      │       │   └── peniko v0.6.1
+      │       │       └── vello_common v0.1.0
+      │       │           └── vello_cpu v0.1.0
+      │       │               └── epaint v0.36.2
+      │       │                   ├── egui v0.36.2
+      │       │                   │   ├── commander v0.2.0 (*)
+      │       │                   │   ├── eframe v0.36.2 (*)
+      │       │                   │   ├── egui-wgpu v0.36.2
+      │       │                   │   │   └── eframe v0.36.2 (*)
+      │       │                   │   ├── egui-winit v0.36.2 (*)
+      │       │                   │   ├── egui_extras v0.36.2
+      │       │                   │   │   └── commander v0.2.0 (*)
+      │       │                   │   └── egui_glow v0.36.2
+      │       │                   │       └── eframe v0.36.2 (*)
+      │       │                   └── egui-wgpu v0.36.2 (*)
+      │       ├── ecolor v0.36.2
+      │       │   └── epaint v0.36.2 (*)
+      │       ├── eframe v0.36.2 (*)
+      │       ├── egui-wgpu v0.36.2 (*)
+      │       ├── egui-winit v0.36.2 (*)
+      │       ├── egui_glow v0.36.2 (*)
+      │       ├── emath v0.36.2
+      │       │   ├── ecolor v0.36.2 (*)
+      │       │   ├── egui v0.36.2 (*)
+      │       │   └── epaint v0.36.2 (*)
+      │       ├── epaint v0.36.2 (*)
+      │       ├── font-types v0.12.5
+      │       │   ├── epaint v0.36.2 (*)
+      │       │   └── read-fonts v0.41.0
+      │       │       ├── harfrust v0.12.0
+      │       │       │   └── epaint v0.36.2 (*)
+      │       │       └── skrifa v0.44.0
+      │       │           └── epaint v0.36.2 (*)
+      │       ├── harfrust v0.12.0 (*)
+      │       ├── image v0.25.10
+      │       │   ├── arboard v3.6.1
+      │       │   │   ├── commander v0.2.0 (*)
+      │       │   │   └── egui-winit v0.36.2 (*)
+      │       │   ├── commander v0.2.0 (*)
+      │       │   ├── eframe v0.36.2 (*)
+      │       │   └── egui_extras v0.36.2 (*)
+      │       ├── peniko v0.6.1 (*)
+      │       ├── read-fonts v0.41.0 (*)
+      │       ├── rgb v0.8.53
+      │       │   └── resvg v0.45.1
+      │       │       └── egui_extras v0.36.2 (*)
+      │       ├── skrifa v0.44.0 (*)
+      │       ├── tiny-skia v0.11.4
+      │       │   ├── resvg v0.45.1 (*)
+      │       │   └── sctk-adwaita v0.10.1
+      │       │       └── winit v0.30.13
+      │       │           ├── accesskit_winit v0.32.2 (*)
+      │       │           ├── eframe v0.36.2 (*)
+      │       │           ├── egui-wgpu v0.36.2 (*)
+      │       │           ├── egui-winit v0.36.2 (*)
+      │       │           └── glutin-winit v0.5.0
+      │       │               └── eframe v0.36.2 (*)
+      │       ├── tiny-skia-path v0.11.4
+      │       │   ├── tiny-skia v0.11.4 (*)
+      │       │   └── usvg v0.45.1
+      │       │       └── resvg v0.45.1 (*)
+      │       ├── vello_common v0.1.0 (*)
+      │       ├── vello_cpu v0.1.0 (*)
+      │       ├── wgpu v30.0.1
+      │       │   ├── eframe v0.36.2 (*)
+      │       │   └── egui-wgpu v0.36.2 (*)
+      │       ├── wgpu-core v30.0.1
+      │       │   └── wgpu v30.0.1 (*)
+      │       ├── wgpu-hal v30.0.1
+      │       │   ├── wgpu v30.0.1 (*)
+      │       │   ├── wgpu-core v30.0.1 (*)
+      │       │   ├── wgpu-core-deps-apple v30.0.1
+      │       │   │   └── wgpu-core v30.0.1 (*)
+      │       │   ├── wgpu-core-deps-emscripten v30.0.1
+      │       │   │   └── wgpu-core v30.0.1 (*)
+      │       │   ├── wgpu-core-deps-wasm v30.0.1
+      │       │   │   └── wgpu-core v30.0.1 (*)
+      │       │   └── wgpu-core-deps-windows-linux-android v30.0.1
+      │       │       └── wgpu-core v30.0.1 (*)
+      │       ├── wgpu-types v30.0.1
+      │       │   ├── wgpu v30.0.1 (*)
+      │       │   ├── wgpu-core v30.0.1 (*)
+      │       │   ├── wgpu-hal v30.0.1 (*)
+      │       │   └── wgpu-naga-bridge v30.0.1
+      │       │       ├── wgpu-core v30.0.1 (*)
+      │       │       └── wgpu-hal v30.0.1 (*)
+      │       └── winit v0.30.13 (*)
+      ├── displaydoc v0.2.7
+      │   ├── icu_collections v2.3.0
+      │   │   ├── icu_normalizer v2.3.0
+      │   │   │   └── idna_adapter v1.2.2
+      │   │   │       └── idna v1.1.0
+      │   │   │           └── url v2.5.8
+      │   │   │               └── webbrowser v1.2.4
+      │   │   │                   └── egui-winit v0.36.2 (*)
+      │   │   └── icu_properties v2.3.0
+      │   │       └── idna_adapter v1.2.2 (*)
+      │   ├── icu_locale_core v2.3.0
+      │   │   ├── icu_properties v2.3.0 (*)
+      │   │   └── icu_provider v2.3.1
+      │   │       ├── icu_normalizer v2.3.0 (*)
+      │   │       └── icu_properties v2.3.0 (*)
+      │   ├── icu_properties v2.3.0 (*)
+      │   ├── icu_provider v2.3.1 (*)
+      │   ├── tinystr v0.8.4
+      │   │   └── icu_locale_core v2.3.0 (*)
+      │   └── zerotrie v0.2.5
+      │       ├── icu_properties v2.3.0 (*)
+      │       └── icu_provider v2.3.1 (*)
+      ├── foreign-types-macros v0.2.4
+      │   └── foreign-types v0.5.0
+      │       └── core-graphics v0.23.2
+      │           └── winit v0.30.13 (*)
+      ├── futures-macro v0.3.34
+      │   └── futures-util v0.3.34
+      │       ├── accesskit_unix v0.21.1 (*)
+      │       └── js-sys v0.3.105
+      │           ├── chrono v0.4.45
+      │           │   ├── commander v0.2.0 (*)
+      │           │   └── trash v5.2.8
+      │           │       └── commander v0.2.0 (*)
+      │           ├── eframe v0.36.2 (*)
+      │           ├── glow v0.17.0
+      │           │   ├── eframe v0.36.2 (*)
+      │           │   ├── egui_glow v0.36.2 (*)
+      │           │   └── wgpu-hal v30.0.1 (*)
+      │           ├── iana-time-zone v0.1.65
+      │           │   └── chrono v0.4.45 (*)
+      │           ├── wasm-bindgen-futures v0.4.78
+      │           │   ├── wgpu v30.0.1 (*)
+      │           │   └── winit v0.30.13 (*)
+      │           ├── web-sys v0.3.105
+      │           │   ├── eframe v0.36.2 (*)
+      │           │   ├── egui v0.36.2 (*)
+      │           │   ├── glow v0.17.0 (*)
+      │           │   ├── webbrowser v1.2.4 (*)
+      │           │   ├── wgpu v30.0.1 (*)
+      │           │   ├── wgpu-hal v30.0.1 (*)
+      │           │   ├── wgpu-types v30.0.1 (*)
+      │           │   └── winit v0.30.13 (*)
+      │           ├── web-time v1.1.0
+      │           │   ├── eframe v0.36.2 (*)
+      │           │   ├── egui-wgpu v0.36.2 (*)
+      │           │   ├── egui-winit v0.36.2 (*)
+      │           │   └── winit v0.30.13 (*)
+      │           ├── wgpu v30.0.1 (*)
+      │           ├── wgpu-hal v30.0.1 (*)
+      │           ├── wgpu-types v30.0.1 (*)
+      │           └── winit v0.30.13 (*)
+      ├── serde_derive v1.0.229
+      │   └── serde v1.0.229
+      │       ├── accesskit_atspi_common v0.18.1 (*)
+      │       ├── accesskit_unix v0.21.1 (*)
+      │       ├── atspi-common v0.13.0 (*)
+      │       ├── atspi-proxies v0.13.0 (*)
+      │       ├── commander v0.2.0 (*)
+      │       ├── enumflags2 v0.7.12
+      │       │   ├── atspi-common v0.13.0 (*)
+      │       │   ├── zbus v5.19.0 (*)
+      │       │   └── zvariant v5.15.0
+      │       │       ├── accesskit_atspi_common v0.18.1 (*)
+      │       │       ├── atspi-common v0.13.0 (*)
+      │       │       ├── zbus v5.19.0 (*)
+      │       │       ├── zbus-lockstep v0.5.2
+      │       │       │   ├── atspi-common v0.13.0 (*)
+      │       │       │   └── zbus-lockstep-macros v0.5.2
+      │       │       │       └── atspi-common v0.13.0 (*)
+      │       │       ├── zbus-lockstep-macros v0.5.2 (*)
+      │       │       ├── zbus_macros v5.19.0
+      │       │       │   └── zbus v5.19.0 (*)
+      │       │       ├── zbus_names v4.3.4
+      │       │       │   ├── atspi-common v0.13.0 (*)
+      │       │       │   ├── zbus v5.19.0 (*)
+      │       │       │   ├── zbus_macros v5.19.0 (*)
+      │       │       │   └── zbus_xml v5.2.1
+      │       │       │       ├── zbus-lockstep v0.5.2 (*)
+      │       │       │       └── zbus-lockstep-macros v0.5.2 (*)
+      │       │       └── zbus_xml v5.2.1 (*)
+      │       ├── zbus v5.19.0 (*)
+      │       ├── zbus_names v4.3.4 (*)
+      │       ├── zbus_xml v5.2.1 (*)
+      │       ├── zcheapstr v1.1.0
+      │       │   └── zvariant v5.15.0 (*)
+      │       ├── zvariant v5.15.0 (*)
+      │       └── zvariant_utils v4.2.0
+      │           ├── zbus_macros v5.19.0 (*)
+      │           ├── zvariant v5.15.0 (*)
+      │           └── zvariant_derive v5.15.0
+      │               └── zvariant v5.15.0 (*)
+      ├── serde_repr v0.1.21
+      │   └── zbus v5.19.0 (*)
+      ├── thiserror-impl v2.0.20
+      │   └── thiserror v2.0.20
+      │       ├── android-activity v0.6.1
+      │       │   └── winit v0.30.13 (*)
+      │       ├── egui-wgpu v0.36.2 (*)
+      │       ├── gpu-allocator v0.28.0
+      │       │   └── wgpu-hal v30.0.1 (*)
+      │       ├── jni v0.22.4
+      │       │   ├── android-activity v0.6.1 (*)
+      │       │   └── webbrowser v1.2.4 (*)
+      │       ├── naga v30.0.1
+      │       │   ├── wgpu-core v30.0.1 (*)
+      │       │   ├── wgpu-hal v30.0.1 (*)
+      │       │   └── wgpu-naga-bridge v30.0.1 (*)
+      │       ├── naga-types v30.0.1
+      │       │   ├── naga v30.0.1 (*)
+      │       │   ├── wgpu-core v30.0.1 (*)
+      │       │   ├── wgpu-hal v30.0.1 (*)
+      │       │   └── wgpu-types v30.0.1 (*)
+      │       ├── redox_users v0.5.2
+      │       │   └── dirs-sys v0.5.0
+      │       │       └── dirs v7.0.0
+      │       │           └── commander v0.2.0 (*)
+      │       ├── smithay-client-toolkit v0.20.0
+      │       │   └── smithay-clipboard v0.7.3
+      │       │       └── egui-winit v0.36.2 (*)
+      │       ├── vello_common v0.1.0 (*)
+      │       ├── wgpu-core v30.0.1 (*)
+      │       └── wgpu-hal v30.0.1 (*)
+      ├── wasm-bindgen-macro-support v0.2.128
+      │   └── wasm-bindgen-macro v0.2.128
+      │       └── wasm-bindgen v0.2.128
+      │           ├── chrono v0.4.45 (*)
+      │           ├── eframe v0.36.2 (*)
+      │           ├── glow v0.17.0 (*)
+      │           ├── iana-time-zone v0.1.65 (*)
+      │           ├── js-sys v0.3.105 (*)
+      │           ├── wasm-bindgen-futures v0.4.78 (*)
+      │           ├── web-sys v0.3.105 (*)
+      │           ├── web-time v1.1.0 (*)
+      │           ├── wgpu v30.0.1 (*)
+      │           ├── wgpu-hal v30.0.1 (*)
+      │           └── winit v0.30.13 (*)
+      ├── zbus_macros v5.19.0 (*)
+      ├── zerovec-derive v0.11.6
+      │   └── zerovec v0.11.8
+      │       ├── icu_collections v2.3.0 (*)
+      │       ├── icu_locale_core v2.3.0 (*)
+      │       ├── icu_normalizer v2.3.0 (*)
+      │       ├── icu_properties v2.3.0 (*)
+      │       ├── icu_provider v2.3.1 (*)
+      │       ├── potential_utf v0.1.6
+      │       │   └── icu_collections v2.3.0 (*)
+      │       └── tinystr v0.8.4 (*)
+      ├── zvariant_derive v5.15.0 (*)
+      └── zvariant_utils v4.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'thiserror'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:376:1
+    │  
+376 │ ╭ thiserror 1.0.69 registry+https://github.com/rust-lang/crates.io-index
+377 │ │ thiserror 2.0.20 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ thiserror v1.0.69
+      ├── calloop v0.13.0
+      │   ├── calloop-wayland-source v0.3.0
+      │   │   └── smithay-client-toolkit v0.19.2
+      │   │       ├── sctk-adwaita v0.10.1
+      │   │       │   └── winit v0.30.13
+      │   │       │       ├── accesskit_winit v0.32.2
+      │   │       │       │   └── egui-winit v0.36.2
+      │   │       │       │       └── eframe v0.36.2
+      │   │       │       │           └── commander v0.2.0
+      │   │       │       ├── eframe v0.36.2 (*)
+      │   │       │       ├── egui-wgpu v0.36.2
+      │   │       │       │   └── eframe v0.36.2 (*)
+      │   │       │       ├── egui-winit v0.36.2 (*)
+      │   │       │       └── glutin-winit v0.5.0
+      │   │       │           └── eframe v0.36.2 (*)
+      │   │       └── winit v0.30.13 (*)
+      │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   └── winit v0.30.13 (*)
+      ├── ndk v0.9.0
+      │   ├── android-activity v0.6.1
+      │   │   └── winit v0.30.13 (*)
+      │   └── winit v0.30.13 (*)
+      └── smithay-client-toolkit v0.19.2 (*)
+    ├ thiserror v2.0.20
+      ├── android-activity v0.6.1
+      │   └── winit v0.30.13
+      │       ├── accesskit_winit v0.32.2
+      │       │   └── egui-winit v0.36.2
+      │       │       └── eframe v0.36.2
+      │       │           └── commander v0.2.0
+      │       ├── eframe v0.36.2 (*)
+      │       ├── egui-wgpu v0.36.2
+      │       │   └── eframe v0.36.2 (*)
+      │       ├── egui-winit v0.36.2 (*)
+      │       └── glutin-winit v0.5.0
+      │           └── eframe v0.36.2 (*)
+      ├── egui-wgpu v0.36.2 (*)
+      ├── gpu-allocator v0.28.0
+      │   └── wgpu-hal v30.0.1
+      │       ├── wgpu v30.0.1
+      │       │   ├── eframe v0.36.2 (*)
+      │       │   └── egui-wgpu v0.36.2 (*)
+      │       ├── wgpu-core v30.0.1
+      │       │   └── wgpu v30.0.1 (*)
+      │       ├── wgpu-core-deps-apple v30.0.1
+      │       │   └── wgpu-core v30.0.1 (*)
+      │       ├── wgpu-core-deps-emscripten v30.0.1
+      │       │   └── wgpu-core v30.0.1 (*)
+      │       ├── wgpu-core-deps-wasm v30.0.1
+      │       │   └── wgpu-core v30.0.1 (*)
+      │       └── wgpu-core-deps-windows-linux-android v30.0.1
+      │           └── wgpu-core v30.0.1 (*)
+      ├── jni v0.22.4
+      │   ├── android-activity v0.6.1 (*)
+      │   └── webbrowser v1.2.4
+      │       └── egui-winit v0.36.2 (*)
+      ├── naga v30.0.1
+      │   ├── wgpu-core v30.0.1 (*)
+      │   ├── wgpu-hal v30.0.1 (*)
+      │   └── wgpu-naga-bridge v30.0.1
+      │       ├── wgpu-core v30.0.1 (*)
+      │       └── wgpu-hal v30.0.1 (*)
+      ├── naga-types v30.0.1
+      │   ├── naga v30.0.1 (*)
+      │   ├── wgpu-core v30.0.1 (*)
+      │   ├── wgpu-hal v30.0.1 (*)
+      │   └── wgpu-types v30.0.1
+      │       ├── wgpu v30.0.1 (*)
+      │       ├── wgpu-core v30.0.1 (*)
+      │       ├── wgpu-hal v30.0.1 (*)
+      │       └── wgpu-naga-bridge v30.0.1 (*)
+      ├── redox_users v0.5.2
+      │   └── dirs-sys v0.5.0
+      │       └── dirs v7.0.0
+      │           └── commander v0.2.0 (*)
+      ├── smithay-client-toolkit v0.20.0
+      │   └── smithay-clipboard v0.7.3
+      │       └── egui-winit v0.36.2 (*)
+      ├── vello_common v0.1.0
+      │   └── vello_cpu v0.1.0
+      │       └── epaint v0.36.2
+      │           ├── egui v0.36.2
+      │           │   ├── commander v0.2.0 (*)
+      │           │   ├── eframe v0.36.2 (*)
+      │           │   ├── egui-wgpu v0.36.2 (*)
+      │           │   ├── egui-winit v0.36.2 (*)
+      │           │   ├── egui_extras v0.36.2
+      │           │   │   └── commander v0.2.0 (*)
+      │           │   └── egui_glow v0.36.2
+      │           │       └── eframe v0.36.2 (*)
+      │           └── egui-wgpu v0.36.2 (*)
+      ├── wgpu-core v30.0.1 (*)
+      └── wgpu-hal v30.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'thiserror-impl'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:378:1
+    │  
+378 │ ╭ thiserror-impl 1.0.69 registry+https://github.com/rust-lang/crates.io-index
+379 │ │ thiserror-impl 2.0.20 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ thiserror-impl v1.0.69
+      └── thiserror v1.0.69
+          ├── calloop v0.13.0
+          │   ├── calloop-wayland-source v0.3.0
+          │   │   └── smithay-client-toolkit v0.19.2
+          │   │       ├── sctk-adwaita v0.10.1
+          │   │       │   └── winit v0.30.13
+          │   │       │       ├── accesskit_winit v0.32.2
+          │   │       │       │   └── egui-winit v0.36.2
+          │   │       │       │       └── eframe v0.36.2
+          │   │       │       │           └── commander v0.2.0
+          │   │       │       ├── eframe v0.36.2 (*)
+          │   │       │       ├── egui-wgpu v0.36.2
+          │   │       │       │   └── eframe v0.36.2 (*)
+          │   │       │       ├── egui-winit v0.36.2 (*)
+          │   │       │       └── glutin-winit v0.5.0
+          │   │       │           └── eframe v0.36.2 (*)
+          │   │       └── winit v0.30.13 (*)
+          │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   └── winit v0.30.13 (*)
+          ├── ndk v0.9.0
+          │   ├── android-activity v0.6.1
+          │   │   └── winit v0.30.13 (*)
+          │   └── winit v0.30.13 (*)
+          └── smithay-client-toolkit v0.19.2 (*)
+    ├ thiserror-impl v2.0.20
+      └── thiserror v2.0.20
+          ├── android-activity v0.6.1
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2
+          │       │           └── commander v0.2.0
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0
+          │           └── eframe v0.36.2 (*)
+          ├── egui-wgpu v0.36.2 (*)
+          ├── gpu-allocator v0.28.0
+          │   └── wgpu-hal v30.0.1
+          │       ├── wgpu v30.0.1
+          │       │   ├── eframe v0.36.2 (*)
+          │       │   └── egui-wgpu v0.36.2 (*)
+          │       ├── wgpu-core v30.0.1
+          │       │   └── wgpu v30.0.1 (*)
+          │       ├── wgpu-core-deps-apple v30.0.1
+          │       │   └── wgpu-core v30.0.1 (*)
+          │       ├── wgpu-core-deps-emscripten v30.0.1
+          │       │   └── wgpu-core v30.0.1 (*)
+          │       ├── wgpu-core-deps-wasm v30.0.1
+          │       │   └── wgpu-core v30.0.1 (*)
+          │       └── wgpu-core-deps-windows-linux-android v30.0.1
+          │           └── wgpu-core v30.0.1 (*)
+          ├── jni v0.22.4
+          │   ├── android-activity v0.6.1 (*)
+          │   └── webbrowser v1.2.4
+          │       └── egui-winit v0.36.2 (*)
+          ├── naga v30.0.1
+          │   ├── wgpu-core v30.0.1 (*)
+          │   ├── wgpu-hal v30.0.1 (*)
+          │   └── wgpu-naga-bridge v30.0.1
+          │       ├── wgpu-core v30.0.1 (*)
+          │       └── wgpu-hal v30.0.1 (*)
+          ├── naga-types v30.0.1
+          │   ├── naga v30.0.1 (*)
+          │   ├── wgpu-core v30.0.1 (*)
+          │   ├── wgpu-hal v30.0.1 (*)
+          │   └── wgpu-types v30.0.1
+          │       ├── wgpu v30.0.1 (*)
+          │       ├── wgpu-core v30.0.1 (*)
+          │       ├── wgpu-hal v30.0.1 (*)
+          │       └── wgpu-naga-bridge v30.0.1 (*)
+          ├── redox_users v0.5.2
+          │   └── dirs-sys v0.5.0
+          │       └── dirs v7.0.0
+          │           └── commander v0.2.0 (*)
+          ├── smithay-client-toolkit v0.20.0
+          │   └── smithay-clipboard v0.7.3
+          │       └── egui-winit v0.36.2 (*)
+          ├── vello_common v0.1.0
+          │   └── vello_cpu v0.1.0
+          │       └── epaint v0.36.2
+          │           ├── egui v0.36.2
+          │           │   ├── commander v0.2.0 (*)
+          │           │   ├── eframe v0.36.2 (*)
+          │           │   ├── egui-wgpu v0.36.2 (*)
+          │           │   ├── egui-winit v0.36.2 (*)
+          │           │   ├── egui_extras v0.36.2
+          │           │   │   └── commander v0.2.0 (*)
+          │           │   └── egui_glow v0.36.2
+          │           │       └── eframe v0.36.2 (*)
+          │           └── egui-wgpu v0.36.2 (*)
+          ├── wgpu-core v30.0.1 (*)
+          └── wgpu-hal v30.0.1 (*)
+
+warning[duplicate]: found 4 duplicate entries for crate 'windows-sys'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:456:1
+    │  
+456 │ ╭ windows-sys 0.52.0 registry+https://github.com/rust-lang/crates.io-index
+457 │ │ windows-sys 0.59.0 registry+https://github.com/rust-lang/crates.io-index
+458 │ │ windows-sys 0.60.2 registry+https://github.com/rust-lang/crates.io-index
+459 │ │ windows-sys 0.61.2 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows-sys v0.52.0
+      ├── glutin v0.32.3
+      │   ├── eframe v0.36.2
+      │   │   └── commander v0.2.0
+      │   └── glutin-winit v0.5.0
+      │       └── eframe v0.36.2 (*)
+      ├── glutin_egl_sys v0.7.1
+      │   └── glutin v0.32.3 (*)
+      └── winit v0.30.13
+          ├── accesskit_winit v0.32.2
+          │   └── egui-winit v0.36.2
+          │       └── eframe v0.36.2 (*)
+          ├── eframe v0.36.2 (*)
+          ├── egui-wgpu v0.36.2
+          │   └── eframe v0.36.2 (*)
+          ├── egui-winit v0.36.2 (*)
+          └── glutin-winit v0.5.0 (*)
+    ├ windows-sys v0.59.0
+      └── rustix v0.38.44
+          ├── calloop v0.13.0
+          │   ├── calloop-wayland-source v0.3.0
+          │   │   └── smithay-client-toolkit v0.19.2
+          │   │       ├── sctk-adwaita v0.10.1
+          │   │       │   └── winit v0.30.13
+          │   │       │       ├── accesskit_winit v0.32.2
+          │   │       │       │   └── egui-winit v0.36.2
+          │   │       │       │       └── eframe v0.36.2
+          │   │       │       │           └── commander v0.2.0
+          │   │       │       ├── eframe v0.36.2 (*)
+          │   │       │       ├── egui-wgpu v0.36.2
+          │   │       │       │   └── eframe v0.36.2 (*)
+          │   │       │       ├── egui-winit v0.36.2 (*)
+          │   │       │       └── glutin-winit v0.5.0
+          │   │       │           └── eframe v0.36.2 (*)
+          │   │       └── winit v0.30.13 (*)
+          │   ├── smithay-client-toolkit v0.19.2 (*)
+          │   └── winit v0.30.13 (*)
+          ├── calloop-wayland-source v0.3.0 (*)
+          ├── smithay-client-toolkit v0.19.2 (*)
+          └── winit v0.30.13 (*)
+    ├ windows-sys v0.60.2
+      ├── arboard v3.6.1
+      │   ├── commander v0.2.0
+      │   └── egui-winit v0.36.2
+      │       └── eframe v0.36.2
+      │           └── commander v0.2.0 (*)
+      └── notify v8.2.0
+          └── commander v0.2.0 (*)
+    ├ windows-sys v0.61.2
+      ├── async-io v2.6.0
+      │   ├── async-process v2.5.0
+      │   │   └── zbus v5.19.0
+      │   │       ├── accesskit_unix v0.21.1
+      │   │       │   └── accesskit_winit v0.32.2
+      │   │       │       └── egui-winit v0.36.2
+      │   │       │           └── eframe v0.36.2
+      │   │       │               └── commander v0.2.0
+      │   │       ├── atspi-common v0.13.0
+      │   │       │   ├── accesskit_atspi_common v0.18.1
+      │   │       │   │   └── accesskit_unix v0.21.1 (*)
+      │   │       │   ├── atspi v0.29.0
+      │   │       │   │   └── accesskit_unix v0.21.1 (*)
+      │   │       │   └── atspi-proxies v0.13.0
+      │   │       │       └── atspi v0.29.0 (*)
+      │   │       └── atspi-proxies v0.13.0 (*)
+      │   ├── async-signal v0.2.14
+      │   │   └── async-process v2.5.0 (*)
+      │   └── zbus v5.19.0 (*)
+      ├── async-signal v0.2.14 (*)
+      ├── dirs-sys v0.5.0
+      │   └── dirs v7.0.0
+      │       └── commander v0.2.0 (*)
+      ├── eframe v0.36.2 (*)
+      ├── errno v0.3.14
+      │   ├── rustix v0.38.44
+      │   │   ├── calloop v0.13.0
+      │   │   │   ├── calloop-wayland-source v0.3.0
+      │   │   │   │   └── smithay-client-toolkit v0.19.2
+      │   │   │   │       ├── sctk-adwaita v0.10.1
+      │   │   │   │       │   └── winit v0.30.13
+      │   │   │   │       │       ├── accesskit_winit v0.32.2 (*)
+      │   │   │   │       │       ├── eframe v0.36.2 (*)
+      │   │   │   │       │       ├── egui-wgpu v0.36.2
+      │   │   │   │       │       │   └── eframe v0.36.2 (*)
+      │   │   │   │       │       ├── egui-winit v0.36.2 (*)
+      │   │   │   │       │       └── glutin-winit v0.5.0
+      │   │   │   │       │           └── eframe v0.36.2 (*)
+      │   │   │   │       └── winit v0.30.13 (*)
+      │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   └── winit v0.30.13 (*)
+      │   │   ├── calloop-wayland-source v0.3.0 (*)
+      │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   └── winit v0.30.13 (*)
+      │   ├── rustix v1.1.4
+      │   │   ├── async-io v2.6.0 (*)
+      │   │   ├── async-process v2.5.0 (*)
+      │   │   ├── async-signal v0.2.14 (*)
+      │   │   ├── calloop v0.14.4
+      │   │   │   ├── calloop-wayland-source v0.4.1
+      │   │   │   │   └── smithay-client-toolkit v0.20.0
+      │   │   │   │       └── smithay-clipboard v0.7.3
+      │   │   │   │           └── egui-winit v0.36.2 (*)
+      │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   ├── calloop-wayland-source v0.4.1 (*)
+      │   │   ├── gethostname v1.1.0
+      │   │   │   └── x11rb v0.13.2
+      │   │   │       ├── arboard v3.6.1
+      │   │   │       │   ├── commander v0.2.0 (*)
+      │   │   │       │   └── egui-winit v0.36.2 (*)
+      │   │   │       └── winit v0.30.13 (*)
+      │   │   ├── polling v3.11.0
+      │   │   │   ├── async-io v2.6.0 (*)
+      │   │   │   ├── calloop v0.13.0 (*)
+      │   │   │   └── calloop v0.14.4 (*)
+      │   │   ├── smithay-client-toolkit v0.20.0 (*)
+      │   │   ├── tempfile v3.27.0
+      │   │   │   └── uds_windows v1.2.1
+      │   │   │       └── zbus v5.19.0 (*)
+      │   │   ├── wayland-backend v0.3.17
+      │   │   │   ├── calloop-wayland-source v0.3.0 (*)
+      │   │   │   ├── calloop-wayland-source v0.4.1 (*)
+      │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   ├── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   ├── smithay-clipboard v0.7.3 (*)
+      │   │   │   ├── wayland-client v0.31.15
+      │   │   │   │   ├── calloop-wayland-source v0.3.0 (*)
+      │   │   │   │   ├── calloop-wayland-source v0.4.1 (*)
+      │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   │   ├── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   │   ├── wayland-cursor v0.31.14
+      │   │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   │   ├── wayland-protocols v0.32.13
+      │   │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   │   │   ├── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   │   │   ├── wayland-protocols-experimental v20250721.0.1
+      │   │   │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   │   │   ├── wayland-protocols-misc v0.3.12
+      │   │   │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   │   │   ├── wayland-protocols-plasma v0.3.12
+      │   │   │   │   │   │   └── winit v0.30.13 (*)
+      │   │   │   │   │   ├── wayland-protocols-wlr v0.3.12
+      │   │   │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   │   │   └── winit v0.30.13 (*)
+      │   │   │   │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+      │   │   │   │   ├── wayland-protocols-misc v0.3.12 (*)
+      │   │   │   │   ├── wayland-protocols-plasma v0.3.12 (*)
+      │   │   │   │   ├── wayland-protocols-wlr v0.3.12 (*)
+      │   │   │   │   └── winit v0.30.13 (*)
+      │   │   │   ├── wayland-csd-frame v0.3.0
+      │   │   │   │   ├── smithay-client-toolkit v0.19.2 (*)
+      │   │   │   │   └── smithay-client-toolkit v0.20.0 (*)
+      │   │   │   ├── wayland-protocols v0.32.13 (*)
+      │   │   │   ├── wayland-protocols-experimental v20250721.0.1 (*)
+      │   │   │   ├── wayland-protocols-misc v0.3.12 (*)
+      │   │   │   ├── wayland-protocols-plasma v0.3.12 (*)
+      │   │   │   ├── wayland-protocols-wlr v0.3.12 (*)
+      │   │   │   └── winit v0.30.13 (*)
+      │   │   ├── wayland-client v0.31.15 (*)
+      │   │   ├── wayland-cursor v0.31.14 (*)
+      │   │   ├── x11rb v0.13.2 (*)
+      │   │   ├── xattr v1.6.1
+      │   │   │   └── tar v0.4.46
+      │   │   │       └── commander v0.2.0 (*)
+      │   │   └── zbus v5.19.0 (*)
+      │   └── signal-hook-registry v1.4.8
+      │       └── async-signal v0.2.14 (*)
+      ├── mio v1.2.3
+      │   └── notify v8.2.0
+      │       └── commander v0.2.0 (*)
+      ├── polling v3.11.0 (*)
+      ├── rustix v1.1.4 (*)
+      ├── tempfile v3.27.0 (*)
+      ├── uds_windows v1.2.1 (*)
+      ├── winapi-util v0.1.11
+      │   ├── same-file v1.0.6
+      │   │   └── walkdir v2.5.0
+      │   │       ├── (build) jni v0.22.4
+      │   │       │   ├── android-activity v0.6.1
+      │   │       │   │   └── winit v0.30.13 (*)
+      │   │       │   └── webbrowser v1.2.4
+      │   │       │       └── egui-winit v0.36.2 (*)
+      │   │       └── notify v8.2.0 (*)
+      │   └── walkdir v2.5.0 (*)
+      └── zbus v5.19.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows-targets'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:460:1
+    │  
+460 │ ╭ windows-targets 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+461 │ │ windows-targets 0.53.5 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows-targets v0.52.6
+      ├── windows-sys v0.52.0
+      │   ├── glutin v0.32.3
+      │   │   ├── eframe v0.36.2
+      │   │   │   └── commander v0.2.0
+      │   │   └── glutin-winit v0.5.0
+      │   │       └── eframe v0.36.2 (*)
+      │   ├── glutin_egl_sys v0.7.1
+      │   │   └── glutin v0.32.3 (*)
+      │   └── winit v0.30.13
+      │       ├── accesskit_winit v0.32.2
+      │       │   └── egui-winit v0.36.2
+      │       │       └── eframe v0.36.2 (*)
+      │       ├── eframe v0.36.2 (*)
+      │       ├── egui-wgpu v0.36.2
+      │       │   └── eframe v0.36.2 (*)
+      │       ├── egui-winit v0.36.2 (*)
+      │       └── glutin-winit v0.5.0 (*)
+      └── windows-sys v0.59.0
+          └── rustix v0.38.44
+              ├── calloop v0.13.0
+              │   ├── calloop-wayland-source v0.3.0
+              │   │   └── smithay-client-toolkit v0.19.2
+              │   │       ├── sctk-adwaita v0.10.1
+              │   │       │   └── winit v0.30.13 (*)
+              │   │       └── winit v0.30.13 (*)
+              │   ├── smithay-client-toolkit v0.19.2 (*)
+              │   └── winit v0.30.13 (*)
+              ├── calloop-wayland-source v0.3.0 (*)
+              ├── smithay-client-toolkit v0.19.2 (*)
+              └── winit v0.30.13 (*)
+    ├ windows-targets v0.53.5
+      └── windows-sys v0.60.2
+          ├── arboard v3.6.1
+          │   ├── commander v0.2.0
+          │   └── egui-winit v0.36.2
+          │       └── eframe v0.36.2
+          │           └── commander v0.2.0 (*)
+          └── notify v8.2.0
+              └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_aarch64_gnullvm'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:463:1
+    │  
+463 │ ╭ windows_aarch64_gnullvm 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+464 │ │ windows_aarch64_gnullvm 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_aarch64_gnullvm v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_aarch64_gnullvm v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_aarch64_msvc'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:465:1
+    │  
+465 │ ╭ windows_aarch64_msvc 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+466 │ │ windows_aarch64_msvc 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_aarch64_msvc v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_aarch64_msvc v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_i686_gnu'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:467:1
+    │  
+467 │ ╭ windows_i686_gnu 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+468 │ │ windows_i686_gnu 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_i686_gnu v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_i686_gnu v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_i686_gnullvm'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:469:1
+    │  
+469 │ ╭ windows_i686_gnullvm 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+470 │ │ windows_i686_gnullvm 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_i686_gnullvm v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_i686_gnullvm v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_i686_msvc'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:471:1
+    │  
+471 │ ╭ windows_i686_msvc 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+472 │ │ windows_i686_msvc 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_i686_msvc v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_i686_msvc v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_x86_64_gnu'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:473:1
+    │  
+473 │ ╭ windows_x86_64_gnu 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+474 │ │ windows_x86_64_gnu 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_x86_64_gnu v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_x86_64_gnu v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_x86_64_gnullvm'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:475:1
+    │  
+475 │ ╭ windows_x86_64_gnullvm 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+476 │ │ windows_x86_64_gnullvm 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_x86_64_gnullvm v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_x86_64_gnullvm v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows_x86_64_msvc'
+    ┌─ /Users/themoretheless/Documents/Sources/commander/Cargo.lock:477:1
+    │  
+477 │ ╭ windows_x86_64_msvc 0.52.6 registry+https://github.com/rust-lang/crates.io-index
+478 │ │ windows_x86_64_msvc 0.53.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ windows_x86_64_msvc v0.52.6
+      └── windows-targets v0.52.6
+          ├── windows-sys v0.52.0
+          │   ├── glutin v0.32.3
+          │   │   ├── eframe v0.36.2
+          │   │   │   └── commander v0.2.0
+          │   │   └── glutin-winit v0.5.0
+          │   │       └── eframe v0.36.2 (*)
+          │   ├── glutin_egl_sys v0.7.1
+          │   │   └── glutin v0.32.3 (*)
+          │   └── winit v0.30.13
+          │       ├── accesskit_winit v0.32.2
+          │       │   └── egui-winit v0.36.2
+          │       │       └── eframe v0.36.2 (*)
+          │       ├── eframe v0.36.2 (*)
+          │       ├── egui-wgpu v0.36.2
+          │       │   └── eframe v0.36.2 (*)
+          │       ├── egui-winit v0.36.2 (*)
+          │       └── glutin-winit v0.5.0 (*)
+          └── windows-sys v0.59.0
+              └── rustix v0.38.44
+                  ├── calloop v0.13.0
+                  │   ├── calloop-wayland-source v0.3.0
+                  │   │   └── smithay-client-toolkit v0.19.2
+                  │   │       ├── sctk-adwaita v0.10.1
+                  │   │       │   └── winit v0.30.13 (*)
+                  │   │       └── winit v0.30.13 (*)
+                  │   ├── smithay-client-toolkit v0.19.2 (*)
+                  │   └── winit v0.30.13 (*)
+                  ├── calloop-wayland-source v0.3.0 (*)
+                  ├── smithay-client-toolkit v0.19.2 (*)
+                  └── winit v0.30.13 (*)
+    ├ windows_x86_64_msvc v0.53.1
+      └── windows-targets v0.53.5
+          └── windows-sys v0.60.2
+              ├── arboard v3.6.1
+              │   ├── commander v0.2.0
+              │   └── egui-winit v0.36.2
+              │       └── eframe v0.36.2
+              │           └── commander v0.2.0 (*)
+              └── notify v8.2.0
+                  └── commander v0.2.0 (*)
+
+advisories ok, bans ok, licenses ok, sources ok

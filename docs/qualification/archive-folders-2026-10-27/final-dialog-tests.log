@@ -1,0 +1,16 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.95s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 8 tests
+test app::archive_dialog::tests::member_cursor_steps_through_visible_rows_only ... ok
+test app::archive_dialog::tests::extract_labels_name_hidden_selection_and_capped_listings ... ok
+test app::archive_dialog::tests::many_extract_errors_toast_a_count_and_cap_the_inline_list ... ok
+test app::archive_dialog::tests::selecting_folder_contents_includes_only_real_subtree_members ... ok
+test app::archive_dialog::tests::unchanged_filter_reuses_its_matches ... ok
+test app::archive_dialog::tests::member_filter_matches_case_insensitively_and_tracks_the_text ... ok
+test app::archive_dialog::tests::archive_sort_preserves_focus_and_selection_membership_after_filtering ... ok
+test app::archive_dialog::tests::archive_folder_navigation_preserves_member_ids_and_hidden_selection ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 2238 filtered out; finished in 0.01s
+

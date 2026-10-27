@@ -1,0 +1,13 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.96s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 1 test
+test app::mask_dialog::tests::mask_count_is_recomputed_only_when_its_inputs_change ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2406 filtered out; finished in 0.00s
+

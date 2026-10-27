@@ -14,9 +14,11 @@ mod file_list;
 mod find_dialog;
 pub mod glyphs;
 mod history_dialog;
+mod keyboard_help;
 mod keys;
 mod mask_dialog;
 mod omnibar_dialog;
+mod permissions_dialog;
 mod preload;
 mod queue_dialog;
 mod recovery_dialog;
@@ -28,6 +30,7 @@ mod saved_search_dialog;
 #[cfg(test)]
 mod smoke;
 mod sync_dialog;
+mod tabs;
 mod toolbar;
 mod tree;
 mod treemap_dialog;
@@ -72,12 +75,14 @@ pub struct App {
     pub theme_mode: ThemeMode,
     /// Track the OS appearance each frame instead of a fixed `theme_mode`.
     pub(crate) follow_system_theme: bool,
+    pub(crate) theme_palette: Option<String>,
     pub colors: ThemeColors,
     pub(crate) accessibility_preferences: crate::accessibility::Preferences,
     /// Re-reads [`Self::accessibility_preferences`] on window focus gain.
     pub(crate) accessibility_watch: crate::accessibility::PreferenceWatch,
     pub(crate) prev_window_width: f32,
     pub(crate) image_cache: crate::image_cache::ImageCache,
+    pub(crate) pdf_cache: crate::pdf_preview::Cache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
     tree_children_cache: tree::ChildCache,
@@ -128,6 +133,7 @@ pub struct App {
     pub(crate) project_collections: crate::collections::ProjectCollections,
     /// Saved command templates, loaded lazily on first use.
     pub(crate) command_templates: Option<crate::cmdtemplate::Templates>,
+    pub(crate) rename_presets: crate::rename_presets::Presets,
     /// Cached cross-panel compare maps and the panel generations they were built
     /// from, so compare mode does not rebuild two `HashMaps` (cloning every
     /// `name_lower`) on every painted frame. `(right_gen, left_gen, left_map,
@@ -155,9 +161,12 @@ pub struct App {
     /// Close the native window once all user-cancelled mutations retire.
     pub(crate) quit_when_operations_settle: bool,
     pub(crate) quit_confirmation: bool,
+    pub(crate) hex_viewer: Option<crate::hex_preview::HexViewer>,
     checksum_task: Option<ChecksumTask>,
     checksum_report: Option<crate::checksum::ChecksumReport>,
     checksum_generation: u64,
+    checksum_expected: String,
+    checksum_algorithm: crate::checksum::Algorithm,
 }
 
 struct ChecksumTask {
@@ -165,6 +174,7 @@ struct ChecksumTask {
     task: crate::workload::TaskHandle,
     completed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     total: usize,
+    cancel_requested: bool,
 }
 
 #[cfg(feature = "visual-qa")]
@@ -290,6 +300,8 @@ impl DeveloperNotice {
 
 /// UI state for the run-command / open-with bar.
 pub struct RunCommandState {
+    pub template_name: String,
+    pub template_extensions: String,
     /// The editable command line (placeholders expand against the selection).
     pub line: String,
     /// Separates egui scroll memory from earlier openings of this dialog.
@@ -654,18 +666,33 @@ pub struct BatchRenameState {
     /// Panel listing revision used to build `context.existing`. The selected
     /// targets stay fixed, but sibling collisions follow watcher refreshes.
     pub listing_generation: u64,
+    pub remove_prefix: String,
+    pub remove_suffix: String,
     pub find: String,
     pub replace: String,
     /// Treat `find` as a regular expression (`$1`-style groups in `replace`)
     /// instead of a literal substring.
     pub regex_mode: bool,
+    pub ignore_case: bool,
+    pub first_only: bool,
+    pub trim_spaces: bool,
+    pub collapse_repeats: bool,
+    pub normalization: crate::rename::NameNormalization,
+    pub stem_limit_on: bool,
+    pub stem_limit: u32,
+    pub replace_target: crate::rename::ReplaceTarget,
     pub prefix: String,
     pub suffix: String,
     pub case: crate::rename::CaseMode,
+    pub extension_case: crate::rename::ExtensionCase,
     pub numbering_on: bool,
-    pub num_start: u32,
-    pub num_step: u32,
+    pub number_position: crate::rename::NumberPosition,
+    pub num_start: i64,
+    pub num_step: i64,
     pub num_pad: u32,
+    pub preset_name: String,
+    pub preset_selected: Option<String>,
+    pub preset_status: Option<Result<String, String>>,
     pub error: Option<String>,
     /// Separates egui scroll memory from earlier openings of this dialog.
     pub scroll_nonce: u64,
@@ -674,18 +701,70 @@ pub struct BatchRenameState {
 }
 
 impl BatchRenameState {
+    fn reset_rule(&mut self) {
+        self.load_rule(&crate::rename::RenameRule::default());
+        self.num_start = 1;
+        self.num_step = 1;
+        self.num_pad = 2;
+        self.stem_limit = 32;
+        self.preset_name.clear();
+        self.preset_selected = None;
+        self.preset_status = Some(Ok("Rule reset".into()));
+        self.error = None;
+    }
+
+    fn load_rule(&mut self, rule: &crate::rename::RenameRule) {
+        self.remove_prefix = rule.remove_prefix.clone();
+        self.remove_suffix = rule.remove_suffix.clone();
+        self.find = rule.find.clone();
+        self.replace = rule.replace.clone();
+        self.regex_mode = rule.regex;
+        self.ignore_case = rule.ignore_case;
+        self.first_only = rule.first_only;
+        self.trim_spaces = rule.trim_spaces;
+        self.collapse_repeats = rule.collapse_repeats;
+        self.normalization = rule.normalization;
+        self.stem_limit_on = rule.stem_limit.is_some();
+        if let Some(limit) = rule.stem_limit {
+            self.stem_limit = limit as u32;
+        }
+        self.replace_target = rule.replace_target;
+        self.prefix = rule.prefix.clone();
+        self.suffix = rule.suffix.clone();
+        self.case = rule.case;
+        self.extension_case = rule.extension_case;
+        self.numbering_on = rule.numbering.is_some();
+        self.number_position = rule.number_position;
+        if let Some(numbering) = rule.numbering {
+            self.num_start = numbering.start;
+            self.num_step = numbering.step;
+            self.num_pad = numbering.pad as u32;
+        }
+        self.validation = None;
+    }
     /// Build the pure rename rule from the current field values.
     pub(crate) fn rule(&self) -> crate::rename::RenameRule {
         crate::rename::RenameRule {
+            remove_prefix: self.remove_prefix.clone(),
+            remove_suffix: self.remove_suffix.clone(),
             find: self.find.clone(),
             replace: self.replace.clone(),
             regex: self.regex_mode,
+            ignore_case: self.ignore_case,
+            first_only: self.first_only,
+            trim_spaces: self.trim_spaces,
+            collapse_repeats: self.collapse_repeats,
+            normalization: self.normalization,
+            stem_limit: self.stem_limit_on.then_some(self.stem_limit as usize),
+            replace_target: self.replace_target,
             prefix: self.prefix.clone(),
             suffix: self.suffix.clone(),
             case: self.case,
+            extension_case: self.extension_case,
+            number_position: self.number_position,
             numbering: self.numbering_on.then_some(crate::rename::Numbering {
                 start: self.num_start,
-                step: self.num_step.max(1),
+                step: self.num_step,
                 pad: self.num_pad as usize,
             }),
         }
@@ -944,6 +1023,7 @@ impl App {
             } else {
                 ActivePanel::Right
             };
+            ws.restore_tabs(&s.left_tabs, &s.right_tabs);
             ws.durability_profile = s.durability_profile;
             ws.version_retention = s.version_retention;
             ws.sync_guard_policy = s.sync_guard_policy.clone();
@@ -979,6 +1059,10 @@ impl App {
             recent_order: session
                 .as_ref()
                 .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
+            rename_presets: session
+                .as_ref()
+                .map(|s| s.rename_presets.clone())
+                .unwrap_or_default(),
             search_history: session
                 .as_ref()
                 .map(|s| s.search_history.clone())
@@ -1008,6 +1092,11 @@ impl App {
                 project_collections,
             })
         };
+        app.theme_palette = session
+            .as_ref()
+            .and_then(|s| s.theme_palette.clone())
+            .filter(|id| crate::theme_catalog::find(id).is_some());
+        app.apply_current_palette(&cc.egui_ctx);
         if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
         }
@@ -1105,6 +1194,7 @@ impl App {
             accessibility_preferences,
             accessibility_watch: crate::accessibility::PreferenceWatch::default(),
             prev_window_width: 0.0,
+            pdf_cache: crate::pdf_preview::Cache::default(),
             image_cache,
             show_tree: false,
             tree_expanded: std::collections::HashSet::new(),
@@ -1118,6 +1208,7 @@ impl App {
             show_compare: false,
             show_key_bar: false,
             follow_system_theme: false,
+            theme_palette: None,
             fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
@@ -1137,6 +1228,7 @@ impl App {
             smart_folders: None,
             project_collections,
             command_templates: None,
+            rename_presets: crate::rename_presets::Presets::default(),
             compare_cache: None,
             confirm_cache: confirm_dialog::ConfirmCache::default(),
             startup_trace: None,
@@ -1148,9 +1240,12 @@ impl App {
             helper_failure_seen: crate::native_effect::helper_failure_generation(),
             quit_when_operations_settle: false,
             quit_confirmation: false,
+            hex_viewer: None,
             checksum_task: None,
             checksum_report: None,
             checksum_generation: 0,
+            checksum_expected: String::new(),
+            checksum_algorithm: crate::checksum::Algorithm::default(),
         }
     }
 
@@ -1238,8 +1333,11 @@ impl App {
             left_path: self.ws.left.current_path.clone(),
             right_path: self.ws.right.current_path.clone(),
             active_left: self.ws.active == ActivePanel::Left,
+            left_tabs: self.ws.tab_snapshot(ActivePanel::Left),
+            right_tabs: self.ws.tab_snapshot(ActivePanel::Right),
             theme_dark: self.theme_mode == ThemeMode::Dark,
             theme_follow_system: self.follow_system_theme,
+            theme_palette: self.theme_palette.clone(),
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
@@ -1255,6 +1353,7 @@ impl App {
             recent_stats,
             recent_order: self.recent_order,
             search_history: self.search_history.clone(),
+            rename_presets: self.rename_presets.clone(),
             durability_profile: self.ws.durability_profile,
             version_retention: self.ws.version_retention,
             sync_guard_policy: self.ws.sync_guard_policy.clone(),

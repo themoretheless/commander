@@ -1,0 +1,3 @@
+f5a96afd73580cb4acb6423b6ad785deabb38236092fee4e7ef1dcf748d36c9f  README.md
+9d7431b45fd1f76f11632efb957c6c3b7d9f626236bb7fb684ec4bbbcb0a5fc8  src/panel.rs
+3f00e265fbbcf740edae97a35a8c9db1872b60241cdf84fa042e108b6367e2b0  src/app/mask_dialog.rs

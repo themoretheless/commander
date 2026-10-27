@@ -1,0 +1,14 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.75s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 5 tests
+test rename::tests::capitalization_modes_use_unicode_and_preserve_word_separators ... ok
+test rename::tests::capitalization_keeps_extension_and_existing_transform_order ... ok
+test app::batch_rename_dialog::tests::capitalization_changes_rebuild_cached_preview_before_submission ... ok
+test rename_presets::tests::capitalization_presets_round_trip ... ok
+test workspace::tests::capitalization_batch_rename_preserves_content_and_undo_redo ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2329 filtered out; finished in 0.01s
+

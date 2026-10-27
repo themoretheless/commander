@@ -1,0 +1,40 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.90s
+     Running unittests src/main.rs (target/debug/build/commander/df71a97c0b0295db/out/commander-df71a97c0b0295db)
+
+running 32 tests
+test search::tests::abandoned_search_closes_its_channel_and_wakes_the_ui ... ok
+test search::tests::archive_members_report_their_own_modified_time ... ok
+test search::tests::archives_that_will_not_open_are_counted ... ok
+test search::tests::content_partial_note_uses_the_symlink_target_size ... ok
+test search::tests::content_read_stops_after_the_head_of_a_binary_file ... ok
+test search::tests::content_search_skips_binary_files_and_counts_them ... ok
+test search::tests::content_search_skips_fifos_without_blocking ... ok
+test search::tests::exactly_cap_matches_is_not_truncated ... ok
+test search::tests::exhausted_archive_budget_marks_the_results_capped ... ok
+test search::tests::filtered_content_search_reports_corrupt_tar_gz_archives ... ok
+test search::tests::first_batch_arrives_before_the_full_walk_completes ... ok
+test search::tests::fuzzy_filename_ranking_has_a_golden_order ... ok
+test search::tests::highlight_ranges_count_characters_not_bytes ... ok
+test search::tests::indexed_provider_delegates_zip_paths_to_the_archive_provider ... ok
+test search::tests::indexed_provider_searches_the_snapshot_without_disk_reads ... ok
+test search::tests::live_provider_searches_text_inside_plain_and_gzip_tar ... ok
+test search::tests::live_provider_streams_archive_members_and_reveals_the_archive ... ok
+test search::tests::modified_text_falls_back_for_times_chrono_cannot_hold ... ok
+test search::tests::open_regular_file_refuses_devices_and_directories ... ok
+test search::tests::oversized_literal_query_is_an_error_not_a_panic ... ok
+test search::tests::path_predicate_ignores_the_search_root ... ok
+test search::tests::query_history_is_replayable_deduplicated_and_capped ... ok
+test search::tests::search_benchmark_shallow_deep_many_small_huge_and_mixed ... ignored, manual search benchmark harness
+test search::tests::stable_refresh_keeps_prior_identities_and_ranks_new_hits ... ok
+test search::tests::stale_worker_reports_cancellation_before_scanning ... ok
+test search::tests::starting_a_generation_invalidates_the_previous_one ... ok
+test search::tests::streaming_search_finds_metadata_and_content ... ok
+test search::tests::synthetic_entries_use_the_panel_placeholders ... ok
+test search::tests::time_bucket_handles_times_outside_chrono_range ... ok
+test search::tests::time_buckets_follow_local_calendar_days ... ok
+test search::tests::time_pivot_has_stable_age_buckets ... ok
+test search::tests::unreadable_folders_are_counted_not_dropped ... ok
+
+test result: ok. 31 passed; 0 failed; 1 ignored; 0 measured; 2181 filtered out; finished in 0.62s
+

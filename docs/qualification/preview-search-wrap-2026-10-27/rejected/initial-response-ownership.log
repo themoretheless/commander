@@ -1,0 +1,42 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0382]: borrow of moved value: `previous`
+   --> src/preview_find.rs:472:31
+    |
+446 |             let previous = ui.add_enabled(state.can_step(false), egui::Button::new("Prev"));
+    |                 -------- move occurs because `previous` has type `Response`, which does not implement the `Copy` trait
+...
+455 |                 .on_hover_text("Previous match (Shift+Enter or Shift+F3 in search)")
+    |                  ------------------------------------------------------------------- `previous` moved due to this method call
+...
+472 |             ui.ctx().data_mut(|data| data.insert_temp(id.with("navigation-enabled"), [previous.enabled(), next.enabled()]));
+    |                               ^^^^^^ value borrowed here after move                   -------- borrow occurs due to use in closure
+    |
+note: `egui::Response::on_hover_text` takes ownership of the receiver `self`, which moves `previous`
+   --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/response.rs:727:26
+    |
+727 |     pub fn on_hover_text(self, text: impl Into<WidgetText>) -> Self {
+    |                          ^^^^
+help: you can `clone` the value and consume it, but this might not be your desired behavior
+    |
+454 |             if previous.clone()
+    |                        ++++++++
+
+error[E0382]: borrow of moved value: `next`
+   --> src/preview_find.rs:472:31
+    |
+460 |             let next = ui.add_enabled(state.can_step(true), egui::Button::new("Next"));
+    |                 ---- move occurs because `next` has type `Response`, which does not implement the `Copy` trait
+...
+468 |             if next.on_hover_text("Next match (Enter or F3 in search)").clicked() {
+    |                     --------------------------------------------------- `next` moved due to this method call
+...
+472 |             ui.ctx().data_mut(|data| data.insert_temp(id.with("navigation-enabled"), [previous.enabled(), next.enabled()]));
+    |                               ^^^^^^ value borrowed here after move                                       ---- borrow occurs due to use in closure
+    |
+help: you can `clone` the value and consume it, but this might not be your desired behavior
+    |
+468 |             if next.clone().on_hover_text("Next match (Enter or F3 in search)").clicked() {
+    |                    ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

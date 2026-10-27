@@ -124,6 +124,14 @@ impl SizeIndex {
         }
     }
 
+    pub(super) fn suspend(&mut self) {
+        let _boundary = lock_recover(scan_commit_boundary());
+        let mut epoch = lock_recover(&self.scan_epoch);
+        epoch.cancel();
+        *epoch = Arc::new(ScanEpoch::new());
+        self.dirty = false;
+    }
+
     pub(super) fn bind(&mut self, path: &Path) {
         if self.binding == path {
             return;

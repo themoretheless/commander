@@ -1,0 +1,58 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:255:56
+    |
+255 |         assert_eq!(matches("ёж É é [x]", "é", true).0, [5..6]);
+    |                                                        ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+    = note: `-D clippy::single-range-in-vec-init` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::single_range_in_vec_init)]`
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+255 -         assert_eq!(matches("ёж É é [x]", "é", true).0, [5..6]);
+255 +         assert_eq!(matches("ёж É é [x]", "é", true).0, (5..6).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 6, try
+    |
+255 -         assert_eq!(matches("ёж É é [x]", "é", true).0, [5..6]);
+255 +         assert_eq!(matches("ёж É é [x]", "é", true).0, [5; 6]);
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:256:59
+    |
+256 |         assert_eq!(matches("ёж É é [x]", "[x]", false).0, [7..10]);
+    |                                                           ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+256 -         assert_eq!(matches("ёж É é [x]", "[x]", false).0, [7..10]);
+256 +         assert_eq!(matches("ёж É é [x]", "[x]", false).0, (7..10).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 10, try
+    |
+256 -         assert_eq!(matches("ёж É é [x]", "[x]", false).0, [7..10]);
+256 +         assert_eq!(matches("ёж É é [x]", "[x]", false).0, [7; 10]);
+    |
+
+error: an array of `Range` that is only one element
+   --> src/preview_find.rs:259:50
+    |
+259 |         assert_eq!(matches("aaa", "aa", true).0, [0..2]);
+    |                                                  ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+259 -         assert_eq!(matches("aaa", "aa", true).0, [0..2]);
+259 +         assert_eq!(matches("aaa", "aa", true).0, (0..2).collect::<std::vec::Vec<usize>>());
+    |
+help: if you wanted an array of len 2, try
+    |
+259 -         assert_eq!(matches("aaa", "aa", true).0, [0..2]);
+259 +         assert_eq!(matches("aaa", "aa", true).0, [0; 2]);
+    |
+
+error: could not compile `commander` (bin "commander" test) due to 3 previous errors

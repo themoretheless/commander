@@ -107,6 +107,12 @@ macro_rules! define_modal_store {
 }
 
 define_modal_store!(
+    Permissions => Permissions {
+        permissions: Option<super::permissions_dialog::PermissionState>, option
+    },
+    KeyboardHelp => KeyboardHelp {
+        keyboard_help: bool, bool
+    },
     History => History {
         history_preview: Option<HistoryPreviewState>, option
     },
@@ -312,7 +318,7 @@ mod tests {
 
     #[test]
     fn registry_covers_all_ui_modals_with_unique_surfaces() {
-        assert_eq!(UI_MODAL_REGISTRY.len(), 9);
+        assert_eq!(UI_MODAL_REGISTRY.len(), 11);
         for (index, (modal, surface)) in UI_MODAL_REGISTRY.iter().enumerate() {
             assert_eq!(modal.surface(), *surface);
             assert_eq!(UiModal::from_surface(*surface), Some(*modal));

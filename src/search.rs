@@ -249,7 +249,7 @@ impl SearchProvider for FilesystemProvider {
     }
 
     fn label(&self) -> &'static str {
-        "Live + ZIP"
+        "Live + archives"
     }
 
     fn root(&self) -> &Path {
@@ -408,7 +408,7 @@ impl SearchProvider for ArchiveProvider {
     }
 
     fn label(&self) -> &'static str {
-        "ZIP"
+        "Archives"
     }
 
     fn root(&self) -> &Path {
@@ -432,7 +432,7 @@ impl SearchProvider for IndexedProvider {
     }
 
     fn label(&self) -> &'static str {
-        "Index + ZIP"
+        "Index + archives"
     }
 
     fn root(&self) -> &Path {
@@ -1502,11 +1502,11 @@ mod tests {
     }
 
     #[test]
-    fn filtered_content_search_counts_unsearched_tar_gz_archives() {
+    fn filtered_content_search_reports_corrupt_tar_gz_archives() {
         let tmp = TempDir::new();
         tmp.file("server.log", "no match here");
         // The archive fails the name filter, so it is never read as a binary
-        // file; its members are still skipped and must be counted.
+        // file; failing to read its members must still be counted.
         tmp.file("logs.tgz", "members would hold server.log with ERROR");
         let summary = name_search(tmp.path(), "path:server.log content:ERROR");
         assert!(summary.content_skipped >= 1, "{summary:?}");
@@ -1590,11 +1590,58 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(run.provider, "Index + ZIP");
+        assert_eq!(run.provider, "Index + archives");
         let (hits, summary) = collect_run(&run);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].entry.name, "notes.txt");
         assert_eq!(summary.content_skipped, 0);
+    }
+
+    #[test]
+    fn live_provider_searches_text_inside_plain_and_gzip_tar() {
+        let tmp = TempDir::new();
+        for name in ["logs.tar", "logs.tgz"] {
+            let mut builder = tar::Builder::new(Vec::new());
+            let content = b"Unicode archive needle";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(37);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "docs/inside.txt", &content[..])
+                .unwrap();
+            let bytes = builder.into_inner().unwrap();
+            let bytes = if name.ends_with("tgz") {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                std::io::Write::write_all(&mut encoder, &bytes).unwrap();
+                encoder.finish().unwrap()
+            } else {
+                bytes
+            };
+            std::fs::write(tmp.path().join(name), bytes).unwrap();
+        }
+        let engine = SearchEngine::default();
+        let run = engine
+            .start(
+                tmp.path().into(),
+                Query::parse("path:inside.txt content:needle", MatchMode::Exact).unwrap(),
+                100,
+                Arc::new(|| {}),
+            )
+            .unwrap();
+        let (hits, summary) = collect_run(&run);
+        assert_eq!(summary.matched, 2);
+        assert_eq!(summary.content_skipped, 0);
+        assert!(!summary.truncated);
+        assert_eq!(hits.len(), 2);
+        for hit in hits {
+            assert!(
+                matches!(&hit.location, SearchLocation::ArchiveMember { member, .. } if member == Path::new("docs/inside.txt"))
+            );
+            assert!(hit.reveal_path().is_file());
+        }
     }
 
     #[test]
@@ -1612,7 +1659,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(run.provider, "Live + ZIP");
+        assert_eq!(run.provider, "Live + archives");
         let (hits, summary) = collect_run(&run);
         assert_eq!(summary.matched, 1);
         assert_eq!(hits.len(), 1);

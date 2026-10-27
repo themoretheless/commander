@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.17s
+     Running `target/debug/commander --visual-qa folder_tabs --output target/visual-qa`
+2026-10-28T00:56:56 INFO  commander::logging: logging initialized
+2026-10-28T00:56:56 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: folder_tabs
+2026-10-28T00:56:56 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-28T00:56:57 WARN  notify::poll::data: walkdir error scanning Error { depth: 1, inner: Io { path: Some("/.VolumeIcon.icns"), err: Os { code: 2, kind: NotFound, message: "No such file or directory" } } }
+2026-10-28T00:56:57 WARN  notify::poll::data: walkdir error scanning Error { depth: 1, inner: Io { path: Some("/.VolumeIcon.icns"), err: Os { code: 2, kind: NotFound, message: "No such file or directory" } } }

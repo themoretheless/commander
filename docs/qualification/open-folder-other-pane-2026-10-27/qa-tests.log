@@ -1,0 +1,13 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.96s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 4 tests
+test visual_qa::tests::rect_contract_rejects_clipping_and_non_finite_values ... ok
+test visual_qa::tests::only_json_copy_scenario_accepts_exactly_one_recording_clipboard_call ... ok
+test visual_qa::tests::required_scenario_matrix_is_stable ... ok
+test visual_qa::tests::painted_glyph_probe_rejects_blank_regions_and_detects_ink ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2371 filtered out; finished in 0.00s
+

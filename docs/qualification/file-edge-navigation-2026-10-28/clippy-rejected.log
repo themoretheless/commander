@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable
+    --> src/panel.rs:1630:9
+     |
+1621 |         let mut rows = self
+     |                        ---- immutable borrow occurs here
+...
+1630 |         self.set_cursor(row);
+     |         ^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+1633 |     }
+     |     - immutable borrow might be used here, when `rows` is dropped and runs the destructor for type `std::iter::Map<std::iter::Filter<std::iter::Enumerate<impl std::iter::Iterator<Item = &panel::FileEntry>>, {closure@src/panel.rs:1624:21: 1624:33}>, {closure@src/panel.rs:1625:18: 1625:30}>`
+
+error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable
+    --> src/panel.rs:1631:9
+     |
+1621 |         let mut rows = self
+     |                        ---- immutable borrow occurs here
+...
+1631 |         self.set_scroll_to_cursor(true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+1632 |         true
+1633 |     }
+     |     - immutable borrow might be used here, when `rows` is dropped and runs the destructor for type `std::iter::Map<std::iter::Filter<std::iter::Enumerate<impl std::iter::Iterator<Item = &panel::FileEntry>>, {closure@src/panel.rs:1624:21: 1624:33}>, {closure@src/panel.rs:1625:18: 1625:30}>`
+
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

@@ -1,0 +1,54 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.95s
+     Running unittests src/main.rs (target/debug/build/commander/64b722dc4e709030/out/commander-64b722dc4e709030)
+
+running 46 tests
+test command::tests::activate_needs_a_cursor_entry_or_a_parent_folder ... ok
+test command::tests::availability_explains_missing_command_context ... ok
+test command::tests::availability_keeps_close_actions_reachable ... ok
+test command::tests::availability_prioritizes_safety_and_busy_reasons ... ok
+test command::tests::browse_archive_needs_a_highlighted_file ... ok
+test command::tests::capability_predicates_gate_only_the_required_panes ... ok
+test command::tests::catalog_labels_and_commands_are_unique ... ok
+test command::tests::catalog_shortcut_hints_match_the_key_bindings ... ok
+test command::tests::cmd_brackets_walk_history ... ok
+test command::tests::cmd_d_diffs_and_cmd_shift_d_cycles_density ... ok
+test command::tests::cmd_digits_are_quick_jump_slots ... ok
+test command::tests::cmd_f_opens_find ... ok
+test command::tests::cmd_i_is_info_but_cmd_shift_i_inverts_selection ... ok
+test command::tests::cmd_shift_c_copies_path ... ok
+test command::tests::cmd_shift_f_focuses_the_pane_filter ... ok
+test command::tests::cmd_shift_m_opens_treemap ... ok
+test command::tests::cmd_shift_r_is_batch_rename_distinct_from_cmd_r ... ok
+test command::tests::cmd_shift_s_is_synchronize ... ok
+test command::tests::combined_score_caps_frequency_and_recency ... ok
+test command::tests::combined_score_lets_habit_break_close_ties_not_clear_wins ... ok
+test command::tests::command_enter_maps_to_keyboard_drop_while_enter_still_activates ... ok
+test command::tests::commands_compose_typed_predicates_in_priority_order ... ok
+test command::tests::contextual_shortcuts_only_describe_available_next_actions ... ok
+test command::tests::empty_query_lists_most_recently_used_first ... ok
+test command::tests::every_catalog_availability_has_a_consistent_reason ... ok
+test command::tests::filter_commands_matches_shortcuts_and_aliases ... ok
+test command::tests::filter_commands_ranks_by_fuzzy_relevance ... ok
+test command::tests::function_keys_map_to_file_ops ... ok
+test command::tests::keyword_wins_keep_the_label_highlight ... ok
+test command::tests::keywords_match_by_word_prefix ... ok
+test command::tests::letter_keys_require_command_modifier ... ok
+test command::tests::map_keys_preserves_order_and_drops_unmapped ... ok
+test command::tests::modified_period_does_not_repeat_last_command ... ok
+test command::tests::mutating_commands_are_exactly_the_mutation_gated_ones ... ok
+test command::tests::navigation_keys_map ... ok
+test command::tests::palette_binds_to_cmd_k ... ok
+test command::tests::panel_sync_binds_to_cmd_e_and_cmd_u ... ok
+test command::tests::rename_binds_to_f2_and_cmd_r ... ok
+test command::tests::shift_arrows_extend_selection ... ok
+test command::tests::shortcut_punctuation_is_part_of_the_match ... ok
+test command::tests::space_hint_names_the_toggle_it_would_perform ... ok
+test command::tests::stray_letters_do_not_match_inside_shortcuts ... ok
+test command::tests::sync_needs_only_one_writable_pane ... ok
+test command::tests::transfer_into_folder_explains_each_missing_target ... ok
+test command::tests::undo_binds_to_cmd_z_and_redo_to_cmd_shift_z ... ok
+test command::tests::unused_commands_fall_back_to_fuzzy_order ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.01s
+

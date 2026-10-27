@@ -1,0 +1,19 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.02s
+     Running `target/debug/commander --visual-qa pdf_preview --output target/visual-qa-pdf-text`
+2026-10-27T17:55:08 INFO  commander::logging: logging initialized
+2026-10-27T17:55:08 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: pdf_preview
+2026-10-27T17:55:08 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 0 at [855.0 335.5]
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 1 at [855.0 335.5]
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 2 at [855.0 335.5]
+2026-10-27T17:55:08 INFO  commander::pdf_preview: PDF UI Next accepted at page 1
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 3 at [695.6 335.5]
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 4 at [695.6 335.5]
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 5 at [695.6 335.5]
+2026-10-27T17:55:08 INFO  commander::pdf_preview: PDF UI Previous accepted at page 2
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 6 at [776.0 301.5]
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 7 at [776.0 301.5]
+2026-10-27T17:55:08 INFO  commander::visual_qa: PDF QA pointer phase 8 at [776.0 301.5]
+2026-10-27T17:55:09 INFO  commander::visual_qa: PDF native QA: pointer round trip 1 -> 2 -> 1 and Page text/search validated
+2026-10-27T17:55:09 INFO  commander::visual_qa: PDF native QA: pointer round trip 1 -> 2 -> 1 and Page text/search validated
