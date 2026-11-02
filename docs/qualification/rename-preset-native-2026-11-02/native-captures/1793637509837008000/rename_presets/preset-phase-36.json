@@ -1,0 +1,54 @@
+{
+  "editor": {
+    "name": "Copy",
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "prefix": "Photo_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "selected": "Album"
+  },
+  "phase": 36,
+  "presets": [
+    {
+      "name": "Album",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    },
+    {
+      "name": "Copy",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "rename_presets",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/rename-preset-native-2026-11-02/native-captures/1793637227005590000",
+  "binary_sha256": "dfec82a190e8b5e0570ac515859263cde7e8f26eee3f0cba18cd87606869833e",
+  "core_sha256": "dfec82a190e8b5e0570ac515859263cde7e8f26eee3f0cba18cd87606869833e",
+  "wrapper_sha256": "750ae65d87fc9c888705bf8ccdb579eb80e4469d8014e3247868f1b12043e900",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

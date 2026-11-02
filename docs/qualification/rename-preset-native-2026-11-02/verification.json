@@ -1,0 +1,16 @@
+{
+  "checks": 16,
+  "phases": 43,
+  "observations": 33,
+  "native_effects": 0,
+  "verified": [
+    "rename",
+    "saved-copy",
+    "set-launch",
+    "clear-launch",
+    "set-again",
+    "close",
+    "keyboard-reopen-load"
+  ],
+  "frame_sha256": "2d7349a6d8999ac436e316dfc6c05da31667fcd31ef4aa7488c1595154c1c8c8"
+}

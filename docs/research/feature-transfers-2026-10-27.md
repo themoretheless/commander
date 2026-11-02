@@ -2478,3 +2478,7 @@ Independent adaptation of [Double Commander preset management](https://doublecmd
 ## Saved rename rule at launch (2026-11-02)
 
 Independent adaptation of [Double Commander Preset at launch](https://doublecmd.github.io/doc/en/multirename.html): choose one saved rule for subsequent dialog openings or restore empty-rule startup. The choice survives session save/load and follows rename/update; copies do not inherit it and deletion clears it. Old preset JSON remains readable; ambiguous multi-default JSON is rejected. No automatic filesystem action. [Evidence and native interaction limits](../qualification/rename-launch-preset-2026-11-02/README.md).
+
+## Native saved rename-rule management (2026-11-02)
+
+The native scenario now executes rename, saved-rule duplication, setting/clearing/re-setting launch preference, Escape closure and Cmd+Shift+R reopening. Per-render-frame acknowledgement prevents raw-hook phase loss. Successful 43-phase capture: 16/16 checks, 33 observations independently compared with saved rule semantics, zero native effects. This closes the prior success-path native interaction gaps for these controls; post-animation layout, error paths, date controls and native restart remain open. [Receipts, failed attempts and limits](../qualification/rename-preset-native-2026-11-02/README.md).

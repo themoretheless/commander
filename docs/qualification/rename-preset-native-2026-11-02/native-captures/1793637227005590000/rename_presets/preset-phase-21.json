@@ -1,0 +1,38 @@
+{
+  "editor": {
+    "name": "Photos",
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "prefix": "Photo_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "selected": "Photos"
+  },
+  "phase": 21,
+  "presets": [
+    {
+      "name": "Photos",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    }
+  ]
+}
