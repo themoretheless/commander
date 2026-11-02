@@ -1,0 +1,9 @@
+{
+  "src/visual_qa.rs": "a786bd3674afde3e8a8f4127532c7a208b69440f6fecf10b395ecbda87428ba4",
+  "src/fictionbook_preview.rs": "d05a60293368399cc1124614c500d87371cde40bad2fcd9a8305de34e9390cc6",
+  "src/image_cache.rs": "3ea117c108b4625247dbb8e5ab98adc7c80eda1e5c4df0ab721fdee239fb8999",
+  "src/app/render.rs": "0c1d1e20e817951196fe05440f5ef8a96d61cae34b3220463da71e8005db8e2e",
+  "Cargo.toml": "3f9419f2137db7c88e89eca5c61c799d787dfe5cfab9302cb9e91f6543b1c350",
+  "Cargo.lock": "74cf6ecdd7af1af9c14df20845b58bbba599e6d342d3b924e927eb1b963dc2ca",
+  "target/debug/commander": "f7dbc64f19b23867bf12a667d2a3b2a732ce37b5d33e6a7ac972c75570cefd19"
+}

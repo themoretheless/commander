@@ -2452,3 +2452,7 @@ Commander extension of the [Double Commander whitespace comparison workflow](htt
 ## Single-book zipped FB2 text preview (2026-11-02)
 
 Commander extension of the existing Strata-inspired ebook/archive preview work: .fb2.zip now displays one contained FB2 using the shared encoding/body parser and guarded background snapshot pipeline, without disk extraction. Bounds cover outer ZIP/entry count/declared and actual member bytes; multiple books, unsafe candidates and damaged data fail. Seven gates passed including supply-chain audit, 3302 / 3 ignored; filesystem-provider regression verifies text/cancellation/change ownership. Native compressed-book UI and other wrappers remain open. [Evidence and limits](../qualification/zipped-fb2-preview-2026-11-02/README.md).
+
+## Native zipped FB2 success path (2026-11-02)
+
+Separate compressed-book and raw control scenarios each passed 14/14 on the current executable. The ZIP scene opens a nested uppercase Windows-1251 FB2, finds one phrase and copies the actual text through pointer input. Independent Python ZIP/XML decoding matches all clipboard bytes; both stable frames inspected. Seven gates passed including audit, 3302 / 3 ignored. This closes the prior compressed-book success-path UI gap; error/multi-book layouts, other wrappers and OS pasteboard remain open. [Evidence](../qualification/zipped-fb2-native-2026-11-02/README.md).

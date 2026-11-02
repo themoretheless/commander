@@ -1,0 +1,8 @@
+{
+  "scenario": "fictionbook_preview",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zipped-fb2-native-2026-11-02/native-captures/1793633600334388000",
+  "binary_sha256": "f7dbc64f19b23867bf12a667d2a3b2a732ce37b5d33e6a7ac972c75570cefd19",
+  "core_sha256": "f7dbc64f19b23867bf12a667d2a3b2a732ce37b5d33e6a7ac972c75570cefd19",
+  "wrapper_sha256": "9c6b72f91ca5c5b75d8bb0e205a3a5f2cc2df4219f863f863daaa0f825090292",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
