@@ -123,6 +123,34 @@ fn name_list_editor(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
     )
 }
 
+fn preview_name_list(
+    context: &BatchRenameContext,
+    rule: &RenameRule,
+) -> Result<RenameRule, String> {
+    let validation = ValidatedBatchRename::build(context, rule.clone());
+    if validation.regex_error.is_some()
+        || (!validation.applicable && validation.will_change > 0)
+        || validation
+            .plans
+            .iter()
+            .any(|plan| !matches!(plan.status, PlanStatus::Ok | PlanStatus::Unchanged))
+    {
+        return Err("Fix invalid or colliding preview names before editing them as a list".into());
+    }
+    let names = validation
+        .plans
+        .iter()
+        .map(|plan| plan.to.clone())
+        .collect::<Vec<_>>();
+    let text = crate::rename::name_list_text(&names)?;
+    // The seeds already contain every reviewed transform; resetting the other
+    // modifiers preserves that preview instead of applying them a second time.
+    Ok(RenameRule {
+        name_list: Some(text),
+        ..Default::default()
+    })
+}
+
 fn modified_saved_preset(
     presets: &crate::rename_presets::Presets,
     selected: Option<&str>,
@@ -732,10 +760,21 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         let enabled=ui.checkbox(&mut state.name_list_on,"Use name list").on_hover_text("One complete filename per row, assigned in the current batch order before the other transforms. Saved in presets. Reordering changes assignments; excluding requires updating the count.");
                         preset_interaction |= enabled.has_focus() || enabled.lost_focus() || enabled.changed();
-                        if ui.button("Start from original names").clicked() {
-                            preset_interaction=true;
-                            if state.context.targets.iter().any(|name|name.contains(['\r','\n'])) {state.error=Some("Original names contain line breaks and cannot be represented in a plain name list".into());}
-                            else {state.name_list_on=true;state.name_list_text=state.context.targets.join("\n");}
+                        let original=ui.button("Start from original names");
+                        preset_interaction |= original.has_focus() || original.lost_focus() || original.clicked();
+                        if original.clicked() {
+                            match crate::rename::name_list_text(&state.context.targets) {
+                                Ok(text)=>{state.name_list_on=true;state.name_list_text=text;state.error=None;},
+                                Err(error)=>state.error=Some(error),
+                            }
+                        }
+                        let preview=ui.button("Edit preview names").on_hover_text("Turn the current valid proposed names into an editable list and reset other transforms to avoid applying them twice. No files are renamed.");
+                        preset_interaction |= preview.has_focus() || preview.lost_focus() || preview.clicked();
+                        if preview.clicked() {
+                            match preview_name_list(&state.context,&state.rule()) {
+                                Ok(rule)=>{state.load_rule(&rule);state.error=None;state.preset_status=Some(Ok("Editing preview names; other transforms reset".into()));},
+                                Err(error)=>state.error=Some(error),
+                            }
                         }
                     });
                     if state.name_list_on {
@@ -1333,6 +1372,57 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_name_list_preserves_reviewed_targets_without_double_transforms() {
+        let context = context(&["alpha.txt", "beta.txt"], &[]);
+        let mut rule = RenameRule {
+            prefix: "P_".into(),
+            suffix: "_S".into(),
+            case: crate::rename::CaseMode::Upper,
+            numbering: Some(crate::rename::Numbering {
+                start: 1,
+                step: 1,
+                pad: 2,
+            }),
+            ..Default::default()
+        };
+        let before = ValidatedBatchRename::build(&context, rule.clone());
+        let prepared = preview_name_list(&context, &rule).unwrap();
+        assert_eq!(
+            prepared.name_list.as_deref(),
+            Some("P_ALPHA_S01.txt\nP_BETA_S02.txt")
+        );
+        assert_eq!(
+            prepared,
+            RenameRule {
+                name_list: prepared.name_list.clone(),
+                ..Default::default()
+            }
+        );
+        let after = ValidatedBatchRename::build(&context, prepared.clone());
+        assert_eq!(before.plans, after.plans);
+        assert_eq!(after.rule_for_submit(true), Some(prepared));
+        rule.name_list = Some("wrong-count.txt".into());
+        assert!(preview_name_list(&context, &rule).is_err());
+        rule = RenameRule {
+            name_list: Some("same.txt\nsame.txt".into()),
+            ..Default::default()
+        };
+        assert!(preview_name_list(&context, &rule).is_err());
+        rule = RenameRule {
+            prefix: "\n".into(),
+            ..Default::default()
+        };
+        assert!(preview_name_list(&context, &rule).is_err());
+        rule = RenameRule {
+            prefix: "\u{feff}".into(),
+            ..Default::default()
+        };
+        assert!(preview_name_list(&context, &rule).is_err());
+        let unchanged = preview_name_list(&context, &RenameRule::default()).unwrap();
+        assert_eq!(unchanged.name_list.as_deref(), Some("alpha.txt\nbeta.txt"));
+    }
 
     #[test]
     fn oversized_name_list_paste_remains_invalid_in_the_real_editor() {

@@ -526,6 +526,29 @@ pub fn parse_name_list(input: &str) -> Result<Vec<&str>, String> {
     }
     Ok(rows)
 }
+/// Build a list only when every name survives the plain-record format exactly.
+pub fn name_list_text(names: &[String]) -> Result<String, String> {
+    if names.is_empty() || names.len() > 10000 {
+        return Err("Name lists need 1–10000 rows".into());
+    }
+    let mut bytes = names.len() - 1;
+    for name in names {
+        if name.contains(['\r', '\n']) {
+            return Err("Names with line breaks cannot be represented in a plain name list".into());
+        }
+        bytes = bytes
+            .checked_add(name.len())
+            .filter(|&n| n <= MAX_NAME_LIST_BYTES)
+            .ok_or("Name lists are limited to 256 KiB")?;
+    }
+    let text = names.join("\n");
+    let parsed = parse_name_list(&text)?;
+    if !parsed.into_iter().eq(names.iter().map(String::as_str)) {
+        return Err("Names cannot be represented losslessly in a plain name list".into());
+    }
+    Ok(text)
+}
+
 pub fn name_list_error(rule: &RenameRule, count: usize) -> Option<String> {
     let input = rule.name_list.as_deref()?;
     match parse_name_list(input) {
@@ -1198,6 +1221,37 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn name_list_text_is_lossless_bounded_and_rejects_bom_or_linebreak_ambiguity() {
+        let names = vec![
+            " leading ".into(),
+            "ёж\".txt".into(),
+            "\u{feff}later".into(),
+        ];
+        let text = name_list_text(&names).unwrap();
+        assert_eq!(
+            parse_name_list(&text).unwrap(),
+            names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        for bad in [
+            vec![],
+            vec![String::new()],
+            vec!["first\nsecond".into()],
+            vec!["a\r".into()],
+            vec!["\u{feff}first".into()],
+            vec!["x".repeat(MAX_NAME_LIST_BYTES + 1)],
+            vec!["x".into(); 10001],
+        ] {
+            assert!(name_list_text(&bad).is_err());
+        }
+        assert_eq!(
+            name_list_text(&["x".repeat(MAX_NAME_LIST_BYTES)])
+                .unwrap()
+                .len(),
+            MAX_NAME_LIST_BYTES
+        );
     }
 
     #[test]

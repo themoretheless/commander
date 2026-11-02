@@ -2578,3 +2578,7 @@ Native 34-phase pointer/text workflow now qualifies replacement, invalid input, 
 ## Ordered name lists for batch rename (2026-11-03)
 
 Independent adaptation of [Double Commander name lists and modifiers](https://doublecmd.github.io/doc/en/multirename.html): pasted/edited complete-name seeds in batch order, strict whole-batch count validation, original-name initialization, preset retention and shared preview/apply composition. Original source identity and date ownership remain intact; collisions/cycles use the existing planner. [Bounds, filesystem Undo/Redo evidence and remaining native/file-import scope](../qualification/rename-name-list-2026-11-03/README.md).
+
+## Edit proposed rename names as a list (2026-11-03)
+
+Independent adaptation of [Double Commander proposed-name list editing](https://doublecmd.github.io/doc/en/multirename.html): turn the current valid preview into an editable name list, resetting already-applied modifiers so targets do not change twice. A shared lossless/bounded constructor also protects original-name initialization. [Plan-equivalence tests and native/external-editor limits](../qualification/rename-preview-name-list-2026-11-03/README.md).
