@@ -67,6 +67,16 @@ fn preset_order_controls(
     (changed, interaction)
 }
 
+fn modified_saved_preset(
+    presets: &crate::rename_presets::Presets,
+    selected: Option<&str>,
+    rule: &RenameRule,
+) -> bool {
+    selected
+        .and_then(|name| presets.get(name))
+        .is_some_and(|preset| preset.rule != *rule)
+}
+
 fn status_hint(status: PlanStatus) -> Option<&'static str> {
     match status {
         PlanStatus::Ok | PlanStatus::Unchanged => None,
@@ -308,6 +318,7 @@ impl App {
         let listing_generation = self.ws.active_panel_ref().entries_gen();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.batch_rename = Some(BatchRenameState {
+            confirm_preset_discard: false,
             parent_on: false,
             parent_depth: 1,
             parent_separator: "_".into(),
@@ -408,6 +419,7 @@ impl App {
 
         let mut commit: Option<(RenameRule, BatchRenameContext)> = None;
         let mut cancel = false;
+        let mut discard_confirmed = false;
         let mut move_target = None;
         let mut remove_target = None;
         let mut copy_format = None;
@@ -599,6 +611,21 @@ impl App {
                             state.preset_status = Some(result.map(|()| "Launch preference saved; current editor retained".into()));
                         }
                     });
+                    if state.confirm_preset_discard {
+                        if modified_saved_preset(presets, state.preset_selected.as_deref(), &state.rule()) {
+                            ui.colored_label(t.accent_warning, "The selected saved rule has unsaved changes.");
+                            ui.horizontal_wrapped(|ui| {
+                                let keep = ui.button("Keep editing");
+                                let discard = ui.button("Discard edits and close");
+                                #[cfg(feature="visual-qa")]
+                                ui.ctx().data_mut(|data| { data.insert_temp(egui::Id::new("rename-preset-keep"),keep.rect); data.insert_temp(egui::Id::new("rename-preset-discard"),discard.rect); });
+                                if keep.clicked() { state.confirm_preset_discard = false; }
+                                if discard.clicked() { discard_confirmed = true; cancel = true; }
+                            });
+                            ui.small("Use Update selected to save the edited rule before closing.");
+                            preset_interaction = true;
+                        } else { state.confirm_preset_discard = false; }
+                    }
                     let (order_changed, order_interaction) = preset_order_controls(ui, presets, state.preset_selected.as_deref());
                     preset_interaction |= order_interaction;
                     if order_changed {
@@ -647,6 +674,8 @@ impl App {
                             ui.end_row();
 
                             let prefix = field(ui, "Prefix", &mut state.prefix, "before name");
+                            #[cfg(feature="visual-qa")]
+                            ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-prefix"),prefix.rect));
                             let suffix = field(ui, "Suffix", &mut state.suffix, "after name");
                             ui.end_row();
                             let remove_prefix = field(ui, "Remove prefix", &mut state.remove_prefix, "exact original start");
@@ -1056,7 +1085,7 @@ impl App {
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
-                                validation.applicable,
+                                validation.applicable && !state.confirm_preset_discard,
                                 super::dialog_button(
                                     t,
                                     super::ButtonRole::Primary,
@@ -1092,7 +1121,7 @@ impl App {
                     {
                         submit_requested = true;
                     }
-                    if let Some(rule) = validation.rule_for_submit(submit_requested && move_target.is_none() && remove_target.is_none() && copy_format.is_none()) {
+                    if let Some(rule) = validation.rule_for_submit(submit_requested && !state.confirm_preset_discard && move_target.is_none() && remove_target.is_none() && copy_format.is_none()) {
                         commit = Some((rule, state.context.clone()));
                     }
                     if move_target.is_none() && remove_target.is_none()
@@ -1154,6 +1183,19 @@ impl App {
             }
         }
 
+        if cancel
+            && !discard_confirmed
+            && let Some(state) = &mut self.ui.modals.batch_rename
+            && modified_saved_preset(
+                &self.rename_presets,
+                state.preset_selected.as_deref(),
+                &state.rule(),
+            )
+        {
+            state.confirm_preset_discard = true;
+            ctx.request_repaint();
+            return;
+        }
         if cancel {
             self.ui.modals.batch_rename = None;
             return;
@@ -1319,6 +1361,7 @@ mod tests {
     #[test]
     fn reset_rule_clears_edits_and_stale_validation_but_keeps_context_identity() {
         let mut state = BatchRenameState {
+            confirm_preset_discard: false,
             parent_on: false,
             parent_depth: 1,
             parent_separator: "_".into(),

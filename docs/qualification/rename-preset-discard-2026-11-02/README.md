@@ -1,0 +1,11 @@
+# Modified saved rename-rule cancellation
+
+Independent adaptation of [Double Commander Exit with modified preset](https://doublecmd.github.io/doc/en/multirename.html): Cancel/Escape on a modified selected saved rule keeps the dialog open and offers **Keep editing** or **Discard edits and close**. The user can update/save the rule through existing preset controls before cancelling. Repeated Escape does not silently discard. Rename submission is disabled while the discard prompt is active. Rule load/reset clears the prompt.
+
+Scope: only cancellation of a selected existing saved rule. This does not intercept explicit Reset, loading another rule, successful file Rename, fresh unsaved rules without a selected preset, application quit or external process termination. No new persistent preference or save-on-exit behavior is claimed. Updating a preset uses the existing persistence/error reporting, with no new durability guarantee.
+
+The native scenario now has 78 phases and retains 68 observations: edit actual Prefix through pointer/text input, Escape opens the guard, Keep editing preserves Edited_, another Escape reopens it, Discard closes, Cmd+Shift+R reopens the unchanged saved Photo_ rule. Existing management/sorting paths also run. `verify.py` independently checks both prompt observations, retained draft, closed state, restored rule, unchanged saved collection, 16/16 manifest checks and zero native effects. Final receipt: native-captures/1793639013305949000. The earlier successful pre-lint capture 1793638829667429000 is retained separately. Final reopened post-animation frame inspected; intermediate prompt appearance/error/keyboard-button paths remain open.
+
+The CUA response reported an accessibility error; subsequent manifest/process inspection proved successful capture and terminal process, so no retry was performed. Preliminary build warning for a redundant assignment was removed before native capture. A strict Clippy collapsible-if failure was then corrected; preliminary logs are retained and the successful native workflow was repeated on the final rebuilt binary. Seven final gates are recorded in checks.json.
+
+Final result: seven gates passed; 3326 tests passed, 0 failed, 3 ignored. Strict Clippy passed. Current rebuilt binary SHA-256 equals the final successful native receipt.

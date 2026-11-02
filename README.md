@@ -17,6 +17,8 @@ load the copy to edit it. Current unsaved editor changes are retained.
 opens; **Start empty** restores the empty-rule default. Loading never renames files.
 **Preset up/down** and **Sort A–Z / Z–A** organize saved rules; the order is
 restored with the session, while the current editor and launch choice are retained.
+Cancel/Escape asks before discarding edits to a selected saved rename rule. Choose
+**Keep editing**, save with **Update selected**, or **Discard edits and close**.
 
 Panels offer **Columns** alongside List and Icons: scroll through parent folders
 beside the current folder, descend with one click, or bring an ancestor file

@@ -16727,10 +16727,10 @@ impl eframe::App for VisualQaApp {
                 self.preset_input_pending = true;
             }
         }
-        if self.scenario == Scenario::RenamePresets && (10..56).contains(&self.preset_click_phase) {
+        if self.scenario == Scenario::RenamePresets && (10..78).contains(&self.preset_click_phase) {
             let phase = self.preset_click_phase;
             let state = self.inner.ui.modals.batch_rename.as_ref();
-            let observation = serde_json::json!({"phase":phase,"presets":self.inner.rename_presets,"editor":state.map(|state|serde_json::json!({"selected":state.preset_selected,"name":state.preset_name,"rule":state.rule()}))});
+            let observation = serde_json::json!({"phase":phase,"presets":self.inner.rename_presets,"editor":state.map(|state|serde_json::json!({"selected":state.preset_selected,"name":state.preset_name,"rule":state.rule(),"discard_prompt":state.confirm_preset_discard}))});
             let _ = serde_json::to_vec_pretty(&observation).is_ok_and(|bytes| {
                 std::fs::write(
                     self.scenario_dir.join(format!("preset-phase-{phase}.json")),
@@ -16740,19 +16740,47 @@ impl eframe::App for VisualQaApp {
             });
             if matches!(
                 phase,
-                10 | 14 | 15 | 16 | 23 | 24 | 25 | 38 | 39 | 40 | 41 | 42 | 55
+                10 | 14
+                    | 15
+                    | 16
+                    | 23
+                    | 24
+                    | 25
+                    | 38
+                    | 39
+                    | 40
+                    | 41
+                    | 42
+                    | 55
+                    | 59
+                    | 60
+                    | 61
+                    | 62
+                    | 63
+                    | 64
+                    | 68
+                    | 69
+                    | 70
+                    | 74
+                    | 75
+                    | 76
+                    | 77
             ) {
                 let (key, pressed, modifiers) = match phase {
                     10 => (egui::Key::Enter, false, egui::Modifiers::NONE),
-                    14 | 15 | 23 | 24 => (
+                    14 | 15 | 23 | 24 | 59 | 60 => (
                         egui::Key::A,
-                        matches!(phase, 14 | 23),
+                        matches!(phase, 14 | 23 | 59),
                         egui::Modifiers::COMMAND,
                     ),
-                    38 | 39 => (egui::Key::Escape, phase == 38, egui::Modifiers::NONE),
+                    38 | 39 | 62 | 63 | 68 | 69 => (
+                        egui::Key::Escape,
+                        matches!(phase, 38 | 62 | 68),
+                        egui::Modifiers::NONE,
+                    ),
                     _ => (
                         egui::Key::R,
-                        phase == 41,
+                        matches!(phase, 41 | 75),
                         egui::Modifiers {
                             command: true,
                             mac_cmd: true,
@@ -16762,14 +16790,19 @@ impl eframe::App for VisualQaApp {
                     ),
                 };
                 input.events.push(egui::Event::ModifiersChanged(modifiers));
-                if phase == 16 || phase == 25 {
+                if matches!(phase, 16 | 25 | 61) {
                     input
                         .events
                         .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
                     input.events.push(egui::Event::Text(
-                        if phase == 16 { "Album" } else { "Copy" }.into(),
+                        match phase {
+                            16 => "Album",
+                            25 => "Copy",
+                            _ => "Edited_",
+                        }
+                        .into(),
                     ));
-                } else if phase != 40 && phase != 55 {
+                } else if !matches!(phase, 40 | 55 | 64 | 70 | 74 | 77) {
                     input.events.push(egui::Event::Key {
                         key,
                         physical_key: None,
@@ -16792,6 +16825,9 @@ impl eframe::App for VisualQaApp {
                     46..=48 => ("rename-preset-up", phase - 46),
                     49..=51 => ("rename-preset-down", phase - 49),
                     52..=54 => ("rename-preset-sort-asc", phase - 52),
+                    56..=58 => ("rename-prefix", phase - 56),
+                    65..=67 => ("rename-preset-keep", phase - 65),
+                    71..=73 => ("rename-preset-discard", phase - 71),
                     _ => unreachable!(),
                 };
                 if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(id)))
@@ -17051,7 +17087,7 @@ impl eframe::App for VisualQaApp {
         if self.scenario == Scenario::RenamePresets && self.preset_input_pending {
             self.preset_click_phase += 1;
             self.preset_input_pending = false;
-            if self.preset_click_phase == 56 {
+            if self.preset_click_phase == 78 {
                 self.preset_settled_at = Some(Instant::now());
             }
         }
@@ -19326,7 +19362,7 @@ impl eframe::App for VisualQaApp {
                     && !self.fixture.left.join("item.log").exists()
             }
             Scenario::RenamePresets => {
-                self.preset_click_phase == 56
+                self.preset_click_phase == 78
                     && self.preset_settled_at.is_some_and(|time|time.elapsed()>=Duration::from_millis(300))
                     && self.inner.rename_presets.items().iter().map(|preset|preset.name.as_str()).eq(["Album","Copy"])
                     && self.inner.rename_presets.launch_preset().is_some_and(|preset|preset.name=="Album")

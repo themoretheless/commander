@@ -1,0 +1,24 @@
+{
+  "checks": 16,
+  "phases": 78,
+  "observations": 68,
+  "native_effects": 0,
+  "verified": [
+    "rename",
+    "saved-copy",
+    "set-launch",
+    "clear-launch",
+    "set-again",
+    "close",
+    "keyboard-reopen-load",
+    "sort-desc",
+    "move-up",
+    "move-down",
+    "sort-asc",
+    "dirty-escape-guard",
+    "keep-editing",
+    "discard-close",
+    "reopen-saved-rule"
+  ],
+  "frame_sha256": "20874167a85544f78b7c05c5758031a01328f96832b7a43c62bef66bc88e9b6c"
+}

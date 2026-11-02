@@ -2494,3 +2494,7 @@ Success-path native interaction now covers both sorts and selected-rule up/down 
 ## Parent-folder rename affixes (2026-11-02)
 
 Independent adaptation of [Double Commander ancestor-name placeholders](https://doublecmd.github.io/doc/en/multirename.html): captured lexical containing-folder/ancestor name as prefix or suffix, configurable level and separator, composing with dates/manual affixes/extensions. The shared planner supplies identical preview/apply semantics and refuses unavailable levels before filesystem mutation. Presets retain policy without retaining a path. [Evidence and explicit mask/native limits](../qualification/rename-parent-folder-2026-11-02/README.md).
+
+## Modified saved rename-rule cancellation (2026-11-02)
+
+Independent adaptation of [Double Commander modified-preset exit behavior](https://doublecmd.github.io/doc/en/multirename.html): Cancel/Escape on an edited selected saved rule requires explicit discard or keeps editing; Rename submission is blocked during the prompt. Native 78-phase workflow verifies both choices and reopening of the unchanged saved rule, 16/16 checks and zero native effects. [Evidence and explicit cancellation/application-quit limits](../qualification/rename-preset-discard-2026-11-02/README.md).

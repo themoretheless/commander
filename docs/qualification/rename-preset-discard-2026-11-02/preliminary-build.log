@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: value assigned to `commit` is never read
+    --> src/app/batch_rename_dialog.rs:1189:17
+     |
+1189 |                 commit = None;
+     |                 ^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 34.79s
+  Executable unittests src/main.rs (target/debug/build/commander/ae736cd21cb52eff/out/commander-ae736cd21cb52eff)

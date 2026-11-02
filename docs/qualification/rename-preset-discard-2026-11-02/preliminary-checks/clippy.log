@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+    --> src/app/batch_rename_dialog.rs:1186:9
+     |
+1186 | /         if cancel && !discard_confirmed {
+1187 | |             if let Some(state) = &mut self.ui.modals.batch_rename
+1188 | |                 && modified_saved_preset(
+1189 | |                     &self.rename_presets,
+...    |
+1198 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+1186 ~         if cancel && !discard_confirmed
+1187 ~             && let Some(state) = &mut self.ui.modals.batch_rename
+1188 |                 && modified_saved_preset(
+ ...
+1196 |                 return;
+1197 ~             }
+     |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error
