@@ -1,1 +1,1 @@
-native-captures/**/correct-names.txt -text
+native-captures/**/correct-names.txt -text -diff
