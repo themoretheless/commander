@@ -2160,11 +2160,13 @@ impl App {
 
                     // The outer sheet scrolls controls/details/actions as they grow.
                     // Keep member virtualization bounded even in its unbounded content UI.
+                    #[cfg(feature = "visual-qa")]
+                    let mut rendered_rows = Vec::new();
                     let mut member_scroll = egui::ScrollArea::vertical().id_salt("archive-members");
                     if std::mem::take(reset_scroll) {
                         member_scroll = member_scroll.vertical_scroll_offset(0.0);
                     }
-                    member_scroll
+                    let member_rows = member_scroll
                         .min_scrolled_height(0.0)
                         .auto_shrink([false, false])
                         .max_height(rows_height)
@@ -2287,7 +2289,10 @@ impl App {
                                     .response
                                     .interact(Sense::click());
                                 #[cfg(feature = "visual-qa")]
-                                if !synthetic { ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("archive-member-row", member.path.clone())), response.rect)); }
+                                if !synthetic {
+                                    rendered_rows.push((member.path.clone(), response.rect));
+                                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("archive-member-row", member.path.clone())), response.rect));
+                                }
                                 response.widget_info(|| {
                                     if synthetic {
                                         return egui::WidgetInfo::labeled(
@@ -2329,6 +2334,13 @@ impl App {
                                 }
                             }
                         });
+                    #[cfg(feature = "visual-qa")]
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("archive-current-member-rows"), rendered_rows);
+                        d.insert_temp(egui::Id::new("archive-member-clip"), member_rows.inner_rect.intersect(ui.clip_rect()));
+                    });
+                    #[cfg(not(feature = "visual-qa"))]
+                    let _ = member_rows;
                     if visible.is_empty() {
                         ui.label(
                             egui::RichText::new("No matching members")

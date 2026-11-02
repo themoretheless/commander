@@ -1,0 +1,15 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "40d0f52085dbc60495f39be8b0e5b65070f3c85f8f7fec16fff1f3fe5ca3ebf5",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-xz-2026-11-03/native-captures/1793663677289479000/archive_metadata"
+  }
+}

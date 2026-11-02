@@ -2594,6 +2594,11 @@ fn main() {
                     .as_slice(),
                 ))?;
                 writer.raw_copy_file_rename(lzma.by_index_raw(0)?, "f-lzma.txt")?;
+                let mut xz = zip::ZipArchive::new(std::io::Cursor::new(
+                    include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/normal.zipx")
+                        .as_slice(),
+                ))?;
+                writer.raw_copy_file_rename(xz.by_index_raw(0)?, "g-xz.txt")?;
                 writer.finish()?;
                 let mut bytes = std::fs::read(&path)?;
                 for offset in 0..bytes.len().saturating_sub(46) {
@@ -4917,7 +4922,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveExport && self.archive_copy_phase < 43)
             && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
-            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 21)
+            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 24)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -16638,7 +16643,7 @@ impl eframe::App for VisualQaApp {
             }
         }
         if self.scenario == Scenario::ArchiveMetadata
-            && self.archive_copy_phase == 21
+            && self.archive_copy_phase == 24
             && ctx
                 .data(|d| {
                     d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
@@ -16659,20 +16664,21 @@ impl eframe::App for VisualQaApp {
                 modifiers: Default::default(),
             });
         }
-        if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 21 {
+        if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 24 {
             let phase = self.archive_copy_phase;
             let observed = ctx.data(|d| {
                 d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
                     "archive-rendered-details",
                 ))
             });
-            if matches!(phase, 6 | 9 | 12 | 15 | 18) {
+            if matches!(phase, 6 | 9 | 12 | 15 | 18 | 21) {
                 let expected = match phase {
                     6 => "a-stored.txt",
                     9 => "b-deflated.txt",
                     12 => "c-encrypted.txt",
                     15 => "d-bzip2.txt",
-                    _ => "e-deflate64.txt",
+                    18 => "e-deflate64.txt",
+                    _ => "f-lzma.txt",
                 };
                 if !self
                     .scenario_dir
@@ -16705,56 +16711,78 @@ impl eframe::App for VisualQaApp {
                     );
                 }
             }
-            let (id, step) = match phase {
-                0..=2 => (
-                    egui::Id::new(("archive-member-row", PathBuf::from("a-stored.txt"))),
-                    phase,
-                ),
-                3..=5 => (egui::Id::new("archive-details-header"), phase - 3),
-                6..=8 => (
-                    egui::Id::new(("archive-member-row", PathBuf::from("b-deflated.txt"))),
-                    phase - 6,
-                ),
-                9..=11 => (
-                    egui::Id::new(("archive-member-row", PathBuf::from("c-encrypted.txt"))),
-                    phase - 9,
-                ),
-                12..=14 => (
-                    egui::Id::new(("archive-member-row", PathBuf::from("d-bzip2.txt"))),
-                    phase - 12,
-                ),
-                15..=17 => (
-                    egui::Id::new(("archive-member-row", PathBuf::from("e-deflate64.txt"))),
-                    phase - 15,
-                ),
-                _ => (
-                    egui::Id::new(("archive-member-row", PathBuf::from("f-lzma.txt"))),
-                    phase - 18,
-                ),
+            let (target, step) = match phase {
+                0..=2 => ("a-stored.txt", phase),
+                3..=5 => ("", phase - 3),
+                6..=8 => ("b-deflated.txt", phase - 6),
+                9..=11 => ("c-encrypted.txt", phase - 9),
+                12..=14 => ("d-bzip2.txt", phase - 12),
+                15..=17 => ("e-deflate64.txt", phase - 15),
+                18..=20 => ("f-lzma.txt", phase - 18),
+                _ => ("g-xz.txt", phase - 21),
             };
-            if let (Some(rect), Some(clip)) = (
-                ctx.data(|d| d.get_temp::<egui::Rect>(id)),
-                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip"))),
-            ) {
-                if !clip.contains_rect(rect.shrink(0.5)) {
+            let id = if target.is_empty() {
+                egui::Id::new("archive-details-header")
+            } else {
+                egui::Id::new(("archive-member-row", PathBuf::from(target)))
+            };
+            let rect = if target.is_empty() {
+                ctx.data(|d| d.get_temp::<egui::Rect>(id))
+            } else {
+                ctx.data(|d| {
+                    d.get_temp::<Vec<(PathBuf, egui::Rect)>>(egui::Id::new(
+                        "archive-current-member-rows",
+                    ))
+                })
+                .and_then(|rows| {
+                    rows.into_iter()
+                        .find(|(path, _)| path == Path::new(target))
+                        .map(|(_, r)| r)
+                })
+            };
+            if let Some(outer) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+            {
+                let view = if target.is_empty() {
+                    outer
+                } else {
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-member-clip")))
+                        .unwrap_or(outer)
+                };
+                if view.height() < 2.0 || view.width() < 2.0 {
                     input.events.push(egui::Event::PointerMoved(
-                        clip.right_bottom() - egui::vec2(25.0, 25.0),
+                        outer.right_bottom() - egui::vec2(25.0, 25.0),
                     ));
                     input.events.push(egui::Event::MouseWheel {
                         unit: egui::MouseWheelUnit::Point,
                         phase: egui::TouchPhase::Move,
-                        delta: egui::vec2(
-                            0.0,
-                            if rect.center().y < clip.center().y {
-                                80.0
-                            } else {
-                                -80.0
-                            },
-                        ),
+                        delta: egui::vec2(0.0, 80.0),
                         modifiers: Default::default(),
                     });
                     return;
                 }
+                if !rect.is_some_and(|r| view.contains_rect(r.shrink(0.5))) {
+                    let delta = if rect.is_some_and(|r| r.center().y < view.center().y) {
+                        80.0
+                    } else {
+                        -80.0
+                    };
+                    input
+                        .events
+                        .push(egui::Event::PointerMoved(if target.is_empty() {
+                            view.right_bottom() - egui::vec2(25.0, 25.0)
+                        } else {
+                            view.center()
+                        }));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0.0, delta),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                let rect = rect.unwrap();
                 input.events.push(egui::Event::PointerMoved(rect.center()));
                 if step == 0 && !self.hex_target_settled(id, rect) {
                     return;
@@ -20844,9 +20872,9 @@ impl eframe::App for VisualQaApp {
             }
             Scenario::ArchiveMetadata => {
                 let observed = ctx.data(|d| d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")));
-                let ready = self.archive_copy_phase == 21 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("f-lzma.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Lzma" && rows[7].1 == "No");
-                if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-f-lzma.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
-                ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file() && self.scenario_dir.join("metadata-d-bzip2.txt.json").is_file() && self.scenario_dir.join("metadata-e-deflate64.txt.json").is_file()
+                let ready = self.archive_copy_phase == 24 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("g-xz.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Xz" && rows[7].1 == "No");
+                if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-g-xz.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
+                ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file() && self.scenario_dir.join("metadata-d-bzip2.txt.json").is_file() && self.scenario_dir.join("metadata-e-deflate64.txt.json").is_file() && self.scenario_dir.join("metadata-f-lzma.txt.json").is_file()
             }
             Scenario::ArchiveFuzzy => {
                 self.archive_copy_phase == 7
@@ -21208,6 +21236,16 @@ impl eframe::App for VisualQaApp {
                 self.inner.ws.pending_op.is_some(),
                 self.inner.ui.modals.any_open(),
                 self.fixture.right.join("bytes.bin").exists(),
+            ));
+        }
+        if self.scenario == Scenario::ArchiveMetadata {
+            self.last_probe_summary.push_str(&format!(
+                "; archive_metadata_phase={}, member_clip={:?}, rows={:?}",
+                self.archive_copy_phase,
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-member-clip"))),
+                ctx.data(|d| d.get_temp::<Vec<(PathBuf, egui::Rect)>>(egui::Id::new(
+                    "archive-current-member-rows"
+                )))
             ));
         }
         if matches!(

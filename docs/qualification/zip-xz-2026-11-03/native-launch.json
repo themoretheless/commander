@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-xz-2026-11-03/native-captures/1793663677289479000",
+  "binary_sha256": "b217aa289356a43b54bd4aa5bfd2920b6df1d2fb67055a9e60421efc0b619307",
+  "core_sha256": "b217aa289356a43b54bd4aa5bfd2920b6df1d2fb67055a9e60421efc0b619307",
+  "wrapper_sha256": "b44a19c75b36c40d57b2160178f91543f548d7a120ec4fe2a501600f715368e9",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

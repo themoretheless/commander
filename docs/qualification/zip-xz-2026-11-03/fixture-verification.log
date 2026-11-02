@@ -1,0 +1,17 @@
+normal.zipx verified
+concatenated.zipx verified
+huge-dictionary.zipx verified
+later-block-memory.zipx verified
+later-stream-memory.zipx verified
+bad-crc.zipx verified
+bad-size.zipx verified
+truncated.zipx verified
+trailing.zipx verified
+bad-check.zipx verified
+encrypted.zipx verified
+ratio.zipx verified
+unsafe.zipx verified
+symlinks.zipx verified
+xz (XZ Utils) 5.8.4
+liblzma 5.8.4
+

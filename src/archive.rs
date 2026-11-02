@@ -272,6 +272,8 @@ pub fn visit_members(
                 zip_info: Some(ZipMemberInfo {
                     compression: if raw.compression() == zip::CompressionMethod::LZMA {
                         "Lzma".into()
+                    } else if raw.compression() == zip::CompressionMethod::XZ {
+                        "Xz".into()
                     } else {
                         format!("{:?}", raw.compression())
                     },
@@ -1425,6 +1427,259 @@ mod tests {
             writer.write_all(content).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    #[test]
+    fn xz_zipx_reads_checks_and_concatenated_streams() {
+        let temp = TempDir::new();
+        let cancel = AtomicBool::new(false);
+        let payload =
+            include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/expected.txt");
+        for (name, bytes, count) in [
+            (
+                "normal",
+                include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/normal.zipx")
+                    .as_slice(),
+                4,
+            ),
+            (
+                "concatenated",
+                include_bytes!(
+                    "../docs/qualification/zip-xz-2026-11-03/fixtures/concatenated.zipx"
+                )
+                .as_slice(),
+                1,
+            ),
+        ] {
+            let path = temp.path().join(format!("{name}.ZIPX"));
+            fs::write(&path, bytes).unwrap();
+            let listing = list_archive(path.clone(), &cancel).unwrap();
+            assert_eq!(listing.members.len(), count);
+            assert!(
+                listing
+                    .members
+                    .iter()
+                    .all(|m| m.zip_info.as_ref().unwrap().compression == "Xz")
+            );
+            let mut contents = std::collections::BTreeMap::new();
+            let mut budget = SearchBudget::default();
+            let summary = visit_members(
+                &path,
+                true,
+                &mut budget,
+                || false,
+                |m| {
+                    contents.insert(m.member.path, m.content.unwrap().as_bytes().to_vec());
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(summary.content_skipped, 0);
+            assert_eq!(summary.emitted, count);
+            assert_eq!(
+                contents[Path::new("payload.txt")],
+                if name == "normal" {
+                    payload.to_vec()
+                } else {
+                    payload.repeat(3)
+                }
+            );
+            if name == "normal" {
+                assert_eq!(contents[Path::new("nested/ёж.txt")], payload.repeat(3));
+                assert!(contents[Path::new("empty.txt")].is_empty());
+            }
+            let check = crate::archive_check::check(
+                &path,
+                &|| false,
+                &std::sync::atomic::AtomicU64::new(0),
+            )
+            .unwrap();
+            assert_eq!(check.members, count);
+            assert_eq!(
+                check.decoded,
+                contents.values().map(|x| x.len() as u64).sum::<u64>()
+            );
+            let dest = temp.path().join(name);
+            let indexes: Vec<_> = listing.members.iter().map(|m| m.index).collect();
+            let report = extract_members(&path, &dest, &indexes, &cancel).unwrap();
+            assert_eq!(report.extracted, count);
+            assert!(report.errors.is_empty());
+            for (file, data) in contents {
+                assert_eq!(fs::read(dest.join(file)).unwrap(), data);
+            }
+            fs::write(dest.join("payload.txt"), b"keep").unwrap();
+            let repeat = extract_members(&path, &dest, &indexes, &cancel).unwrap();
+            assert_eq!(repeat.skipped_existing, count);
+            assert_eq!(fs::read(dest.join("payload.txt")).unwrap(), b"keep");
+        }
+    }
+
+    #[test]
+    fn xz_zipx_refuses_bad_streams_and_later_dictionary_requests() {
+        let temp = TempDir::new();
+        for (name, bytes) in [
+            (
+                "encrypted",
+                include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/encrypted.zipx")
+                    .as_slice(),
+            ),
+            (
+                "crc",
+                include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/bad-crc.zipx")
+                    .as_slice(),
+            ),
+            (
+                "size",
+                include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/bad-size.zipx")
+                    .as_slice(),
+            ),
+            (
+                "truncated",
+                include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/truncated.zipx")
+                    .as_slice(),
+            ),
+            (
+                "memory",
+                include_bytes!(
+                    "../docs/qualification/zip-xz-2026-11-03/fixtures/huge-dictionary.zipx"
+                )
+                .as_slice(),
+            ),
+            (
+                "later-block",
+                include_bytes!(
+                    "../docs/qualification/zip-xz-2026-11-03/fixtures/later-block-memory.zipx"
+                )
+                .as_slice(),
+            ),
+            (
+                "later-stream",
+                include_bytes!(
+                    "../docs/qualification/zip-xz-2026-11-03/fixtures/later-stream-memory.zipx"
+                )
+                .as_slice(),
+            ),
+            (
+                "trailing",
+                include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/trailing.zipx")
+                    .as_slice(),
+            ),
+            (
+                "check",
+                include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/bad-check.zipx")
+                    .as_slice(),
+            ),
+        ] {
+            let path = temp.path().join(format!("{name}.zipx"));
+            fs::write(&path, bytes).unwrap();
+            let mut budget = SearchBudget::default();
+            let summary = visit_members(
+                &path,
+                true,
+                &mut budget,
+                || false,
+                |m| {
+                    assert!(m.content.is_none(), "{name}");
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(summary.content_skipped, 1, "{name}");
+            assert!(
+                crate::archive_check::check(
+                    &path,
+                    &|| false,
+                    &std::sync::atomic::AtomicU64::new(0)
+                )
+                .is_err(),
+                "{name}"
+            );
+            let dest = temp.path().join(name);
+            let report = extract_members(&path, &dest, &[0], &AtomicBool::new(false)).unwrap();
+            assert_eq!(report.extracted, 0, "{name}");
+            assert_eq!(report.errors.len(), 1, "{name}");
+            assert!(!dest.join("payload.txt").exists(), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xz_zipx_extracts_only_symlinks_that_stay_inside_destination() {
+        let temp = TempDir::new();
+        let path = temp.path().join("symlinks.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/symlinks.zipx"),
+        )
+        .unwrap();
+        let dest = temp.path().join("out");
+        let report = extract_members(&path, &dest, &[0, 1, 2], &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.extracted, 2);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(
+            fs::read_link(dest.join("link-safe")).unwrap(),
+            Path::new("target.txt")
+        );
+        assert_eq!(
+            fs::read(dest.join("link-safe")).unwrap(),
+            include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/expected.txt")
+        );
+        assert!(fs::symlink_metadata(dest.join("link-escape")).is_err());
+    }
+
+    #[test]
+    fn xz_zipx_keeps_path_ratio_and_cancellation_guards() {
+        let temp = TempDir::new();
+        let path = temp.path().join("unsafe.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/unsafe.zipx"),
+        )
+        .unwrap();
+        let listing = list_archive(path.clone(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(listing.unsafe_members, 1);
+        assert_eq!(listing.members.len(), 1);
+        let report = extract_members(
+            &path,
+            &temp.path().join("out"),
+            &[0, 1],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(report.extracted, 1);
+        assert_eq!(report.errors.len(), 1);
+        assert!(!temp.path().join("escape.txt").exists());
+        let ratio = temp.path().join("ratio.zipx");
+        fs::write(
+            &ratio,
+            include_bytes!("../docs/qualification/zip-xz-2026-11-03/fixtures/ratio.zipx"),
+        )
+        .unwrap();
+        let mut budget = SearchBudget::default();
+        let summary = visit_members(
+            &ratio,
+            true,
+            &mut budget,
+            || false,
+            |m| {
+                assert!(m.content.is_none());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.content_skipped, 1);
+        assert_eq!(budget.content_bytes, 0);
+        assert!(
+            visit_members(
+                &ratio,
+                true,
+                &mut budget,
+                || true,
+                |_| panic!("cancelled visit")
+            )
+            .unwrap()
+            .cancelled
+        );
     }
 
     #[test]

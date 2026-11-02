@@ -1,0 +1,45 @@
+[
+  "d-bzip2.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "24 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "62 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "Unavailable",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Bzip2",
+      true
+    ],
+    [
+      "Encrypted",
+      "No",
+      true
+    ]
+  ]
+]
