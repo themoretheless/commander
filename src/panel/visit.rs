@@ -93,6 +93,21 @@ pub fn record_visit(path: &Path) {
     record_visit_into(&mut log, &mut stats, path, VISITED_CAP);
 }
 
+/// Forget one exact destination and its ranking metadata. A future visit can
+/// record it again; unrelated destinations and their recency ticks are kept.
+fn forget_visit_into(list: &mut Vec<PathBuf>, stats: &mut VisitStats, path: &Path) -> bool {
+    let before = list.len();
+    list.retain(|entry| entry != path);
+    let removed_usage = stats.uses.remove(path).is_some();
+    before != list.len() || removed_usage
+}
+
+pub fn forget_visit(path: &Path) -> bool {
+    let mut log = recover(visited_log());
+    let mut stats = recover(visit_stats());
+    forget_visit_into(&mut log, &mut stats, path)
+}
+
 /// Snapshot of recently visited directories, most recent first.
 pub fn visited_paths() -> Vec<PathBuf> {
     recover(visited_log()).clone()
@@ -159,6 +174,51 @@ pub fn rank_visited(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_recent_path_removes_rank_preserves_peers_and_survives_roundtrip() {
+        let a = PathBuf::from("/work/alpha");
+        let b = PathBuf::from("/work/beta");
+        let mut paths = vec![];
+        let mut stats = VisitStats::default();
+        for path in [&a, &b, &a] {
+            record_visit_into(&mut paths, &mut stats, path, 200);
+        }
+        let peer = stats.uses[&b].clone();
+        let tick = stats.tick;
+        assert!(forget_visit_into(&mut paths, &mut stats, &a));
+        assert_eq!(paths.as_slice(), std::slice::from_ref(&b));
+        assert_eq!(stats.uses[&b], peer);
+        assert_eq!(stats.tick, tick);
+        assert!(!stats.uses.contains_key(&a));
+        assert!(!forget_visit_into(&mut paths, &mut stats, &a));
+        let encoded = serde_json::to_string(&(paths.clone(), stats.clone())).unwrap();
+        let (restored, restored_stats): (Vec<PathBuf>, VisitStats) =
+            serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            rank_visited(&restored, "alpha", RecentOrder::Frecency, &restored_stats),
+            vec![]
+        );
+        record_visit_into(&mut paths, &mut stats, &a, 200);
+        assert_eq!(stats.uses[&a].count, 1);
+        assert_eq!(stats.uses[&a].last, tick + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forgetting_recent_path_uses_exact_non_utf8_identity() {
+        use std::os::unix::ffi::OsStringExt;
+        let a = PathBuf::from(std::ffi::OsString::from_vec(b"/work/\xff".to_vec()));
+        let b = PathBuf::from(std::ffi::OsString::from_vec(b"/work/\xfe".to_vec()));
+        let mut paths = vec![a.clone(), b.clone(), a.clone()];
+        let mut stats = VisitStats::default();
+        stats.record(&a);
+        stats.record(&b);
+        assert!(forget_visit_into(&mut paths, &mut stats, &a));
+        assert_eq!(paths.as_slice(), std::slice::from_ref(&b));
+        assert_eq!(stats.uses.len(), 1);
+        assert!(stats.uses.contains_key(&b));
+    }
 
     #[test]
     fn a_poisoned_visit_log_keeps_recording() {

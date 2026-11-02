@@ -43,6 +43,32 @@ enum OmniRow {
     AssignSlot(u8),
 }
 
+fn recent_forget_control(ui: &mut egui::Ui, row: Option<&OmniRow>) -> (bool, Option<PathBuf>) {
+    let path = match row {
+        Some(OmniRow::Folder {
+            path,
+            pinned: false,
+        }) => Some(path),
+        _ => None,
+    };
+    let response = ui.add_enabled(path.is_some(), egui::Button::new("Forget recent folder"))
+        .on_hover_text("Remove the selected recent folder and its usage rank from the quick switcher. Revisiting remembers it again.");
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("omnibar-forget-recent-id"), response.id);
+        data.insert_temp(egui::Id::new("omnibar-forget-recent"), response.rect);
+    });
+    let interaction = response.has_focus() || response.lost_focus() || response.clicked();
+    (
+        interaction,
+        if response.clicked() {
+            path.cloned()
+        } else {
+            None
+        },
+    )
+}
+
 enum OmniAction {
     Go(std::path::PathBuf),
     Favorite(std::path::PathBuf),
@@ -480,6 +506,8 @@ impl App {
         let probe_input = state.probe.as_ref().map(|p| p.input().to_string());
         let opening_panel = state.opening_panel;
 
+        let mut forget_recent = None;
+        let mut recent_interaction = false;
         let mut action: Option<OmniAction> = None;
         let cancel = escape_requested;
         let width = (ctx.content_rect().width() - 32.0).clamp(280.0, 640.0);
@@ -631,6 +659,9 @@ impl App {
                         }
                     }
                     OmnibarMode::Jump(_) | OmnibarMode::Command(_) | OmnibarMode::Favorites(_) => {
+                        if matches!(mode, OmnibarMode::Jump(_)) {
+                            (recent_interaction, forget_recent) = recent_forget_control(ui, rows.get(selected));
+                        }
                         if rows.is_empty() {
                             Self::omnibar_hint(ui, t, "No matches");
                         }
@@ -873,6 +904,7 @@ impl App {
                                 }
                             });
                         if action.is_none()
+                            && !recent_interaction
                             && enter
                             && let Some(index) = enter_target(selected, focused_row, &enabled)
                             && let Some(row) = rows.get(index)
@@ -910,6 +942,42 @@ impl App {
             // keep typing in the input.
             if enter && action.is_none() && !cancel {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
+            }
+        }
+        if let Some(path) = forget_recent {
+            action = None;
+            if crate::panel::forget_visit(&path) {
+                if let Some(state) = self.ui.modals.palette_input.as_mut() {
+                    state.selected = 0;
+                }
+                let snapshot = self.to_session();
+                let saved = crate::persistence::report_save(
+                    "Session",
+                    crate::session::save_with(
+                        self.persistence.as_ref(),
+                        &snapshot,
+                        &mut self.session_gate,
+                    ),
+                )
+                .is_some();
+                self.toast(
+                    ctx,
+                    if saved {
+                        crate::toasts::ToastKind::Info
+                    } else {
+                        crate::toasts::ToastKind::Error
+                    },
+                    if saved {
+                        "Recent folder forgotten; revisiting will remember it again"
+                    } else {
+                        "Recent folder forgotten for this session; could not save settings"
+                    },
+                    false,
+                );
+                if let Some(input_id) = input_id {
+                    ctx.memory_mut(|memory| memory.request_focus(input_id));
+                }
+                ctx.request_repaint();
             }
         }
         let favorite_target = self
@@ -1198,6 +1266,72 @@ mod tests {
         home_relative_display, input_accessible_label, jump_rows, path_submit, picked_count,
         row_action, saved_searches_label, selection_reveal_requested, step_selection,
     };
+
+    #[test]
+    fn forget_recent_control_requires_recent_row_and_reports_focus_ownership() {
+        let ctx = egui::Context::default();
+        let path = std::path::PathBuf::from("/fixture/recent");
+        let pinned = OmniRow::Folder {
+            path: path.clone(),
+            pinned: true,
+        };
+        let recent = OmniRow::Folder {
+            path: path.clone(),
+            pinned: false,
+        };
+        let frame = |row: &OmniRow, events| {
+            let mut result = (false, None);
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    result = super::recent_forget_control(ui, Some(row));
+                },
+            ));
+            result
+        };
+        assert_eq!(frame(&pinned, vec![]).1, None);
+        let rect = ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new("omnibar-forget-recent"))
+                .unwrap()
+        });
+        let click = |pressed| egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            &pinned,
+            vec![egui::Event::PointerMoved(rect.center()), click(true)],
+        );
+        assert_eq!(frame(&pinned, vec![click(false)]).1, None);
+        frame(&recent, vec![]);
+        frame(&recent, vec![click(true)]);
+        let (interaction, forgotten) = frame(&recent, vec![click(false)]);
+        assert!(interaction);
+        assert_eq!(forgotten, Some(path.clone()));
+        let button_id = ctx.data(|data| {
+            data.get_temp::<egui::Id>(egui::Id::new("omnibar-forget-recent-id"))
+                .unwrap()
+        });
+        ctx.memory_mut(|memory| memory.request_focus(button_id));
+        let (interaction, forgotten) = frame(
+            &recent,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(interaction);
+        assert_eq!(forgotten, Some(path));
+        assert_eq!(frame(&OmniRow::Command(0), vec![]).1, None);
+    }
 
     #[test]
     fn favorite_actions_keep_original_identity_and_same_frame_enter_waits_for_fresh_rows() {

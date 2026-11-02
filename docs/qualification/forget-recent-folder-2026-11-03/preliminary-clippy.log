@@ -1,0 +1,20 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: unnecessary use of `clone` to create a slice from a reference
+   --> src/panel/visit.rs:190:9
+    |
+190 |         assert_eq!(paths, [b.clone()]);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#cloned_ref_to_slice_refs
+    = note: `-D clippy::cloned-ref-to-slice-refs` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::cloned_ref_to_slice_refs)]`
+
+error: unnecessary use of `clone` to create a slice from a reference
+   --> src/panel/visit.rs:218:9
+    |
+218 |         assert_eq!(paths, [b.clone()]);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#cloned_ref_to_slice_refs
+
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

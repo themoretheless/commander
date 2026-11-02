@@ -2610,3 +2610,7 @@ Independent adaptation of [PeaZip BLAKE2 file checking](https://peazip.github.io
 ## Native BLAKE2 workflow and digest alignment (2026-11-03)
 
 Native pointer/key/text flow exercises both BLAKE2 algorithms, Hex/Base64 copy/comparison, absolute list export, invalid comparison and recovery. Result columns size to the longest algorithm label so BLAKE2 and existing sums align. [Independent Python payload verification and native limits](../qualification/blake2-native-2026-11-03/README.md).
+
+## Forget an individual recent folder (2026-11-03)
+
+Independent adaptation of [zoxide remove](https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/man/man1/zoxide-remove.1): Cmd+P can remove its selected recent-folder path and usage rank, immediately saving the session while retaining switcher/input ownership. Revisiting records it anew; bookmarks and panel history are separate. [Snapshot, exact-path and real-egui regressions; native limits](../qualification/forget-recent-folder-2026-11-03/README.md).
