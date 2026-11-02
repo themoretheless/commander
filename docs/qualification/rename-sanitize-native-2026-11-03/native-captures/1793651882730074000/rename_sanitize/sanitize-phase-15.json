@@ -1,0 +1,35 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "invalid_char_replacement": "-",
+    "numbering": null,
+    "prefix": "folder/",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "phase": 15,
+  "preview": {
+    "applicable": true,
+    "block_reason": null,
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Ok",
+        "to": "folder-sanitize.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "invalid_char_replacement": "-",
+      "numbering": null,
+      "prefix": "folder/",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": null
+  }
+}

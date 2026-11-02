@@ -1,0 +1,33 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "numbering": null,
+    "prefix": "",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "phase": 3,
+  "preview": {
+    "applicable": false,
+    "block_reason": null,
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Unchanged",
+        "to": "sanitize.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": null,
+      "prefix": "",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": null
+  }
+}

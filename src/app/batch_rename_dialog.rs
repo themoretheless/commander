@@ -102,6 +102,7 @@ fn invalid_character_controls(
     #[cfg(any(test, feature = "visual-qa"))]
     ui.ctx().data_mut(|data| {
         data.insert_temp(egui::Id::new("rename-invalid-characters"), toggle.rect);
+        data.insert_temp(egui::Id::new("rename-invalid-clip"), ui.clip_rect());
         data.insert_temp(
             egui::Id::new("rename-invalid-replacement"),
             replacement.rect,
@@ -184,7 +185,7 @@ pub struct ValidatedBatchRename {
 impl ValidatedBatchRename {
     #[cfg(feature = "visual-qa")]
     pub fn metadata_snapshot(&self) -> serde_json::Value {
-        serde_json::json!({"rule":self.rule,"applicable":self.applicable,"plans":self.plans.iter().map(|plan|serde_json::json!({"from":plan.from,"to":plan.to,"status":format!("{:?}",plan.status)})).collect::<Vec<_>>()})
+        serde_json::json!({"rule":self.rule,"applicable":self.applicable,"rule_error":self.regex_error,"block_reason":self.block_reason,"plans":self.plans.iter().map(|plan|serde_json::json!({"from":plan.from,"to":plan.to,"status":format!("{:?}",plan.status)})).collect::<Vec<_>>()})
     }
 
     #[cfg(feature = "visual-qa")]

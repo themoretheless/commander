@@ -224,6 +224,7 @@ enum Scenario {
     Timestamps,
     RenamePresets,
     RenameTarget,
+    RenameSanitize,
     RenameOptions,
     NameList,
     NameListActions,
@@ -346,7 +347,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 133] = [
+    const ALL: [Self; 134] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -413,6 +414,7 @@ impl Scenario {
         Self::Timestamps,
         Self::RenamePresets,
         Self::RenameTarget,
+        Self::RenameSanitize,
         Self::RenameOptions,
         Self::NameList,
         Self::NameListActions,
@@ -557,6 +559,7 @@ impl Scenario {
             Self::Timestamps => "timestamps",
             Self::RenamePresets => "rename_presets",
             Self::RenameTarget => "rename_target",
+            Self::RenameSanitize => "rename_sanitize",
             Self::RenameOptions => "rename_options",
             Self::NameList => "name_list",
             Self::NameListActions => "name_list_actions",
@@ -696,6 +699,7 @@ impl Scenario {
             | Self::Timestamps
             | Self::RenamePresets
             | Self::RenameTarget
+            | Self::RenameSanitize
             | Self::RenameOptions
             | Self::ProfileExchange
             | Self::ProfileNames
@@ -845,6 +849,7 @@ impl Scenario {
             | Self::Timestamps
             | Self::RenamePresets
             | Self::RenameTarget
+            | Self::RenameSanitize
             | Self::RenameOptions
             | Self::ProfileExchange
             | Self::ProfileNames
@@ -949,7 +954,7 @@ impl Scenario {
             | Self::ChangedSearch
             | Self::TimeGroups
             | Self::FindSort => Some("Find"),
-            Self::RenameTarget | Self::RenameOptions => Some("BatchRename"),
+            Self::RenameTarget | Self::RenameOptions | Self::RenameSanitize => Some("BatchRename"),
             _ => None,
         }
     }
@@ -2076,6 +2081,10 @@ impl Fixture {
             std::fs::write(left.join("TXT-TXT.txt"), "original bytes")
                 .map_err(|error| error.to_string())?;
         }
+        if scenario == Scenario::RenameSanitize {
+            std::fs::write(left.join("sanitize.txt"), "rename payload")
+                .map_err(|error| error.to_string())?;
+        }
         if scenario == Scenario::RenameTarget {
             std::fs::write(left.join("item.txt"), "original bytes")
                 .map_err(|error| error.to_string())?;
@@ -3014,6 +3023,9 @@ struct VisualQaApp {
     preset_input_pending: bool,
     preset_settled_at: Option<Instant>,
     rename_target_phase: u8,
+    sanitize_phase: u8,
+    sanitize_input_pending: bool,
+    sanitize_input_at: Instant,
     rename_options_phase: u8,
     rename_range_phase: u8,
     rename_insert_phase: u8,
@@ -3297,6 +3309,9 @@ impl VisualQaApp {
             preset_input_pending: false,
             preset_settled_at: None,
             rename_target_phase: 0,
+            sanitize_phase: 0,
+            sanitize_input_pending: false,
+            sanitize_input_at: Instant::now(),
             rename_options_phase: 0,
             rename_range_phase: 0,
             rename_insert_phase: 0,
@@ -4599,6 +4614,7 @@ impl eframe::App for VisualQaApp {
         self.table_input_pending = false;
         self.checksum_input_pending = false;
         self.details_input_pending = false;
+        self.sanitize_input_pending = false;
         // Script waits and capture deadlines must advance even when the app
         // has no background work or user events requesting another frame.
         ctx.request_repaint_after(Duration::from_millis(16));
@@ -4623,6 +4639,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::CustomNavigation && self.json_mode_phase < 20)
             && !(self.scenario == Scenario::ShortcutHints && self.json_mode_phase < 10)
             && !(self.scenario == Scenario::CopyDetails && self.details_phase < 14)
+            && !(self.scenario == Scenario::RenameSanitize && self.sanitize_phase < 34)
             && !(matches!(
                 self.scenario,
                 Scenario::NameListActions | Scenario::MaskActions
@@ -17076,6 +17093,87 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
+        if self.scenario == Scenario::RenameSanitize && self.pane_tool_opened {
+            let phase = self.sanitize_phase;
+            if let Some(state) = self.inner.ui.modals.batch_rename.as_ref() {
+                let snapshot = serde_json::json!({"phase":phase,"editor":state.rule(),"preview":state.validation.as_ref().map(|v|v.metadata_snapshot())});
+                let _ = std::fs::write(
+                    self.scenario_dir
+                        .join(format!("sanitize-phase-{phase}.json")),
+                    serde_json::to_vec_pretty(&snapshot).unwrap(),
+                );
+            }
+            if phase < 34 {
+                let (key, local, text) = match phase {
+                    0..=4 => ("rename-prefix", phase, Some("folder/")),
+                    5..=7 => ("rename-invalid-characters", phase - 5, None),
+                    8..=12 => ("rename-invalid-replacement", phase - 8, Some("-")),
+                    13..=17 => ("rename-invalid-replacement", phase - 13, Some("/")),
+                    18..=22 => ("rename-invalid-replacement", phase - 18, Some("")),
+                    23..=27 => ("rename-invalid-replacement", phase - 23, Some("_")),
+                    28..=30 => ("rename-invalid-characters", phase - 28, None),
+                    _ => ("rename-invalid-characters", phase - 31, None),
+                };
+                if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key))) {
+                    if let Some(clip) =
+                        ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("rename-invalid-clip")))
+                        && !clip.contains_rect(rect)
+                    {
+                        input.events.push(egui::Event::PointerMoved(egui::pos2(
+                            clip.center().x,
+                            clip.max.y - 16.0,
+                        )));
+                        input.events.push(egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            phase: egui::TouchPhase::Move,
+                            delta: egui::vec2(
+                                0.0,
+                                if rect.min.y < clip.min.y {
+                                    180.0
+                                } else {
+                                    -180.0
+                                },
+                            ),
+                            modifiers: Default::default(),
+                        });
+                        return;
+                    }
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    if local == 3 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::COMMAND,
+                        });
+                    } else if local == 4 {
+                        if text == Some("") {
+                            input.events.push(egui::Event::Key {
+                                key: egui::Key::Backspace,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: Default::default(),
+                            });
+                        } else {
+                            input
+                                .events
+                                .push(egui::Event::Text(text.unwrap_or_default().into()));
+                        }
+                    } else if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.sanitize_input_pending = true;
+                }
+                return;
+            }
+        }
         if self.scenario == Scenario::RenameTarget && self.rename_target_phase < 12 {
             let stem_ready = self.rename_target_phase != 6
                 || self
@@ -17574,6 +17672,11 @@ impl eframe::App for VisualQaApp {
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
+        if self.scenario == Scenario::RenameSanitize && self.sanitize_input_pending {
+            self.sanitize_phase += 1;
+            self.sanitize_input_at = Instant::now();
+            self.sanitize_input_pending = false;
+        }
         if self.scenario == Scenario::CopyDetails && self.details_input_pending {
             self.details_phase += 1;
             self.details_input_pending = false;
@@ -18586,6 +18689,23 @@ impl eframe::App for VisualQaApp {
             ctx.request_repaint();
             return;
         }
+        if self.scenario == Scenario::RenameSanitize && !self.pane_tool_opened {
+            self.inner.ws.left.focus_child("sanitize.txt".into());
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.name == "sanitize.txt")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.clear_selection();
+                self.inner.open_batch_rename(&ctx);
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
         if self.scenario == Scenario::RenameOptions && !self.pane_tool_opened {
             self.inner.ws.left.focus_child("TXT-TXT.txt".into());
             if self
@@ -18966,6 +19086,7 @@ impl eframe::App for VisualQaApp {
                 .get(&self.fixture.left.join("photo.png"))
                 .is_some();
         let scenario_state_ready = match self.scenario {
+            Scenario::RenameSanitize => self.sanitize_phase==34 && self.sanitize_input_at.elapsed()>=Duration::from_millis(300) && self.inner.ui.modals.batch_rename.as_ref().and_then(|state|state.validation.as_ref()).is_some_and(|v|v.targets_preview(&[("sanitize.txt","folder_sanitize.txt")])) && std::fs::read(self.fixture.left.join("sanitize.txt")).is_ok_and(|data|data==b"rename payload") && !self.fixture.left.join("folder_sanitize.txt").exists() && std::fs::copy(self.fixture.left.join("sanitize.txt"),self.scenario_dir.join("source.txt")).is_ok(),
             Scenario::CopyDetails => self.details_phase==14 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.modals.palette_input.is_none() && self.inner.toasts.is_empty() && self.recorded_clipboard_dump("many.tsv"),
             Scenario::SearchJson => {
                 std::fs::copy(self.fixture.root.join("path-capability.json"),self.scenario_dir.join("path-capability.json")).is_ok() && self.search_json_phase==45 && self.counters.clipboard.load(Ordering::Relaxed)==5 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && state.error.is_none() && state.results.is_empty() && state.expression=="name:does-not-exist" && state.result_copy_format==crate::app::FindCopyFormat::DetailsJson)
@@ -21024,6 +21145,7 @@ mod tests {
                 "timestamps",
                 "rename_presets",
                 "rename_target",
+                "rename_sanitize",
                 "rename_options",
                 "name_list",
                 "name_list_actions",
