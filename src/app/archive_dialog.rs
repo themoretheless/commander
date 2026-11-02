@@ -1275,7 +1275,7 @@ fn similar_member_rows(
 fn member_details(
     kind: crate::archive::ArchiveKind,
     member: &crate::archive::ArchiveMember,
-) -> [(&'static str, String); 6] {
+) -> [(&'static str, String); 8] {
     let member_kind = if member.is_symlink {
         "Symbolic link"
     } else if member.is_dir {
@@ -1325,6 +1325,29 @@ fn member_details(
                 None => "Unavailable",
             }
             .to_owned(),
+        ),
+        (
+            "Compression method",
+            member
+                .zip_info
+                .as_ref()
+                .map(|info| info.compression.clone())
+                .unwrap_or_else(|| "Unavailable (not recorded per member)".into()),
+        ),
+        (
+            "Encrypted",
+            member
+                .zip_info
+                .as_ref()
+                .map(|info| {
+                    if info.encrypted {
+                        "Yes (password extraction unavailable)"
+                    } else {
+                        "No"
+                    }
+                    .to_owned()
+                })
+                .unwrap_or_else(|| "Unavailable (not recorded per member)".into()),
         ),
     ]
 }
@@ -2636,6 +2659,7 @@ mod tests {
                     is_executable: Some(false),
                     size: 1,
                     compressed_size: 1,
+                    zip_info: None,
                     tar_name: None,
                     modified: None,
                 })
@@ -2788,7 +2812,9 @@ mod tests {
                 "0 bytes",
                 "1970-01-01T00:00:00Z",
                 "0000",
-                "No"
+                "No",
+                "Unavailable (not recorded per member)",
+                "Unavailable (not recorded per member)"
             ]
         );
         member.unix_mode = None;
@@ -2799,6 +2825,27 @@ mod tests {
         assert_eq!(fields[3].1, "Unavailable");
         assert_eq!(fields[4].1, "Unavailable");
         assert_eq!(fields[5].1, "Unavailable");
+    }
+
+    #[test]
+    fn archive_details_show_zip_method_and_password_requirement() {
+        let mut listing = listing(&["file"]);
+        let member = &mut listing.members[0];
+        member.zip_info = Some(crate::archive::ZipMemberInfo {
+            compression: "Deflated".into(),
+            encrypted: true,
+        });
+        let fields = super::member_details(crate::archive::ArchiveKind::Zip, member);
+        assert_eq!(fields[6], ("Compression method", "Deflated".into()));
+        assert_eq!(
+            fields[7],
+            ("Encrypted", "Yes (password extraction unavailable)".into())
+        );
+        member.zip_info.as_mut().unwrap().encrypted = false;
+        assert_eq!(
+            super::member_details(crate::archive::ArchiveKind::Zip, member)[7].1,
+            "No"
+        );
     }
 
     #[test]

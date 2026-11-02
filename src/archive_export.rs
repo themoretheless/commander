@@ -64,7 +64,7 @@ pub fn format(
     if format == Format::Csv {
         append(
             &mut out,
-            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated\n",
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted\n",
         )?;
     }
     for &index in rows {
@@ -139,6 +139,16 @@ pub fn format(
                 .map(crate::listing_export::iso_8601_utc)
                 .unwrap_or_default(),
             listing.truncated.to_string(),
+            member
+                .zip_info
+                .as_ref()
+                .map(|info| info.compression.clone())
+                .unwrap_or_default(),
+            member
+                .zip_info
+                .as_ref()
+                .map(|info| info.encrypted.to_string())
+                .unwrap_or_default(),
         ];
         for (column, field) in fields.iter().enumerate() {
             if column > 0 {
@@ -176,6 +186,7 @@ mod tests {
             is_executable: None,
             size: 12,
             compressed_size: 4,
+            zip_info: None,
             tar_name: None,
             modified: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(37)),
         })
@@ -281,16 +292,34 @@ mod tests {
         let text = format(Path::new("a.zip"), &listing, &[1, 2, 3], Format::Csv).unwrap();
         assert_eq!(
             text,
-            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated\na.zip,1,dir/file.txt,symlink,12,4,1970-01-01T00:00:37Z,true\na.zip,2,folder,folder,,,1970-01-01T00:00:37Z,true\na.zip,3,\"'=formula,\"\"quoted\"\"\n.txt\",file,12,4,1970-01-01T00:00:37Z,true\n"
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted\na.zip,1,dir/file.txt,symlink,12,4,1970-01-01T00:00:37Z,true,,\na.zip,2,folder,folder,,,1970-01-01T00:00:37Z,true,,\na.zip,3,\"'=formula,\"\"quoted\"\"\n.txt\",file,12,4,1970-01-01T00:00:37Z,true,,\n"
         );
         listing.kind = ArchiveKind::TarXz;
         listing.members[0].modified = None;
         assert!(
             format(Path::new("a.txz"), &listing, &[0], Format::Csv)
                 .unwrap()
-                .ends_with("a.txz,0,dir/file.txt,file,12,,,true\n")
+                .ends_with("a.txz,0,dir/file.txt,file,12,,,true,,\n")
         );
     }
+    #[test]
+    fn csv_exports_zip_metadata_and_keeps_unavailable_distinct_from_false() {
+        let mut listing = listing();
+        listing.members[0].zip_info = Some(crate::archive::ZipMemberInfo {
+            compression: "Deflated".into(),
+            encrypted: true,
+        });
+        listing.members[1].zip_info = Some(crate::archive::ZipMemberInfo {
+            compression: "Stored".into(),
+            encrypted: false,
+        });
+        let text = format(Path::new("a.zip"), &listing, &[0, 1, 2], Format::Csv).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert!(lines[1].ends_with(",true,Deflated,true"));
+        assert!(lines[2].ends_with(",true,Stored,false"));
+        assert!(lines[3].ends_with(",true,,"));
+    }
+
     #[test]
     fn output_budget_empty_stale_ids_and_non_utf8_never_return_partial_output() {
         let mut listing = listing();

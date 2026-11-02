@@ -2642,3 +2642,7 @@ Independent adaptation of [zoxide base-directory filtering](https://github.com/a
 ## Native recent-folder base scope and reopen reset (2026-11-03)
 
 Actual Cmd+P, scope pointer toggles, Escape and pane switching verify filtering on both panel roots, close-while-enabled/reopen reset and fresh base capture. Query filtering composes with scope while global history/rank and pane directories remain unchanged. [Independent path-component/state verification and native limits](../qualification/recent-base-native-2026-11-03/README.md).
+
+### ZIP member compression and encryption metadata — 2026-11-03
+
+Independent adaptation of [PeaZip per-item method display](https://sourceforge.net/p/peazip/news/2021/09/peazip-820---free-open-source-file-archiver-utility/), cohort #96. Raw ZIP listing now carries compression method (including unsupported numeric identifiers) and encrypted flag without decoding payloads. Member details exposes both and explains unavailable password extraction. CSV appends both fields, distinguishing false from absent metadata. TAR and synthetic folder metadata remain unavailable. Password extraction/encryption-method identification and native visual acceptance remain open. [Qualification](../qualification/archive-method-metadata-2026-11-03/README.md).

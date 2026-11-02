@@ -146,6 +146,7 @@ mod tests {
                     is_executable: Some(false),
                     size: [60, 4, 0][index],
                     compressed_size: [30, 1, 0][index],
+                    zip_info: None,
                     tar_name: None,
                     modified: (index < 2).then(|| {
                         std::time::UNIX_EPOCH + std::time::Duration::from_secs([10, 20, 0][index])

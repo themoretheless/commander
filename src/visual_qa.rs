@@ -3454,7 +3454,7 @@ impl VisualQaApp {
 
     fn archive_export_csv(&self, selected: bool) -> String {
         let mut text = String::from(
-            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated\n",
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted\n",
         );
         let rows: &[(usize, &str, usize)] = if selected {
             &[(0, "docs/notes.txt", 30)]
@@ -3467,7 +3467,7 @@ impl VisualQaApp {
         };
         for (index, path, size) in rows {
             text.push_str(&format!(
-                "{},{index},{path},file,{size},,1970-01-01T00:00:37Z,false\n",
+                "{},{index},{path},file,{size},,1970-01-01T00:00:37Z,false,,\n",
                 self.fixture.left.join("sample.tar").display()
             ));
         }

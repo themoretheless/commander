@@ -41,6 +41,13 @@ impl ArchiveKind {
     }
 }
 
+/// Central-directory metadata, available without opening or decoding payloads.
+#[derive(Clone, Debug)]
+pub struct ZipMemberInfo {
+    pub compression: String,
+    pub encrypted: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct ArchiveMember {
     pub index: usize,
@@ -55,6 +62,7 @@ pub struct ArchiveMember {
     pub is_executable: Option<bool>,
     pub size: u64,
     pub compressed_size: u64,
+    pub zip_info: Option<ZipMemberInfo>,
     /// The member name's original bytes. Tar extraction must pass this rather
     /// than a display conversion of `path`. `None` for zip members.
     pub tar_name: Option<std::ffi::OsString>,
@@ -262,6 +270,10 @@ pub fn visit_members(
                 },
                 size: raw.size(),
                 compressed_size: raw.compressed_size(),
+                zip_info: Some(ZipMemberInfo {
+                    compression: format!("{:?}", raw.compression()),
+                    encrypted: raw.encrypted(),
+                }),
                 tar_name: None,
                 modified: zip_member_modified(&raw),
             }
@@ -476,6 +488,7 @@ fn visit_tar(
             },
             size: if is_dir { 0 } else { size },
             compressed_size: 0,
+            zip_info: None,
             tar_name,
             modified,
         };
@@ -1410,6 +1423,57 @@ mod tests {
             writer.write_all(content).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    #[test]
+    fn zip_listing_reports_methods_and_encryption_without_decoding_payloads() {
+        let temp = TempDir::new();
+        let path = temp.path().join("metadata.zip");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        for method in [
+            zip::CompressionMethod::Stored,
+            zip::CompressionMethod::Deflated,
+        ] {
+            writer
+                .start_file(
+                    method.to_string(),
+                    zip::write::SimpleFileOptions::default().compression_method(method),
+                )
+                .unwrap();
+            writer.write_all(b"payload").unwrap();
+        }
+        writer.finish().unwrap();
+        let cancel = AtomicBool::new(false);
+        let listing = list_archive(path.clone(), &cancel).unwrap();
+        for member in &listing.members {
+            let info = member.zip_info.as_ref().unwrap();
+            assert_eq!(info.compression, member.path.to_str().unwrap());
+            assert!(!info.encrypted);
+        }
+        // Change both headers to an unsupported method and set the encryption
+        // bit. The payload deliberately remains undecodable: listing must only
+        // inspect metadata, not try to decompress or require a password.
+        let mut bytes = fs::read(&path).unwrap();
+        for offset in 0..bytes.len().saturating_sub(12) {
+            let (flags, method) = if bytes[offset..].starts_with(b"PK\x03\x04") {
+                (offset + 6, offset + 8)
+            } else if bytes[offset..].starts_with(b"PK\x01\x02") {
+                (offset + 8, offset + 10)
+            } else {
+                continue;
+            };
+            bytes[flags] |= 1;
+            bytes[method..method + 2].copy_from_slice(&222u16.to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        let listing = list_archive(path, &cancel).unwrap();
+        assert_eq!(listing.members.len(), 2);
+        assert_eq!(listing.unreadable_members, 0);
+        for member in listing.members {
+            let info = member.zip_info.unwrap();
+            assert!(info.encrypted);
+            assert!(info.compression.contains("222"), "{}", info.compression);
+        }
     }
 
     #[test]

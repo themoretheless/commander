@@ -138,6 +138,7 @@ impl Tree {
                 is_executable: Some(false),
                 size: 0,
                 compressed_size: 0,
+                zip_info: None,
                 tar_name: None,
                 modified: None,
             });
@@ -269,6 +270,7 @@ mod tests {
             is_executable: Some(false),
             size: 0,
             compressed_size: 0,
+            zip_info: None,
             tar_name: None,
             modified: None,
         }
