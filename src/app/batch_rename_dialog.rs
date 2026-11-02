@@ -67,6 +67,20 @@ fn preset_order_controls(
     (changed, interaction)
 }
 
+fn literal_replacement_control(
+    ui: &mut egui::Ui,
+    regex: bool,
+    literal: &mut bool,
+) -> egui::Response {
+    let response = ui.add_enabled(regex, egui::Checkbox::new(literal, "Literal replacement"))
+        .on_hover_text("With regex search, insert replacement text exactly: $1, ${name} and $$ stay literal. Applies to every replacement pair. Disable to expand capture groups.");
+    #[cfg(feature = "visual-qa")]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("rename-literal-replacement"), response.rect)
+    });
+    response
+}
+
 fn modified_saved_preset(
     presets: &crate::rename_presets::Presets,
     selected: Option<&str>,
@@ -729,11 +743,8 @@ impl App {
                         let regex = ui.checkbox(&mut state.regex_mode, "Find is a regex");
                         let case = ui.checkbox(&mut state.ignore_case, "Ignore case");
                         let first = ui.checkbox(&mut state.first_only, "First match only");
-                        let literal = ui.add_enabled(state.regex_mode, egui::Checkbox::new(&mut state.literal_replacement, "Literal replacement"))
-                            .on_hover_text("With regex search, insert replacement text exactly: $1, ${name} and $$ stay literal. Applies to every replacement pair. Disable to expand capture groups.");
+                        let literal = literal_replacement_control(ui, state.regex_mode, &mut state.literal_replacement);
                         preset_interaction |= regex.changed() || case.changed() || first.changed() || literal.changed();
-                        #[cfg(feature = "visual-qa")]
-                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-literal-replacement"), literal.rect));
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| {
                             data.insert_temp(egui::Id::new("rename-ignore-case"), case.rect);
@@ -1254,7 +1265,81 @@ impl App {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "visual-qa")]
+    #[test]
+    fn literal_replacement_pointer_input_updates_same_frame_plan_and_retains_disabled_choice() {
+        let ctx = egui::Context::default();
+        let context = context(&["old.txt"], &[]);
+        let mut cache = None;
+        let mut rule = RenameRule {
+            find: "(old)".into(),
+            replace: "$1".into(),
+            regex: true,
+            ..Default::default()
+        };
+        let mut frame = |regex: bool, events: Vec<egui::Event>| {
+            rule.regex = regex;
+            let mut rect = egui::Rect::NOTHING;
+            let mut changed = false;
+            let mut target = String::new();
+            let mut submitted = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 300.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let response =
+                        literal_replacement_control(ui, rule.regex, &mut rule.literal_replacement);
+                    rect = response.rect;
+                    changed = response.changed();
+                    let validation =
+                        ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+                    target = validation.plans[0].to.clone();
+                    submitted = validation.rule_for_submit(true);
+                },
+            ));
+            (rect, changed, target, submitted, rule.literal_replacement)
+        };
+        let pos = frame(true, vec![]).0.center();
+        for (regex, expected_changed, expected_literal, expected_target) in [
+            (true, true, true, "$1.txt"),
+            (false, false, true, "old.txt"),
+            (true, true, false, "old.txt"),
+        ] {
+            frame(regex, vec![egui::Event::PointerMoved(pos)]);
+            frame(
+                regex,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+            );
+            let result = frame(
+                regex,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            );
+            assert_eq!(
+                (result.1, result.4, result.2.as_str()),
+                (expected_changed, expected_literal, expected_target)
+            );
+            assert_eq!(result.3.is_some(), expected_changed && expected_literal);
+            if let Some(rule) = result.3 {
+                assert!(rule.literal_replacement && rule.regex);
+            }
+        }
+    }
+
     #[test]
     fn literal_replacement_rebuilds_preview_and_submission() {
         let context = context(&["old.txt"], &[]);
@@ -1275,6 +1360,7 @@ mod tests {
         assert_eq!(plan.rule_for_submit(true), Some(rule));
     }
 
+    #[cfg(feature = "visual-qa")]
     #[test]
     fn preset_order_buttons_use_pointer_input_and_retain_launch_identity() {
         let ctx = egui::Context::default();

@@ -822,7 +822,7 @@ impl MemberFilter {
         true
     }
 
-    #[cfg(feature = "visual-qa")]
+    #[cfg(any(test, feature = "visual-qa"))]
     pub fn row_position(&self, index: usize) -> Option<usize> {
         self.visible.iter().position(|&row| row == index)
     }

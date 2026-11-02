@@ -2526,3 +2526,7 @@ Two native scenarios now qualify a real semicolon file with quoted/multiline dat
 ## Literal replacement in regex rename (2026-11-02)
 
 Independent adaptation of [Double Commander regex substitution control](https://doublecmd.github.io/doc/en/multirename.html): the regex finder can now insert replacement strings literally, including dollar/capture syntax. The option composes with sequential replacements, persists in presets, and reaches the shared preview/apply planner. Existing rules retain capture expansion. [Qualification and native limits](../qualification/rename-literal-replacement-2026-11-02/README.md).
+
+## Regex literal-replacement pointer input (2026-11-02)
+
+Actual egui pointer input now checks enabling, disabled-click refusal/choice retention and disabling the production control, including same-frame preview and submit-rule changes. Test feature gating corrected. This is headless egui qualification; native window/layout remains open. [Evidence](../qualification/rename-literal-pointer-2026-11-02/README.md).

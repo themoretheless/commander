@@ -1,0 +1,39 @@
+   Compiling once_cell v1.21.4
+   Compiling objc2-core-foundation v0.3.2
+   Compiling read-fonts v0.41.0
+   Compiling naga v30.0.1
+   Compiling ahash v0.8.12
+   Compiling objc2-foundation v0.3.2
+   Compiling objc2-core-graphics v0.3.2
+   Compiling objc2-metal v0.3.2
+   Compiling objc2-app-kit v0.3.2
+   Compiling trash v5.2.8
+   Compiling webbrowser v1.2.4
+   Compiling arboard v3.6.1
+   Compiling harfrust v0.12.0
+   Compiling skrifa v0.44.0
+   Compiling objc2-quartz-core v0.3.2
+   Compiling raw-window-metal v1.1.0
+   Compiling wgpu-naga-bridge v30.0.1
+   Compiling wgpu-hal v30.0.1
+   Compiling wgpu-core-deps-apple v30.0.1
+   Compiling wgpu-core v30.0.1
+   Compiling epaint v0.36.2
+   Compiling egui v0.36.2
+   Compiling egui-winit v0.36.2
+   Compiling egui_extras v0.36.2
+   Compiling wgpu v30.0.1
+   Compiling egui-wgpu v0.36.2
+   Compiling eframe v0.36.2
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `row_position` found for struct `MemberFilter` in the current scope
+    --> src/app/archive_dialog.rs:3050:24
+     |
+ 488 | pub struct MemberFilter {
+     | ----------------------- method `row_position` not found for this struct
+...
+3050 |         assert!(filter.row_position(build).is_none());
+     |                        ^^^^^^^^^^^^ method not found in `MemberFilter`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

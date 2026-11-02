@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 30.11s
+     Running unittests src/main.rs (target/debug/build/commander/ae736cd21cb52eff/out/commander-ae736cd21cb52eff)
+
+running 4 tests
+test app::batch_rename_dialog::tests::literal_replacement_rebuilds_preview_and_submission ... ok
+test rename::tests::literal_replacement_preserves_dollars_in_regex_and_sequential_pairs ... ok
+test rename::tests::first_only_and_ignore_case_compose_without_expanding_literal_replacements ... ok
+test app::batch_rename_dialog::tests::literal_replacement_pointer_input_updates_same_frame_plan_and_retains_disabled_choice ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3335 filtered out; finished in 0.02s
+
