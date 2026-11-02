@@ -3209,9 +3209,10 @@ impl VisualQaApp {
             inner.ws.bookmarks = crate::bookmarks::Bookmarks::default();
             inner.ws.active = crate::workspace::ActivePanel::Left;
             let mut stats = crate::panel::VisitStats::default();
-            stats.record(&keep);
+            for _ in 0..8 {
+                stats.record(&keep);
+            }
             stats.record(&forget);
-            stats.record(&keep);
             stats.record(&forget);
             crate::panel::restore_visit_snapshot(&[forget, keep], &stats);
         }
@@ -4709,7 +4710,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
             && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 65)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
-            && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 15)
+            && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 27)
             && !(self.scenario == Scenario::Favorites && self.favorite_phase < 41)
             && !(self.scenario == Scenario::FavoriteImport && self.favorite_import_phase < 17)
             && !(self.scenario == Scenario::CustomShortcuts && self.json_mode_phase < 17)
@@ -14070,18 +14071,18 @@ impl eframe::App for VisualQaApp {
         if self.scenario == Scenario::RecentForget {
             let phase = self.recent_forget_phase;
             let (paths, stats) = crate::panel::visit_snapshot();
-            let saved = crate::session::load_with(self.inner.persistence.as_ref()).value.map(|value|serde_json::json!({"paths":value.recent_paths,"stats":value.recent_stats}));
+            let saved = crate::session::load_with(self.inner.persistence.as_ref()).value.map(|value|serde_json::json!({"paths":value.recent_paths,"stats":value.recent_stats,"order":value.recent_order}));
             let visible = ctx
                 .data(|data| {
                     data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))
                 })
                 .unwrap_or_default();
-            let snapshot = serde_json::json!({"phase":phase,"paths":paths,"stats":stats,"saved":saved,"visible":visible,"query":self.inner.ui.modals.palette_input.as_ref().map(|state|&state.input),"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path});
+            let snapshot = serde_json::json!({"phase":phase,"order":self.inner.recent_order,"selected":self.inner.ui.modals.palette_input.as_ref().map(|state|state.selected),"paths":paths,"stats":stats,"saved":saved,"visible":visible,"query":self.inner.ui.modals.palette_input.as_ref().map(|state|&state.input),"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path});
             let _ = std::fs::write(
                 self.scenario_dir.join(format!("recent-phase-{phase}.json")),
                 serde_json::to_vec_pretty(&snapshot).unwrap(),
             );
-            if phase < 15 {
+            if phase < 27 {
                 if phase == 0
                     && (self.frames < 3
                         || self.inner.ws.left.entries().is_empty()
@@ -14108,23 +14109,52 @@ impl eframe::App for VisualQaApp {
                     self.recent_forget_pending = true;
                     return;
                 }
-                if phase == 7 && visible.first() != Some(&self.fixture.root.join("ForgetMe")) {
+                if phase == 16 && visible.first() != Some(&self.fixture.root.join("ForgetMe")) {
                     return;
                 }
-                if phase == 10
+                if phase == 19
                     && (paths.contains(&self.fixture.root.join("ForgetMe"))
                         || visible.contains(&self.fixture.root.join("ForgetMe"))
                         || saved.is_none())
                 {
                     return;
                 }
-                let (key, local, text) = match phase {
-                    2..=6 => ("omnibar-input", phase - 2, Some("ForgetMe")),
-                    7..=9 => ("omnibar-forget-recent", phase - 7, None),
-                    _ => ("omnibar-input", phase - 10, Some("KeepMe")),
+                let keep = self.fixture.root.join("KeepMe");
+                let forget = self.fixture.root.join("ForgetMe");
+                let expected = match phase {
+                    2 | 8 => Some(vec![keep.clone(), forget.clone()]),
+                    5 | 11 => Some(vec![forget, keep]),
+                    _ => None,
                 };
-                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
-                {
+                if expected.is_some_and(|expected| visible != expected) {
+                    return;
+                }
+                let (id, local, text) = match phase {
+                    2..=4 => (
+                        egui::Id::new(("recent-order", "Recent first")),
+                        phase - 2,
+                        None,
+                    ),
+                    5..=7 => (
+                        egui::Id::new(("recent-order", "Frequent + recent")),
+                        phase - 5,
+                        None,
+                    ),
+                    8..=10 => (
+                        egui::Id::new(("recent-order", "Recent first")),
+                        phase - 8,
+                        None,
+                    ),
+                    11..=15 => (egui::Id::new("omnibar-input"), phase - 11, Some("ForgetMe")),
+                    16..=18 => (egui::Id::new("omnibar-forget-recent"), phase - 16, None),
+                    19..=23 => (egui::Id::new("omnibar-input"), phase - 19, Some("KeepMe")),
+                    _ => (
+                        egui::Id::new(("recent-order", "Frequent + recent")),
+                        phase - 24,
+                        None,
+                    ),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
                     input.events.push(egui::Event::PointerMoved(rect.center()));
                     if local == 3 {
                         input.events.push(egui::Event::Key {
@@ -20218,8 +20248,9 @@ impl eframe::App for VisualQaApp {
             Scenario::RecentForget => {
                 let (paths,stats)=crate::panel::visit_snapshot();
                 let keep=self.fixture.root.join("KeepMe");let forget=self.fixture.root.join("ForgetMe");
-                self.recent_forget_phase==15 && forget.is_dir() && paths.contains(&keep) && !paths.contains(&forget) && !stats.uses.contains_key(&forget)
-                    && stats.uses.get(&keep).is_some_and(|usage|usage.count==2 && usage.last==3)
+                self.recent_forget_phase==27 && forget.is_dir() && paths.contains(&keep) && !paths.contains(&forget) && !stats.uses.contains_key(&forget)
+                    && stats.uses.get(&keep).is_some_and(|usage|usage.count==8 && usage.last==8)
+                    && self.inner.recent_order==crate::panel::RecentOrder::Frecency
                     && self.inner.ui.modals.palette_input.as_ref().is_some_and(|state|state.input=="KeepMe")
                     && ctx.data(|data|data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))).is_some_and(|visible|visible==[keep.clone()])
                     && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right

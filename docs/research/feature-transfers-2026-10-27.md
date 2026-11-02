@@ -2622,3 +2622,7 @@ Actual Cmd+P and pointer/text input remove one selected recent-folder record, ke
 ## Choose recent-folder order in Cmd+P (2026-11-03)
 
 Exposes the existing chronological alternative alongside Commander's [zoxide-inspired frequency/recency ranking](https://github.com/ajeetdsouza/zoxide/wiki/Algorithm). Frequent + recent / Recent first preserve query, pinned favorites and visit metadata; mode changes reset selection, retain focus and save through the session service. [Pointer/Enter, projection and full-session round-trip evidence; native limits](../qualification/recent-folder-order-2026-11-03/README.md).
+
+## Native recent-folder ordering and removal (2026-11-03)
+
+Actual Cmd+P, pointer and text input prove contrasting frequency/chronological projections, selection reset, saved mode changes and removal after reordering. The peer's visit metadata, query and pane destinations are preserved. [Independent snapshot/session verifier and remaining native scope](../qualification/recent-order-native-2026-11-03/README.md).
