@@ -92,6 +92,20 @@ impl Algorithm {
         value.filter(|value| valid_digest(value, self.hex_len()))
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DigestEncoding {
+    #[default]
+    Hex,
+    Base64,
+}
+impl DigestEncoding {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Hex => "Hex",
+            Self::Base64 => "Base64",
+        }
+    }
+}
 impl ChecksumReport {
     /// A single completed, valid digest; never guess an algorithm from its length.
     pub fn single_digest(&self, algorithm: Algorithm) -> Option<&str> {
@@ -190,6 +204,39 @@ impl ChecksumReport {
             return ExpectedMatch::Unavailable;
         };
         if actual.eq_ignore_ascii_case(expected) {
+            ExpectedMatch::Match
+        } else {
+            ExpectedMatch::Mismatch
+        }
+    }
+    pub fn compare_expected_encoded(
+        &self,
+        expected: &str,
+        algorithm: Algorithm,
+        encoding: DigestEncoding,
+    ) -> ExpectedMatch {
+        if encoding == DigestEncoding::Hex {
+            return self.compare_expected_algorithm(expected, algorithm);
+        }
+        use base64::Engine;
+        let expected = expected.trim();
+        if expected.is_empty() {
+            return ExpectedMatch::Empty;
+        }
+        let bytes = algorithm.hex_len() / 2;
+        if expected.len() != bytes.div_ceil(3) * 4 {
+            return ExpectedMatch::Invalid;
+        }
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(expected) else {
+            return ExpectedMatch::Invalid;
+        };
+        if decoded.len() != bytes {
+            return ExpectedMatch::Invalid;
+        }
+        let Some(actual) = self.single_digest_base64(algorithm) else {
+            return ExpectedMatch::Unavailable;
+        };
+        if actual == expected {
             ExpectedMatch::Match
         } else {
             ExpectedMatch::Mismatch
@@ -557,6 +604,80 @@ mod tests {
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
     const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn expected_base64_is_explicit_strict_bounded_and_case_sensitive() {
+        let temp = TempDir::new();
+        let mut report = verify_paths([temp.file("data", "abc")]);
+        assert_eq!(DigestEncoding::default(), DigestEncoding::Hex);
+        for algorithm in Algorithm::ALL {
+            let encoded = report.single_digest_base64(algorithm).unwrap();
+            assert_eq!(
+                report.compare_expected_encoded(
+                    &format!("  {encoded}\n"),
+                    algorithm,
+                    DigestEncoding::Base64
+                ),
+                ExpectedMatch::Match
+            );
+            let mut changed = encoded.clone().into_bytes();
+            changed[0] = if changed[0] == b'A' { b'B' } else { b'A' };
+            assert_eq!(
+                report.compare_expected_encoded(
+                    std::str::from_utf8(&changed).unwrap(),
+                    algorithm,
+                    DigestEncoding::Base64
+                ),
+                ExpectedMatch::Mismatch
+            );
+            assert_eq!(
+                report.compare_expected_encoded(
+                    report.single_digest(algorithm).unwrap(),
+                    algorithm,
+                    DigestEncoding::Hex
+                ),
+                ExpectedMatch::Match
+            );
+        }
+        for invalid in [
+            "024d0127",
+            "Ak0BJw",
+            "Ak0BJw===",
+            "Ak0BJx==",
+            "Ak0B Jw==",
+            "Ak0B\nJw==",
+            "____Jw==",
+            "éééé",
+            &"A".repeat(100000),
+        ] {
+            assert_eq!(
+                report.compare_expected_encoded(
+                    invalid,
+                    Algorithm::Adler32,
+                    DigestEncoding::Base64
+                ),
+                ExpectedMatch::Invalid,
+                "{invalid:.20}"
+            );
+        }
+        assert_eq!(
+            report.compare_expected_encoded("ak0BJw==", Algorithm::Adler32, DigestEncoding::Base64),
+            ExpectedMatch::Mismatch
+        );
+        assert_eq!(
+            report.compare_expected_encoded("Ak0BJw==", Algorithm::Adler32, DigestEncoding::Hex),
+            ExpectedMatch::Invalid
+        );
+        assert_eq!(
+            report.compare_expected_encoded("  ", Algorithm::Adler32, DigestEncoding::Base64),
+            ExpectedMatch::Empty
+        );
+        report.cancelled = true;
+        assert_eq!(
+            report.compare_expected_encoded("Ak0BJw==", Algorithm::Adler32, DigestEncoding::Base64),
+            ExpectedMatch::Unavailable
+        );
+    }
 
     #[test]
     fn base64_digest_encodes_bytes_for_every_algorithm_and_refuses_unavailable_results() {

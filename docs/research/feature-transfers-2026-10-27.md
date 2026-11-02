@@ -2542,3 +2542,7 @@ Native 143-phase checksum workflow selects Adler-32, compares uppercase expected
 ## Base64 checksum copying (2026-11-02)
 
 Independent adaptation of [PeaZip Base64 hash output](https://peazip.github.io/verify-checksum-hash.html): copy the selected completed digest as standard padded Base64 bytes, covering all eight algorithms and retaining the single-result validity guard. Hex comparison and list formats remain explicit. [Qualification and native scope](../qualification/checksum-base64-2026-11-02/README.md).
+
+## Explicit Base64 expected-digest comparison (2026-11-02)
+
+Commander extension of the PeaZip-inspired encoded checksum workflow: explicit Hex/Base64 expected-value selection with strict standard padded Base64 validation and algorithm byte-width checks. Selection rechecks existing text; new calculations default to Hex. Shared completion guards remain intact. [Qualification and native scope](../qualification/checksum-base64-compare-2026-11-02/README.md).

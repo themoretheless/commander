@@ -1654,6 +1654,7 @@ impl App {
             Ok(task) => {
                 self.checksum_report = None;
                 self.checksum_expected.clear();
+                self.checksum_encoding = crate::checksum::DigestEncoding::default();
                 self.checksum_algorithm = crate::checksum::Algorithm::default();
                 self.checksum_relative_paths = false;
                 self.checksum_relative_base = None;
@@ -1752,7 +1753,11 @@ impl App {
         self.checksum_task.is_none()
             && self.checksum_algorithm == algorithm
             && self.checksum_report.as_ref().is_some_and(|report| {
-                report.compare_expected_algorithm(&self.checksum_expected, algorithm) == expected
+                report.compare_expected_encoded(
+                    &self.checksum_expected,
+                    algorithm,
+                    self.checksum_encoding,
+                ) == expected
             })
     }
 
@@ -1810,14 +1815,24 @@ impl App {
                     let algorithm = self.checksum_algorithm;
                     let comparable = report.single_digest(algorithm).is_some();
                     let expected_label = format!("Expected {}", algorithm.label());
-                    ui.label(&expected_label);
-                    let expected = ui.add_enabled(comparable, egui::TextEdit::singleline(&mut self.checksum_expected).desired_width(f32::INFINITY).char_limit(256).hint_text(format!("Paste {} hexadecimal characters", algorithm.hex_len())));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(&expected_label);
+                        for encoding in [crate::checksum::DigestEncoding::Hex, crate::checksum::DigestEncoding::Base64] {
+                            let option = ui.selectable_value(&mut self.checksum_encoding, encoding, encoding.label());
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("checksum-encoding", encoding.label())), option.rect));
+                            #[cfg(not(feature = "visual-qa"))]
+                            let _ = option;
+                        }
+                    });
+                    let encoding_hint = match self.checksum_encoding { crate::checksum::DigestEncoding::Hex => format!("Paste {} hexadecimal characters", algorithm.hex_len()), crate::checksum::DigestEncoding::Base64 => "Paste standard padded Base64 digest".into() };
+                    let expected = ui.add_enabled(comparable, egui::TextEdit::singleline(&mut self.checksum_expected).desired_width(f32::INFINITY).char_limit(256).hint_text(encoding_hint));
                     expected.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, expected.enabled(), &expected_label));
                     #[cfg(feature = "visual-qa")]
                     ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-expected"), expected.rect));
                     use crate::checksum::ExpectedMatch;
-                    let invalid_message = format!("Enter exactly {} hexadecimal characters", algorithm.hex_len());
-                    let (message, color) = match report.compare_expected_algorithm(&self.checksum_expected, self.checksum_algorithm) {
+                    let invalid_message = match self.checksum_encoding { crate::checksum::DigestEncoding::Hex => format!("Enter exactly {} hexadecimal characters", algorithm.hex_len()), crate::checksum::DigestEncoding::Base64 => format!("Enter standard padded Base64 for a {}-byte digest", algorithm.hex_len()/2) };
+                    let (message, color) = match report.compare_expected_encoded(&self.checksum_expected, self.checksum_algorithm, self.checksum_encoding) {
                         ExpectedMatch::Empty if comparable => ("Paste an expected digest to compare this file", ui.visuals().text_color()),
                         ExpectedMatch::Empty | ExpectedMatch::Unavailable => ("Select one completed file to compare an expected digest", ui.visuals().text_color()),
                         ExpectedMatch::Invalid => (invalid_message.as_str(), ui.visuals().error_fg_color),
@@ -1851,7 +1866,7 @@ impl App {
                             copy = report.single_digest(algorithm).map(str::to_owned);
                         }
                         let copy_base64 = ui.add_enabled(comparable, egui::Button::new("Copy Base64"))
-                            .on_hover_text(format!("Copy {} digest bytes as standard padded Base64. Expected values and checksum lists use hexadecimal.", algorithm.label()));
+                            .on_hover_text(format!("Copy {} digest bytes as standard padded Base64. Choose Hex or Base64 for expected values; checksum lists use hexadecimal.", algorithm.label()));
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-copy-base64"), copy_base64.rect));
                         if copy_base64.clicked() { copy = report.single_digest_base64(algorithm); }

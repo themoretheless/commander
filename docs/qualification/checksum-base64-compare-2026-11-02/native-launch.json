@@ -1,0 +1,8 @@
+{
+  "scenario": "checksums",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/checksum-base64-compare-2026-11-02/native-captures/1793648408727126000",
+  "binary_sha256": "d078c240979701f3d59c7b375f8b5943d22feb4c0528dfbf5281d1623c1fc517",
+  "core_sha256": "d078c240979701f3d59c7b375f8b5943d22feb4c0528dfbf5281d1623c1fc517",
+  "wrapper_sha256": "4baf7d1e1cc39f72c01de6b67b2a0b1af8108328b2132883c12e4a51d3356c5d",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

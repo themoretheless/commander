@@ -4632,7 +4632,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::RtfPreview
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
-            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 146)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 164)
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -14948,6 +14948,58 @@ impl eframe::App for VisualQaApp {
             }
             return;
         }
+        if self.scenario == Scenario::Checksums && (146..164).contains(&self.checksum_click_phase) {
+            let phase = self.checksum_click_phase;
+            if phase == 146 && !self.recorded_clipboard_dump("adler32-base64.txt") {
+                return;
+            }
+            if matches!(phase, 154 | 159)
+                && !self.inner.checksum_comparison_is(
+                    crate::checksum::Algorithm::Adler32,
+                    if phase == 154 {
+                        crate::checksum::ExpectedMatch::Match
+                    } else {
+                        crate::checksum::ExpectedMatch::Invalid
+                    },
+                )
+            {
+                return;
+            }
+            let (key, local) = if phase < 149 {
+                (egui::Id::new(("checksum-encoding", "Base64")), phase - 146)
+            } else {
+                (egui::Id::new("checksum-expected"), (phase - 149) % 5)
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                if phase >= 149 && local == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if phase >= 149 && local == 4 {
+                    input.events.push(egui::Event::Text(
+                        if phase == 158 { "Ak0BJw" } else { "Ak0BJw==" }.into(),
+                    ));
+                } else if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_input_pending = true;
+            }
+            return;
+        }
         if self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6 {
             let find_id = egui::Id::new(("text_preview", "right")).with("find");
             if self.regex_click_phase == 3
@@ -19626,7 +19678,7 @@ impl eframe::App for VisualQaApp {
             }
             Scenario::Checksums => {
                 let expected="Ak0BJw==";
-                self.checksum_click_phase==146 && self.counters.clipboard.load(Ordering::Relaxed)==20
+                self.checksum_click_phase==164 && self.counters.clipboard.load(Ordering::Relaxed)==20
                     && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected)
                     && !self.inner.checksum_relative_mode_is(true)
                     && self.inner.toasts.is_empty()
