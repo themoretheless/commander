@@ -1,0 +1,16 @@
+   Compiling arboard v3.6.1
+   Compiling egui_extras v0.36.2
+   Compiling egui-winit v0.36.2
+   Compiling eframe v0.36.2
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 2m 11s
+     Running unittests src/main.rs (target/debug/build/commander/ff563ae38647a835/out/commander-ff563ae38647a835)
+
+running 4 tests
+test app::batch_rename_dialog::tests::invalid_character_option_rebuilds_cached_preview_before_submit ... ok
+test rename::tests::invalid_character_replacement_is_opt_in_bounded_and_collision_checked ... ok
+test workspace::tests::invalid_character_rule_uses_same_target_on_disk_and_undo_redo ... ok
+test app::batch_rename_dialog::tests::invalid_character_controls_pointer_and_text_update_same_frame_submission ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3329 filtered out; finished in 0.04s
+

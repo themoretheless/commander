@@ -2566,3 +2566,7 @@ The native palette workflow now exports twelve selected records including names 
 ## Replace prohibited characters in rename targets (2026-11-03)
 
 Independent adaptation of [Double Commander invalid-character replacement](https://doublecmd.github.io/doc/en/multirename.html): optional literal replacement or removal of slash/NUL in final generated names, before validation/collision checks. Default refusal behavior remains; presets and shared preview/apply planner retain the policy. [Bounds, regressions and native/platform limits](../qualification/rename-invalid-characters-2026-11-03/README.md).
+
+## Invalid-character editor pointer/text input (2026-11-03)
+
+Production egui controls now have pointer/text regression coverage for enable, replacement, invalid input, empty stripping and disabled retention with same-frame cached preview/submission checks. Checkbox focus joins the existing form interaction guard. [Evidence and native/full-sheet limits](../qualification/rename-invalid-input-2026-11-03/README.md).

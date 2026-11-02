@@ -81,6 +81,35 @@ fn literal_replacement_control(
     response
 }
 
+fn invalid_character_controls(
+    ui: &mut egui::Ui,
+    enabled: &mut bool,
+    text: &mut String,
+) -> (egui::Response, egui::Response) {
+    let toggle = ui.checkbox(enabled, "Replace invalid characters")
+        .on_hover_text("Replace slash and NUL in the final target name after other edits. Empty replacement strips them. Preview and collision validation still apply; other platform filename policies are unchanged.");
+    let replacement = ui
+        .add_enabled_ui(*enabled, |ui| {
+            ui.label("with");
+            ui.add(
+                egui::TextEdit::singleline(text)
+                    .desired_width(90.0)
+                    .char_limit(32)
+                    .hint_text("empty = strip"),
+            )
+        })
+        .inner;
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("rename-invalid-characters"), toggle.rect);
+        data.insert_temp(
+            egui::Id::new("rename-invalid-replacement"),
+            replacement.rect,
+        );
+    });
+    (toggle, replacement)
+}
+
 fn modified_saved_preset(
     presets: &crate::rename_presets::Presets,
     selected: Option<&str>,
@@ -845,14 +874,8 @@ impl App {
                         });
                     });
                     ui.horizontal_wrapped(|ui| {
-                    let sanitize = ui.checkbox(&mut state.invalid_chars_on, "Replace invalid characters")
-                        .on_hover_text("Replace slash and NUL in the final target name after other edits. Empty replacement strips them. Preview and collision validation still apply; other platform filename policies are unchanged.");
-                    preset_interaction |= sanitize.changed();
-                    ui.add_enabled_ui(state.invalid_chars_on, |ui| {
-                        ui.label("with");
-                        let replacement = ui.add(egui::TextEdit::singleline(&mut state.invalid_chars_text).desired_width(90.0).char_limit(32).hint_text("empty = strip"));
-                        preset_interaction |= replacement.has_focus() || replacement.lost_focus() || replacement.changed();
-                    });
+                    let (sanitize,replacement) = invalid_character_controls(ui,&mut state.invalid_chars_on,&mut state.invalid_chars_text);
+                    preset_interaction |= sanitize.has_focus() || sanitize.lost_focus() || sanitize.clicked() || replacement.has_focus() || replacement.lost_focus() || replacement.changed();
                     let trim = ui.checkbox(&mut state.trim_spaces, "Trim spaces")
                         .on_hover_text("Remove whitespace at the beginning and end of the final name");
                     preset_interaction |= trim.has_focus() || trim.lost_focus() || trim.clicked();
@@ -1274,6 +1297,115 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_character_controls_pointer_and_text_update_same_frame_submission() {
+        let ctx = egui::Context::default();
+        let context = context(&["a.txt"], &[]);
+        let mut cache = None;
+        let (mut enabled, mut text) = (false, "_".to_owned());
+        let mut frame = |events: Vec<egui::Event>| {
+            let mut result = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 300.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let (toggle, replacement) =
+                            invalid_character_controls(ui, &mut enabled, &mut text);
+                        let interaction = toggle.has_focus()
+                            || toggle.lost_focus()
+                            || toggle.clicked()
+                            || replacement.has_focus()
+                            || replacement.lost_focus()
+                            || replacement.changed();
+                        let rule = RenameRule {
+                            prefix: "dir/".into(),
+                            invalid_char_replacement: enabled.then(|| text.clone()),
+                            ..Default::default()
+                        };
+                        let validation = ValidatedBatchRename::cached(&mut cache, &context, rule);
+                        result = Some((
+                            validation.plans[0].to.clone(),
+                            validation.rule_for_submit(true),
+                            interaction,
+                            enabled,
+                            text.clone(),
+                        ));
+                    });
+                },
+            ));
+            result.unwrap()
+        };
+        frame(vec![]);
+        let toggle = ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("rename-invalid-characters")))
+            .unwrap()
+            .center();
+        let click = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(vec![egui::Event::PointerMoved(toggle)]);
+        frame(vec![click(toggle, true)]);
+        let result = frame(vec![click(toggle, false)]);
+        assert_eq!(result.0, "dir_a.txt");
+        assert!(result.2 && result.3);
+        assert_eq!(result.1.unwrap().invalid_char_replacement, Some("_".into()));
+        let field = ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("rename-invalid-replacement")))
+            .unwrap()
+            .center();
+        frame(vec![egui::Event::PointerMoved(field)]);
+        frame(vec![click(field, true)]);
+        frame(vec![click(field, false)]);
+        let select_all = || egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let result = frame(vec![select_all(), egui::Event::Text("-".into())]);
+        assert_eq!(result.0, "dir-a.txt");
+        assert!(result.2);
+        assert_eq!(result.1.unwrap().invalid_char_replacement, Some("-".into()));
+        let result = frame(vec![select_all(), egui::Event::Text("/".into())]);
+        assert!(result.1.is_none() && result.2);
+        let result = frame(vec![
+            select_all(),
+            egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        ]);
+        assert_eq!(result.0, "dira.txt");
+        assert_eq!(
+            result.1.unwrap().invalid_char_replacement,
+            Some(String::new())
+        );
+        frame(vec![egui::Event::PointerMoved(toggle)]);
+        frame(vec![click(toggle, true)]);
+        let result = frame(vec![click(toggle, false)]);
+        assert!(!result.3 && result.2 && result.1.is_none());
+        frame(vec![egui::Event::PointerMoved(field)]);
+        frame(vec![click(field, true)]);
+        frame(vec![click(field, false)]);
+        let result = frame(vec![egui::Event::Text("ignored".into())]);
+        assert_eq!(result.4, "");
+        assert!(!result.3);
+    }
 
     #[test]
     fn invalid_character_option_rebuilds_cached_preview_before_submit() {
