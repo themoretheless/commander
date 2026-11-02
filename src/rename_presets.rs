@@ -29,6 +29,9 @@ fn name(name: &str) -> Result<String, String> {
     Ok(name)
 }
 fn validate(rule: &RenameRule) -> Result<(), String> {
+    if let Some(error) = rule.parent_affix.as_ref().and_then(|affix| affix.error()) {
+        return Err(error.into());
+    }
     if let Some(error) = rule
         .date_stamp
         .as_ref()
@@ -231,6 +234,37 @@ impl<'de> Deserialize<'de> for Presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parent_folder_policy_round_trips_and_rejects_invalid_parameters() {
+        let mut presets = Presets::default();
+        let mut rule = RenameRule {
+            parent_affix: Some(crate::rename::ParentAffix {
+                depth: 2,
+                separator: " - ".into(),
+                suffix: true,
+            }),
+            ..Default::default()
+        };
+        presets.add("Folder", rule.clone()).unwrap();
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored, presets);
+        for (depth, separator) in [
+            (0, "_".into()),
+            (33, "_".into()),
+            (1, "/".into()),
+            (1, "x".repeat(33)),
+        ] {
+            rule.parent_affix = Some(crate::rename::ParentAffix {
+                depth,
+                separator,
+                suffix: false,
+            });
+            assert!(presets.add("bad", rule.clone()).is_err());
+        }
+        assert_eq!(presets, restored);
+    }
+
     #[test]
     fn ordering_keeps_rule_identity_launch_choice_and_serialized_order() {
         let mut presets = Presets::default();

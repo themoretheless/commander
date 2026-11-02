@@ -2490,3 +2490,7 @@ Independent adaptation of [Double Commander preset sorting](https://doublecmd.gi
 ## Native saved rename-rule ordering (2026-11-02)
 
 Success-path native interaction now covers both sorts and selected-rule up/down after the existing management/reopen workflow: 56 phases, 16/16 checks, 46 observations independently compared to expected order and rule/default ownership, zero native effects. A 300 ms post-input wait fixes the prior fade capture; the visible controls were visually inspected after settling. [Evidence and remaining error/restart/date scope](../qualification/rename-preset-order-native-2026-11-02/README.md).
+
+## Parent-folder rename affixes (2026-11-02)
+
+Independent adaptation of [Double Commander ancestor-name placeholders](https://doublecmd.github.io/doc/en/multirename.html): captured lexical containing-folder/ancestor name as prefix or suffix, configurable level and separator, composing with dates/manual affixes/extensions. The shared planner supplies identical preview/apply semantics and refuses unavailable levels before filesystem mutation. Presets retain policy without retaining a path. [Evidence and explicit mask/native limits](../qualification/rename-parent-folder-2026-11-02/README.md).

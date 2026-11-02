@@ -1,5 +1,10 @@
 # Commander
 
+Batch rename can add a **Folder name** prefix or suffix with an ancestor level
+and separator: level 1 uses the containing folder, level 2 its parent. The captured
+path feeds preview and apply; unavailable levels block the batch. Presets retain
+the policy and use the next dialog's folder.
+
 Batch rename can add a **Modified date (UTC)** prefix or suffix, using a
 strftime format such as `%Y-%m-%d_`. Dates come from the listing captured when
 the dialog opens and stay attached to each original file when rows are reordered.

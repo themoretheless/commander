@@ -6,6 +6,50 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// A lexical ancestor of the folder captured when the rename dialog opens.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ParentAffix {
+    pub depth: u8,
+    pub separator: String,
+    pub suffix: bool,
+}
+impl Default for ParentAffix {
+    fn default() -> Self {
+        Self {
+            depth: 1,
+            separator: "_".into(),
+            suffix: false,
+        }
+    }
+}
+impl ParentAffix {
+    pub fn error(&self) -> Option<&'static str> {
+        if !(1..=32).contains(&self.depth) {
+            return Some("Folder level must be between 1 and 32");
+        }
+        if self.separator.len() > 32
+            || self.separator.chars().any(char::is_control)
+            || !is_valid_name(&format!("x{}x", self.separator))
+        {
+            return Some(
+                "Folder separator must be at most 32 bytes without control or invalid filename characters",
+            );
+        }
+        None
+    }
+    fn folder_name<'a>(&self, folder: &'a std::path::Path) -> Option<&'a str> {
+        if self.error().is_some() {
+            return None;
+        }
+        folder
+            .ancestors()
+            .nth(usize::from(self.depth) - 1)?
+            .file_name()?
+            .to_str()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatePosition {
     #[default]
@@ -372,6 +416,8 @@ impl InsertText {
 pub struct RenameRule {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_stamp: Option<DateStamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_affix: Option<ParentAffix>,
     #[serde(skip_serializing_if = "CharacterTarget::is_stem")]
     pub character_target: CharacterTarget,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -493,6 +539,7 @@ pub enum PlanStatus {
     Invalid,
     /// Captured modification time or its requested format is unavailable.
     DateUnavailable,
+    FolderUnavailable,
     /// Two entries map to the same target, or the target collides with a
     /// sibling that is not itself being renamed away.
     Collision,
@@ -903,6 +950,7 @@ pub fn plan_batch_rename_with(
 ) -> Vec<RenamePlan> {
     plan_batch_rename_with_dates(names, existing, rule, dirs, folding, &HashMap::new())
 }
+#[cfg(test)]
 pub fn plan_batch_rename_with_dates(
     names: &[String],
     existing: &HashSet<String>,
@@ -911,6 +959,31 @@ pub fn plan_batch_rename_with_dates(
     folding: crate::rename_order::NameFolding,
     modified: &HashMap<String, std::time::SystemTime>,
 ) -> Vec<RenamePlan> {
+    plan_batch_rename_in_folder(names, existing, rule, dirs, folding, modified, None)
+}
+pub fn plan_batch_rename_in_folder(
+    names: &[String],
+    existing: &HashSet<String>,
+    rule: &RenameRule,
+    dirs: &HashSet<String>,
+    folding: crate::rename_order::NameFolding,
+    modified: &HashMap<String, std::time::SystemTime>,
+    folder: Option<&std::path::Path>,
+) -> Vec<RenamePlan> {
+    let mut contextual = rule.clone();
+    let mut folder_unavailable = false;
+    if let Some(affix) = &rule.parent_affix {
+        if let Some(name) = folder.and_then(|folder| affix.folder_name(folder)) {
+            if affix.suffix {
+                contextual.suffix = format!("{}{}{name}", rule.suffix, affix.separator);
+            } else {
+                contextual.prefix = format!("{name}{}{}", affix.separator, rule.prefix);
+            }
+        } else {
+            folder_unavailable = true;
+        }
+    }
+    let rule = &contextual;
     let batch_lower: HashSet<String> = names.iter().map(|name| folding.key(name)).collect();
     let existing_lower: HashSet<String> = existing.iter().map(|name| folding.key(name)).collect();
 
@@ -972,7 +1045,9 @@ pub fn plan_batch_rename_with_dates(
         .zip(date_errors.iter())
         .map(|(((from, to), exceeded), date_error)| {
             let to_lower = folding.key(to);
-            let status = if *date_error {
+            let status = if folder_unavailable {
+                PlanStatus::FolderUnavailable
+            } else if *date_error {
                 PlanStatus::DateUnavailable
             } else if *exceeded {
                 PlanStatus::ExpansionLimit
@@ -1007,6 +1082,7 @@ pub fn plan_is_applicable(plans: &[RenamePlan]) -> bool {
             PlanStatus::ExpansionLimit
                 | PlanStatus::Invalid
                 | PlanStatus::DateUnavailable
+                | PlanStatus::FolderUnavailable
                 | PlanStatus::Collision
         )
     });
@@ -1032,6 +1108,101 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn parent_folder_affixes_compose_with_dates_and_preserve_directory_extensions() {
+        let names: Vec<String> = vec!["Photo.JPG".into(), "folder.old".into()];
+        let dates = names
+            .iter()
+            .map(|name| (name.clone(), std::time::UNIX_EPOCH))
+            .collect();
+        let dirs = HashSet::from(["folder.old".into()]);
+        let mut rule = RenameRule {
+            parent_affix: Some(ParentAffix::default()),
+            prefix: "pre_".into(),
+            suffix: "_post".into(),
+            extension_case: ExtensionCase::Lower,
+            date_stamp: Some(DateStamp {
+                format: "%Y_".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let plan = |rule: &RenameRule| {
+            plan_batch_rename_in_folder(
+                &names,
+                &HashSet::new(),
+                rule,
+                &dirs,
+                crate::rename_order::NameFolding::Exact,
+                &dates,
+                Some(std::path::Path::new("/Library/旅行/Album")),
+            )
+        };
+        let first = plan(&rule);
+        assert_eq!(first[0].to, "1970_Album_pre_Photo_post.jpg");
+        assert_eq!(first[1].to, "1970_Album_pre_folder.old_post");
+        rule.parent_affix = Some(ParentAffix {
+            depth: 2,
+            separator: "-".into(),
+            suffix: true,
+        });
+        assert_eq!(plan(&rule)[0].to, "1970_pre_Photo_post-旅行.jpg");
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(legacy.parent_affix.is_none());
+    }
+
+    #[test]
+    fn parent_folder_affixes_refuse_missing_levels_and_keep_collision_checks() {
+        let names: Vec<String> = vec!["one.txt".into()];
+        let mut rule = RenameRule {
+            parent_affix: Some(ParentAffix::default()),
+            ..Default::default()
+        };
+        for folder in [None, Some(std::path::Path::new("/"))] {
+            let plans = plan_batch_rename_in_folder(
+                &names,
+                &HashSet::new(),
+                &rule,
+                &HashSet::new(),
+                crate::rename_order::NameFolding::Exact,
+                &HashMap::new(),
+                folder,
+            );
+            assert_eq!(plans[0].status, PlanStatus::FolderUnavailable);
+            assert!(!plan_is_applicable(&plans));
+        }
+        for (depth, separator) in [(0, "_"), (33, "_"), (1, "/"), (1, "\n")] {
+            rule.parent_affix = Some(ParentAffix {
+                depth,
+                separator: separator.into(),
+                suffix: false,
+            });
+            assert!(rule.parent_affix.as_ref().unwrap().error().is_some());
+        }
+        rule.parent_affix = Some(ParentAffix::default());
+        let plans = plan_batch_rename_in_folder(
+            &names,
+            &HashSet::from(["Album_one.txt".into()]),
+            &rule,
+            &HashSet::new(),
+            crate::rename_order::NameFolding::Exact,
+            &HashMap::new(),
+            Some(std::path::Path::new("/Album")),
+        );
+        assert_eq!(plans[0].status, PlanStatus::Collision);
+        rule.parent_affix.as_mut().unwrap().depth = 3;
+        let plans = plan_batch_rename_in_folder(
+            &names,
+            &HashSet::new(),
+            &rule,
+            &HashSet::new(),
+            crate::rename_order::NameFolding::Exact,
+            &HashMap::new(),
+            Some(std::path::Path::new("/Album")),
+        );
+        assert_eq!(plans[0].status, PlanStatus::FolderUnavailable);
     }
 
     #[test]

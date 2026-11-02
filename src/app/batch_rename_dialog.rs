@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::rename::{
-    PlanStatus, RenamePlan, RenameRule, plan_batch_rename_with_dates, plan_is_applicable,
+    PlanStatus, RenamePlan, RenameRule, plan_batch_rename_in_folder, plan_is_applicable,
 };
 use crate::rename_order::{RenameOrder, safe_rename_order_with};
 use crate::workspace::BatchRenameContext;
@@ -72,6 +72,9 @@ fn status_hint(status: PlanStatus) -> Option<&'static str> {
         PlanStatus::Ok | PlanStatus::Unchanged => None,
         PlanStatus::ExpansionLimit => Some("Replacement output exceeds 64 KiB"),
         PlanStatus::Invalid => Some("Name is not valid"),
+        PlanStatus::FolderUnavailable => {
+            Some("Folder level is unavailable or separator is invalid")
+        }
         PlanStatus::DateUnavailable => {
             Some("Captured modification time is missing or the UTC date format is invalid")
         }
@@ -176,13 +179,14 @@ impl ValidatedBatchRename {
 
     fn build(context: &BatchRenameContext, rule: RenameRule) -> Self {
         let regex_err = crate::rename::regex_error(&rule);
-        let plans = plan_batch_rename_with_dates(
+        let plans = plan_batch_rename_in_folder(
             &context.targets,
             &context.existing,
             &rule,
             &context.dirs,
             context.folding,
             &context.modified,
+            Some(&context.dir),
         );
         let changes: Vec<(String, String)> = plans
             .iter()
@@ -203,6 +207,14 @@ impl ValidatedBatchRename {
             (
                 false,
                 Some("Reduce the replacement expansion (64 KiB per stage)".into()),
+            )
+        } else if plans
+            .iter()
+            .any(|plan| plan.status == PlanStatus::FolderUnavailable)
+        {
+            (
+                false,
+                Some("Fix the folder level or separator to continue".into()),
             )
         } else if plans
             .iter()
@@ -296,6 +308,10 @@ impl App {
         let listing_generation = self.ws.active_panel_ref().entries_gen();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.batch_rename = Some(BatchRenameState {
+            parent_on: false,
+            parent_depth: 1,
+            parent_separator: "_".into(),
+            parent_suffix: false,
             date_on: false,
             date_format: crate::rename::DateStamp::default().format,
             date_position: crate::rename::DatePosition::Prefix,
@@ -830,6 +846,20 @@ impl App {
                             }
                         });
                     });
+                    ui.horizontal_wrapped(|ui| {
+                        let enabled = ui.checkbox(&mut state.parent_on, "Folder name").on_hover_text("Level 1 is the containing folder; level 2 is its parent. Uses the captured folder path without resolving links.");
+                        preset_interaction |= enabled.changed();
+                        ui.add_enabled_ui(state.parent_on, |ui| {
+                            ui.label("level");
+                            preset_interaction |= ui.add(egui::DragValue::new(&mut state.parent_depth).range(1..=32)).changed();
+                            ui.label("separator");
+                            let input = ui.add(egui::TextEdit::singleline(&mut state.parent_separator).char_limit(32).desired_width(70.0));
+                            text_fields.push(input.id);
+                            preset_interaction |= input.changed();
+                            preset_interaction |= ui.selectable_value(&mut state.parent_suffix, false, "Folder prefix").changed();
+                            preset_interaction |= ui.selectable_value(&mut state.parent_suffix, true, "Folder suffix").changed();
+                        });
+                    });
                     // ── Case + numbering ────────────────────────────────────
                     ui.horizontal_wrapped(|ui| {
                         use crate::rename::CaseMode;
@@ -939,7 +969,7 @@ impl App {
                                     PlanStatus::Ok => (t.accent, "->"),
                                     PlanStatus::Unchanged => (t.text_muted, "="),
                                     PlanStatus::ExpansionLimit => (t.accent_red, "x"),
-                                    PlanStatus::Invalid | PlanStatus::DateUnavailable => (t.accent_red, "x"),
+                                    PlanStatus::Invalid | PlanStatus::DateUnavailable | PlanStatus::FolderUnavailable => (t.accent_red, "x"),
                                     PlanStatus::Collision => (t.accent_warning, "!"),
                                 };
                                 ui.horizontal(|ui| {
@@ -1231,6 +1261,24 @@ mod tests {
     }
 
     #[test]
+    fn parent_folder_preview_uses_captured_folder_and_blocks_unavailable_levels() {
+        let mut context = context(&["photo.jpg"], &[]);
+        context.dir = PathBuf::from("/Trips/Album");
+        let mut rule = RenameRule {
+            parent_affix: Some(crate::rename::ParentAffix::default()),
+            ..Default::default()
+        };
+        let mut cached = None;
+        let preview = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+        assert_eq!(preview.plans[0].to, "Album_photo.jpg");
+        assert!(preview.rule_for_submit(true).is_some());
+        rule.parent_affix.as_mut().unwrap().depth = 32;
+        let preview = ValidatedBatchRename::cached(&mut cached, &context, rule);
+        assert_eq!(preview.plans[0].status, PlanStatus::FolderUnavailable);
+        assert!(preview.rule_for_submit(true).is_none());
+    }
+
+    #[test]
     fn date_preview_is_source_bound_and_blocks_missing_dates_before_submission() {
         let mut context = context(&["a.txt", "b.txt"], &[]);
         context
@@ -1271,6 +1319,10 @@ mod tests {
     #[test]
     fn reset_rule_clears_edits_and_stale_validation_but_keeps_context_identity() {
         let mut state = BatchRenameState {
+            parent_on: false,
+            parent_depth: 1,
+            parent_separator: "_".into(),
+            parent_suffix: false,
             date_on: false,
             date_format: crate::rename::DateStamp::default().format,
             date_position: crate::rename::DatePosition::Prefix,
@@ -1366,6 +1418,7 @@ mod tests {
         let preset = crate::rename_presets::Preset {
             name: "Opening".into(),
             rule: RenameRule {
+                parent_affix: Some(crate::rename::ParentAffix::default()),
                 prefix: "auto_".into(),
                 ..Default::default()
             },
@@ -1379,7 +1432,7 @@ mod tests {
         assert!(state.validation.is_none() && state.error.is_none());
         let rule = state.rule();
         let validation = ValidatedBatchRename::cached(&mut state.validation, &state.context, rule);
-        assert_eq!(validation.plans[0].to, "auto_Photo.JPG");
+        assert_eq!(validation.plans[0].to, "fixture_auto_Photo.JPG");
         state.reset_rule();
         assert_eq!(state.rule(), RenameRule::default());
     }

@@ -90,6 +90,7 @@ pub fn rename_plan(
                 crate::rename::PlanStatus::Ok => "ok",
                 crate::rename::PlanStatus::Unchanged => "unchanged",
                 crate::rename::PlanStatus::Invalid => "invalid",
+                crate::rename::PlanStatus::FolderUnavailable => "folder_unavailable",
                 crate::rename::PlanStatus::DateUnavailable => "date_unavailable",
                 crate::rename::PlanStatus::Collision => "collision",
                 crate::rename::PlanStatus::ExpansionLimit => "expansion_limit",

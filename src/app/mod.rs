@@ -764,6 +764,10 @@ pub struct SyncState {
 /// UI state for the batch-rename studio. The transform itself lives in
 /// `crate::rename`; this only holds the editable rule fields.
 pub struct BatchRenameState {
+    pub parent_on: bool,
+    pub parent_depth: u8,
+    pub parent_separator: String,
+    pub parent_suffix: bool,
     pub date_on: bool,
     pub date_format: String,
     pub date_position: crate::rename::DatePosition,
@@ -848,6 +852,11 @@ impl BatchRenameState {
     }
 
     fn load_rule(&mut self, rule: &crate::rename::RenameRule) {
+        self.parent_on = rule.parent_affix.is_some();
+        let parent = rule.parent_affix.clone().unwrap_or_default();
+        self.parent_depth = parent.depth;
+        self.parent_separator = parent.separator;
+        self.parent_suffix = parent.suffix;
         self.date_on = rule.date_stamp.is_some();
         let date = rule.date_stamp.clone().unwrap_or_default();
         self.date_format = date.format;
@@ -900,6 +909,11 @@ impl BatchRenameState {
     /// Build the pure rename rule from the current field values.
     pub(crate) fn rule(&self) -> crate::rename::RenameRule {
         crate::rename::RenameRule {
+            parent_affix: self.parent_on.then(|| crate::rename::ParentAffix {
+                depth: self.parent_depth,
+                separator: self.parent_separator.clone(),
+                suffix: self.parent_suffix,
+            }),
             date_stamp: self.date_on.then(|| crate::rename::DateStamp {
                 format: self.date_format.clone(),
                 position: self.date_position,

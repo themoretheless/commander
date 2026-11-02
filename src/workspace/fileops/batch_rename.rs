@@ -163,19 +163,28 @@ pub fn apply_batch_rename_in(
             "\"{name}\" is not valid UTF-8 and cannot be batch renamed; rename it on its own first"
         ));
     }
-    let plans = crate::rename::plan_batch_rename_with_dates(
+    let plans = crate::rename::plan_batch_rename_in_folder(
         &context.targets,
         &existing,
         rule,
         &context.dirs,
         context.folding,
         &context.modified,
+        Some(&context.dir),
     );
     if plans
         .iter()
         .any(|plan| plan.status == crate::rename::PlanStatus::ExpansionLimit)
     {
         return Err("Replacement output exceeds 64 KiB; no names were changed".into());
+    }
+    if plans
+        .iter()
+        .any(|p| p.status == crate::rename::PlanStatus::FolderUnavailable)
+    {
+        return Err(
+            "Folder level is unavailable or separator is invalid; no names were changed".into(),
+        );
     }
     if plans
         .iter()

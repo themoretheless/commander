@@ -2007,6 +2007,32 @@ fn select_same_named_adds_common_names_keeping_prior_picks() {
 }
 
 #[test]
+fn parent_folder_batch_rename_applies_captured_context_and_refuses_unknown_ancestor() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let original = l.file("photo.jpg", "photo bytes");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(original.clone());
+    let context = ws.batch_rename_context().unwrap();
+    let mut rule = crate::rename::RenameRule {
+        parent_affix: Some(crate::rename::ParentAffix {
+            depth: 32,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(ws.apply_batch_rename_in(&context, &rule).is_err());
+    assert!(original.exists());
+    rule.parent_affix.as_mut().unwrap().depth = 1;
+    assert_eq!(ws.apply_batch_rename_in(&context, &rule).unwrap(), 1);
+    let expected = l.path().join(format!(
+        "{}_photo.jpg",
+        context.dir.file_name().unwrap().to_str().unwrap()
+    ));
+    assert_eq!(std::fs::read_to_string(expected).unwrap(), "photo bytes");
+    assert!(!original.exists());
+}
+
+#[test]
 fn dated_batch_rename_uses_the_reviewed_snapshot_and_refuses_partial_unknown_dates() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let a = l.file("a.txt", "first");
