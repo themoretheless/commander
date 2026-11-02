@@ -1615,6 +1615,30 @@ impl Workspace {
             Command::CopyPath => {
                 self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::FullPath))
             }
+            Command::CopyFileDetails => {
+                let entries = self
+                    .active_panel_ref()
+                    .selected_or_cursor()
+                    .unwrap_or_default();
+                if !entries.is_empty() {
+                    match crate::clipboard::file_details(entries.iter().map(|entry| {
+                        [
+                            entry.name.as_str(),
+                            entry.size_str.as_str(),
+                            entry.modified_str.as_str(),
+                        ]
+                    })) {
+                        Ok(text) => self.emit_ui_request(UiRequest::CopyText {
+                            text,
+                            label: format!("file details for {} item(s)", entries.len()),
+                        }),
+                        Err(message) => self.emit_ui_request(UiRequest::Notice {
+                            message,
+                            error: true,
+                        }),
+                    }
+                }
+            }
             Command::CopyNameWithoutExtension => {
                 self.emit_ui_request(UiRequest::CopyPaths(
                     crate::clipboard::PathStyle::NameWithoutExtension,

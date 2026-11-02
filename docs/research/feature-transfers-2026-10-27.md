@@ -2546,3 +2546,7 @@ Independent adaptation of [PeaZip Base64 hash output](https://peazip.github.io/v
 ## Explicit Base64 expected-digest comparison (2026-11-02)
 
 Commander extension of the PeaZip-inspired encoded checksum workflow: explicit Hex/Base64 expected-value selection with strict standard padded Base64 validation and algorithm byte-width checks. Selection rechecks existing text; new calculations default to Hex. Shared completion guards remain intact. [Qualification and native scope](../qualification/checksum-base64-compare-2026-11-02/README.md).
+
+## Copy file details as TSV (2026-11-02)
+
+Independent adaptation of [Double Commander copy file details](https://doublecmd.github.io/doc/en/help.html): command-palette export of captured Name/Size/Modified display cells from visible selection or cursor fallback, without metadata rereads. Quoted TSV preserves control characters and is bounded to 10000 records / 1 MiB. [Evidence and explicit display-column/native limits](../qualification/file-details-tsv-2026-11-02/README.md).

@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 34.24s
+     Running unittests src/main.rs (target/debug/build/commander/fceee63abddc28d9/out/commander-fceee63abddc28d9)
+
+running 2 tests
+test workspace::tests::copy_file_details_uses_captured_selection_and_cursor_without_restat_or_mutation ... ok
+test clipboard::tests::file_details_tsv_round_trips_controls_and_enforces_encoded_limits ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3343 filtered out; finished in 0.05s
+

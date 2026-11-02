@@ -124,6 +124,8 @@ pub enum Command {
     /// Copy the selection's file name(s).
     CopyName,
     CopyNameWithoutExtension,
+    /// Copy captured Name/Size/Modified cells as a quoted TSV table.
+    CopyFileDetails,
     /// Copy the selection's parent directory path(s).
     CopyParentPath,
     CopyFolderPath,
@@ -730,6 +732,7 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         CopyPath
         | CopyName
         | CopyNameWithoutExtension
+        | CopyFileDetails
         | CopyParentPath
         | CopyFileUrl
         | CopyShellPath
@@ -934,6 +937,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Project collections", "", "project collection workspace roots virtual view", Command::OpenProjectCollections),
     entry("Copy path", "Cmd+Shift+C", "clipboard copy path", Command::CopyPath),
     entry("Copy name", "", "clipboard copy name filename", Command::CopyName),
+    entry("Copy file details (TSV)", "", "clipboard copy file details columns name size modified table spreadsheet tsv", Command::CopyFileDetails),
     entry("Copy name without extension", "", "clipboard copy filename stem basename no suffix extension", Command::CopyNameWithoutExtension),
     entry("Copy current folder path", "", "clipboard copy directory current folder location path empty", Command::CopyFolderPath),
     entry("Copy current folder as file URL", "", "clipboard copy current folder directory location file url link empty", Command::CopyFolderUrl),

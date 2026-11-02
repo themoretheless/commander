@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0616]: field `selection` of struct `panel::PanelState` is private
+    --> src/workspace/tests.rs:9046:13
+     |
+9046 |     ws.left.selection.focus_parent();
+     |             ^^^^^^^^^ private field
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

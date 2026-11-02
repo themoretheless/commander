@@ -23,6 +23,49 @@ pub enum PathStyle {
     RelativeToOther,
 }
 
+/// Copy the captured Name/Size/Modified display cells as quoted TSV.
+/// No metadata is re-read. Bound both row count and encoded clipboard bytes.
+pub fn file_details<'a>(rows: impl IntoIterator<Item = [&'a str; 3]>) -> Result<String, String> {
+    const MAX_BYTES: usize = 1024 * 1024;
+    const MAX_ROWS: usize = 10_000;
+    let encoded_len = |row: [&str; 3]| -> Option<usize> {
+        row.iter().try_fold(3usize, |total, cell| {
+            total
+                .checked_add(cell.len())?
+                .checked_add(2)?
+                .checked_add(cell.bytes().filter(|&byte| byte == b'"').count())
+        })
+    };
+    let header = ["Name", "Size", "Modified"];
+    let mut size = encoded_len(header).ok_or("File details exceed 1 MiB")?;
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(b'\t')
+        .quote_style(csv::QuoteStyle::Always)
+        .from_writer(Vec::new());
+    writer
+        .write_record(header)
+        .map_err(|error| error.to_string())?;
+    let mut any = false;
+    for (index, row) in rows.into_iter().enumerate() {
+        if index == MAX_ROWS {
+            return Err("File details are limited to 10000 entries".into());
+        }
+        size = size
+            .checked_add(encoded_len(row).ok_or("File details exceed 1 MiB")?)
+            .filter(|&size| size <= MAX_BYTES)
+            .ok_or("File details exceed 1 MiB")?;
+        writer
+            .write_record(row)
+            .map_err(|error| error.to_string())?;
+        any = true;
+    }
+    if !any {
+        return Err("No visible file details to copy".into());
+    }
+    let bytes = writer.into_inner().map_err(|error| error.to_string())?;
+    String::from_utf8(bytes).map_err(|error| error.to_string())
+}
+
 /// Short label for the "Copied ..." toast.
 pub const fn style_label(style: PathStyle) -> &'static str {
     match style {
@@ -155,6 +198,32 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn file_details_tsv_round_trips_controls_and_enforces_encoded_limits() {
+        let rows = [["a\tb\n\"c\"", "12 B", "today"], ["ёж", "…", ""]];
+        let text = file_details(rows).unwrap();
+        let parsed: Vec<Vec<String>> = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_reader(text.as_bytes())
+            .records()
+            .map(|row| row.unwrap().iter().map(str::to_owned).collect())
+            .collect();
+        assert_eq!(parsed[0], ["Name", "Size", "Modified"]);
+        assert_eq!(parsed[1], rows[0]);
+        assert_eq!(parsed[2], rows[1]);
+        assert!(file_details([]).is_err());
+        assert!(file_details(std::iter::repeat_n(["", "", ""], 10000)).is_ok());
+        assert!(file_details(std::iter::repeat_n(["", "", ""], 10001)).is_err());
+        let overhead = file_details([["", "", ""]]).unwrap().len();
+        let exact = "a".repeat(1024 * 1024 - overhead);
+        assert_eq!(file_details([[&exact, "", ""]]).unwrap().len(), 1024 * 1024);
+        let over = exact + "a";
+        assert!(file_details([[&over, "", ""]]).is_err());
+        let quotes = "\"".repeat(1024 * 1024 / 2);
+        assert!(file_details([[&quotes, "", ""]]).is_err());
     }
 
     #[test]

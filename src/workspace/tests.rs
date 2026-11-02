@@ -9000,3 +9000,51 @@ fn literal_regex_batch_rename_preserves_content_and_undo_redo() {
         b"payload"
     );
 }
+
+#[test]
+fn copy_file_details_uses_captured_selection_and_cursor_without_restat_or_mutation() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let original = left.file("a\tb.txt", "old bytes");
+    left.file("other.txt", "other");
+    let mut ws = workspace(&left, &right);
+    ws.left.focus_child("other.txt".into());
+    ws.left.select_path(original.clone());
+    let entries = ws.left.selected_or_cursor().unwrap();
+    let expected = crate::clipboard::file_details(entries.iter().map(|e| {
+        [
+            e.name.as_str(),
+            e.size_str.as_str(),
+            e.modified_str.as_str(),
+        ]
+    }))
+    .unwrap();
+    std::fs::remove_file(&original).unwrap();
+    assert!(crate::command::availability(Command::CopyFileDetails, &ws.command_context()).enabled);
+    ws.execute(Command::CopyFileDetails);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::CopyText {
+            text: expected,
+            label: "file details for 1 item(s)".into()
+        }]
+    );
+    assert!(ws.left.is_selected(&original));
+    assert_eq!(ws.left.cursor_entry().unwrap().name, "other.txt");
+    ws.left.clear_selection();
+    ws.execute(Command::CopyFileDetails);
+    let requests = ws.drain_ui_requests();
+    let UiRequest::CopyText { text, .. } = &requests[0] else {
+        panic!("expected clipboard text")
+    };
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .from_reader(text.as_bytes());
+    assert_eq!(
+        reader.records().next().unwrap().unwrap().get(0),
+        Some("other.txt")
+    );
+    ws.left.set_cursor(0);
+    assert!(!crate::command::availability(Command::CopyFileDetails, &ws.command_context()).enabled);
+    ws.execute(Command::CopyFileDetails);
+    assert!(ws.drain_ui_requests().is_empty());
+}

@@ -1,0 +1,8 @@
+{
+  "src/clipboard.rs": "13cb0b9d1a8c5ba5e193ac9a0ede397f222e0095a109d0fe474d794ffc5f2758",
+  "src/command.rs": "051735b606c4260f983b15c9256f523c7d48a0ec6d9e54ccb35754403fc4ecab",
+  "src/workspace.rs": "61700479640780f9533fb96e841a73c9449002dc30a1e353d76b07ccab355c82",
+  "src/workspace/tests.rs": "b8451eb3a325a66ba7c7c206aa8de9e6629c0245a2abd00a9701ab9ac5878743",
+  "src/app/omnibar_dialog.rs": "d04acbd5b805be417853c35c4f076e71f540340ad5a0a2c5cad749a761a21441",
+  "Cargo.lock": "4c43a342a7894d17bd7b3c6a920324c487d00e439ccb1429b75e3c574d8350a5"
+}

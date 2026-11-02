@@ -1076,6 +1076,7 @@ impl App {
                 self.recovery.operations.len(),
                 self.recovery.orphans.len()
             ),
+            Command::CopyFileDetails => format!("{picked} item(s) · Name / Size / Modified · TSV"),
             Command::CopyPath
             | Command::CopyName
             | Command::CopyParentPath
