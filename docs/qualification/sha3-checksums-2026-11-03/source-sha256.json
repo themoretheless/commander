@@ -1,0 +1,12 @@
+{
+  "src/checksum.rs": "ef72dba0cc4871b23229dcfafed3f5de9c83e96e466bdf1cbc87d0b715742f1c",
+  "src/checksum_list.rs": "c5f3033241e282701490ce4e0b93c10a907d829b1bb853221ad210c9d7003b91",
+  "src/app/update.rs": "ba9ddb0bf5de8426e236b7912981bce1a9327ce8eb3f601a915f87d8695be29c",
+  "src/app/checksum_list_dialog.rs": "965d6f6fe051857bb523bbf2fab0bf40dcfb685f11596257b35aab8f47be2575",
+  "Cargo.toml": "8a2edc8c44d93199969043ce709301da5953c09d39b2fc053d57fcf63f9a282c",
+  "Cargo.lock": "a5e34d38cd7eca44ebaf90ba36c1dce34bacf82db06550e623ad801b7c45f976",
+  "THIRD_PARTY_LICENSES.md": "15daeb25413ea62b4d7939fdd0aa39ea7296f897339909654231c258972c5f9d",
+  "data/licenses/sha3-0.12.0-MIT.txt": "6462612d92b861384dcd378168a7a0ef3ef28876d3d380d382cb5a3091e360b8",
+  "data/licenses/keccak-0.2.2-MIT.txt": "8c7516d4b27b1e495be5e38b612298b63de48d05f49cdac94f70f3cd70f8864b",
+  "data/licenses/sponge-cursor-0.1.0-MIT.txt": "083cb05a34eb9c78faf69aa49674ec30d1eadbdc2042473644992786e6c8249b"
+}

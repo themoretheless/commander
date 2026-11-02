@@ -2594,3 +2594,7 @@ Independent adaptation of [Double Commander existing name lists, section 5.1](ht
 ## Native name-list file loading (2026-11-03)
 
 Real native pointer/text actions load a wrong-count file, demonstrate disabled adoption without changing the editor, load a valid UTF-8 BOM/CRLF file and adopt it only with a separate click. Read-only snapshots and byte-exact artifacts are independently checked. [Receipts, source hashes and remaining native scope](../qualification/rename-name-list-file-native-2026-11-03/README.md).
+
+## SHA3-256 and SHA3-512 file checks (2026-11-03)
+
+Independent adaptation of [PeaZip file-checking algorithms](https://peazip.github.io/pea-archiving-utility.html): two SHA-3 digests in the guarded streaming reader, Hex/Base64 comparison and copying, and tagged/hinted/GNU checksum-list import/export. Identical SHA-2/SHA-3 digest widths require explicit selection when no tag or filename hint resolves them. [Python oracle, regression and dependency audit evidence; native limits](../qualification/sha3-checksums-2026-11-03/README.md).

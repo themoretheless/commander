@@ -173,6 +173,8 @@ fn tagged_algorithm(tag: &str) -> Option<Algorithm> {
         "SHA256" | "SHA-256" | "SHA2-256" => Some(Algorithm::Sha256),
         "SHA384" | "SHA-384" | "SHA2-384" => Some(Algorithm::Sha384),
         "SHA512" | "SHA-512" | "SHA2-512" => Some(Algorithm::Sha512),
+        "SHA3-256" | "SHA3_256" => Some(Algorithm::Sha3_256),
+        "SHA3-512" | "SHA3_512" => Some(Algorithm::Sha3_512),
         "MD5" => Some(Algorithm::Md5),
         "SHA1" | "SHA-1" => Some(Algorithm::Sha1),
         "BLAKE3" => Some(Algorithm::Blake3),
@@ -212,6 +214,8 @@ fn parse_untagged(body: &str, algorithm: Algorithm) -> Option<(String, String)> 
 fn filename_algorithm(path: &Path) -> Option<Algorithm> {
     let name = path.file_name()?.to_str()?.to_ascii_lowercase();
     match name.as_str() {
+        "sha3-256sums" | "sha3_256sums" => return Some(Algorithm::Sha3_256),
+        "sha3-512sums" | "sha3_512sums" => return Some(Algorithm::Sha3_512),
         "md5sums" => return Some(Algorithm::Md5),
         "sha1sums" => return Some(Algorithm::Sha1),
         "adler32sums" => return Some(Algorithm::Adler32),
@@ -225,6 +229,8 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
         "sha256" | "sha256sum" => Some(Algorithm::Sha256),
         "sha384" | "sha384sum" => Some(Algorithm::Sha384),
         "sha512" | "sha512sum" => Some(Algorithm::Sha512),
+        "sha3-256" | "sha3_256" => Some(Algorithm::Sha3_256),
+        "sha3-512" | "sha3_512" => Some(Algorithm::Sha3_512),
         "md5" | "md5sum" => Some(Algorithm::Md5),
         "sha1" | "sha1sum" => Some(Algorithm::Sha1),
         "adler32" | "adler32sum" => Some(Algorithm::Adler32),
@@ -250,7 +256,7 @@ fn detect(
     for algorithm in Algorithm::ALL {
         if let Ok(rows) = parse(text, algorithm) {
             if detected.is_some() {
-                return Err("Ambiguous checksum algorithm or record layout: choose explicitly (64-digit hashes may be SHA-256 or BLAKE3), or use a tagged list / recognized filename".into());
+                return Err("Ambiguous checksum algorithm or record layout: choose explicitly (64-digit hashes may be SHA-256, SHA3-256 or BLAKE3; 128-digit hashes may be SHA-512 or SHA3-512), or use a tagged list / recognized filename".into());
             }
             detected = Some((algorithm, rows));
         }
@@ -432,6 +438,50 @@ mod tests {
             &AtomicUsize::new(0),
             &AtomicUsize::new(0),
         )
+    }
+
+    #[test]
+    fn sha3_tags_hints_and_ambiguous_widths_are_distinct_from_sha2() {
+        let temp = crate::testutil::TempDir::new();
+        for (algorithm, tag, extension) in [
+            (Algorithm::Sha3_256, "SHA3-256", "sha3-256"),
+            (Algorithm::Sha3_512, "SHA3_512", "sha3_512"),
+        ] {
+            let digest = "a".repeat(algorithm.hex_len());
+            let tagged = format!("{tag} (data) = {digest}\n");
+            assert_eq!(
+                detect(&temp.path().join("list"), &tagged, None).unwrap().0,
+                algorithm
+            );
+            let untagged = format!("{digest} *data\n");
+            assert!(detect(&temp.path().join("list"), &untagged, None).is_err());
+            assert_eq!(
+                detect(
+                    &temp.path().join(format!("list.{extension}")),
+                    &untagged,
+                    None
+                )
+                .unwrap()
+                .0,
+                algorithm
+            );
+            let sums = temp
+                .path()
+                .join(format!("{}sums", tag.to_ascii_lowercase()));
+            assert_eq!(detect(&sums, &untagged, None).unwrap().0, algorithm);
+            assert!(
+                parse(
+                    &tagged,
+                    if algorithm == Algorithm::Sha3_256 {
+                        Algorithm::Sha256
+                    } else {
+                        Algorithm::Sha512
+                    }
+                )
+                .is_err()
+            );
+            assert!(detect(&temp.path().join("list.sha256"), &tagged, None).is_err());
+        }
     }
 
     #[test]
@@ -634,7 +684,7 @@ mod tests {
         assert!(
             detect(
                 Path::new("list"),
-                &format!("SHA3-256 (a) = {}", "0".repeat(64)),
+                &format!("SHA3-224 (a) = {}", "0".repeat(56)),
                 None
             )
             .is_err()
@@ -643,7 +693,6 @@ mod tests {
             (Algorithm::Md5, 32),
             (Algorithm::Sha1, 40),
             (Algorithm::Sha384, 96),
-            (Algorithm::Sha512, 128),
         ] {
             assert_eq!(
                 detect(

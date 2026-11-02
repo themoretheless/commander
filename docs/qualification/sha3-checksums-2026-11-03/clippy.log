@@ -1,0 +1,5 @@
+    Checking keccak v0.2.2
+    Checking sponge-cursor v0.1.0
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Checking sha3 v0.12.0
+    Finished `dev` profile [unoptimized] target(s) in 17.63s

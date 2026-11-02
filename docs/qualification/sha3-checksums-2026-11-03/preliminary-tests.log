@@ -1,0 +1,76 @@
+   Compiling keccak v0.2.2
+   Compiling sponge-cursor v0.1.0
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling sha3 v0.12.0
+    Finished `test` profile [unoptimized] target(s) in 29.37s
+     Running unittests src/main.rs (target/debug/build/commander/4e5529b15829a3e5/out/commander-4e5529b15829a3e5)
+
+running 51 tests
+test checksum::tests::blake3_hex_is_the_lowercase_digest_of_the_content ... ok
+test checksum::tests::base64_digest_encodes_bytes_for_every_algorithm_and_refuses_unavailable_results ... ok
+test checksum::tests::blake3_lists_reject_ambiguous_paths_without_sha_fallback ... ok
+test archive_check::tests::tar_header_and_truncated_payload_fail_but_payload_checksums_are_not_invented ... ok
+test checksum::tests::checksum_list_rejects_non_utf8_paths_without_lossy_export ... ok
+test checksum::tests::checksum_open_rejects_symlink_substitution_and_special_files ... ok
+test checksum::tests::blake3_lists_preserve_paths_and_verify_with_b3sum_when_requested ... ok
+test checksum::tests::content_hash_matches_the_streaming_content_hash ... ok
+test checksum::tests::detailed_text_formats_ok_error_skipped_and_unknown_rows ... ok
+test checksum::tests::digest_copy_and_comparison_reject_incomplete_or_ambiguous_reports ... ok
+test checksum::tests::expected_base64_is_explicit_strict_bounded_and_case_sensitive ... ok
+test checksum::tests::explicit_algorithm_comparison_never_guesses_from_equal_digest_lengths ... ok
+test checksum::tests::extended_sha_known_vectors_and_selected_length_validation ... ok
+test checksum::tests::extended_sha_lists_omit_unavailable_rows_and_keep_algorithm_identity ... ok
+test checksum::tests::crc32_vectors_comparison_and_sfv_interoperability ... ok
+test checksum::tests::folders_are_skipped_not_failed ... ok
+test checksum::tests::cancellation_and_changed_file_never_publish_partial_digests ... ok
+test checksum::tests::identical_files_share_hashes ... ok
+test checksum::tests::md5_lists_escape_names_and_exclude_unavailable_results ... ok
+test checksum::tests::growing_and_truncated_files_never_publish_digests ... ok
+test checksum::tests::missing_paths_report_the_os_error_and_folders_explain_the_skip ... ok
+test checksum::tests::relative_list_base_uses_components_selected_algorithm_and_completed_rows_only ... ok
+test checksum::tests::extended_sha_lists_verify_with_system_shasum_across_chunks_and_escaped_paths ... ok
+test checksum::tests::sfv_refuses_ambiguous_paths_and_omits_incomplete_rows_without_sha_fallback ... ok
+test checksum::tests::adler32_streams_known_vectors_and_block_boundaries_with_exact_export ... ok
+test checksum::tests::relative_lists_survive_moving_the_directory_and_protect_special_filenames ... ok
+test checksum::tests::sha256_list_escapes_carriage_return_and_rejects_unavailable_rows ... ok
+test checksum::tests::sha256_list_round_trips_through_system_shasum_with_escaped_names ... ok
+test checksum::tests::summary_line_for_empty_and_failed_only_reports ... ok
+test checksum::tests::symlinks_are_skipped_without_following_them ... ok
+test checksum_list::tests::accepts_system_shasum_generated_manifest_and_detects_corruption ... ok
+test checksum_list::tests::adler32_lists_support_tags_hints_and_gnu_layout_without_crc_confusion ... ok
+test checksum_list::tests::auto_worker_reports_detected_algorithm_and_refuses_bad_lists_before_hashing_targets ... ok
+test checksum_list::tests::automatic_detection_requires_an_unambiguous_complete_list_and_respects_manual_override ... FAILED
+test checksum_list::tests::exported_manifests_round_trip_all_algorithms_absolute_and_relative ... ok
+test checksum_list::tests::limits_parse_failure_and_cancellation_never_claim_unprocessed_records ... ok
+test checksum::tests::md5_vectors_streaming_explicit_comparison_and_system_interoperability ... ok
+test checksum_list::tests::parent_outside_absolute_and_symbolic_paths_are_refused ... ok
+test checksum_list::tests::parser_preserves_escaped_names_spaces_crlf_and_sfv_comments ... ok
+test checksum_list::tests::rhash_bsd_lists_are_detected_and_verified_when_external_verifier_is_available ... ok
+test checksum_list::tests::openssl_tagged_files_are_detected_and_verified_without_extension_hints ... ok
+test checksum_list::tests::tagged_names_preserve_delimiters_unicode_spaces_and_gnu_escapes ... ok
+test checksum_list::tests::sha1_lists_detect_gnu_bsd_and_filename_hints_and_verify_mismatches ... ok
+test checksum_list::tests::verified_rows_distinguish_match_mismatch_missing_and_rerun_changes ... ok
+test checksum_list_view::tests::new_same_length_reports_require_invalidation_and_keep_preferences ... ok
+test checksum_list_view::tests::statuses_and_unicode_names_compose_with_stable_order_and_cached_empty_views ... ok
+test checksum_list_view::tests::visible_copy_keeps_full_summary_partial_status_and_escaped_names_but_refuses_stale_views ... ok
+test workspace::tests::checksum_list_command_captures_cursor_file_and_gates_parent_row ... ok
+test checksum_list_view::tests::visible_copy_limits_actual_formatted_output ... ok
+test checksum::tests::sha1_legacy_vectors_streaming_exports_and_explicit_comparison ... ok
+test checksum::tests::sha256_known_vectors_and_expected_digest_comparison ... ok
+
+failures:
+
+---- checksum_list::tests::automatic_detection_requires_an_unambiguous_complete_list_and_respects_manual_override stdout ----
+
+thread 'checksum_list::tests::automatic_detection_requires_an_unambiguous_complete_list_and_respects_manual_override' (16567657) panicked at src/checksum_list.rs:640:9:
+assertion failed: detect(Path::new("list"), &format!("SHA3-256 (a) = {}", "0".repeat(64)),
+        None).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    checksum_list::tests::automatic_detection_requires_an_unambiguous_complete_list_and_respects_manual_override
+
+test result: FAILED. 50 passed; 1 failed; 0 ignored; 0 measured; 3309 filtered out; finished in 0.36s
+
+error: test failed, to rerun pass `--bin commander`

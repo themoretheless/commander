@@ -45,3 +45,9 @@ SHA-256 remains the default for file digest comparison.
 
 Digest byte encoding uses `base64` 0.22.1 under its
 [MIT license](data/licenses/base64-MIT.txt).
+
+SHA3-256 and SHA3-512 use RustCrypto `sha3` 0.12.0 and its `keccak` 0.2.2
+and `sponge-cursor` 0.1.0 dependencies under their MIT license options:
+[sha3](data/licenses/sha3-0.12.0-MIT.txt),
+[keccak](data/licenses/keccak-0.2.2-MIT.txt),
+[sponge-cursor](data/licenses/sponge-cursor-0.1.0-MIT.txt).
