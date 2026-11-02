@@ -1,0 +1,8 @@
+{
+  "scenario": "recent_forget",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/recent-path-terms-native-2026-11-03/native-captures/1793658505420575000",
+  "binary_sha256": "59cf09771e6da37c8efb45f5f9434b6aace3716c9d0ee6be44089267c506c941",
+  "core_sha256": "59cf09771e6da37c8efb45f5f9434b6aace3716c9d0ee6be44089267c506c941",
+  "wrapper_sha256": "f51052cd1ddce11920905eb14d67b95e72ea10e04d7346e1e23a869c3871c72f",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

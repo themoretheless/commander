@@ -4710,7 +4710,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
             && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 65)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
-            && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 27)
+            && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 61)
             && !(self.scenario == Scenario::Favorites && self.favorite_phase < 41)
             && !(self.scenario == Scenario::FavoriteImport && self.favorite_import_phase < 17)
             && !(self.scenario == Scenario::CustomShortcuts && self.json_mode_phase < 17)
@@ -14071,18 +14071,32 @@ impl eframe::App for VisualQaApp {
         if self.scenario == Scenario::RecentForget {
             let phase = self.recent_forget_phase;
             let (paths, stats) = crate::panel::visit_snapshot();
-            let saved = crate::session::load_with(self.inner.persistence.as_ref()).value.map(|value|serde_json::json!({"paths":value.recent_paths,"stats":value.recent_stats,"order":value.recent_order}));
+            let saved = crate::session::load_with(self.inner.persistence.as_ref()).value.map(|value|serde_json::json!({"paths":value.recent_paths,"stats":value.recent_stats,"order":value.recent_order,"match_mode":value.recent_match_mode}));
             let visible = ctx
                 .data(|data| {
                     data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))
                 })
                 .unwrap_or_default();
-            let snapshot = serde_json::json!({"phase":phase,"order":self.inner.recent_order,"selected":self.inner.ui.modals.palette_input.as_ref().map(|state|state.selected),"paths":paths,"stats":stats,"saved":saved,"visible":visible,"query":self.inner.ui.modals.palette_input.as_ref().map(|state|&state.input),"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path});
+            let match_error = self
+                .inner
+                .ui
+                .modals
+                .palette_input
+                .as_ref()
+                .and_then(
+                    |state| match crate::omnibar::OmnibarMode::parse(&state.input) {
+                        crate::omnibar::OmnibarMode::Jump(query) => {
+                            crate::panel::recent_match_error(query, self.inner.recent_match_mode)
+                        }
+                        _ => None,
+                    },
+                );
+            let snapshot = serde_json::json!({"phase":phase,"match_mode":self.inner.recent_match_mode,"match_error":match_error,"order":self.inner.recent_order,"selected":self.inner.ui.modals.palette_input.as_ref().map(|state|state.selected),"paths":paths,"stats":stats,"saved":saved,"visible":visible,"query":self.inner.ui.modals.palette_input.as_ref().map(|state|&state.input),"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path});
             let _ = std::fs::write(
                 self.scenario_dir.join(format!("recent-phase-{phase}.json")),
                 serde_json::to_vec_pretty(&snapshot).unwrap(),
             );
-            if phase < 27 {
+            if phase < 61 {
                 if phase == 0
                     && (self.frames < 3
                         || self.inner.ws.left.entries().is_empty()
@@ -14129,6 +14143,21 @@ impl eframe::App for VisualQaApp {
                 if expected.is_some_and(|expected| visible != expected) {
                     return;
                 }
+                let keep_only = vec![self.fixture.root.join("KeepMe")];
+                if matches!(phase, 35 | 48) && visible != keep_only {
+                    return;
+                }
+                if matches!(phase, 40 | 45 | 51 | 56) && !visible.is_empty() {
+                    return;
+                }
+                if phase == 56 && match_error.is_none() {
+                    return;
+                }
+                let oversized = if (51..=55).contains(&phase) {
+                    "x".repeat(1025)
+                } else {
+                    String::new()
+                };
                 let (id, local, text) = match phase {
                     2..=4 => (
                         egui::Id::new(("recent-order", "Recent first")),
@@ -14148,10 +14177,38 @@ impl eframe::App for VisualQaApp {
                     11..=15 => (egui::Id::new("omnibar-input"), phase - 11, Some("ForgetMe")),
                     16..=18 => (egui::Id::new("omnibar-forget-recent"), phase - 16, None),
                     19..=23 => (egui::Id::new("omnibar-input"), phase - 19, Some("KeepMe")),
-                    _ => (
+                    24..=26 => (
                         egui::Id::new(("recent-order", "Frequent + recent")),
                         phase - 24,
                         None,
+                    ),
+                    27..=29 => (egui::Id::new("recent-match-mode"), phase - 27, None),
+                    30..=34 => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 30,
+                        Some("recent_forget / kee"),
+                    ),
+                    35..=39 => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 35,
+                        Some("kee recent_forget"),
+                    ),
+                    40..=44 => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 40,
+                        Some("recent_forget"),
+                    ),
+                    45..=47 => (egui::Id::new("recent-match-mode"), phase - 45, None),
+                    48..=50 => (egui::Id::new("recent-match-mode"), phase - 48, None),
+                    51..=55 => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 51,
+                        Some(oversized.as_str()),
+                    ),
+                    _ => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 56,
+                        Some("RECENT_FORGET / KEE"),
                     ),
                 };
                 if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
@@ -20248,10 +20305,11 @@ impl eframe::App for VisualQaApp {
             Scenario::RecentForget => {
                 let (paths,stats)=crate::panel::visit_snapshot();
                 let keep=self.fixture.root.join("KeepMe");let forget=self.fixture.root.join("ForgetMe");
-                self.recent_forget_phase==27 && forget.is_dir() && paths.contains(&keep) && !paths.contains(&forget) && !stats.uses.contains_key(&forget)
+                self.recent_forget_phase==61 && forget.is_dir() && paths.contains(&keep) && !paths.contains(&forget) && !stats.uses.contains_key(&forget)
                     && stats.uses.get(&keep).is_some_and(|usage|usage.count==8 && usage.last==8)
                     && self.inner.recent_order==crate::panel::RecentOrder::Frecency
-                    && self.inner.ui.modals.palette_input.as_ref().is_some_and(|state|state.input=="KeepMe")
+                    && self.inner.recent_match_mode==crate::panel::RecentMatchMode::OrderedTerms
+                    && self.inner.ui.modals.palette_input.as_ref().is_some_and(|state|state.input=="RECENT_FORGET / KEE")
                     && ctx.data(|data|data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))).is_some_and(|visible|visible==[keep.clone()])
                     && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
                     && self.inner.ws.bookmarks.items.is_empty() && self.inner.toasts.is_empty()

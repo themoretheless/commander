@@ -2630,3 +2630,7 @@ Actual Cmd+P, pointer and text input prove contrasting frequency/chronological p
 ## Ordered recent-folder path terms (2026-11-03)
 
 Independent adaptation of [zoxide matching rules](https://github.com/ajeetdsouza/zoxide/wiki/Algorithm): optional ordered contiguous path terms with literal separators and final-folder matching in Cmd+P. The existing fuzzy default, original path identities, frequency/chronological choices and bookmark matching remain. Bounded query refusal, selection/focus ownership and persisted mode are explicit. [Upstream examples, limits, pointer/keyboard and session evidence; native scope](../qualification/recent-path-terms-2026-11-03/README.md).
+
+## Native ordered recent-folder path queries (2026-11-03)
+
+Actual pointer/text flow proves ordered fragments, literal slash constraints, reverse/ancestor-only refusal, fuzzy contrast, saved matching mode and over-limit refusal/recovery. Python independently checks native projections and preserves original paths, peer ranking and pane destinations. [Capture, source hashes and visual error/restart limits](../qualification/recent-path-terms-native-2026-11-03/README.md).

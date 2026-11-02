@@ -1,0 +1,10 @@
+{
+  "native_checks": 16,
+  "observations": 62,
+  "native_effects": 0,
+  "ordered_queries_mode_persistence_limit_and_recovery": true,
+  "independent_oracle": "Python ordered fragments and final component",
+  "peer_rank_and_source_preserved": true,
+  "no_panel_navigation": true,
+  "source_and_binary_hashes_match": true
+}
