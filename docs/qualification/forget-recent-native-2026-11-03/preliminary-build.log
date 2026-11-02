@@ -1,0 +1,51 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: `?` couldn't convert the error to `VisualQaCreationError`
+    --> src/visual_qa.rs:3203:72
+     |
+3203 |             std::fs::create_dir_all(&forget).map_err(|e| e.to_string())?;
+     |             -------------------------------- --------------------------^ the trait `std::convert::From<std::string::String>` is not implemented for `VisualQaCreationError`
+     |             |                                |
+     |             |                                this can't be annotated with `?` because it has type `Result<_, std::string::String>`
+     |             this has type `Result<_, std::io::Error>`
+     |
+note: `VisualQaCreationError` needs to implement `From<std::string::String>`
+    --> src/visual_qa.rs:1232:1
+     |
+1232 | enum VisualQaCreationError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `VisualQaCreationError`
+    --> src/visual_qa.rs:3204:70
+     |
+3204 |             std::fs::create_dir_all(&keep).map_err(|e| e.to_string())?;
+     |             ------------------------------ --------------------------^ the trait `std::convert::From<std::string::String>` is not implemented for `VisualQaCreationError`
+     |             |                              |
+     |             |                              this can't be annotated with `?` because it has type `Result<_, std::string::String>`
+     |             this has type `Result<_, std::io::Error>`
+     |
+note: `VisualQaCreationError` needs to implement `From<std::string::String>`
+    --> src/visual_qa.rs:1232:1
+     |
+1232 | enum VisualQaCreationError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+error[E0277]: `?` couldn't convert the error to `VisualQaCreationError`
+    --> src/visual_qa.rs:3205:94
+     |
+3205 |             std::fs::write(keep.join("keep.txt"), b"kept payload").map_err(|e| e.to_string())?;
+     |             ------------------------------------------------------ --------------------------^ the trait `std::convert::From<std::string::String>` is not implemented for `VisualQaCreationError`
+     |             |                                                      |
+     |             |                                                      this can't be annotated with `?` because it has type `Result<_, std::string::String>`
+     |             this has type `Result<_, std::io::Error>`
+     |
+note: `VisualQaCreationError` needs to implement `From<std::string::String>`
+    --> src/visual_qa.rs:1232:1
+     |
+1232 | enum VisualQaCreationError {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander") due to 3 previous errors

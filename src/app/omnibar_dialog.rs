@@ -477,6 +477,21 @@ impl App {
                 rows.push(OmniRow::AssignSlotPrompt);
             }
         }
+        #[cfg(feature = "visual-qa")]
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("omnibar-visible-recents"),
+                rows.iter()
+                    .filter_map(|row| match row {
+                        OmniRow::Folder {
+                            path,
+                            pinned: false,
+                        } => Some(path.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
         let row_enabled = |row: &OmniRow| match row {
             OmniRow::Folder { .. } | OmniRow::Favorite { .. } => true,
             OmniRow::Command(i) => availabilities[*i].enabled,

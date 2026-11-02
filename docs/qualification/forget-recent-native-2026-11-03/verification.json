@@ -1,0 +1,10 @@
+{
+  "native_checks": 16,
+  "observations": 16,
+  "native_effects": 0,
+  "removed_from_saved_paths_and_ranking": true,
+  "peer_preserved": true,
+  "panel_navigation_unchanged": true,
+  "source_bytes_unchanged": true,
+  "source_and_binary_hashes_match": true
+}

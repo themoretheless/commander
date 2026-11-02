@@ -1,0 +1,28 @@
+{
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/left",
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/ForgetMe",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/KeepMe"
+  ],
+  "phase": 4,
+  "query": "",
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/right",
+  "saved": null,
+  "stats": {
+    "tick": 4,
+    "uses": {
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/ForgetMe": {
+        "count": 2,
+        "last": 4
+      },
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/KeepMe": {
+        "count": 2,
+        "last": 3
+      }
+    }
+  },
+  "visible": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/ForgetMe",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17540-recent_forget/KeepMe"
+  ]
+}

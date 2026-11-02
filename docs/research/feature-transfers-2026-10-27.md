@@ -2614,3 +2614,7 @@ Native pointer/key/text flow exercises both BLAKE2 algorithms, Hex/Base64 copy/c
 ## Forget an individual recent folder (2026-11-03)
 
 Independent adaptation of [zoxide remove](https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/man/man1/zoxide-remove.1): Cmd+P can remove its selected recent-folder path and usage rank, immediately saving the session while retaining switcher/input ownership. Revisiting records it anew; bookmarks and panel history are separate. [Snapshot, exact-path and real-egui regressions; native limits](../qualification/forget-recent-folder-2026-11-03/README.md).
+
+## Native recent-folder removal and saved ranking (2026-11-03)
+
+Actual Cmd+P and pointer/text input remove one selected recent-folder record, keep a peer fuzzy match and preserve pane destinations/source bytes. The isolated session service reload confirms removal from both saved paths and saved ranking metadata, with the peer count/recency retained. [Native observations, independent verifier and restart limits](../qualification/forget-recent-native-2026-11-03/README.md).

@@ -285,6 +285,7 @@ enum Scenario {
     Favorites,
     FavoriteImport,
     FavoritePicker,
+    RecentForget,
     TemplateBrowser,
     PerItemCommand,
     PerItemStop,
@@ -391,7 +392,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 134] = [
+    const ALL: [Self; 135] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -475,6 +476,7 @@ impl Scenario {
         Self::Favorites,
         Self::FavoriteImport,
         Self::FavoritePicker,
+        Self::RecentForget,
         Self::TemplateBrowser,
         Self::PerItemCommand,
         Self::PerItemStop,
@@ -620,6 +622,7 @@ impl Scenario {
             Self::Favorites => "favorites",
             Self::FavoriteImport => "favorite_import",
             Self::FavoritePicker => "favorite_picker",
+            Self::RecentForget => "recent_forget",
             Self::TemplateBrowser => "template_browser",
             Self::PerItemCommand => "per_item_command",
             Self::PerItemStop => "per_item_stop",
@@ -760,6 +763,7 @@ impl Scenario {
             | Self::Favorites
             | Self::FavoriteImport
             | Self::FavoritePicker
+            | Self::RecentForget
             | Self::TemplateBrowser
             | Self::PerItemCommand
             | Self::PerItemStop
@@ -910,6 +914,7 @@ impl Scenario {
             | Self::Favorites
             | Self::FavoriteImport
             | Self::FavoritePicker
+            | Self::RecentForget
             | Self::TemplateBrowser
             | Self::PerItemCommand
             | Self::PerItemStop
@@ -979,7 +984,7 @@ impl Scenario {
     const fn modal_owner(self) -> Option<&'static str> {
         match self {
             Self::ConfirmationOwner => Some("Confirmation"),
-            Self::FavoritePicker | Self::ShortcutHints => Some("Palette"),
+            Self::FavoritePicker | Self::RecentForget | Self::ShortcutHints => Some("Palette"),
             Self::TemplateBrowser | Self::PerItemCommand | Self::PerItemStop => Some("RunCommand"),
             Self::Permissions | Self::Timestamps => Some("Permissions"),
             Self::NameList => Some("Mask"),
@@ -3026,6 +3031,8 @@ struct VisualQaApp {
     checksum_list_phase: u8,
     favorite_phase: u8,
     favorite_import_phase: u8,
+    recent_forget_phase: u8,
+    recent_forget_pending: bool,
     favorite_picker_phase: u8,
     template_browser_phase: u8,
     per_item_stop_phase: u8,
@@ -3190,6 +3197,24 @@ impl VisualQaApp {
                 ],
             });
         }
+        if scenario == Scenario::RecentForget {
+            let forget = fixture.root.join("ForgetMe");
+            let keep = fixture.root.join("KeepMe");
+            std::fs::create_dir_all(&forget)
+                .map_err(|e| VisualQaCreationError::Setup(e.to_string()))?;
+            std::fs::create_dir_all(&keep)
+                .map_err(|e| VisualQaCreationError::Setup(e.to_string()))?;
+            std::fs::write(keep.join("keep.txt"), b"kept payload")
+                .map_err(|e| VisualQaCreationError::Setup(e.to_string()))?;
+            inner.ws.bookmarks = crate::bookmarks::Bookmarks::default();
+            inner.ws.active = crate::workspace::ActivePanel::Left;
+            let mut stats = crate::panel::VisitStats::default();
+            stats.record(&keep);
+            stats.record(&forget);
+            stats.record(&keep);
+            stats.record(&forget);
+            crate::panel::restore_visit_snapshot(&[forget, keep], &stats);
+        }
         if scenario == Scenario::FavoritePicker {
             for index in 0..150 {
                 inner.ws.bookmarks.add(
@@ -3312,6 +3337,8 @@ impl VisualQaApp {
             checksum_list_phase: 0,
             favorite_phase: 0,
             favorite_import_phase: 0,
+            recent_forget_phase: 0,
+            recent_forget_pending: false,
             favorite_picker_phase: 0,
             template_browser_phase: 0,
             per_item_stop_phase: 0,
@@ -4662,6 +4689,7 @@ impl eframe::App for VisualQaApp {
         self.table_input_pending = false;
         self.checksum_input_pending = false;
         self.details_input_pending = false;
+        self.recent_forget_pending = false;
         self.sanitize_input_pending = false;
         // Script waits and capture deadlines must advance even when the app
         // has no background work or user events requesting another frame.
@@ -4681,6 +4709,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
             && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 65)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
+            && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 15)
             && !(self.scenario == Scenario::Favorites && self.favorite_phase < 41)
             && !(self.scenario == Scenario::FavoriteImport && self.favorite_import_phase < 17)
             && !(self.scenario == Scenario::CustomShortcuts && self.json_mode_phase < 17)
@@ -14038,6 +14067,90 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
+        if self.scenario == Scenario::RecentForget {
+            let phase = self.recent_forget_phase;
+            let (paths, stats) = crate::panel::visit_snapshot();
+            let saved = crate::session::load_with(self.inner.persistence.as_ref()).value.map(|value|serde_json::json!({"paths":value.recent_paths,"stats":value.recent_stats}));
+            let visible = ctx
+                .data(|data| {
+                    data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))
+                })
+                .unwrap_or_default();
+            let snapshot = serde_json::json!({"phase":phase,"paths":paths,"stats":stats,"saved":saved,"visible":visible,"query":self.inner.ui.modals.palette_input.as_ref().map(|state|&state.input),"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path});
+            let _ = std::fs::write(
+                self.scenario_dir.join(format!("recent-phase-{phase}.json")),
+                serde_json::to_vec_pretty(&snapshot).unwrap(),
+            );
+            if phase < 15 {
+                if phase == 0
+                    && (self.frames < 3
+                        || self.inner.ws.left.entries().is_empty()
+                        || self.inner.ws.right.entries().is_empty())
+                {
+                    return;
+                }
+                if phase < 2 {
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::P,
+                        physical_key: None,
+                        pressed: phase == 0,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    });
+                    if phase == 1 {
+                        input
+                            .events
+                            .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    }
+                    self.recent_forget_pending = true;
+                    return;
+                }
+                if phase == 7 && visible.first() != Some(&self.fixture.root.join("ForgetMe")) {
+                    return;
+                }
+                if phase == 10
+                    && (paths.contains(&self.fixture.root.join("ForgetMe"))
+                        || visible.contains(&self.fixture.root.join("ForgetMe"))
+                        || saved.is_none())
+                {
+                    return;
+                }
+                let (key, local, text) = match phase {
+                    2..=6 => ("omnibar-input", phase - 2, Some("ForgetMe")),
+                    7..=9 => ("omnibar-forget-recent", phase - 7, None),
+                    _ => ("omnibar-input", phase - 10, Some("KeepMe")),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
+                {
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    if local == 3 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::COMMAND,
+                        });
+                    } else if local == 4 {
+                        input
+                            .events
+                            .push(egui::Event::Text(text.unwrap_or_default().into()));
+                    } else if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.recent_forget_pending = true;
+                }
+                return;
+            }
+        }
         if self.scenario == Scenario::FavoritePicker && self.favorite_picker_phase < 38 {
             let phase = self.favorite_picker_phase;
             if !self.pane_tool_opened {
@@ -17875,6 +17988,10 @@ impl eframe::App for VisualQaApp {
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
+        if self.scenario == Scenario::RecentForget && self.recent_forget_pending {
+            self.recent_forget_phase += 1;
+            self.recent_forget_pending = false;
+        }
         if self.scenario == Scenario::RenameSanitize && self.sanitize_input_pending {
             self.sanitize_phase += 1;
             self.sanitize_input_at = Instant::now();
@@ -20098,6 +20215,18 @@ impl eframe::App for VisualQaApp {
                     ready && serde_json::to_vec_pretty(&serde_json::json!({"query":state.template_browser.query,"all":state.template_browser.show_all,"indices":state.template_browser.indices,"applicable":state.template_browser.applicable,"line":state.line,"name":state.template_name,"extensions":state.template_extensions,"require_all":state.template_require_all,"kind":state.template_kind,"opening_directories":state.opening.selection.iter().map(|entry|entry.is_dir).collect::<Vec<_>>(),"limits":state.template_limits,"selection_count":state.opening.selection.len(),"run_enabled":ctx.data(|data|data.get_temp::<bool>(egui::Id::new("run-command-enabled"))),"run_present":state.run.is_some(),"output_present":state.output.is_some(),"templates":self.inner.command_templates})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("browser-state.json"),bytes).is_ok())
                 })
             }
+            Scenario::RecentForget => {
+                let (paths,stats)=crate::panel::visit_snapshot();
+                let keep=self.fixture.root.join("KeepMe");let forget=self.fixture.root.join("ForgetMe");
+                self.recent_forget_phase==15 && forget.is_dir() && paths.contains(&keep) && !paths.contains(&forget) && !stats.uses.contains_key(&forget)
+                    && stats.uses.get(&keep).is_some_and(|usage|usage.count==2 && usage.last==3)
+                    && self.inner.ui.modals.palette_input.as_ref().is_some_and(|state|state.input=="KeepMe")
+                    && ctx.data(|data|data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))).is_some_and(|visible|visible==[keep.clone()])
+                    && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
+                    && self.inner.ws.bookmarks.items.is_empty() && self.inner.toasts.is_empty()
+                    && std::fs::read(keep.join("keep.txt")).is_ok_and(|bytes|bytes==b"kept payload")
+                    && std::fs::copy(keep.join("keep.txt"),self.scenario_dir.join("keep.txt")).is_ok()
+            }
             Scenario::FavoritePicker => {
                 self.favorite_picker_phase == 38 && self.favorite_picker_final()
             }
@@ -21365,6 +21494,7 @@ mod tests {
                 "favorites",
                 "favorite_import",
                 "favorite_picker",
+                "recent_forget",
                 "template_browser",
                 "per_item_command",
                 "per_item_stop",

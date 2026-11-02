@@ -1,0 +1,8 @@
+{
+  "scenario": "recent_forget",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/forget-recent-native-2026-11-03/native-captures/1793656900398526000",
+  "binary_sha256": "fc772a8c9de04d74583de530fbd6f8c576da2e0c2bbc4f4ae8ac23195b535b2b",
+  "core_sha256": "fc772a8c9de04d74583de530fbd6f8c576da2e0c2bbc4f4ae8ac23195b535b2b",
+  "wrapper_sha256": "db461b789a70ff5e6d6ee0abd18c099bd8e5ed5a00e8621a728e9ba5bf833eb7",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
