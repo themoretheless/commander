@@ -2550,3 +2550,7 @@ Commander extension of the PeaZip-inspired encoded checksum workflow: explicit H
 ## Copy file details as TSV (2026-11-02)
 
 Independent adaptation of [Double Commander copy file details](https://doublecmd.github.io/doc/en/help.html): command-palette export of captured Name/Size/Modified display cells from visible selection or cursor fallback, without metadata rereads. Quoted TSV preserves control characters and is bounded to 10000 records / 1 MiB. [Evidence and explicit display-column/native limits](../qualification/file-details-tsv-2026-11-02/README.md).
+
+## Native TSV file-details copying (2026-11-02)
+
+Native keyboard workflow invokes the command palette for cursor-only and six-entry selected exports, including a control-character/Unicode filename: 14/14 checks and two isolated clipboard calls. Python csv independently verifies captured cells and exact quoting. [Evidence and native scope](../qualification/file-details-native-2026-11-02/README.md).

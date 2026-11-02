@@ -158,6 +158,7 @@ const MAX_CAPTURE_ATTEMPTS: u8 = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     DesktopBase,
+    CopyDetails,
     IconsGrid,
     ImagePreview,
     PdfPreview,
@@ -345,8 +346,9 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 132] = [
+    const ALL: [Self; 133] = [
         Self::DesktopBase,
+        Self::CopyDetails,
         Self::IconsGrid,
         Self::ImagePreview,
         Self::PdfPreview,
@@ -489,6 +491,7 @@ impl Scenario {
     const fn name(self) -> &'static str {
         match self {
             Self::DesktopBase => "desktop_base",
+            Self::CopyDetails => "copy_details",
             Self::IconsGrid => "icons_grid",
             Self::ImagePreview => "image_preview",
             Self::PdfPreview => "pdf_preview",
@@ -628,6 +631,7 @@ impl Scenario {
         match self {
             Self::MinimumWindow | Self::Zoom200Accessible => [900.0, 500.0],
             Self::DesktopBase
+            | Self::CopyDetails
             | Self::IconsGrid
             | Self::ImagePreview
             | Self::PdfPreview
@@ -776,6 +780,7 @@ impl Scenario {
         match self {
             Self::MinimumWindow | Self::Zoom200Accessible => ThemeMode::Light,
             Self::DesktopBase
+            | Self::CopyDetails
             | Self::IconsGrid
             | Self::ImagePreview
             | Self::PdfPreview
@@ -2328,6 +2333,10 @@ impl Fixture {
             std::fs::write(left.join("preview.pdf"), crate::pdf_preview::fixture())
                 .map_err(|error| error.to_string())?;
         }
+        if scenario == Scenario::CopyDetails {
+            std::fs::write(left.join("detail\tline\n\"ёж\".txt"), "TSV")
+                .map_err(|error| error.to_string())?;
+        }
         if matches!(scenario, Scenario::TableDialect | Scenario::TableAmbiguous) {
             let source = if scenario == Scenario::TableDialect {
                 "Name;Count;Note\nbeta;2;\"one;two|three\"\nalpha;-10;\"line\nbreak\"\n"
@@ -2945,6 +2954,8 @@ struct VisualQaApp {
     image_click_phase: u8,
     checksum_click_phase: u8,
     checksum_input_pending: bool,
+    details_phase: u8,
+    details_input_pending: bool,
     checksum_list_phase: u8,
     favorite_phase: u8,
     favorite_import_phase: u8,
@@ -3226,6 +3237,8 @@ impl VisualQaApp {
             image_click_phase: 0,
             checksum_click_phase: 0,
             checksum_input_pending: false,
+            details_phase: 0,
+            details_input_pending: false,
             checksum_list_phase: 0,
             favorite_phase: 0,
             favorite_import_phase: 0,
@@ -4575,6 +4588,7 @@ impl eframe::App for VisualQaApp {
         self.preset_input_pending = false;
         self.table_input_pending = false;
         self.checksum_input_pending = false;
+        self.details_input_pending = false;
         // Script waits and capture deadlines must advance even when the app
         // has no background work or user events requesting another frame.
         ctx.request_repaint_after(Duration::from_millis(16));
@@ -4598,6 +4612,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::CustomShortcuts && self.json_mode_phase < 17)
             && !(self.scenario == Scenario::CustomNavigation && self.json_mode_phase < 20)
             && !(self.scenario == Scenario::ShortcutHints && self.json_mode_phase < 10)
+            && !(self.scenario == Scenario::CopyDetails && self.details_phase < 14)
             && !(matches!(
                 self.scenario,
                 Scenario::NameListActions | Scenario::MaskActions
@@ -9997,6 +10012,94 @@ impl eframe::App for VisualQaApp {
                 });
             }
             self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::CopyDetails && self.details_phase < 14 {
+            let phase = self.details_phase;
+            if phase == 0
+                && !self
+                    .inner
+                    .ws
+                    .left
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.name == "README.txt")
+            {
+                return;
+            }
+            if matches!(phase, 2 | 9) {
+                let entries = self.inner.ws.left.selected_or_cursor().unwrap_or_default();
+                let rows: Vec<_> = entries
+                    .iter()
+                    .map(|e| {
+                        [
+                            e.name.as_str(),
+                            e.size_str.as_str(),
+                            e.modified_str.as_str(),
+                        ]
+                    })
+                    .collect();
+                if rows.len() != if phase == 2 { 1 } else { 6 } {
+                    return;
+                }
+                let _ = std::fs::write(
+                    self.scenario_dir.join(if phase == 2 {
+                        "expected-one.json"
+                    } else {
+                        "expected-many.json"
+                    }),
+                    serde_json::to_vec_pretty(&rows).unwrap(),
+                );
+            }
+            if phase == 7
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 1
+                    || !self.recorded_clipboard_dump("one.tsv"))
+            {
+                return;
+            }
+            if matches!(phase, 4 | 11) && self.inner.ui.modals.palette_input.is_none() {
+                return;
+            }
+            if matches!(phase, 5 | 12)
+                && !ctx
+                    .data(|data| {
+                        data.get_temp::<Vec<String>>(egui::Id::new(
+                            "palette-visible-command-labels",
+                        ))
+                    })
+                    .is_some_and(|labels| {
+                        labels.first().map(String::as_str) == Some("Copy file details (TSV)")
+                    })
+            {
+                return;
+            }
+            let command = matches!(phase, 2 | 3 | 7 | 8 | 9 | 10);
+            let modifiers = if command {
+                egui::Modifiers::COMMAND
+            } else {
+                egui::Modifiers::NONE
+            };
+            input.events.push(egui::Event::ModifiersChanged(modifiers));
+            if matches!(phase, 4 | 11) {
+                input
+                    .events
+                    .push(egui::Event::Text(">Copy file details (TSV)".into()));
+            } else {
+                let key = match phase {
+                    0 | 1 => egui::Key::End,
+                    2 | 3 | 9 | 10 => egui::Key::K,
+                    7 | 8 => egui::Key::A,
+                    _ => egui::Key::Enter,
+                };
+                input.events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: matches!(phase, 0 | 2 | 5 | 7 | 9 | 12),
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            self.details_input_pending = true;
             return;
         }
         if self.scenario == Scenario::ShortcutHints && self.json_mode_phase < 10 {
@@ -17431,7 +17534,10 @@ impl eframe::App for VisualQaApp {
             Duration::from_secs(30)
         } else if matches!(
             self.scenario,
-            Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::Checksums
+            Scenario::TableDialect
+                | Scenario::TableAmbiguous
+                | Scenario::Checksums
+                | Scenario::CopyDetails
         ) {
             // These scenes deliberately wait for the last copy toast to expire
             // before requesting an unobscured frame; retain the capture budget.
@@ -17458,6 +17564,10 @@ impl eframe::App for VisualQaApp {
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
+        if self.scenario == Scenario::CopyDetails && self.details_input_pending {
+            self.details_phase += 1;
+            self.details_input_pending = false;
+        }
         if self.scenario == Scenario::Checksums && self.checksum_input_pending {
             self.checksum_click_phase += 1;
             self.checksum_input_pending = false;
@@ -18846,6 +18956,7 @@ impl eframe::App for VisualQaApp {
                 .get(&self.fixture.left.join("photo.png"))
                 .is_some();
         let scenario_state_ready = match self.scenario {
+            Scenario::CopyDetails => self.details_phase==14 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.modals.palette_input.is_none() && self.inner.toasts.is_empty() && self.recorded_clipboard_dump("many.tsv"),
             Scenario::SearchJson => {
                 std::fs::copy(self.fixture.root.join("path-capability.json"),self.scenario_dir.join("path-capability.json")).is_ok() && self.search_json_phase==45 && self.counters.clipboard.load(Ordering::Relaxed)==5 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && state.error.is_none() && state.results.is_empty() && state.expression=="name:does-not-exist" && state.result_copy_format==crate::app::FindCopyFormat::DetailsJson)
                     && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|r|r["exported_rows"]==0 && r["context"]["completed"]==true) && std::fs::write(self.scenario_dir.join("report-empty.json"),text).is_ok())
@@ -20372,7 +20483,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         Scenario::Checksums => 20,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
         Scenario::TablePreview => 5,
-        Scenario::TableDialect | Scenario::TableAmbiguous => 2,
+        Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::CopyDetails => 2,
         Scenario::JsonPreview
         | Scenario::DocxPreview
         | Scenario::OdtPreview
@@ -20799,7 +20910,7 @@ mod tests {
                 Scenario::Checksums => 20,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
                 Scenario::TablePreview => 5,
-                Scenario::TableDialect | Scenario::TableAmbiguous => 2,
+                Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::CopyDetails => 2,
                 Scenario::JsonPreview
                 | Scenario::DocxPreview
                 | Scenario::OdtPreview
@@ -20838,6 +20949,7 @@ mod tests {
             Scenario::ALL.map(Scenario::name),
             [
                 "desktop_base",
+                "copy_details",
                 "icons_grid",
                 "image_preview",
                 "pdf_preview",

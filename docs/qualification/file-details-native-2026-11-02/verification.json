@@ -1,0 +1,8 @@
+{
+  "native_checks": 14,
+  "clipboard_calls": 2,
+  "single_rows": 1,
+  "selected_rows": 6,
+  "oracle": "Python csv.reader and csv.writer QUOTE_ALL",
+  "source_and_binary_hashes_match": true
+}

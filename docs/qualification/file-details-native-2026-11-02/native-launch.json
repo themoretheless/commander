@@ -1,0 +1,8 @@
+{
+  "scenario": "copy_details",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/file-details-native-2026-11-02/native-captures/1793649441231298000",
+  "binary_sha256": "b48d0882c872fd5904e3cba6de35943cbef9fdabd8e0a5b2eeac4366df6b65ec",
+  "core_sha256": "b48d0882c872fd5904e3cba6de35943cbef9fdabd8e0a5b2eeac4366df6b65ec",
+  "wrapper_sha256": "59c9558a9916cb396cc06a24016d8519b609ea4093b14a6058a2a41539d717c8",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
