@@ -1,5 +1,9 @@
 # Commander
 
+CSV/TSV preview offers **Numeric sort** for signed decimals and scientific notation.
+Comparison preserves precision; empty, missing and non-numeric cells stay last.
+Filtering and copied rows retain original cell text and the displayed order.
+
 Batch rename can add a **Folder name** prefix or suffix with an ancestor level
 and separator: level 1 uses the containing folder, level 2 its parent. The captured
 path feeds preview and apply; unavailable levels block the batch. Presets retain

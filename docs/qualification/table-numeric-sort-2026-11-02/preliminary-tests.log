@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 34.06s
+     Running unittests src/main.rs (target/debug/build/commander/ae736cd21cb52eff/out/commander-ae736cd21cb52eff)
+
+running 6 tests
+test app::keys::tests::a_numeric_buffer_jumps_as_a_name_once_no_motion_follows ... ok
+test app::keys::tests::a_numeric_buffer_waits_for_its_motion_instead_of_jumping ... ok
+test hex_search::tests::mixed_literals_and_hex_constants_preserve_utf8_escapes_and_numeric_hex_semantics ... ok
+test panel::sort::tests::sensitive_stems_keep_numeric_sort_and_unicode_code_point_order ... ok
+test table_preview::tests::numeric_sort_preserves_precision_signed_values_ties_and_invalid_tail ... ok
+test table_preview::tests::numeric_toggle_rebuilds_ui_order_and_filtered_exports_without_changing_cells ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3326 filtered out; finished in 0.06s
+

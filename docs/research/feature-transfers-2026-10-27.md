@@ -2502,3 +2502,7 @@ Independent adaptation of [Double Commander modified-preset exit behavior](https
 ## Native date/folder rename application and Undo (2026-11-02)
 
 Native controls now set UTC year prefix and containing-folder suffix/separator, apply with Enter, then execute the normal Cmd+Z confirmation. Independent Python checks cached proposals against filesystem timestamps/names, actual renamed bytes and complete restoration by Undo. Successful 111-phase workflow: 14/14 final main-pane checks, 101 retained observations, zero clipboard/opener/trash effects and verified owned-fixture mutations. Final restored pane inspected. [Receipts, failed attempts and remaining alternate/native scroll scope](../qualification/rename-metadata-native-2026-11-02/README.md).
+
+## Exact numeric CSV/TSV column sorting (2026-11-02)
+
+Commander extension of the Strata-inspired table preview: Numeric sort compares signed decimal/scientific values without f64 rounding, preserves equal-value source order, keeps invalid/empty/missing cells last, and composes with existing headings, filters and exports. Original cell spelling is retained. This is an independently specified numeric policy, not an upstream parity claim. [Bounds, exact rational oracle, pointer-input tests and native scope](../qualification/table-numeric-sort-2026-11-02/README.md).

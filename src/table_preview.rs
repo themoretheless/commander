@@ -68,6 +68,7 @@ struct CachedTable {
 #[derive(Clone, Default)]
 struct View {
     first_heading: bool,
+    numeric_sort: bool,
     sort: Option<(usize, bool)>,
     filter: RowFilter,
     filter_error: Option<String>,
@@ -154,14 +155,131 @@ pub fn filter_snapshot(ctx: &egui::Context, side: &str) -> Option<serde_json::Va
         .map(|view| serde_json::json!({"query":view.filter.query,"fuzzy":view.filter.fuzzy,"regex":view.filter.regex,"whole_words":view.filter.whole_words,"column":view.filter.column,"exclude":view.filter.exclude,"error":view.filter_error,"rows":view.order.as_ref(),"heading":view.first_heading}))
 }
 
+/// Exact finite decimal/scientific notation, bounded without expanding powers.
+/// Canonical significant digits share an implied decimal position `magnitude`.
+#[derive(Debug, PartialEq, Eq)]
+struct DecimalKey {
+    negative: bool,
+    digits: Vec<u8>,
+    magnitude: i64,
+}
+impl DecimalKey {
+    fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        if text.is_empty() || text.len() > 4096 {
+            return None;
+        }
+        let (negative, text) = if let Some(rest) = text.strip_prefix('-') {
+            (true, rest)
+        } else {
+            (false, text.strip_prefix('+').unwrap_or(text))
+        };
+        let (mantissa, exponent) = match text.find(['e', 'E']) {
+            Some(index) => (&text[..index], text[index + 1..].parse::<i32>().ok()?),
+            None => (text, 0),
+        };
+        if !(-1_000_000..=1_000_000).contains(&exponent) {
+            return None;
+        }
+        let mut digits = Vec::with_capacity(mantissa.len());
+        let mut fractional = 0_i64;
+        let mut point = false;
+        for byte in mantissa.bytes() {
+            match byte {
+                b'0'..=b'9' => {
+                    digits.push(byte);
+                    if point {
+                        fractional += 1;
+                    }
+                }
+                b'.' if !point => point = true,
+                _ => return None,
+            }
+        }
+        if digits.is_empty() {
+            return None;
+        }
+        let Some(first) = digits.iter().position(|&digit| digit != b'0') else {
+            return Some(Self {
+                negative: false,
+                digits: Vec::new(),
+                magnitude: 0,
+            });
+        };
+        let magnitude = (digits.len() - first) as i64 - fractional + i64::from(exponent);
+        let end = digits.iter().rposition(|&digit| digit != b'0')? + 1;
+        Some(Self {
+            negative,
+            digits: digits[first..end].to_vec(),
+            magnitude,
+        })
+    }
+    fn compare(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        if self.negative != other.negative {
+            return if self.negative {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        let order = match (self.digits.is_empty(), other.digits.is_empty()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            _ => self
+                .magnitude
+                .cmp(&other.magnitude)
+                .then_with(|| self.digits.cmp(&other.digits)),
+        };
+        if self.negative {
+            order.reverse()
+        } else {
+            order
+        }
+    }
+}
+
+#[cfg(test)]
 fn ordered_rows(table: &Table, heading: bool, sort: Option<(usize, bool)>) -> Vec<usize> {
+    ordered_rows_with_policy(table, heading, sort, false)
+}
+fn ordered_rows_with_policy(
+    table: &Table,
+    heading: bool,
+    sort: Option<(usize, bool)>,
+    numeric: bool,
+) -> Vec<usize> {
+    use std::cmp::Ordering;
     let mut order: Vec<_> =
         (usize::from(heading && !table.rows.is_empty())..table.rows.len()).collect();
     if let Some((column, descending)) = sort.filter(|(column, _)| *column < table.columns) {
+        let numbers: Vec<_> = if numeric {
+            table
+                .rows
+                .iter()
+                .map(|row| row.get(column).and_then(|cell| DecimalKey::parse(cell)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         order.sort_by(|&a, &b| {
-            let value = |row: usize| table.rows[row].get(column).map_or("", String::as_str);
-            let cmp = crate::natural_sort::compare(value(a), value(b));
-            (if descending { cmp.reverse() } else { cmp }).then_with(|| a.cmp(&b))
+            let comparison = if numeric {
+                match (&numbers[a], &numbers[b]) {
+                    (Some(a), Some(b)) => {
+                        let cmp = a.compare(b);
+                        if descending { cmp.reverse() } else { cmp }
+                    }
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                }
+            } else {
+                let value = |row: usize| table.rows[row].get(column).map_or("", String::as_str);
+                let cmp = crate::natural_sort::compare(value(a), value(b));
+                if descending { cmp.reverse() } else { cmp }
+            };
+            comparison.then_with(|| a.cmp(&b))
         });
     }
     order
@@ -269,7 +387,12 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
             .data(|data| data.get_temp::<View>(id.with("view")))
             .unwrap_or_default()
     };
-    let before = (view.first_heading, view.sort, view.filter.clone());
+    let before = (
+        view.first_heading,
+        view.sort,
+        view.numeric_sort,
+        view.filter.clone(),
+    );
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let heading = ui.checkbox(&mut view.first_heading, "First row is headings")
@@ -278,6 +401,11 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
         ui.ctx().data_mut(|data| data.insert_temp(id.with("heading"), heading.rect));
         #[cfg(not(any(test, feature = "visual-qa")))]
         let _ = heading;
+        let numeric = ui.checkbox(&mut view.numeric_sort, "Numeric sort").on_hover_text("Exact signed decimal/scientific numbers, up to 4096 bytes and exponents ±1000000. Empty, missing and non-numeric cells stay last in both directions. Original cell text is preserved.");
+        #[cfg(any(test,feature="visual-qa"))]
+        ui.ctx().data_mut(|data|data.insert_temp(id.with("numeric-sort"),numeric.rect));
+        #[cfg(not(any(test,feature="visual-qa")))]
+        let _=numeric;
         if ui.add_enabled(view.sort.is_some(), egui::Button::new("Original order")).clicked() {
             view.sort = None;
         }
@@ -351,7 +479,14 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
     ui.small("Click a column: ascending, descending, original. Natural, case-sensitive text order; only loaded rows.");
     let mut copy = None;
     let mut export_error = None;
-    let mut rebuild = changed || before != (view.first_heading, view.sort, view.filter.clone());
+    let mut rebuild = changed
+        || before
+            != (
+                view.first_heading,
+                view.sort,
+                view.numeric_sort,
+                view.filter.clone(),
+            );
     egui::ScrollArea::horizontal()
         .id_salt(id.with("horizontal"))
         .show(ui, |ui| {
@@ -394,7 +529,7 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
                 }
             });
             if rebuild || !view.order_ready {
-                let mut order = ordered_rows(&table, view.first_heading, view.sort);
+                let mut order = ordered_rows_with_policy(&table, view.first_heading, view.sort, view.numeric_sort);
                 view.filter_error = view.filter.retain(&table, &mut order).err();
                 view.order = Arc::new(order);
                 view.order_ready = true;
@@ -458,6 +593,171 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn numeric_sort_preserves_precision_signed_values_ties_and_invalid_tail() {
+        let values = [
+            "9007199254740993",
+            "9007199254740992",
+            "-10",
+            "-2",
+            "0",
+            "-0.00",
+            "1.20",
+            "1.2e0",
+            ".001",
+            "1e-1000000",
+            "-1e-1000000",
+            "1e1000000",
+            "bad",
+            "",
+            "NaN",
+            "Infinity",
+        ];
+        let mut input = "N,Tag\n".to_owned();
+        for value in values {
+            input.push_str(&format!("{value},keep\n"));
+        }
+        input.push_str("missing\n");
+        let table = parse(&input, b',');
+        assert_eq!(
+            ordered_rows_with_policy(&table, true, Some((0, false)), true),
+            [3, 4, 11, 5, 6, 10, 9, 7, 8, 2, 1, 12, 13, 14, 15, 16, 17]
+        );
+        assert_eq!(
+            ordered_rows_with_policy(&table, true, Some((0, true)), true),
+            [12, 1, 2, 7, 8, 9, 10, 5, 6, 11, 4, 3, 13, 14, 15, 16, 17]
+        );
+        let ragged = parse("Name,Value\na,2\nb\nc,-1\nd,\n", b',');
+        assert_eq!(
+            ordered_rows_with_policy(&ragged, true, Some((1, false)), true),
+            [3, 1, 2, 4]
+        );
+        assert_eq!(
+            ordered_rows_with_policy(&ragged, true, Some((1, true)), true),
+            [1, 3, 2, 4]
+        );
+        assert_eq!(
+            ordered_rows_with_policy(&table, true, None, true),
+            (1..table.rows.len()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn decimal_order_agrees_with_independent_small_rational_oracle() {
+        let mut numbers = Vec::new();
+        for value in -35_i128..=35 {
+            for scale in 0..=3_u32 {
+                numbers.push((
+                    DecimalKey::parse(&format!("{value}e-{scale}")).unwrap(),
+                    value,
+                    10_i128.pow(scale),
+                ));
+            }
+        }
+        for (a, numerator_a, denominator_a) in &numbers {
+            for (b, numerator_b, denominator_b) in &numbers {
+                assert_eq!(
+                    a.compare(b),
+                    (numerator_a * denominator_b).cmp(&(numerator_b * denominator_a))
+                );
+            }
+        }
+        for text in [
+            "",
+            ".",
+            "NaN",
+            "inf",
+            "1,000",
+            "0x10",
+            "1e",
+            "1e1000001",
+            "1e-1000001",
+            "1.2.3",
+            "--1",
+            "١",
+        ] {
+            assert!(DecimalKey::parse(text).is_none(), "{text}");
+        }
+        assert!(DecimalKey::parse(&"1".repeat(4096)).is_some());
+        assert!(DecimalKey::parse(&"1".repeat(4097)).is_none());
+        assert_eq!(
+            DecimalKey::parse("  +001.200E+2 ").unwrap(),
+            DecimalKey::parse("120").unwrap()
+        );
+    }
+
+    #[test]
+    fn numeric_toggle_rebuilds_ui_order_and_filtered_exports_without_changing_cells() {
+        let ctx = egui::Context::default();
+        let content: Arc<str> =
+            Arc::from("N,Tag\n-2,keep\n-10,keep\n2.1,skip\n2.01,keep\n2.100,keep\nbad,keep\n");
+        let original = content.to_string();
+        let id = egui::Id::new(("table_preview", "right"));
+        let frame = |content: &Arc<str>, events| {
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 700.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = render(ui, content, b',', "right");
+                },
+            ));
+        };
+        let click = |key| {
+            let pos = ctx
+                .data(|data| data.get_temp::<egui::Rect>(key))
+                .unwrap()
+                .center();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(pos)];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(&content, events);
+            }
+        };
+        frame(&content, vec![]);
+        click(id.with("heading"));
+        click(id.with(("column", 0usize)));
+        click(id.with("numeric-sort"));
+        assert_eq!(
+            shown_order(&ctx, "right"),
+            Some((true, vec![2, 1, 4, 3, 5, 6]))
+        );
+        click(id.with(("column", 0usize)));
+        assert_eq!(
+            shown_order(&ctx, "right"),
+            Some((true, vec![3, 5, 4, 1, 2, 6]))
+        );
+        click(id.with("filter"));
+        frame(&content, vec![egui::Event::Text("keep".into())]);
+        let view = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        assert_eq!(*view.order, [5, 4, 1, 2, 6]);
+        assert_eq!(
+            export_rows(&parse(&content, b','), &view, b',').unwrap(),
+            "N,Tag\n2.100,keep\n2.01,keep\n-2,keep\n-10,keep\nbad,keep\n"
+        );
+        assert_eq!(content.as_ref(), original);
+        let refreshed: Arc<str> = Arc::from(original);
+        frame(&refreshed, vec![]);
+        let fresh = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        assert!(!fresh.numeric_sort && fresh.sort.is_none() && !fresh.first_heading);
+    }
+
     #[test]
     fn heading_and_natural_sort_preserve_record_identity_and_equal_key_order() {
         let table = parse(
@@ -724,7 +1024,8 @@ mod tests {
             ..Default::default()
         };
         let update = |view: &mut View| {
-            let mut order = ordered_rows(&table, view.first_heading, view.sort);
+            let mut order =
+                ordered_rows_with_policy(&table, view.first_heading, view.sort, view.numeric_sort);
             view.filter_error = view.filter.retain(&table, &mut order).err();
             view.order = Arc::new(order);
             view.order_ready = true;
