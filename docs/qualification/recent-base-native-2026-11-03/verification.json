@@ -1,0 +1,9 @@
+{
+  "native_checks": 16,
+  "observations": 37,
+  "native_effects": 0,
+  "scope_toggle_reopen_reset_and_cross_pane_capture": true,
+  "history_and_rank_preserved": true,
+  "no_folder_navigation": true,
+  "source_and_binary_hashes_match": true
+}

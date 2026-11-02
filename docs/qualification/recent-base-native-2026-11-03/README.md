@@ -1,0 +1,11 @@
+# Native recent-folder base scope
+
+A separate recent_scope scene seeds only two remembered fixture directories: left/Design and right/Archive. Actual Cmd+P opens on the left. Pointer actions enable/disable/re-enable scope; Escape closes it while enabled, Tab switches panes and Cmd+P reopens on the right. The newly opened switcher must be unscoped and capture the right folder. Scope is enabled, query arch is entered, scope is disabled, the query is cleared with a space, and scope is enabled again.
+
+Thirty-six keyboard/pointer/text phases are acknowledged after UI handling. Thirty-seven snapshots observe the actual scope/base/query/selection, rendered recent rows, global history/ranking and pane destinations. Fixed expected rows plus Python path-component checks independently verify the captured base membership. No recent data may be removed or changed. Active pane switching is intentional; folder paths must never change. All isolated native effects must be zero.
+
+The normal ten-second deadline remains. Final image inspection qualifies the visible captured right base and its remaining Archive row. Keyboard-only scope activation, nonexistent-path presentation, symlink physical containment and minimum-window layout remain separate scope; this is a lexical navigation filter.
+
+Initial receipt 1793659515977322000 reached the final captured frame, but the phase-11 snapshot still held the previous unscoped projection immediately after the state flag changed. The Escape action now waits for the actual scoped projection before closing; no oracle expectation was relaxed. The preliminary capture is retained.
+
+Final receipt: 1793659653083823000/recent_scope, captured 16/16 with all native effects zero; owned process terminal. verify.py passed for 37 observations, both pane roots, close-while-enabled/reopen reset, query/scope composition, unchanged history/ranking and unchanged folder paths with matching final source/binary hashes. Final image inspected with scope enabled, the captured right base label and Archive row visible. Launch returned app-not-found after the fast terminal capture; completion was established by manifest and process state. All seven gates exited 0; tests 3374 passed, 0 failed, 3 ignored. Strict visual-qa Clippy passed; ordinary check retains the pre-existing diff_find.rs unused-response warning.

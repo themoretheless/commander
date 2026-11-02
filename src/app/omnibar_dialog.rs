@@ -24,6 +24,13 @@ pub struct OmnibarState {
     favorite_submit: Option<String>,
 }
 
+#[cfg(feature = "visual-qa")]
+impl OmnibarState {
+    pub(crate) fn recent_scope_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"base":self.recent_base,"enabled":self.recent_scoped,"query":self.input,"selected":self.selected})
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum OmniRow {
     Folder {

@@ -286,6 +286,7 @@ enum Scenario {
     FavoriteImport,
     FavoritePicker,
     RecentForget,
+    RecentScope,
     TemplateBrowser,
     PerItemCommand,
     PerItemStop,
@@ -392,7 +393,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 135] = [
+    const ALL: [Self; 136] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -477,6 +478,7 @@ impl Scenario {
         Self::FavoriteImport,
         Self::FavoritePicker,
         Self::RecentForget,
+        Self::RecentScope,
         Self::TemplateBrowser,
         Self::PerItemCommand,
         Self::PerItemStop,
@@ -623,6 +625,7 @@ impl Scenario {
             Self::FavoriteImport => "favorite_import",
             Self::FavoritePicker => "favorite_picker",
             Self::RecentForget => "recent_forget",
+            Self::RecentScope => "recent_scope",
             Self::TemplateBrowser => "template_browser",
             Self::PerItemCommand => "per_item_command",
             Self::PerItemStop => "per_item_stop",
@@ -764,6 +767,7 @@ impl Scenario {
             | Self::FavoriteImport
             | Self::FavoritePicker
             | Self::RecentForget
+            | Self::RecentScope
             | Self::TemplateBrowser
             | Self::PerItemCommand
             | Self::PerItemStop
@@ -915,6 +919,7 @@ impl Scenario {
             | Self::FavoriteImport
             | Self::FavoritePicker
             | Self::RecentForget
+            | Self::RecentScope
             | Self::TemplateBrowser
             | Self::PerItemCommand
             | Self::PerItemStop
@@ -984,7 +989,9 @@ impl Scenario {
     const fn modal_owner(self) -> Option<&'static str> {
         match self {
             Self::ConfirmationOwner => Some("Confirmation"),
-            Self::FavoritePicker | Self::RecentForget | Self::ShortcutHints => Some("Palette"),
+            Self::FavoritePicker | Self::RecentForget | Self::RecentScope | Self::ShortcutHints => {
+                Some("Palette")
+            }
             Self::TemplateBrowser | Self::PerItemCommand | Self::PerItemStop => Some("RunCommand"),
             Self::Permissions | Self::Timestamps => Some("Permissions"),
             Self::NameList => Some("Mask"),
@@ -3197,6 +3204,16 @@ impl VisualQaApp {
                 ],
             });
         }
+        if scenario == Scenario::RecentScope {
+            let left = fixture.left.join("Design");
+            let right = fixture.right.join("Archive");
+            inner.ws.bookmarks = crate::bookmarks::Bookmarks::default();
+            inner.ws.active = crate::workspace::ActivePanel::Left;
+            let mut stats = crate::panel::VisitStats::default();
+            stats.record(&left);
+            stats.record(&right);
+            crate::panel::restore_visit_snapshot(&[right, left], &stats);
+        }
         if scenario == Scenario::RecentForget {
             let forget = fixture.root.join("ForgetMe");
             let keep = fixture.root.join("KeepMe");
@@ -4710,6 +4727,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
             && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 65)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
+            && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 61)
             && !(self.scenario == Scenario::Favorites && self.favorite_phase < 41)
             && !(self.scenario == Scenario::FavoriteImport && self.favorite_import_phase < 17)
@@ -14068,6 +14086,115 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
+        if self.scenario == Scenario::RecentScope {
+            let phase = self.recent_forget_phase;
+            let (paths, stats) = crate::panel::visit_snapshot();
+            let visible = ctx
+                .data(|data| {
+                    data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))
+                })
+                .unwrap_or_default();
+            let state = self
+                .inner
+                .ui
+                .modals
+                .palette_input
+                .as_ref()
+                .map(|state| state.recent_scope_snapshot());
+            let snapshot = serde_json::json!({"phase":phase,"state":state,"visible":visible,"paths":paths,"stats":stats,"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path,"active":format!("{:?}",self.inner.ws.active)});
+            let _ = std::fs::write(
+                self.scenario_dir.join(format!("scope-phase-{phase}.json")),
+                serde_json::to_vec_pretty(&snapshot).unwrap(),
+            );
+            if phase < 36 {
+                if phase == 0
+                    && (self.frames < 3
+                        || self.inner.ws.left.entries().is_empty()
+                        || self.inner.ws.right.entries().is_empty())
+                {
+                    return;
+                }
+                if phase == 11 && visible != [self.fixture.left.join("Design")] {
+                    return;
+                }
+                let key = match phase {
+                    0 | 1 | 15 | 16 => Some(egui::Key::P),
+                    11 | 12 => Some(egui::Key::Escape),
+                    13 | 14 => Some(egui::Key::Tab),
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    let pressed = matches!(phase, 0 | 11 | 13 | 15);
+                    let modifiers = if key == egui::Key::P {
+                        egui::Modifiers::COMMAND
+                    } else {
+                        egui::Modifiers::NONE
+                    };
+                    input.events.push(egui::Event::ModifiersChanged(modifiers));
+                    input.events.push(egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers,
+                    });
+                    if !pressed {
+                        input
+                            .events
+                            .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    }
+                    self.recent_forget_pending = true;
+                    return;
+                }
+                let left = self.fixture.left.join("Design");
+                let right = self.fixture.right.join("Archive");
+                let expected = match phase {
+                    2 | 8 | 17 | 33 => Some(vec![right.clone(), left.clone()]),
+                    5 | 11 => Some(vec![left]),
+                    20 | 25 | 28 => Some(vec![right]),
+                    _ => None,
+                };
+                if expected.is_some_and(|expected| visible != expected) {
+                    return;
+                }
+                let (key, local, text) = match phase {
+                    2..=4 => ("recent-base-scope", phase - 2, None),
+                    5..=7 => ("recent-base-scope", phase - 5, None),
+                    8..=10 => ("recent-base-scope", phase - 8, None),
+                    17..=19 => ("recent-base-scope", phase - 17, None),
+                    20..=24 => ("omnibar-input", phase - 20, Some("arch")),
+                    25..=27 => ("recent-base-scope", phase - 25, None),
+                    28..=32 => ("omnibar-input", phase - 28, Some(" ")),
+                    _ => ("recent-base-scope", phase - 33, None),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
+                {
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    if local == 3 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::COMMAND,
+                        });
+                    } else if local == 4 {
+                        input
+                            .events
+                            .push(egui::Event::Text(text.unwrap_or_default().into()));
+                    } else if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.recent_forget_pending = true;
+                }
+                return;
+            }
+        }
         if self.scenario == Scenario::RecentForget {
             let phase = self.recent_forget_phase;
             let (paths, stats) = crate::panel::visit_snapshot();
@@ -18075,7 +18202,11 @@ impl eframe::App for VisualQaApp {
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
-        if self.scenario == Scenario::RecentForget && self.recent_forget_pending {
+        if matches!(
+            self.scenario,
+            Scenario::RecentForget | Scenario::RecentScope
+        ) && self.recent_forget_pending
+        {
             self.recent_forget_phase += 1;
             self.recent_forget_pending = false;
         }
@@ -20302,6 +20433,11 @@ impl eframe::App for VisualQaApp {
                     ready && serde_json::to_vec_pretty(&serde_json::json!({"query":state.template_browser.query,"all":state.template_browser.show_all,"indices":state.template_browser.indices,"applicable":state.template_browser.applicable,"line":state.line,"name":state.template_name,"extensions":state.template_extensions,"require_all":state.template_require_all,"kind":state.template_kind,"opening_directories":state.opening.selection.iter().map(|entry|entry.is_dir).collect::<Vec<_>>(),"limits":state.template_limits,"selection_count":state.opening.selection.len(),"run_enabled":ctx.data(|data|data.get_temp::<bool>(egui::Id::new("run-command-enabled"))),"run_present":state.run.is_some(),"output_present":state.output.is_some(),"templates":self.inner.command_templates})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("browser-state.json"),bytes).is_ok())
                 })
             }
+            Scenario::RecentScope => self.recent_forget_phase==36
+                && self.inner.ws.active==crate::workspace::ActivePanel::Right
+                && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
+                && self.inner.ui.modals.palette_input.as_ref().is_some_and(|state| {let value=state.recent_scope_snapshot();value["enabled"]==true && value["base"].as_str()==self.fixture.right.to_str()})
+                && ctx.data(|data|data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))).is_some_and(|visible|visible==[self.fixture.right.join("Archive")]),
             Scenario::RecentForget => {
                 let (paths,stats)=crate::panel::visit_snapshot();
                 let keep=self.fixture.root.join("KeepMe");let forget=self.fixture.root.join("ForgetMe");
@@ -21584,6 +21720,7 @@ mod tests {
                 "favorite_import",
                 "favorite_picker",
                 "recent_forget",
+                "recent_scope",
                 "template_browser",
                 "per_item_command",
                 "per_item_stop",

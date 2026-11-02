@@ -1,0 +1,8 @@
+{
+  "scenario": "recent_scope",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/recent-base-native-2026-11-03/native-captures/1793659515977322000",
+  "binary_sha256": "35dd5dfd69bc2bac8f2935024ab71aa73116b0a6338dbfba5d04e468c6910664",
+  "core_sha256": "35dd5dfd69bc2bac8f2935024ab71aa73116b0a6338dbfba5d04e468c6910664",
+  "wrapper_sha256": "4543146502ce4a51beb9ae1bed6bb28c4530864210ebfcdc3ce98f64ecc8b70e",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

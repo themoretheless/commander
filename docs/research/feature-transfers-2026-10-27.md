@@ -2638,3 +2638,7 @@ Actual pointer/text flow proves ordered fragments, literal slash constraints, re
 ## Scope recent destinations to the opening folder (2026-11-03)
 
 Independent adaptation of [zoxide base-directory filtering](https://github.com/ajeetdsouza/zoxide/blob/main/src/db/stream.rs): per-opening Cmd+P scope uses original path components, preserving global recent history and ranking. Source comparison also tightened the ordered matcher's complete final-keyword boundary. [Composition, exact identities, pointer/keyboard evidence and native limits](../qualification/recent-base-scope-2026-11-03/README.md).
+
+## Native recent-folder base scope and reopen reset (2026-11-03)
+
+Actual Cmd+P, scope pointer toggles, Escape and pane switching verify filtering on both panel roots, close-while-enabled/reopen reset and fresh base capture. Query filtering composes with scope while global history/rank and pane directories remain unchanged. [Independent path-component/state verification and native limits](../qualification/recent-base-native-2026-11-03/README.md).

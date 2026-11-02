@@ -1,0 +1,33 @@
+{
+  "active": "Left",
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/left",
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/right/Archive",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/left/Design"
+  ],
+  "phase": 9,
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/right",
+  "state": {
+    "base": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/left",
+    "enabled": false,
+    "query": "",
+    "selected": 0
+  },
+  "stats": {
+    "tick": 2,
+    "uses": {
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/left/Design": {
+        "count": 1,
+        "last": 1
+      },
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/right/Archive": {
+        "count": 1,
+        "last": 2
+      }
+    }
+  },
+  "visible": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/right/Archive",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71150-recent_scope/left/Design"
+  ]
+}
