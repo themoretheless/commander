@@ -176,6 +176,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recent_order_changes_projection_without_mutating_visits_or_scores() {
+        let newest = PathBuf::from("/project/newest");
+        let frequent = PathBuf::from("/project/frequent");
+        let paths = vec![newest.clone(), frequent.clone()];
+        let stats = VisitStats {
+            uses: HashMap::from([
+                (newest.clone(), VisitUsage { count: 1, last: 10 }),
+                (frequent.clone(), VisitUsage { count: 10, last: 9 }),
+            ]),
+            tick: 10,
+        };
+        let before = stats.clone();
+        for query in ["", "project"] {
+            let ranked = rank_visited(&paths, query, RecentOrder::Frecency, &stats);
+            assert_eq!(
+                ranked.iter().map(|row| &row.path).collect::<Vec<_>>(),
+                [&frequent, &newest]
+            );
+            let recent = rank_visited(&paths, query, RecentOrder::Chronological, &stats);
+            assert_eq!(
+                recent.iter().map(|row| &row.path).collect::<Vec<_>>(),
+                [&newest, &frequent]
+            );
+        }
+        assert_eq!(stats, before);
+        assert_eq!(paths, [newest, frequent]);
+    }
+
+    #[test]
     fn forgetting_recent_path_removes_rank_preserves_peers_and_survives_roundtrip() {
         let a = PathBuf::from("/work/alpha");
         let b = PathBuf::from("/work/beta");

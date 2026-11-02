@@ -947,6 +947,24 @@ mod tests {
     }
 
     #[test]
+    fn recent_order_roundtrips_both_modes_with_paths_and_ranks() {
+        let mut session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        session.recent_paths = vec![PathBuf::from("/project")];
+        session.recent_stats.record(&session.recent_paths[0]);
+        for order in [
+            crate::panel::RecentOrder::Frecency,
+            crate::panel::RecentOrder::Chronological,
+        ] {
+            session.recent_order = order;
+            let restored: Session =
+                serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+            assert_eq!(restored.recent_order, order);
+            assert_eq!(restored.recent_paths, session.recent_paths);
+            assert_eq!(restored.recent_stats, session.recent_stats);
+        }
+    }
+
+    #[test]
     fn recent_history_defaults_when_absent() {
         let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
         let mut val = serde_json::to_value(&s).unwrap();

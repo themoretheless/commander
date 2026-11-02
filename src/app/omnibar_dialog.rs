@@ -43,6 +43,33 @@ enum OmniRow {
     AssignSlot(u8),
 }
 
+fn recent_order_controls(
+    ui: &mut egui::Ui,
+    current: crate::panel::RecentOrder,
+) -> (bool, Option<crate::panel::RecentOrder>) {
+    let mut interaction = false;
+    let mut requested = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.small("Recent folders:");
+        for (order, label) in [
+            (crate::panel::RecentOrder::Frecency, "Frequent + recent"),
+            (crate::panel::RecentOrder::Chronological, "Recent first"),
+        ] {
+            let response = ui.selectable_label(current == order, label);
+            #[cfg(any(test, feature = "visual-qa"))]
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new(("recent-order", label)), response.rect);
+                data.insert_temp(egui::Id::new(("recent-order-id", label)), response.id);
+            });
+            interaction |= response.has_focus() || response.lost_focus() || response.clicked();
+            if response.clicked() && current != order {
+                requested = Some(order);
+            }
+        }
+    });
+    (interaction, requested)
+}
+
 fn recent_forget_control(ui: &mut egui::Ui, row: Option<&OmniRow>) -> (bool, Option<PathBuf>) {
     let path = match row {
         Some(OmniRow::Folder {
@@ -266,6 +293,25 @@ const fn selection_reveal_requested(up: bool, down: bool, input_changed: bool) -
 }
 
 impl App {
+    fn persist_recent_change(&mut self, ctx: &egui::Context, success: &str, failure: &str) {
+        let snapshot = self.to_session();
+        let saved = crate::persistence::report_save(
+            "Session",
+            crate::session::save_with(self.persistence.as_ref(), &snapshot, &mut self.session_gate),
+        )
+        .is_some();
+        self.toast(
+            ctx,
+            if saved {
+                crate::toasts::ToastKind::Info
+            } else {
+                crate::toasts::ToastKind::Error
+            },
+            if saved { success } else { failure },
+            false,
+        );
+    }
+
     pub(crate) fn open_palette(&mut self, ctx: &egui::Context) {
         self.open_omnibar(ctx, String::new());
     }
@@ -521,6 +567,7 @@ impl App {
         let probe_input = state.probe.as_ref().map(|p| p.input().to_string());
         let opening_panel = state.opening_panel;
 
+        let mut requested_recent_order = None;
         let mut forget_recent = None;
         let mut recent_interaction = false;
         let mut action: Option<OmniAction> = None;
@@ -675,7 +722,11 @@ impl App {
                     }
                     OmnibarMode::Jump(_) | OmnibarMode::Command(_) | OmnibarMode::Favorites(_) => {
                         if matches!(mode, OmnibarMode::Jump(_)) {
-                            (recent_interaction, forget_recent) = recent_forget_control(ui, rows.get(selected));
+                            let (order_interaction, requested) = recent_order_controls(ui, self.recent_order);
+                            requested_recent_order = requested;
+                            let (forget_interaction, forgotten) = recent_forget_control(ui, rows.get(selected));
+                            forget_recent = forgotten;
+                            recent_interaction = order_interaction || forget_interaction;
                         }
                         if rows.is_empty() {
                             Self::omnibar_hint(ui, t, "No matches");
@@ -959,35 +1010,33 @@ impl App {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
             }
         }
+        if let Some(order) = requested_recent_order {
+            self.recent_order = order;
+            action = None;
+            forget_recent = None;
+            if let Some(state) = self.ui.modals.palette_input.as_mut() {
+                state.selected = 0;
+            }
+            self.persist_recent_change(
+                ctx,
+                "Recent folder order saved",
+                "Recent folder order changed for this session; could not save settings",
+            );
+            if let Some(input_id) = input_id {
+                ctx.memory_mut(|memory| memory.request_focus(input_id));
+            }
+            ctx.request_repaint();
+        }
         if let Some(path) = forget_recent {
             action = None;
             if crate::panel::forget_visit(&path) {
                 if let Some(state) = self.ui.modals.palette_input.as_mut() {
                     state.selected = 0;
                 }
-                let snapshot = self.to_session();
-                let saved = crate::persistence::report_save(
-                    "Session",
-                    crate::session::save_with(
-                        self.persistence.as_ref(),
-                        &snapshot,
-                        &mut self.session_gate,
-                    ),
-                )
-                .is_some();
-                self.toast(
+                self.persist_recent_change(
                     ctx,
-                    if saved {
-                        crate::toasts::ToastKind::Info
-                    } else {
-                        crate::toasts::ToastKind::Error
-                    },
-                    if saved {
-                        "Recent folder forgotten; revisiting will remember it again"
-                    } else {
-                        "Recent folder forgotten for this session; could not save settings"
-                    },
-                    false,
+                    "Recent folder forgotten; revisiting will remember it again",
+                    "Recent folder forgotten for this session; could not save settings",
                 );
                 if let Some(input_id) = input_id {
                     ctx.memory_mut(|memory| memory.request_focus(input_id));
@@ -1281,6 +1330,60 @@ mod tests {
         home_relative_display, input_accessible_label, jump_rows, path_submit, picked_count,
         row_action, saved_searches_label, selection_reveal_requested, step_selection,
     };
+
+    #[test]
+    fn recent_order_pointer_and_focused_enter_preserve_interaction_ownership() {
+        let ctx = egui::Context::default();
+        let frame = |current, events| {
+            let mut result = (false, None);
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| result = super::recent_order_controls(ui, current),
+            ));
+            result
+        };
+        let frequent = crate::panel::RecentOrder::Frecency;
+        let recent = crate::panel::RecentOrder::Chronological;
+        frame(frequent, vec![]);
+        let rect = ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new(("recent-order", "Recent first")))
+                .unwrap()
+        });
+        let click = |pressed| egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            frequent,
+            vec![egui::Event::PointerMoved(rect.center()), click(true)],
+        );
+        let (interaction, requested) = frame(frequent, vec![click(false)]);
+        assert!(interaction);
+        assert_eq!(requested, Some(recent));
+        frame(recent, vec![]);
+        let id = ctx.data(|data| {
+            data.get_temp::<egui::Id>(egui::Id::new(("recent-order-id", "Recent first")))
+                .unwrap()
+        });
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        let (interaction, requested) = frame(
+            recent,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(interaction);
+        assert_eq!(requested, None);
+    }
 
     #[test]
     fn forget_recent_control_requires_recent_row_and_reports_focus_ownership() {

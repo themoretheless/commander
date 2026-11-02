@@ -2618,3 +2618,7 @@ Independent adaptation of [zoxide remove](https://raw.githubusercontent.com/ajee
 ## Native recent-folder removal and saved ranking (2026-11-03)
 
 Actual Cmd+P and pointer/text input remove one selected recent-folder record, keep a peer fuzzy match and preserve pane destinations/source bytes. The isolated session service reload confirms removal from both saved paths and saved ranking metadata, with the peer count/recency retained. [Native observations, independent verifier and restart limits](../qualification/forget-recent-native-2026-11-03/README.md).
+
+## Choose recent-folder order in Cmd+P (2026-11-03)
+
+Exposes the existing chronological alternative alongside Commander's [zoxide-inspired frequency/recency ranking](https://github.com/ajeetdsouza/zoxide/wiki/Algorithm). Frequent + recent / Recent first preserve query, pinned favorites and visit metadata; mode changes reset selection, retain focus and save through the session service. [Pointer/Enter, projection and full-session round-trip evidence; native limits](../qualification/recent-folder-order-2026-11-03/README.md).
