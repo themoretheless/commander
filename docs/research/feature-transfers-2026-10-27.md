@@ -2634,3 +2634,7 @@ Independent adaptation of [zoxide matching rules](https://github.com/ajeetdsouza
 ## Native ordered recent-folder path queries (2026-11-03)
 
 Actual pointer/text flow proves ordered fragments, literal slash constraints, reverse/ancestor-only refusal, fuzzy contrast, saved matching mode and over-limit refusal/recovery. Python independently checks native projections and preserves original paths, peer ranking and pane destinations. [Capture, source hashes and visual error/restart limits](../qualification/recent-path-terms-native-2026-11-03/README.md).
+
+## Scope recent destinations to the opening folder (2026-11-03)
+
+Independent adaptation of [zoxide base-directory filtering](https://github.com/ajeetdsouza/zoxide/blob/main/src/db/stream.rs): per-opening Cmd+P scope uses original path components, preserving global recent history and ranking. Source comparison also tightened the ordered matcher's complete final-keyword boundary. [Composition, exact identities, pointer/keyboard evidence and native limits](../qualification/recent-base-scope-2026-11-03/README.md).

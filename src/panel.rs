@@ -86,8 +86,8 @@ use view::{ViewSettings, ViewState};
 #[allow(unused_imports)]
 pub use visit::{
     RecentMatch, RecentMatchMode, RecentOrder, VISITED_CAP, VisitStats, VisitUsage, forget_visit,
-    push_visit, rank_visited, rank_visited_with_mode, recent_match_error, record_visit,
-    restore_visit_snapshot, visit_snapshot, visited_paths,
+    push_visit, rank_visited, rank_visited_with_mode, recent_match_error, recent_paths_within,
+    record_visit, restore_visit_snapshot, visit_snapshot, visited_paths,
 };
 pub use watcher::WATCHER_RETRY_BACKOFF;
 use watcher::{DirectoryWatcherState, ReconciliationTicket};

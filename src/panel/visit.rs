@@ -79,22 +79,48 @@ impl PathTerms {
             .to_string_lossy()
             .to_lowercase()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        let mut tail = label.as_str();
-        for term in &self.0 {
-            let Some(index) = tail.find(term.as_str()) else {
+        let normalized = label.trim_end_matches('/');
+        let mut prefix = if normalized.is_empty() {
+            label.as_str()
+        } else {
+            normalized
+        };
+        let Some((last, previous)) = self.0.split_last() else {
+            return true;
+        };
+        let Some(index) = prefix.rfind(last.as_str()) else {
+            return false;
+        };
+        if prefix[index + last.len()..].contains('/') {
+            return false;
+        }
+        prefix = &prefix[..index];
+        for term in previous.iter().rev() {
+            let Some(index) = prefix.rfind(term.as_str()) else {
                 return false;
             };
-            tail = &tail[index + term.len()..];
+            prefix = &prefix[..index];
         }
-        self.0.last().is_none_or(|last| {
-            label
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .contains(last.rsplit('/').next().unwrap_or_default())
-        })
+        true
     }
+}
+
+/// Component-aware lexical scope over remembered paths; never probes or resolves links.
+pub fn recent_paths_within(paths: &[PathBuf], base: &Path) -> Vec<PathBuf> {
+    let safe = |path: &Path| {
+        path.is_absolute()
+            && !path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+    };
+    if !safe(base) {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .filter(|path| safe(path) && path.starts_with(base))
+        .cloned()
+        .collect()
 }
 
 pub fn recent_match_error(query: &str, mode: RecentMatchMode) -> Option<&'static str> {
@@ -247,6 +273,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recent_base_scope_uses_components_and_composes_with_matching_and_ordering() {
+        let paths = [
+            "/work/project",
+            "/work/project/child",
+            "/work/project-old/child",
+            "/work/project/../other",
+            "/other/child",
+            "relative/child",
+        ]
+        .map(PathBuf::from)
+        .to_vec();
+        let mut stats = VisitStats::default();
+        for path in &paths {
+            stats.record(path);
+        }
+        let before = stats.clone();
+        let scoped = recent_paths_within(&paths, Path::new("/work/project"));
+        assert_eq!(scoped, paths[..2]);
+        for mode in [RecentMatchMode::Fuzzy, RecentMatchMode::OrderedTerms] {
+            for order in [RecentOrder::Frecency, RecentOrder::Chronological] {
+                let matches = rank_visited_with_mode(&scoped, "child", order, &stats, mode);
+                assert_eq!(matches.len(), 1);
+                assert_eq!(matches[0].path, paths[1]);
+            }
+        }
+        assert!(recent_paths_within(&paths, Path::new("relative")).is_empty());
+        assert!(recent_paths_within(&paths, Path::new("/work/project/..")).is_empty());
+        assert_eq!(recent_paths_within(&paths, Path::new("/")).len(), 4);
+        assert_eq!(stats, before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recent_base_scope_retains_exact_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let base = PathBuf::from(std::ffi::OsString::from_vec(b"/work/\xff".to_vec()));
+        let child = base.join("child");
+        let lookalike = PathBuf::from(std::ffi::OsString::from_vec(b"/work/\xfe/child".to_vec()));
+        assert_eq!(
+            recent_paths_within(&[child.clone(), lookalike], &base),
+            [child]
+        );
+    }
+
+    #[test]
     fn ordered_path_terms_match_documented_examples_unicode_and_boundaries() {
         for (query, path, expected) in [
             ("foo", "/FOO", true),
@@ -261,6 +332,12 @@ mod tests {
             ("bar", "/bar/foo", false),
             ("foo/bar", "/foo/bar", true),
             ("foo/bar", "/foo/bar/baz", false),
+            ("foo/bar", "/foo/bar/other/bar", false),
+            ("foo/", "/foo/bar", true),
+            ("foo/", "/foo/bar/baz", false),
+            ("foo /", "/foo/bar/baz", true),
+            ("/foo/ /bar", "/foo/bar", false),
+            ("/foo/ /bar", "/foo/baz/bar", true),
             ("foo /", "/foo/child", true),
             ("foo foo", "/foo", false),
             ("  ПРОЕКТ  ДоК  ", "/работа/проект/Документы", true),

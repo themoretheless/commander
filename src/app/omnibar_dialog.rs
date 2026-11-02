@@ -10,6 +10,8 @@ use crate::omnibar::OmnibarMode;
 pub struct OmnibarState {
     pub(crate) input: String,
     pub(crate) opening_panel: ActivePanel,
+    recent_base: PathBuf,
+    recent_scoped: bool,
     pub(crate) selected: usize,
     pub(crate) probe: Option<crate::path_probe::PathProbeController>,
     /// Path input submitted with Enter before the probe finished; it goes
@@ -88,6 +90,30 @@ fn recent_match_control(
         } else {
             crate::panel::RecentMatchMode::Fuzzy
         }),
+    )
+}
+
+fn recent_scope_control(
+    ui: &mut egui::Ui,
+    current: bool,
+    base: &std::path::Path,
+) -> (bool, Option<bool>) {
+    let mut scoped = current;
+    let response=ui.checkbox(&mut scoped,"Recent folders under current folder")
+        .on_hover_text("Limit recent destinations to the folder captured when this switcher opened and its descendants. Applies only to recent folders and resets when the switcher closes.");
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("recent-base-scope"), response.rect);
+        data.insert_temp(egui::Id::new("recent-base-scope-id"), response.id);
+    });
+    if scoped {
+        let text = base.to_string_lossy().escape_debug().to_string();
+        ui.add(egui::Label::new(format!("Within: {text}")).truncate())
+            .on_hover_text(text);
+    }
+    (
+        response.has_focus() || response.lost_focus() || response.changed(),
+        response.changed().then_some(scoped),
     )
 }
 
@@ -341,6 +367,8 @@ impl App {
         self.ui.modals.palette_input = Some(OmnibarState {
             input,
             opening_panel: self.ws.active,
+            recent_base: self.ws.active_panel_ref().current_path.clone(),
+            recent_scoped: false,
             selected: 0,
             probe: None,
             pending_go: None,
@@ -484,6 +512,17 @@ impl App {
         match mode {
             OmnibarMode::Jump(q) => {
                 let (visited, stats) = crate::panel::visit_snapshot();
+                let visited = if let Some(state) = self
+                    .ui
+                    .modals
+                    .palette_input
+                    .as_ref()
+                    .filter(|state| state.recent_scoped)
+                {
+                    crate::panel::recent_paths_within(&visited, &state.recent_base)
+                } else {
+                    visited
+                };
                 let recent_matches = match self.recent_match_mode {
                     crate::panel::RecentMatchMode::Fuzzy => {
                         crate::panel::rank_visited(&visited, q, self.recent_order, &stats)
@@ -601,7 +640,10 @@ impl App {
             .map(|p| (p.status().message(), p.status().clone()));
         let probe_input = state.probe.as_ref().map(|p| p.input().to_string());
         let opening_panel = state.opening_panel;
+        let recent_base = state.recent_base.clone();
+        let recent_scoped = state.recent_scoped;
 
+        let mut requested_recent_scope = None;
         let mut requested_recent_match = None;
         let mut requested_recent_order = None;
         let mut forget_recent = None;
@@ -758,6 +800,8 @@ impl App {
                     }
                     OmnibarMode::Jump(_) | OmnibarMode::Command(_) | OmnibarMode::Favorites(_) => {
                         if let OmnibarMode::Jump(query) = mode {
+                            let (scope_interaction, scope) = recent_scope_control(ui,recent_scoped,&recent_base);
+                            requested_recent_scope = scope;
                             let (match_interaction, match_mode) = recent_match_control(ui, self.recent_match_mode);
                             requested_recent_match = match_mode;
                             if let Some(error)=crate::panel::recent_match_error(query,self.recent_match_mode) { ui.colored_label(t.accent_red,error); }
@@ -765,7 +809,7 @@ impl App {
                             requested_recent_order = requested;
                             let (forget_interaction, forgotten) = recent_forget_control(ui, rows.get(selected));
                             forget_recent = forgotten;
-                            recent_interaction = match_interaction || order_interaction || forget_interaction;
+                            recent_interaction = scope_interaction || match_interaction || order_interaction || forget_interaction;
                         }
                         if rows.is_empty() {
                             Self::omnibar_hint(ui, t, "No matches");
@@ -1049,7 +1093,12 @@ impl App {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
             }
         }
-        if requested_recent_order.is_some() || requested_recent_match.is_some() {
+        if requested_recent_order.is_some()
+            || requested_recent_match.is_some()
+            || requested_recent_scope.is_some()
+        {
+            let persistent_change =
+                requested_recent_order.is_some() || requested_recent_match.is_some();
             let matching_changed = requested_recent_match.is_some();
             if let Some(order) = requested_recent_order {
                 self.recent_order = order;
@@ -1061,16 +1110,21 @@ impl App {
             forget_recent = None;
             if let Some(state) = self.ui.modals.palette_input.as_mut() {
                 state.selected = 0;
+                if let Some(scoped) = requested_recent_scope {
+                    state.recent_scoped = scoped;
+                }
             }
-            self.persist_recent_change(
-                ctx,
-                if matching_changed {
-                    "Recent folder matching saved"
-                } else {
-                    "Recent folder order saved"
-                },
-                "Recent folder options changed for this session; could not save settings",
-            );
+            if persistent_change {
+                self.persist_recent_change(
+                    ctx,
+                    if matching_changed {
+                        "Recent folder matching saved"
+                    } else {
+                        "Recent folder order saved"
+                    },
+                    "Recent folder options changed for this session; could not save settings",
+                );
+            }
             if let Some(input_id) = input_id {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
             }
@@ -1379,6 +1433,61 @@ mod tests {
         home_relative_display, input_accessible_label, jump_rows, path_submit, picked_count,
         row_action, saved_searches_label, selection_reveal_requested, step_selection,
     };
+
+    #[test]
+    fn recent_base_scope_pointer_and_keyboard_keep_form_ownership() {
+        let ctx = egui::Context::default();
+        let frame = |scoped, events| {
+            let mut result = (false, None);
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    result =
+                        super::recent_scope_control(ui, scoped, std::path::Path::new("/project"))
+                },
+            ));
+            result
+        };
+        frame(false, vec![]);
+        let rect = ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new("recent-base-scope"))
+                .unwrap()
+        });
+        let click = |pressed| egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            false,
+            vec![egui::Event::PointerMoved(rect.center()), click(true)],
+        );
+        let (interaction, requested) = frame(false, vec![click(false)]);
+        assert!(interaction);
+        assert_eq!(requested, Some(true));
+        frame(true, vec![]);
+        let id = ctx.data(|data| {
+            data.get_temp::<egui::Id>(egui::Id::new("recent-base-scope-id"))
+                .unwrap()
+        });
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        let (interaction, requested) = frame(
+            true,
+            vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(interaction);
+        assert_eq!(requested, Some(false));
+    }
 
     #[test]
     fn ordered_term_toggle_pointer_and_keyboard_keep_form_ownership() {
