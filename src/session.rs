@@ -171,6 +171,8 @@ pub struct Session {
     #[serde(default)]
     pub recent_order: crate::panel::RecentOrder,
     #[serde(default)]
+    pub recent_match_mode: crate::panel::RecentMatchMode,
+    #[serde(default)]
     pub search_history: crate::search::QueryHistory,
     #[serde(default)]
     pub rename_presets: crate::rename_presets::Presets,
@@ -462,6 +464,7 @@ mod tests {
             recent_paths: Vec::new(),
             recent_stats: crate::panel::VisitStats::default(),
             recent_order: crate::panel::RecentOrder::Frecency,
+            recent_match_mode: crate::panel::RecentMatchMode::Fuzzy,
             search_history: crate::search::QueryHistory::default(),
             rename_presets: crate::rename_presets::Presets::default(),
             durability_profile: crate::operation::DurabilityProfile::default(),
@@ -965,6 +968,26 @@ mod tests {
     }
 
     #[test]
+    fn recent_match_modes_roundtrip_without_losing_order_paths_or_ranks() {
+        let mut session = sample(PathBuf::from("/a"), PathBuf::from("/b"));
+        session.recent_paths = vec![PathBuf::from("/foo/bar")];
+        session.recent_stats.record(&session.recent_paths[0]);
+        session.recent_order = crate::panel::RecentOrder::Chronological;
+        for mode in [
+            crate::panel::RecentMatchMode::Fuzzy,
+            crate::panel::RecentMatchMode::OrderedTerms,
+        ] {
+            session.recent_match_mode = mode;
+            let restored: Session =
+                serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+            assert_eq!(restored.recent_match_mode, mode);
+            assert_eq!(restored.recent_order, session.recent_order);
+            assert_eq!(restored.recent_paths, session.recent_paths);
+            assert_eq!(restored.recent_stats, session.recent_stats);
+        }
+    }
+
+    #[test]
     fn recent_history_defaults_when_absent() {
         let s = sample(PathBuf::from("/a"), PathBuf::from("/b"));
         let mut val = serde_json::to_value(&s).unwrap();
@@ -972,6 +995,7 @@ mod tests {
         obj.remove("recent_paths");
         obj.remove("recent_stats");
         obj.remove("recent_order");
+        obj.remove("recent_match_mode");
         obj.remove("search_history");
         obj.remove("version_retention");
         obj.remove("name_policy");
@@ -982,6 +1006,7 @@ mod tests {
         assert!(back.recent_paths.is_empty());
         assert_eq!(back.recent_stats, crate::panel::VisitStats::default());
         assert_eq!(back.recent_order, crate::panel::RecentOrder::Frecency);
+        assert_eq!(back.recent_match_mode, crate::panel::RecentMatchMode::Fuzzy);
         assert_eq!(back.search_history, crate::search::QueryHistory::default());
         assert_eq!(
             back.version_retention,

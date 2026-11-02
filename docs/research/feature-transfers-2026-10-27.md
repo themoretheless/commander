@@ -2626,3 +2626,7 @@ Exposes the existing chronological alternative alongside Commander's [zoxide-ins
 ## Native recent-folder ordering and removal (2026-11-03)
 
 Actual Cmd+P, pointer and text input prove contrasting frequency/chronological projections, selection reset, saved mode changes and removal after reordering. The peer's visit metadata, query and pane destinations are preserved. [Independent snapshot/session verifier and remaining native scope](../qualification/recent-order-native-2026-11-03/README.md).
+
+## Ordered recent-folder path terms (2026-11-03)
+
+Independent adaptation of [zoxide matching rules](https://github.com/ajeetdsouza/zoxide/wiki/Algorithm): optional ordered contiguous path terms with literal separators and final-folder matching in Cmd+P. The existing fuzzy default, original path identities, frequency/chronological choices and bookmark matching remain. Bounded query refusal, selection/focus ownership and persisted mode are explicit. [Upstream examples, limits, pointer/keyboard and session evidence; native scope](../qualification/recent-path-terms-2026-11-03/README.md).

@@ -54,6 +54,54 @@ pub enum RecentOrder {
     Chronological,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecentMatchMode {
+    #[default]
+    Fuzzy,
+    OrderedTerms,
+}
+
+struct PathTerms(Vec<String>);
+impl PathTerms {
+    fn parse(query: &str) -> Option<Self> {
+        if query.len() > 1024 {
+            return None;
+        }
+        let terms = query
+            .split_whitespace()
+            .take(33)
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        (terms.len() <= 32).then_some(Self(terms))
+    }
+    fn matches(&self, path: &Path) -> bool {
+        let label = path
+            .to_string_lossy()
+            .to_lowercase()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let mut tail = label.as_str();
+        for term in &self.0 {
+            let Some(index) = tail.find(term.as_str()) else {
+                return false;
+            };
+            tail = &tail[index + term.len()..];
+        }
+        self.0.last().is_none_or(|last| {
+            label
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .contains(last.rsplit('/').next().unwrap_or_default())
+        })
+    }
+}
+
+pub fn recent_match_error(query: &str, mode: RecentMatchMode) -> Option<&'static str> {
+    (mode == RecentMatchMode::OrderedTerms && PathTerms::parse(query).is_none())
+        .then_some("Use at most 32 path terms and 1024 UTF-8 bytes")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentMatch {
     pub path: PathBuf,
@@ -133,13 +181,36 @@ pub fn rank_visited(
     order: RecentOrder,
     stats: &VisitStats,
 ) -> Vec<RecentMatch> {
+    rank_visited_with_mode(paths, query, order, stats, RecentMatchMode::Fuzzy)
+}
+
+pub fn rank_visited_with_mode(
+    paths: &[PathBuf],
+    query: &str,
+    order: RecentOrder,
+    stats: &VisitStats,
+    mode: RecentMatchMode,
+) -> Vec<RecentMatch> {
+    let terms = if mode == RecentMatchMode::OrderedTerms {
+        let Some(terms) = PathTerms::parse(query) else {
+            return Vec::new();
+        };
+        Some(terms)
+    } else {
+        None
+    };
     let query = query.trim();
     let mut matches: Vec<(usize, RecentMatch)> = paths
         .iter()
         .enumerate()
         .filter_map(|(index, path)| {
             let label = path.to_string_lossy();
-            let fuzzy = if query.is_empty() {
+            let fuzzy = if let Some(terms) = &terms {
+                if !terms.matches(path) {
+                    return None;
+                }
+                0
+            } else if query.is_empty() {
                 0
             } else {
                 crate::fuzzy::score(query, &label)?.score as i64
@@ -174,6 +245,89 @@ pub fn rank_visited(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_path_terms_match_documented_examples_unicode_and_boundaries() {
+        for (query, path, expected) in [
+            ("foo", "/FOO", true),
+            ("fo ba", "/foo/bar", true),
+            ("fo ba", "/bar/foo", false),
+            ("fo / ba", "/foo/bar", true),
+            ("fo / ba", "/foobar", false),
+            ("bar", "/foo/bar", true),
+            ("bar", "/foo/bar/", true),
+            ("foo/bar", "/foo/bar/", true),
+            ("/", "/", true),
+            ("bar", "/bar/foo", false),
+            ("foo/bar", "/foo/bar", true),
+            ("foo/bar", "/foo/bar/baz", false),
+            ("foo /", "/foo/child", true),
+            ("foo foo", "/foo", false),
+            ("  ПРОЕКТ  ДоК  ", "/работа/проект/Документы", true),
+            ("fbr", "/foo/bar", false),
+            ("", "/any", true),
+        ] {
+            assert_eq!(
+                PathTerms::parse(query).unwrap().matches(Path::new(path)),
+                expected,
+                "{query:?} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_terms_preserve_order_rank_identity_and_refuse_oversized_queries() {
+        let paths = vec![
+            PathBuf::from("/foo/bar"),
+            PathBuf::from("/foo/barn"),
+            PathBuf::from("/bar/foo"),
+        ];
+        let mut stats = VisitStats::default();
+        stats.record(&paths[0]);
+        for _ in 0..8 {
+            stats.record(&paths[1]);
+        }
+        let before = stats.clone();
+        let recent = rank_visited_with_mode(
+            &paths,
+            "fo ba",
+            RecentOrder::Chronological,
+            &stats,
+            RecentMatchMode::OrderedTerms,
+        );
+        assert_eq!(
+            recent.iter().map(|row| &row.path).collect::<Vec<_>>(),
+            [&paths[0], &paths[1]]
+        );
+        let ranked = rank_visited_with_mode(
+            &paths,
+            "fo ba",
+            RecentOrder::Frecency,
+            &stats,
+            RecentMatchMode::OrderedTerms,
+        );
+        assert_eq!(
+            ranked.iter().map(|row| &row.path).collect::<Vec<_>>(),
+            [&paths[1], &paths[0]]
+        );
+        assert_eq!(stats, before);
+        for query in ["x".repeat(1025), "é".repeat(513), vec!["x"; 33].join(" ")] {
+            assert!(recent_match_error(&query, RecentMatchMode::OrderedTerms).is_some());
+            assert!(
+                rank_visited_with_mode(
+                    &paths,
+                    &query,
+                    RecentOrder::Frecency,
+                    &stats,
+                    RecentMatchMode::OrderedTerms
+                )
+                .is_empty()
+            );
+            assert!(recent_match_error(&query, RecentMatchMode::Fuzzy).is_none());
+        }
+        assert!(PathTerms::parse(&"é".repeat(512)).is_some());
+        assert!(PathTerms::parse(&vec!["x"; 32].join(" ")).is_some());
+    }
 
     #[test]
     fn recent_order_changes_projection_without_mutating_visits_or_scores() {

@@ -121,6 +121,7 @@ pub struct App {
     /// Ranking mode for recent destinations: habitual (frecency) or strictly
     /// chronological. Persisted with the session.
     pub(crate) recent_order: crate::panel::RecentOrder,
+    pub(crate) recent_match_mode: crate::panel::RecentMatchMode,
     /// Generation-based background search engine and replayable query history.
     pub(crate) search_engine: crate::search::SearchEngine,
     pub(crate) search_history: crate::search::QueryHistory,
@@ -1269,6 +1270,11 @@ impl App {
             recent_order: session
                 .as_ref()
                 .map_or(crate::panel::RecentOrder::Frecency, |s| s.recent_order),
+            recent_match_mode: session
+                .as_ref()
+                .map_or(crate::panel::RecentMatchMode::Fuzzy, |s| {
+                    s.recent_match_mode
+                }),
             rename_presets: session
                 .as_ref()
                 .map(|s| s.rename_presets.clone())
@@ -1447,6 +1453,7 @@ impl App {
             assistive_timeline: crate::assistive_timeline::AssistiveTimeline::default(),
             failure_notice_seen: std::collections::HashSet::new(),
             recent_order: crate::panel::RecentOrder::Frecency,
+            recent_match_mode: crate::panel::RecentMatchMode::Fuzzy,
             search_engine: crate::search::SearchEngine::default(),
             search_history: crate::search::QueryHistory::default(),
             content_index,
@@ -1591,6 +1598,7 @@ impl App {
             recent_paths,
             recent_stats,
             recent_order: self.recent_order,
+            recent_match_mode: self.recent_match_mode,
             search_history: self.search_history.clone(),
             rename_presets: self.rename_presets.clone(),
             durability_profile: self.ws.durability_profile,

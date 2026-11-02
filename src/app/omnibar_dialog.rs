@@ -70,6 +70,27 @@ fn recent_order_controls(
     (interaction, requested)
 }
 
+fn recent_match_control(
+    ui: &mut egui::Ui,
+    current: crate::panel::RecentMatchMode,
+) -> (bool, Option<crate::panel::RecentMatchMode>) {
+    let mut ordered = current == crate::panel::RecentMatchMode::OrderedTerms;
+    let response=ui.checkbox(&mut ordered,"Ordered path terms").on_hover_text("Match space-separated path fragments in order, ignoring case. The last fragment must occur in the final folder name. Recent folders only; disable for fuzzy matching.");
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("recent-match-mode"), response.rect);
+        data.insert_temp(egui::Id::new("recent-match-mode-id"), response.id);
+    });
+    (
+        response.has_focus() || response.lost_focus() || response.changed(),
+        response.changed().then_some(if ordered {
+            crate::panel::RecentMatchMode::OrderedTerms
+        } else {
+            crate::panel::RecentMatchMode::Fuzzy
+        }),
+    )
+}
+
 fn recent_forget_control(ui: &mut egui::Ui, row: Option<&OmniRow>) -> (bool, Option<PathBuf>) {
     let path = match row {
         Some(OmniRow::Folder {
@@ -463,12 +484,26 @@ impl App {
         match mode {
             OmnibarMode::Jump(q) => {
                 let (visited, stats) = crate::panel::visit_snapshot();
+                let recent_matches = match self.recent_match_mode {
+                    crate::panel::RecentMatchMode::Fuzzy => {
+                        crate::panel::rank_visited(&visited, q, self.recent_order, &stats)
+                    }
+                    crate::panel::RecentMatchMode::OrderedTerms => {
+                        crate::panel::rank_visited_with_mode(
+                            &visited,
+                            q,
+                            self.recent_order,
+                            &stats,
+                            self.recent_match_mode,
+                        )
+                    }
+                };
                 rows = jump_rows(
                     self.palette_bookmark_matches(q)
                         .into_iter()
                         .take(5)
                         .map(|(_, path)| path),
-                    crate::panel::rank_visited(&visited, q, self.recent_order, &stats)
+                    recent_matches
                         .into_iter()
                         .take(if q.is_empty() { 8 } else { 6 })
                         .map(|item| item.path),
@@ -567,6 +602,7 @@ impl App {
         let probe_input = state.probe.as_ref().map(|p| p.input().to_string());
         let opening_panel = state.opening_panel;
 
+        let mut requested_recent_match = None;
         let mut requested_recent_order = None;
         let mut forget_recent = None;
         let mut recent_interaction = false;
@@ -721,12 +757,15 @@ impl App {
                         }
                     }
                     OmnibarMode::Jump(_) | OmnibarMode::Command(_) | OmnibarMode::Favorites(_) => {
-                        if matches!(mode, OmnibarMode::Jump(_)) {
+                        if let OmnibarMode::Jump(query) = mode {
+                            let (match_interaction, match_mode) = recent_match_control(ui, self.recent_match_mode);
+                            requested_recent_match = match_mode;
+                            if let Some(error)=crate::panel::recent_match_error(query,self.recent_match_mode) { ui.colored_label(t.accent_red,error); }
                             let (order_interaction, requested) = recent_order_controls(ui, self.recent_order);
                             requested_recent_order = requested;
                             let (forget_interaction, forgotten) = recent_forget_control(ui, rows.get(selected));
                             forget_recent = forgotten;
-                            recent_interaction = order_interaction || forget_interaction;
+                            recent_interaction = match_interaction || order_interaction || forget_interaction;
                         }
                         if rows.is_empty() {
                             Self::omnibar_hint(ui, t, "No matches");
@@ -1010,8 +1049,14 @@ impl App {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
             }
         }
-        if let Some(order) = requested_recent_order {
-            self.recent_order = order;
+        if requested_recent_order.is_some() || requested_recent_match.is_some() {
+            let matching_changed = requested_recent_match.is_some();
+            if let Some(order) = requested_recent_order {
+                self.recent_order = order;
+            }
+            if let Some(mode) = requested_recent_match {
+                self.recent_match_mode = mode;
+            }
             action = None;
             forget_recent = None;
             if let Some(state) = self.ui.modals.palette_input.as_mut() {
@@ -1019,8 +1064,12 @@ impl App {
             }
             self.persist_recent_change(
                 ctx,
-                "Recent folder order saved",
-                "Recent folder order changed for this session; could not save settings",
+                if matching_changed {
+                    "Recent folder matching saved"
+                } else {
+                    "Recent folder order saved"
+                },
+                "Recent folder options changed for this session; could not save settings",
             );
             if let Some(input_id) = input_id {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
@@ -1330,6 +1379,60 @@ mod tests {
         home_relative_display, input_accessible_label, jump_rows, path_submit, picked_count,
         row_action, saved_searches_label, selection_reveal_requested, step_selection,
     };
+
+    #[test]
+    fn ordered_term_toggle_pointer_and_keyboard_keep_form_ownership() {
+        let ctx = egui::Context::default();
+        let frame = |mode, events| {
+            let mut result = (false, None);
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| result = super::recent_match_control(ui, mode),
+            ));
+            result
+        };
+        let fuzzy = crate::panel::RecentMatchMode::Fuzzy;
+        let ordered = crate::panel::RecentMatchMode::OrderedTerms;
+        frame(fuzzy, vec![]);
+        let rect = ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new("recent-match-mode"))
+                .unwrap()
+        });
+        let click = |pressed| egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            fuzzy,
+            vec![egui::Event::PointerMoved(rect.center()), click(true)],
+        );
+        let (interaction, requested) = frame(fuzzy, vec![click(false)]);
+        assert!(interaction);
+        assert_eq!(requested, Some(ordered));
+        frame(ordered, vec![]);
+        let id = ctx.data(|data| {
+            data.get_temp::<egui::Id>(egui::Id::new("recent-match-mode-id"))
+                .unwrap()
+        });
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        let (interaction, requested) = frame(
+            ordered,
+            vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(interaction);
+        assert_eq!(requested, Some(fuzzy));
+    }
 
     #[test]
     fn recent_order_pointer_and_focused_enter_preserve_interaction_ownership() {
