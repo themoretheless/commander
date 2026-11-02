@@ -1,0 +1,9 @@
+{
+  "native_checks": 16,
+  "observations": 56,
+  "key_states": 13,
+  "native_effects": 0,
+  "source_bytes_unchanged": true,
+  "oracle": "Python literal string replacement and fixed refusal states",
+  "source_and_binary_hashes_match": true
+}

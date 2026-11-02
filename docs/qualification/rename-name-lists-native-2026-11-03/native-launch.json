@@ -1,0 +1,8 @@
+{
+  "scenario": "rename_sanitize",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/rename-name-lists-native-2026-11-03/native-captures/1793653585613072000",
+  "binary_sha256": "c6ff54a3ac01046d70b6b0705d8689b58e1ee669415a94d348378b456b3cb551",
+  "core_sha256": "c6ff54a3ac01046d70b6b0705d8689b58e1ee669415a94d348378b456b3cb551",
+  "wrapper_sha256": "5970aedc00b290185307a60e23d36c6bc076eabb5003f1ef767bd1905fc85168",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

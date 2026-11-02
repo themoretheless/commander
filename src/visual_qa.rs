@@ -4639,7 +4639,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::CustomNavigation && self.json_mode_phase < 20)
             && !(self.scenario == Scenario::ShortcutHints && self.json_mode_phase < 10)
             && !(self.scenario == Scenario::CopyDetails && self.details_phase < 14)
-            && !(self.scenario == Scenario::RenameSanitize && self.sanitize_phase < 34)
+            && !(self.scenario == Scenario::RenameSanitize && self.sanitize_phase < 55)
             && !(matches!(
                 self.scenario,
                 Scenario::NameListActions | Scenario::MaskActions
@@ -17103,7 +17103,7 @@ impl eframe::App for VisualQaApp {
                     serde_json::to_vec_pretty(&snapshot).unwrap(),
                 );
             }
-            if phase < 34 {
+            if phase < 55 {
                 let (key, local, text) = match phase {
                     0..=4 => ("rename-prefix", phase, Some("folder/")),
                     5..=7 => ("rename-invalid-characters", phase - 5, None),
@@ -17112,7 +17112,16 @@ impl eframe::App for VisualQaApp {
                     18..=22 => ("rename-invalid-replacement", phase - 18, Some("")),
                     23..=27 => ("rename-invalid-replacement", phase - 23, Some("_")),
                     28..=30 => ("rename-invalid-characters", phase - 28, None),
-                    _ => ("rename-invalid-characters", phase - 31, None),
+                    31..=33 => ("rename-invalid-characters", phase - 31, None),
+                    34..=36 => ("rename-preview-list", phase - 34, None),
+                    37..=41 => (
+                        "rename-name-list",
+                        phase - 37,
+                        Some("edited.txt\nextra.txt"),
+                    ),
+                    42..=46 => ("rename-name-list", phase - 42, Some("edited.txt")),
+                    47..=49 => ("rename-original-list", phase - 47, None),
+                    _ => ("rename-name-list", phase - 50, Some("final.txt")),
                 };
                 if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key))) {
                     if let Some(clip) =
@@ -19086,7 +19095,7 @@ impl eframe::App for VisualQaApp {
                 .get(&self.fixture.left.join("photo.png"))
                 .is_some();
         let scenario_state_ready = match self.scenario {
-            Scenario::RenameSanitize => self.sanitize_phase==34 && self.sanitize_input_at.elapsed()>=Duration::from_millis(300) && self.inner.ui.modals.batch_rename.as_ref().and_then(|state|state.validation.as_ref()).is_some_and(|v|v.targets_preview(&[("sanitize.txt","folder_sanitize.txt")])) && std::fs::read(self.fixture.left.join("sanitize.txt")).is_ok_and(|data|data==b"rename payload") && !self.fixture.left.join("folder_sanitize.txt").exists() && std::fs::copy(self.fixture.left.join("sanitize.txt"),self.scenario_dir.join("source.txt")).is_ok(),
+            Scenario::RenameSanitize => self.sanitize_phase==55 && self.sanitize_input_at.elapsed()>=Duration::from_millis(300) && self.inner.ui.modals.batch_rename.as_ref().and_then(|state|state.validation.as_ref()).is_some_and(|v|v.targets_preview(&[("sanitize.txt","final.txt")])) && std::fs::read(self.fixture.left.join("sanitize.txt")).is_ok_and(|data|data==b"rename payload") && !self.fixture.left.join("folder_sanitize.txt").exists() && !self.fixture.left.join("final.txt").exists() && std::fs::copy(self.fixture.left.join("sanitize.txt"),self.scenario_dir.join("source.txt")).is_ok(),
             Scenario::CopyDetails => self.details_phase==14 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.modals.palette_input.is_none() && self.inner.toasts.is_empty() && self.recorded_clipboard_dump("many.tsv"),
             Scenario::SearchJson => {
                 std::fs::copy(self.fixture.root.join("path-capability.json"),self.scenario_dir.join("path-capability.json")).is_ok() && self.search_json_phase==45 && self.counters.clipboard.load(Ordering::Relaxed)==5 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && state.error.is_none() && state.results.is_empty() && state.expression=="name:does-not-exist" && state.result_copy_format==crate::app::FindCopyFormat::DetailsJson)

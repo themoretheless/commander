@@ -1,0 +1,35 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "name_list": "final.txt",
+    "numbering": null,
+    "prefix": "",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "phase": 55,
+  "preview": {
+    "applicable": true,
+    "block_reason": null,
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Ok",
+        "to": "final.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "name_list": "final.txt",
+      "numbering": null,
+      "prefix": "",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": null
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "numbering": null,
+    "prefix": "folder/",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "phase": 33,
+  "preview": {
+    "applicable": false,
+    "block_reason": "Fix the invalid names to continue",
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Invalid",
+        "to": "folder/sanitize.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": null,
+      "prefix": "folder/",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": null
+  }
+}

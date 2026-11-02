@@ -114,13 +114,17 @@ fn invalid_character_controls(
 fn name_list_editor(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
     // Keep an over-limit sentinel: a truncated oversized paste must not become
     // a valid MAX-byte list. UTF-8 byte validation remains in the shared parser.
-    ui.add(
+    let response = ui.add(
         egui::TextEdit::multiline(text)
             .desired_rows(4)
             .desired_width(f32::INFINITY)
             .char_limit(crate::rename::MAX_NAME_LIST_BYTES + 1)
             .hint_text("first-name.ext\nsecond-name.ext"),
-    )
+    );
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(egui::Id::new("rename-name-list"), response.rect));
+    response
 }
 
 fn preview_name_list(
@@ -761,6 +765,8 @@ impl App {
                         let enabled=ui.checkbox(&mut state.name_list_on,"Use name list").on_hover_text("One complete filename per row, assigned in the current batch order before the other transforms. Saved in presets. Reordering changes assignments; excluding requires updating the count.");
                         preset_interaction |= enabled.has_focus() || enabled.lost_focus() || enabled.changed();
                         let original=ui.button("Start from original names");
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-original-list"),original.rect));
                         preset_interaction |= original.has_focus() || original.lost_focus() || original.clicked();
                         if original.clicked() {
                             match crate::rename::name_list_text(&state.context.targets) {
@@ -769,6 +775,8 @@ impl App {
                             }
                         }
                         let preview=ui.button("Edit preview names").on_hover_text("Turn the current valid proposed names into an editable list and reset other transforms to avoid applying them twice. No files are renamed.");
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-preview-list"),preview.rect));
                         preset_interaction |= preview.has_focus() || preview.lost_focus() || preview.clicked();
                         if preview.clicked() {
                             match preview_name_list(&state.context,&state.rule()) {

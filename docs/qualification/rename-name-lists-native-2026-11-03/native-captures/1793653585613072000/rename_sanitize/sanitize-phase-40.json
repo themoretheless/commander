@@ -1,0 +1,35 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "name_list": "folder_sanitize.txt",
+    "numbering": null,
+    "prefix": "",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "phase": 40,
+  "preview": {
+    "applicable": true,
+    "block_reason": null,
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Ok",
+        "to": "folder_sanitize.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "name_list": "folder_sanitize.txt",
+      "numbering": null,
+      "prefix": "",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": null
+  }
+}

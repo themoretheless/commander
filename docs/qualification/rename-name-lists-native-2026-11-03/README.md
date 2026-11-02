@@ -1,0 +1,11 @@
+# Native rename name-list editing
+
+The native rename_sanitize workflow now continues from the existing invalid-character preview into list editing: Edit preview names, type a two-line wrong-count list, correct it, Start from original names, and enter final.txt. Fifty-five pointer/key/text phases are acknowledged after UI handling. Multiline and both source-button probes expose actual widget rectangles; wheel events reveal offscreen controls using the existing sheet clip.
+
+verify.py independently checks all 56 observed editor/cache rules and 13 key states, including the prior sanitizer states. Promotion must retain folder_sanitize.txt while clearing prefix/sanitizer modifiers; two rows must report a one-row count error and Invalid plan; correction must restore applicability; original-name initialization must yield Unchanged; final manual entry must yield final.txt. Fixed target expectations and Python string operations are independent of the Rust planner.
+
+The copied source artifact and native readiness assert original bytes remain and proposed target files do not exist. No Rename action is submitted; native clipboard/opener/trash/menu effects must be zero. Actual filesystem list/cycle/Undo behavior remains separate core evidence. The final settled sheet image is inspected for visible name-list controls/editor; lower preview/submit rows and intermediate error layout are not visually qualified by this frame.
+
+Native multi-file valid lists, saved-list restart/preset UI, limit-error rendering and external-editor/file import remain separate scope. The scene retains the normal ten-second deadline and 300 ms post-input settling wait. App-not-found AX output after launch is resolved through authoritative completed manifests/process state, not treated as a failed capture.
+
+Final receipt: 1793653585613072000/rename_sanitize, captured 16/16 with zero native-port effects; owned process terminal. Final sheet inspected with visible source buttons and multiline editor. Independent verify.py passed for 56 snapshots, 13 key states, preserved source bytes and matching final source/captured binary hashes. All seven gates exited 0; tests 3353 passed, 0 failed, 3 ignored. Strict visual-qa Clippy passed; ordinary check retains the pre-existing diff_find.rs unused-response warning.

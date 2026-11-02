@@ -2582,3 +2582,7 @@ Independent adaptation of [Double Commander name lists and modifiers](https://do
 ## Edit proposed rename names as a list (2026-11-03)
 
 Independent adaptation of [Double Commander proposed-name list editing](https://doublecmd.github.io/doc/en/multirename.html): turn the current valid preview into an editable name list, resetting already-applied modifiers so targets do not change twice. A shared lossless/bounded constructor also protects original-name initialization. [Plan-equivalence tests and native/external-editor limits](../qualification/rename-preview-name-list-2026-11-03/README.md).
+
+## Native rename name-list editing (2026-11-03)
+
+Native pointer/text flow now exercises preview promotion without repeated modifiers, multiline count refusal/recovery, original-name initialization and a final manual target. Actual editor/cache observations independently checked against fixed expected states; source bytes preserved and zero native-port effects. [Receipts and native apply/layout limits](../qualification/rename-name-lists-native-2026-11-03/README.md).
