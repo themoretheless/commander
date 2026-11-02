@@ -1,0 +1,3 @@
+2026-11-02T19:50:19 INFO  commander::logging: logging initialized
+2026-11-02T19:50:19 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: zipped_fictionbook_preview
+2026-11-02T19:50:19 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

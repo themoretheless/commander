@@ -2456,3 +2456,7 @@ Commander extension of the existing Strata-inspired ebook/archive preview work: 
 ## Native zipped FB2 success path (2026-11-02)
 
 Separate compressed-book and raw control scenarios each passed 14/14 on the current executable. The ZIP scene opens a nested uppercase Windows-1251 FB2, finds one phrase and copies the actual text through pointer input. Independent Python ZIP/XML decoding matches all clipboard bytes; both stable frames inspected. Seven gates passed including audit, 3302 / 3 ignored. This closes the prior compressed-book success-path UI gap; error/multi-book layouts, other wrappers and OS pasteboard remain open. [Evidence](../qualification/zipped-fb2-native-2026-11-02/README.md).
+
+## FB2 ZIP collection selection (2026-11-02)
+
+Commander extension of the archive/book preview workflow: background-load a typed bounded collection and select the displayed/copied member with Book, without rereading or extracting files. Native document/cache/model ownership now carries the complete collection; default text providers remain adapted to the same pipeline. Bounds cover 32 books, combined XML/text/names, duplicate and nonregular candidates. Seven regular gates plus final rebuild/menu test passed, 3307 / 3 ignored. Native two-book selection and single-book control each 14/14; actual selected member/clipboard independently match original ZIP/XML, both frames inspected. [Evidence and remaining edge/native scope](../qualification/fb2-book-picker-2026-11-02/README.md).

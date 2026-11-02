@@ -1,0 +1,35 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 43.54s
+     Running unittests src/main.rs (target/debug/build/commander/707487d88af27fee/out/commander-707487d88af27fee)
+
+running 14 tests
+test fictionbook_preview::tests::inline_links_images_empty_lines_and_namespace_aliases_stay_static ... ok
+test fictionbook_preview::tests::invalid_bytes_unknown_encodings_and_conflicting_boms_are_rejected ... ok
+test fictionbook_preview::tests::collection_preserves_members_encodings_and_order_without_choosing_a_book ... ok
+test fictionbook_preview::tests::utf8_utf16_and_declared_cyrillic_codepages_decode_without_replacement ... ok
+test fictionbook_preview::tests::windows_1251_book_preserves_title_bodies_poetry_and_tables_without_payloads ... ok
+test fictionbook_preview::tests::malformed_roots_dtd_budgets_and_cancellation_do_not_publish_partial_text ... ok
+test fictionbook_preview::tests::zipped_book_preserves_encoding_and_refuses_ambiguous_or_unsafe_members ... ok
+test image_cache::tests::book_collection_cache_retains_typed_owner_and_counts_all_text_and_names ... ok
+test image_cache::tests::filesystem_provider_publishes_multi_book_document_under_one_fingerprint ... ok
+test spreadsheet_preview::tests::workbook_values_sheet_order_rich_strings_and_cached_formulas_agree ... ok
+test app::render::tests::book_picker_switches_real_menu_copy_owner_and_resets_on_new_collection ... FAILED
+test fictionbook_preview::tests::zipped_book_bounds_expansion_and_checks_member_integrity ... ok
+test workspace_profile::tests::stale_rename_keeps_selection_and_book_until_reload ... ok
+test fictionbook_preview::tests::collection_bounds_book_count_combined_input_and_combined_output ... ok
+
+failures:
+
+---- app::render::tests::book_picker_switches_real_menu_copy_owner_and_resets_on_new_collection stdout ----
+
+thread 'app::render::tests::book_picker_switches_real_menu_copy_owner_and_resets_on_new_collection' (14128704) panicked at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/textures.rs:337:9:
+Dropped TexturesDelta with 1 unapplied deltas. Deltas need to be handled. If you want to drop this intentionally call `clear` before dropping.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::render::tests::book_picker_switches_real_menu_copy_owner_and_resets_on_new_collection
+
+test result: FAILED. 13 passed; 1 failed; 0 ignored; 0 measured; 3296 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `--bin commander`

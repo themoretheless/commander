@@ -4104,6 +4104,7 @@ impl Workspace {
             }
             Some(PreviewContent::Pdf(identity))
             | Some(PreviewContent::Pending(identity))
+            | Some(PreviewContent::Books { identity, .. })
             | Some(PreviewContent::Text { identity, .. }) => {
                 !entry.is_image() && identity.matches_entry(entry)
             }

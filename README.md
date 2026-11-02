@@ -1580,8 +1580,10 @@ module is a thin egui layer over it.
   UTF-16 are supported, plus declared Windows-1251/1252, KOI8-R/U and ISO-8859-5.
   Images remain placeholders and binary payloads are omitted. Input/decoded XML
   are limited to 4 MiB and extracted text to 256 KiB. **.fb2.zip** previews read
-  one FB2 book directly from a bounded ZIP (16 MiB, 4096 entries), without
-  extracting files. Multiple books, oversized or damaged members report an error.
+  FB2 books directly from a bounded ZIP (16 MiB, 4096 entries), without
+  extracting files. For collections, **Book** selects the displayed/copied member.
+  At most 32 books, 4 MiB combined XML and 256 KiB combined text/names are loaded;
+  oversized, malformed or damaged collections report an error.
 - **PDF pages on macOS**: Previous/Next, direct page entry, Fit and 25–400%
   zoom of the fixed raster. Reads/renders on preview workers; source limit 64 MiB,
   raster long edge 2048 pixels, two native jobs at once. **Page text** lazily

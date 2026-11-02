@@ -164,6 +164,84 @@ fn image_preview_disabled_reason(state: crate::feature_flags::FeatureSnapshot) -
     }
 }
 
+#[derive(Clone)]
+struct BookChoice {
+    owner: std::sync::Arc<crate::fictionbook_preview::BookCollection>,
+    index: usize,
+}
+#[allow(clippy::too_many_arguments)]
+fn render_book_preview(
+    ui: &mut egui::Ui,
+    path: &std::path::Path,
+    books: &std::sync::Arc<crate::fictionbook_preview::BookCollection>,
+    image_cache: &mut crate::image_cache::ImageCache,
+    t: &ThemeColors,
+    panel_side: &str,
+    close: &mut bool,
+    copy: &mut Option<std::sync::Arc<str>>,
+    high_contrast: bool,
+) {
+    let id = egui::Id::new(("book-choice", panel_side));
+    let mut choice = ui
+        .ctx()
+        .data(|data| data.get_temp::<BookChoice>(id))
+        .filter(|choice| std::sync::Arc::ptr_eq(&choice.owner, books))
+        .unwrap_or(BookChoice {
+            owner: std::sync::Arc::clone(books),
+            index: 0,
+        });
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!("Book ({})", books.books.len()));
+        let menu = egui::ComboBox::from_id_salt(id.with("menu"))
+            .width(260.0)
+            .truncate()
+            .selected_text(
+                books
+                    .books
+                    .get(choice.index)
+                    .map_or("", |book| book.name.as_str()),
+            )
+            .show_ui(ui, |ui| {
+                for (index, book) in books.books.iter().enumerate() {
+                    let response = ui.selectable_value(&mut choice.index, index, &book.name);
+                    #[cfg(any(test, feature = "visual-qa"))]
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(id.with(index), response.rect));
+                    #[cfg(not(any(test, feature = "visual-qa")))]
+                    let _ = response;
+                }
+            });
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(id.with("menu-rect"), menu.response.rect));
+        #[cfg(not(any(test, feature = "visual-qa")))]
+        let _ = menu;
+    });
+    let text = books
+        .books
+        .get(choice.index)
+        .map(|book| std::sync::Arc::clone(&book.text));
+    #[cfg(feature = "visual-qa")]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(("book-selected", panel_side)),
+            (std::sync::Arc::clone(books), choice.index),
+        )
+    });
+    ui.ctx().data_mut(|data| data.insert_temp(id, choice));
+    render_text_preview(
+        ui,
+        path,
+        text.as_ref(),
+        image_cache,
+        t,
+        panel_side,
+        close,
+        copy,
+        high_contrast,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_text_preview(
     ui: &mut egui::Ui,
@@ -1407,6 +1485,7 @@ impl App {
                             &mut copy_preview_text,
                             high_contrast,
                         ),
+                        PreviewContent::Books { identity, books } => render_book_preview(ui,&identity.path,books,image_cache,t,panel_side,&mut close_preview,&mut copy_preview_text,high_contrast),
                         PreviewContent::Text { identity, content } => render_text_preview(
                             ui,
                             &identity.path,
@@ -1494,6 +1573,7 @@ impl App {
                     if close_preview {
                         if let Some(
                             PreviewContent::Pending(identity)
+                            | PreviewContent::Books { identity, .. }
                             | PreviewContent::Text { identity, .. },
                         ) = panel.preview.as_ref()
                         {
@@ -1540,6 +1620,112 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn book_picker_switches_real_menu_copy_owner_and_resets_on_new_collection() {
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        let mut cache = crate::image_cache::ImageCache::new();
+        let mut copied = None;
+        let books = Arc::new(crate::fictionbook_preview::BookCollection {
+            books: vec![
+                crate::fictionbook_preview::Book {
+                    name: "one.fb2".into(),
+                    text: Arc::from("first book"),
+                },
+                crate::fictionbook_preview::Book {
+                    name: "two.fb2".into(),
+                    text: Arc::from("second book"),
+                },
+            ],
+        });
+        let mut frame = |books: &Arc<crate::fictionbook_preview::BookCollection>, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 650.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    super::render_book_preview(
+                        ui,
+                        std::path::Path::new("book.fb2.zip"),
+                        books,
+                        &mut cache,
+                        &ThemeColors::dark(),
+                        "right",
+                        &mut false,
+                        &mut copied,
+                        false,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+        };
+        let id = egui::Id::new(("book-choice", "right"));
+        let click = |frame: &mut dyn FnMut(
+            &Arc<crate::fictionbook_preview::BookCollection>,
+            Vec<egui::Event>,
+        ),
+                     books: &Arc<crate::fictionbook_preview::BookCollection>,
+                     key| {
+            let pos = ctx
+                .data(|data| data.get_temp::<egui::Rect>(key))
+                .unwrap()
+                .center();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(pos)];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(books, events);
+            }
+        };
+        frame(&books, vec![]);
+        click(&mut frame, &books, id.with("menu-rect"));
+        click(&mut frame, &books, id.with(1usize));
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<super::BookChoice>(id))
+                .unwrap()
+                .index,
+            1
+        );
+        click(
+            &mut frame,
+            &books,
+            egui::Id::new(("copy-preview-text", "right")),
+        );
+        assert_eq!(copied.as_deref(), Some("second book"));
+        let replaced = Arc::new(books.as_ref().clone());
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            super::render_book_preview(
+                ui,
+                std::path::Path::new("book.fb2.zip"),
+                &replaced,
+                &mut cache,
+                &ThemeColors::dark(),
+                "right",
+                &mut false,
+                &mut copied,
+                false,
+            )
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<super::BookChoice>(id))
+                .unwrap()
+                .index,
+            0
+        );
+    }
 
     #[test]
     fn copy_displayed_text_uses_current_galley_and_defers_clipboard_io() {

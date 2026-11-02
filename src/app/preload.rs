@@ -141,6 +141,7 @@ impl App {
             };
             let text_identity = match target.preview.as_ref() {
                 Some(PreviewContent::Pending(identity))
+                | Some(PreviewContent::Books { identity, .. })
                 | Some(PreviewContent::Text { identity, .. }) => Some(identity.clone()),
                 Some(PreviewContent::Image(_))
                 | Some(PreviewContent::Pdf(_))
@@ -161,6 +162,10 @@ impl App {
         if let Some(identity) = text_identity {
             let poll = self.image_cache.request_text_preview(ctx, &identity);
             match poll {
+                crate::image_cache::TextPreviewPoll::Books(books) => {
+                    *preview_mut(&mut self.ws, target_pane) =
+                        Some(PreviewContent::Books { identity, books });
+                }
                 crate::image_cache::TextPreviewPoll::Ready(content) => {
                     *preview_mut(&mut self.ws, target_pane) =
                         Some(PreviewContent::Text { identity, content });

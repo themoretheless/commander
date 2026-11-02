@@ -1,0 +1,8 @@
+{
+  "scenario": "zipped_fictionbook_preview",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/fb2-book-picker-2026-11-02/native-captures/1793634613237776000",
+  "binary_sha256": "895275dbc2608977caf6ff95785e0cc6b187ad9f0c8eea0b3b9a66c1f1f0df36",
+  "core_sha256": "895275dbc2608977caf6ff95785e0cc6b187ad9f0c8eea0b3b9a66c1f1f0df36",
+  "wrapper_sha256": "a86a7fe75fa7f1b5889f362e9e1006207be7815c6d14da14f44292dc4b5663d7",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

@@ -201,11 +201,26 @@ impl PreviewError {
     }
 }
 
+#[derive(Clone)]
+enum TextPreviewDocument {
+    Text(Arc<str>),
+    Books(Arc<crate::fictionbook_preview::BookCollection>),
+}
+impl TextPreviewDocument {
+    fn byte_size(&self) -> usize {
+        match self {
+            Self::Text(text) => text.len(),
+            Self::Books(books) => books.byte_size(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum TextPreviewPoll {
     Current,
     Loading,
     Ready(Arc<str>),
+    Books(Arc<crate::fictionbook_preview::BookCollection>),
     Failed(PreviewError),
 }
 
@@ -272,7 +287,7 @@ impl TextPreviewFingerprint {
 }
 
 struct TextPreviewEntry {
-    content: Arc<str>,
+    content: TextPreviewDocument,
     byte_size: usize,
     last_used: u64,
 }
@@ -296,14 +311,25 @@ impl TextPreviewStore {
         }
     }
 
-    fn get(&mut self, key: &TextPreviewFingerprint) -> Option<Arc<str>> {
+    fn get_document(&mut self, key: &TextPreviewFingerprint) -> Option<TextPreviewDocument> {
         self.tick = self.tick.saturating_add(1);
         let entry = self.entries.get_mut(key)?;
         entry.last_used = self.tick;
-        Some(Arc::clone(&entry.content))
+        Some(entry.content.clone())
     }
 
+    #[cfg(test)]
+    fn get(&mut self, key: &TextPreviewFingerprint) -> Option<Arc<str>> {
+        match self.get_document(key)? {
+            TextPreviewDocument::Text(text) => Some(text),
+            TextPreviewDocument::Books(_) => None,
+        }
+    }
+    #[cfg(test)]
     fn insert(&mut self, key: TextPreviewFingerprint, content: Arc<str>) {
+        self.insert_document(key, TextPreviewDocument::Text(content));
+    }
+    fn insert_document(&mut self, key: TextPreviewFingerprint, content: TextPreviewDocument) {
         self.tick = self.tick.saturating_add(1);
         let old_versions: Vec<_> = self
             .entries
@@ -316,7 +342,7 @@ impl TextPreviewStore {
         }
         self.remove(&key);
 
-        let byte_size = content.len();
+        let byte_size = content.byte_size();
         self.total_bytes = self.total_bytes.saturating_add(byte_size);
         self.entries.insert(
             key,
@@ -369,7 +395,7 @@ struct TextPreviewOwnership {
 
 struct TextPreviewSuccess {
     fingerprint: TextPreviewFingerprint,
-    content: Arc<str>,
+    content: TextPreviewDocument,
 }
 
 struct TextPreviewCompletion {
@@ -390,7 +416,7 @@ enum TextPreviewPhase {
     Running {
         deadline: Instant,
     },
-    Ready(Arc<str>),
+    Ready(TextPreviewDocument),
     Failed(PreviewError),
 }
 
@@ -407,6 +433,16 @@ impl TextPreviewClock for SystemTextPreviewClock {
 }
 
 trait TextPreviewProvider: Send + Sync {
+    fn read_document(
+        &self,
+        identity: &crate::panel::PreviewIdentity,
+        expected: &TextPreviewFingerprint,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TextPreviewDocument, PreviewError> {
+        self.read(identity, expected, cancelled)
+            .map(TextPreviewDocument::Text)
+    }
+
     fn supports(&self, _identity: &crate::panel::PreviewIdentity) -> bool {
         true
     }
@@ -527,6 +563,17 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         expected: &TextPreviewFingerprint,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Arc<str>, PreviewError> {
+        match self.read_document(identity, expected, cancelled)? {
+            TextPreviewDocument::Text(text) => Ok(text),
+            TextPreviewDocument::Books(_) => Err(PreviewError::InvalidDocument),
+        }
+    }
+    fn read_document(
+        &self,
+        identity: &crate::panel::PreviewIdentity,
+        expected: &TextPreviewFingerprint,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<TextPreviewDocument, PreviewError> {
         if cancelled() {
             return Err(PreviewError::Cancelled);
         }
@@ -580,8 +627,15 @@ impl TextPreviewProvider for FsTextPreviewProvider {
                 return Err(PreviewError::Changed);
             }
         }
-        if crate::rtf_preview::supported(&identity.path) {
+        let text = if crate::rtf_preview::supported(&identity.path) {
             crate::rtf_preview::extract(&bytes, cancelled).map(Arc::from)
+        } else if crate::fictionbook_preview::compressed(&identity.path) {
+            let books = crate::fictionbook_preview::collection(bytes, cancelled)?;
+            return if books.books.len() == 1 {
+                Ok(TextPreviewDocument::Text(Arc::clone(&books.books[0].text)))
+            } else {
+                Ok(TextPreviewDocument::Books(Arc::new(books)))
+            };
         } else if crate::fictionbook_preview::supported(&identity.path) {
             crate::fictionbook_preview::extract_file(&identity.path, bytes, cancelled)
                 .map(Arc::from)
@@ -589,7 +643,8 @@ impl TextPreviewProvider for FsTextPreviewProvider {
             crate::office_preview::extract(&identity.path, bytes, cancelled).map(Arc::from)
         } else {
             decode_text_bytes(bytes)
-        }
+        };
+        text.map(TextPreviewDocument::Text)
     }
 }
 
@@ -911,7 +966,10 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
             | TextPreviewPhase::Running { .. } => TextPreviewPoll::Loading,
             TextPreviewPhase::Ready(content) => {
                 self.delivered = true;
-                TextPreviewPoll::Ready(Arc::clone(content))
+                match content {
+                    TextPreviewDocument::Text(text) => TextPreviewPoll::Ready(Arc::clone(text)),
+                    TextPreviewDocument::Books(books) => TextPreviewPoll::Books(Arc::clone(books)),
+                }
             }
             TextPreviewPhase::Failed(error) => {
                 self.delivered = true;
@@ -950,14 +1008,15 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
                     return Err(PreviewError::Changed);
                 }
                 if fingerprint.has_stable_change_token()
-                    && let Some(content) = crate::lock_util::recover(&store).get(&fingerprint)
+                    && let Some(content) =
+                        crate::lock_util::recover(&store).get_document(&fingerprint)
                 {
                     return Ok(TextPreviewSuccess {
                         fingerprint,
                         content,
                     });
                 }
-                let content = provider.read(&identity, &fingerprint, &cancelled)?;
+                let content = provider.read_document(&identity, &fingerprint, &cancelled)?;
                 Ok(TextPreviewSuccess {
                     fingerprint,
                     content,
@@ -1026,7 +1085,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
                 Ok(success) => {
                     if success.fingerprint.has_stable_change_token() {
                         crate::lock_util::recover(&self.store)
-                            .insert(success.fingerprint, Arc::clone(&success.content));
+                            .insert_document(success.fingerprint, success.content.clone());
                     }
                     TextPreviewPhase::Ready(success.content)
                 }
@@ -3507,6 +3566,80 @@ mod tests {
         assert_eq!(
             super::text_input_limit(std::path::Path::new("ordinary.txt")),
             MAX_TEXT_PREVIEW_BYTES
+        );
+    }
+
+    #[test]
+    fn book_collection_cache_retains_typed_owner_and_counts_all_text_and_names() {
+        let mut store = TextPreviewStore::new(2, 32);
+        let key = fingerprint("book.fb2.zip", 1, 2);
+        let books = Arc::new(crate::fictionbook_preview::BookCollection {
+            books: vec![
+                crate::fictionbook_preview::Book {
+                    name: "one.fb2".into(),
+                    text: Arc::from("hello"),
+                },
+                crate::fictionbook_preview::Book {
+                    name: "two.fb2".into(),
+                    text: Arc::from("world"),
+                },
+            ],
+        });
+        store.insert_document(
+            key.clone(),
+            super::TextPreviewDocument::Books(Arc::clone(&books)),
+        );
+        assert_eq!(store.total_bytes, 24);
+        let Some(super::TextPreviewDocument::Books(cached)) = store.get_document(&key) else {
+            panic!("typed collection was lost")
+        };
+        assert!(Arc::ptr_eq(&books, &cached));
+        store.insert(fingerprint("other.txt", 1, 20), Arc::from("x".repeat(20)));
+        assert!(store.get_document(&key).is_none());
+        assert_eq!(books.books[1].text.as_ref(), "world");
+    }
+
+    #[test]
+    fn filesystem_provider_publishes_multi_book_document_under_one_fingerprint() {
+        use std::io::{Cursor, Write};
+        let temp = TempDir::new();
+        let path = temp.path().join("books.fb2.zip");
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for name in ["one.fb2", "two.fb2"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&crate::fictionbook_preview::fixture())
+                .unwrap();
+        }
+        std::fs::write(&path, zip.finish().unwrap().into_inner()).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let identity = PreviewIdentity {
+            path: path.clone(),
+            size: meta.len(),
+            modified: meta.modified().ok(),
+        };
+        let provider = FsTextPreviewProvider::default();
+        let stamp = super::TextPreviewProvider::fingerprint(&provider, &identity).unwrap();
+        let super::TextPreviewDocument::Books(books) =
+            super::TextPreviewProvider::read_document(&provider, &identity, &stamp, &|| false)
+                .unwrap()
+        else {
+            panic!("book choice was discarded")
+        };
+        assert_eq!(books.books.len(), 2);
+        assert_eq!(books.books[1].name, "two.fb2");
+        assert_eq!(
+            books.books[1].text.as_ref(),
+            crate::fictionbook_preview::FIXTURE_TEXT
+        );
+        std::fs::write(&path, b"changed source").unwrap();
+        assert!(matches!(
+            super::TextPreviewProvider::read_document(&provider, &identity, &stamp, &|| false),
+            Err(PreviewError::Changed)
+        ));
+        assert_eq!(
+            books.books[1].text.as_ref(),
+            crate::fictionbook_preview::FIXTURE_TEXT
         );
     }
 

@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 35.84s
+     Running unittests src/main.rs (target/debug/build/commander/707487d88af27fee/out/commander-707487d88af27fee)
+
+running 14 tests
+test fictionbook_preview::tests::inline_links_images_empty_lines_and_namespace_aliases_stay_static ... ok
+test fictionbook_preview::tests::invalid_bytes_unknown_encodings_and_conflicting_boms_are_rejected ... ok
+test fictionbook_preview::tests::collection_preserves_members_encodings_and_order_without_choosing_a_book ... ok
+test fictionbook_preview::tests::utf8_utf16_and_declared_cyrillic_codepages_decode_without_replacement ... ok
+test fictionbook_preview::tests::windows_1251_book_preserves_title_bodies_poetry_and_tables_without_payloads ... ok
+test fictionbook_preview::tests::malformed_roots_dtd_budgets_and_cancellation_do_not_publish_partial_text ... ok
+test fictionbook_preview::tests::zipped_book_preserves_encoding_and_refuses_ambiguous_or_unsafe_members ... ok
+test image_cache::tests::book_collection_cache_retains_typed_owner_and_counts_all_text_and_names ... ok
+test image_cache::tests::filesystem_provider_publishes_multi_book_document_under_one_fingerprint ... ok
+test spreadsheet_preview::tests::workbook_values_sheet_order_rich_strings_and_cached_formulas_agree ... ok
+test workspace_profile::tests::stale_rename_keeps_selection_and_book_until_reload ... ok
+test app::render::tests::book_picker_switches_real_menu_copy_owner_and_resets_on_new_collection ... ok
+test fictionbook_preview::tests::zipped_book_bounds_expansion_and_checks_member_integrity ... ok
+test fictionbook_preview::tests::collection_bounds_book_count_combined_input_and_combined_output ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 3296 filtered out; finished in 0.16s
+

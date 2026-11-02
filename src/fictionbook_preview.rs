@@ -29,11 +29,41 @@ pub fn extract_file(
     if !compressed(path) {
         return extract(&bytes, cancelled);
     }
+    let books = collection(bytes, cancelled)?;
+    if books.books.len() != 1 {
+        return Err(invalid());
+    }
+    Ok(books.books[0].text.to_string())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Book {
+    pub name: String,
+    pub text: std::sync::Arc<str>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookCollection {
+    pub books: Vec<Book>,
+}
+impl BookCollection {
+    pub fn byte_size(&self) -> usize {
+        self.books
+            .iter()
+            .map(|book| book.name.len() + book.text.len())
+            .sum()
+    }
+}
+/// All members come from one already verified outer-file snapshot.
+pub fn collection(
+    bytes: Vec<u8>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<BookCollection, PreviewError> {
     if cancelled() {
         return Err(PreviewError::Cancelled);
     }
     let mut archive = crate::office_preview::open_package(bytes)?;
-    let mut chosen = None;
+    let mut candidates = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
     for index in 0..archive.len() {
         if cancelled() {
             return Err(PreviewError::Cancelled);
@@ -43,38 +73,58 @@ pub fn extract_file(
         if file.is_dir() || !name.to_ascii_lowercase().ends_with(".fb2") {
             continue;
         }
-        if name.contains(['\\', '\0'])
+        if name.len() > 4096
+            || name.contains(['\\', '\0'])
             || name.split('/').any(|part| matches!(part, "" | "." | ".."))
-            || file
-                .unix_mode()
-                .is_some_and(|mode| matches!(mode & 0o170000, 0o120000 | 0o040000))
-            || chosen.replace(index).is_some()
+            || file.unix_mode().is_some_and(|mode| {
+                let kind = mode & 0o170000;
+                kind != 0 && kind != 0o100000
+            })
+            || !names.insert(name.to_string())
         {
             return Err(invalid());
         }
-    }
-    let mut file = archive
-        .by_index(chosen.ok_or_else(invalid)?)
-        .map_err(|_| invalid())?;
-    if file.size() > MAX_INPUT_BYTES as u64 {
-        return Err(PreviewError::TooLarge);
-    }
-    let mut xml = Vec::new();
-    let mut chunk = [0; 32 * 1024];
-    loop {
-        if cancelled() {
-            return Err(PreviewError::Cancelled);
-        }
-        let n = file.read(&mut chunk).map_err(|_| invalid())?;
-        if n == 0 {
-            break;
-        }
-        if xml.len() + n > MAX_INPUT_BYTES {
+        candidates.push((index, name.to_string()));
+        if candidates.len() > 32 {
             return Err(PreviewError::TooLarge);
         }
-        xml.extend_from_slice(&chunk[..n]);
     }
-    extract(&xml, cancelled)
+    if candidates.is_empty() {
+        return Err(invalid());
+    }
+    let mut remaining = MAX_INPUT_BYTES;
+    let mut books = BookCollection { books: Vec::new() };
+    for (index, name) in candidates {
+        let mut file = archive.by_index(index).map_err(|_| invalid())?;
+        if file.size() > remaining as u64 {
+            return Err(PreviewError::TooLarge);
+        }
+        let mut xml = Vec::new();
+        let mut chunk = [0; 32 * 1024];
+        loop {
+            if cancelled() {
+                return Err(PreviewError::Cancelled);
+            }
+            let n = file.read(&mut chunk).map_err(|_| invalid())?;
+            if n == 0 {
+                break;
+            }
+            if n > remaining {
+                return Err(PreviewError::TooLarge);
+            }
+            remaining -= n;
+            xml.extend_from_slice(&chunk[..n]);
+        }
+        let text = extract(&xml, cancelled)?;
+        books.books.push(Book {
+            name,
+            text: std::sync::Arc::from(text),
+        });
+        if books.byte_size() > 256 * 1024 {
+            return Err(PreviewError::TooLarge);
+        }
+    }
+    Ok(books)
 }
 
 fn invalid() -> PreviewError {
@@ -277,6 +327,90 @@ mod tests {
             zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn collection_preserves_members_encodings_and_order_without_choosing_a_book() {
+        let first = fixture();
+        let mut second = first.clone();
+        let at = second
+            .windows(9)
+            .position(|part| part == b"Note text")
+            .unwrap();
+        second[at..at + 9].copy_from_slice(b"Else text");
+        let loaded = collection(
+            zip_files(&[
+                ("z.fb2", &first),
+                ("a.FB2", &second),
+                ("cover.png", b"unused"),
+            ]),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(
+            loaded
+                .books
+                .iter()
+                .map(|book| book.name.as_str())
+                .collect::<Vec<_>>(),
+            ["z.fb2", "a.FB2"]
+        );
+        assert_eq!(loaded.books[0].text.as_ref(), FIXTURE_TEXT);
+        assert_eq!(
+            loaded.books[1].text.as_ref(),
+            FIXTURE_TEXT.replace("Note text", "Else text")
+        );
+        assert_eq!(
+            loaded.byte_size(),
+            loaded
+                .books
+                .iter()
+                .map(|book| book.name.len() + book.text.len())
+                .sum::<usize>()
+        );
+        assert_eq!(
+            collection(Vec::new(), &|| true),
+            Err(PreviewError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn collection_bounds_book_count_combined_input_and_combined_output() {
+        let raw = fixture();
+        let names = (0..33).map(|n| format!("book{n}.fb2")).collect::<Vec<_>>();
+        let files = names
+            .iter()
+            .map(|name| (name.as_str(), raw.as_slice()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            collection(zip_files(&files), &|| false),
+            Err(PreviewError::TooLarge)
+        );
+        let huge = format!(
+            "<FictionBook xmlns=\"{FB2}\"><body><p>book</p></body><binary>{}</binary></FictionBook>",
+            "a".repeat(2 * 1024 * 1024)
+        );
+        assert_eq!(
+            collection(
+                zip_files(&[("one.fb2", huge.as_bytes()), ("two.fb2", huge.as_bytes())]),
+                &|| false
+            ),
+            Err(PreviewError::TooLarge)
+        );
+        let output = format!(
+            "<FictionBook xmlns=\"{FB2}\"><body><p>{}</p></body></FictionBook>",
+            "a".repeat(160 * 1024)
+        );
+        assert_eq!(
+            collection(
+                zip_files(&[
+                    ("one.fb2", output.as_bytes()),
+                    ("two.fb2", output.as_bytes())
+                ]),
+                &|| false
+            ),
+            Err(PreviewError::TooLarge)
+        );
     }
 
     #[test]

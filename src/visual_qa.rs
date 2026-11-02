@@ -63,6 +63,36 @@ fn changed_search_snapshot(state: &crate::app::FindState, path: &Path) -> bool {
     serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"name":h.entry.name,"changed_ns":h.entry.changed.and_then(|t|match t.duration_since(std::time::UNIX_EPOCH){Ok(d)=>i64::try_from(d.as_nanos()).ok(),Err(e)=>i64::try_from(e.duration().as_nanos()).ok().and_then(|n|n.checked_neg())}),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(path,b).is_ok())
 }
 
+fn office_preview_matches(
+    scenario: Scenario,
+    ctx: &egui::Context,
+    preview: &Option<crate::panel::PreviewContent>,
+) -> bool {
+    match preview {
+        Some(crate::panel::PreviewContent::Text { content, .. }) => {
+            Some(content.as_ref()) == scenario.office_text()
+        }
+        Some(crate::panel::PreviewContent::Books { books, .. })
+            if scenario == Scenario::BookCollectionPreview =>
+        {
+            ctx.data(|data| {
+                data.get_temp::<(Arc<crate::fictionbook_preview::BookCollection>, usize)>(
+                    egui::Id::new(("book-selected", "right")),
+                )
+            })
+            .is_some_and(|(owner, index)| {
+                Arc::ptr_eq(&owner, books)
+                    && index == 1
+                    && books
+                        .books
+                        .get(index)
+                        .is_some_and(|book| Some(book.text.as_ref()) == scenario.office_text())
+            })
+        }
+        _ => false,
+    }
+}
+
 const QA_SCHEMA: u32 = 1;
 fn capture_owner_facts(folder: &std::path::Path, output: &std::path::Path) -> bool {
     #[cfg(unix)]
@@ -236,6 +266,7 @@ enum Scenario {
     EpubPreview,
     FictionbookPreview,
     ZippedFictionbookPreview,
+    BookCollectionPreview,
     RtfPreview,
     RegexPreview,
     JsonPreview,
@@ -307,11 +338,12 @@ impl Scenario {
             Self::FictionbookPreview | Self::ZippedFictionbookPreview => {
                 Some(crate::fictionbook_preview::FIXTURE_TEXT)
             }
+            Self::BookCollectionPreview => Some("message: Second book unique\n"),
             Self::RtfPreview => Some(crate::rtf_preview::FIXTURE_TEXT),
             _ => None,
         }
     }
-    const ALL: [Self; 129] = [
+    const ALL: [Self; 130] = [
         Self::DesktopBase,
         Self::IconsGrid,
         Self::ImagePreview,
@@ -420,6 +452,7 @@ impl Scenario {
         Self::EpubPreview,
         Self::FictionbookPreview,
         Self::ZippedFictionbookPreview,
+        Self::BookCollectionPreview,
         Self::RtfPreview,
         Self::RegexPreview,
         Self::JsonPreview,
@@ -560,6 +593,7 @@ impl Scenario {
             Self::EpubPreview => "epub_preview",
             Self::FictionbookPreview => "fictionbook_preview",
             Self::ZippedFictionbookPreview => "zipped_fictionbook_preview",
+            Self::BookCollectionPreview => "book_collection_preview",
             Self::RtfPreview => "rtf_preview",
             Self::RegexPreview => "regex_preview",
             Self::JsonPreview => "json_preview",
@@ -695,6 +729,7 @@ impl Scenario {
             | Self::EpubPreview
             | Self::FictionbookPreview
             | Self::ZippedFictionbookPreview
+            | Self::BookCollectionPreview
             | Self::RtfPreview
             | Self::RegexPreview
             | Self::TabSelectionSession
@@ -840,6 +875,7 @@ impl Scenario {
             | Self::EpubPreview
             | Self::FictionbookPreview
             | Self::ZippedFictionbookPreview
+            | Self::BookCollectionPreview
             | Self::RtfPreview
             | Self::RegexPreview
             | Self::TabSelectionSession
@@ -2324,6 +2360,22 @@ impl Fixture {
             std::fs::write(left.join("preview.rtf"), crate::rtf_preview::fixture())
                 .map_err(|error| error.to_string())?;
         }
+        if scenario == Scenario::BookCollectionPreview {
+            use std::io::{Cursor, Write};
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            zip.start_file("first.fb2", zip::write::SimpleFileOptions::default())
+                .map_err(|e| e.to_string())?;
+            zip.write_all(&crate::fictionbook_preview::fixture())
+                .map_err(|e| e.to_string())?;
+            zip.start_file("second.FB2", zip::write::SimpleFileOptions::default())
+                .map_err(|e| e.to_string())?;
+            zip.write_all(b"<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\"><body><p>message: Second book unique</p></body></FictionBook>").map_err(|e|e.to_string())?;
+            std::fs::write(
+                left.join("preview.fb2.zip"),
+                zip.finish().map_err(|e| e.to_string())?.into_inner(),
+            )
+            .map_err(|e| e.to_string())?;
+        }
         if scenario == Scenario::ZippedFictionbookPreview {
             use std::io::{Cursor, Write};
             let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -2912,6 +2964,7 @@ struct VisualQaApp {
     search_restore_retries: u8,
     selection_groups_applied: bool,
     name_list_phase: u8,
+    book_choice_phase: u8,
     json_mode_phase: u8,
     table_phase: u8,
     archive_copy_phase: u8,
@@ -3188,6 +3241,7 @@ impl VisualQaApp {
             search_restore_retries: 0,
             selection_groups_applied: false,
             name_list_phase: 0,
+            book_choice_phase: 0,
             json_mode_phase: 0,
             table_phase: 0,
             archive_copy_phase: 0,
@@ -4541,6 +4595,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::EpubPreview
                     | Scenario::FictionbookPreview
                     | Scenario::ZippedFictionbookPreview
+                    | Scenario::BookCollectionPreview
                     | Scenario::RtfPreview
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
@@ -8792,6 +8847,39 @@ impl eframe::App for VisualQaApp {
                 self.tab_group_phase += 1;
             }
         }
+        if self.scenario == Scenario::BookCollectionPreview && self.book_choice_phase < 6 {
+            let Some(crate::panel::PreviewContent::Books { books, .. }) =
+                &self.inner.ws.right.preview
+            else {
+                return;
+            };
+            if books.books.len() != 2 {
+                return;
+            }
+            let id = egui::Id::new(("book-choice", "right"));
+            let phase = self.book_choice_phase;
+            let key = if phase < 3 {
+                id.with("menu-rect")
+            } else {
+                id.with(1usize)
+            };
+            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) else {
+                return;
+            };
+            let pos = rect.center();
+            let local = phase % 3;
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.book_choice_phase += 1;
+            return;
+        }
         if matches!(
             self.scenario,
             Scenario::DocxPreview
@@ -8803,10 +8891,10 @@ impl eframe::App for VisualQaApp {
                 | Scenario::EpubPreview
                 | Scenario::FictionbookPreview
                 | Scenario::ZippedFictionbookPreview
+                | Scenario::BookCollectionPreview
                 | Scenario::RtfPreview
         ) && self.json_mode_phase < 3
-            && matches!(&self.inner.ws.right.preview, Some(crate::panel::PreviewContent::Text { content, .. })
-                if Some(content.as_ref()) == self.scenario.office_text())
+            && office_preview_matches(self.scenario, ctx, &self.inner.ws.right.preview)
             && let Some(rect) = ctx.data(|data| {
                 data.get_temp::<egui::Rect>(egui::Id::new(("copy-preview-text", "right")))
             })
@@ -17993,6 +18081,7 @@ impl eframe::App for VisualQaApp {
                 | Scenario::EpubPreview
                 | Scenario::FictionbookPreview
                 | Scenario::ZippedFictionbookPreview
+                | Scenario::BookCollectionPreview
                 | Scenario::RtfPreview
                 | Scenario::RegexPreview
                 | Scenario::KmlPreview
@@ -18015,7 +18104,10 @@ impl eframe::App for VisualQaApp {
                 "preview.docx"
             } else if self.scenario == Scenario::RtfPreview {
                 "preview.rtf"
-            } else if self.scenario == Scenario::ZippedFictionbookPreview {
+            } else if matches!(
+                self.scenario,
+                Scenario::ZippedFictionbookPreview | Scenario::BookCollectionPreview
+            ) {
                 "preview.fb2.zip"
             } else if self.scenario == Scenario::FictionbookPreview {
                 "preview.fb2"
@@ -19425,10 +19517,12 @@ impl eframe::App for VisualQaApp {
             | Scenario::EpubPreview
             | Scenario::FictionbookPreview
                 | Scenario::ZippedFictionbookPreview
+                | Scenario::BookCollectionPreview
             | Scenario::RtfPreview => {
                 self.json_mode_phase == 3
-                    && (self.scenario != Scenario::ZippedFictionbookPreview || (
+                    && (!matches!(self.scenario,Scenario::ZippedFictionbookPreview|Scenario::BookCollectionPreview) || (
                         self.recorded_clipboard_dump("copied-book.txt")
+                        && (self.scenario!=Scenario::BookCollectionPreview || ctx.data(|data|data.get_temp::<(Arc<crate::fictionbook_preview::BookCollection>,usize)>(egui::Id::new(("book-selected","right")))).is_some_and(|(books,index)|serde_json::to_vec_pretty(&serde_json::json!({"index":index,"names":books.books.iter().map(|book|&book.name).collect::<Vec<_>>(),"selected":books.books[index].text.as_ref()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("selected-book.json"),bytes).is_ok())))
                         && std::fs::copy(self.fixture.left.join("preview.fb2.zip"), self.scenario_dir.join("source.fb2.zip")).is_ok()
                     ))
                     && self.counters.clipboard.load(Ordering::Relaxed) == 1
@@ -19440,9 +19534,7 @@ impl eframe::App for VisualQaApp {
                         .and_then(|text| text.clone())
                         .as_deref()
                         == self.scenario.office_text()
-                    && matches!(&self.inner.ws.right.preview,
-                    Some(crate::panel::PreviewContent::Text { content, .. })
-                    if Some(content.as_ref()) == self.scenario.office_text())
+                    && office_preview_matches(self.scenario,&ctx,&self.inner.ws.right.preview)
                     && ctx.data(|data| {
                         data.get_temp::<crate::preview_find::PreviewFind>(
                             egui::Id::new(("text_preview", "right")).with("find"),
@@ -19712,6 +19804,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         | Scenario::EpubPreview
         | Scenario::FictionbookPreview
         | Scenario::ZippedFictionbookPreview
+        | Scenario::BookCollectionPreview
         | Scenario::RtfPreview
         | Scenario::DuplicateRoots
         | Scenario::FavoriteImport
@@ -20137,6 +20230,7 @@ mod tests {
                 | Scenario::EpubPreview
                 | Scenario::FictionbookPreview
                 | Scenario::ZippedFictionbookPreview
+                | Scenario::BookCollectionPreview
                 | Scenario::RtfPreview
                 | Scenario::DuplicateRoots
                 | Scenario::FavoriteImport
@@ -20271,6 +20365,7 @@ mod tests {
                 "epub_preview",
                 "fictionbook_preview",
                 "zipped_fictionbook_preview",
+                "book_collection_preview",
                 "rtf_preview",
                 "regex_preview",
                 "json_preview",

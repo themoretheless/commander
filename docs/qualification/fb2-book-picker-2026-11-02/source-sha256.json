@@ -1,0 +1,12 @@
+{
+  "src/fictionbook_preview.rs": "d400c83d2905cf13bfb37e115b738d54bca339c75dbd16189dcd10a308242787",
+  "src/image_cache.rs": "7d8de4afa470e2384e749e2eebab4f68e874d06905e47b09a2633d4097f13779",
+  "src/app/preload.rs": "f316eb7ff43274c70a7114bd8e0ae1ee16f80640adb043278d87cb70dcf0b131",
+  "src/app/render.rs": "a12e0b0038508d40b3716e7b8033fee910e68cdea44f887d3fd9542fd3fd153f",
+  "src/panel/preview.rs": "0bb2cd292550dbaa19d96c520ca39c69bb70ec1f0ee8b868b2f8a2b8cfd8f1ce",
+  "src/workspace.rs": "65b98b45c92f69c94daebe4417c5f8ba41596600c5e67c695bee4e415b1c12a7",
+  "src/visual_qa.rs": "7e69a59ac89bcefc6ea5ca2b71b5a8751b6a8894ec74a230bc354214453660cf",
+  "Cargo.toml": "3f9419f2137db7c88e89eca5c61c799d787dfe5cfab9302cb9e91f6543b1c350",
+  "Cargo.lock": "74cf6ecdd7af1af9c14df20845b58bbba599e6d342d3b924e927eb1b963dc2ca",
+  "target/debug/commander": "895275dbc2608977caf6ff95785e0cc6b187ad9f0c8eea0b3b9a66c1f1f0df36"
+}

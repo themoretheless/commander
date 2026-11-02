@@ -1,0 +1,3 @@
+2026-11-02T19:49:59 INFO  commander::logging: logging initialized
+2026-11-02T19:49:59 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: book_collection_preview
+2026-11-02T19:49:59 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

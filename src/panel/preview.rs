@@ -31,6 +31,10 @@ pub enum PreviewContent {
     Pdf(PreviewIdentity),
     Image(PathBuf),
     Pending(PreviewIdentity),
+    Books {
+        identity: PreviewIdentity,
+        books: Arc<crate::fictionbook_preview::BookCollection>,
+    },
     Text {
         identity: PreviewIdentity,
         content: Arc<str>,
