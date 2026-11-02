@@ -1,0 +1,15 @@
+# Ordered name-list seeds for batch rename
+
+Independent adaptation of Double Commander’s name-list rename workflow and subsequent modifiers (sections 5 and 6): https://doublecmd.github.io/doc/en/multirename.html, consulted 2026-11-03. No upstream implementation copied.
+
+Use name list accepts pasted/typed complete filenames including extensions, one per LF or CRLF record; an optional leading BOM and one final line terminator are accepted. Spaces and other content are not trimmed. Empty records, over 10000 records, over 256 KiB UTF-8 text, or a count different from the current batch block the entire rename. Blank lines are not silently dropped. A bare final CR without LF is content. This plain-record format cannot encode LF inside one filename. Start from original names fills the editor from the captured current order, refusing CR/LF names rather than changing them.
+
+Rows are positional seeds: reordering files changes assignments, and excluding files requires correcting the list count. Find/replace, component edits, case, affixes, counters, normalization/limits and optional prohibited-character replacement apply afterward. Source names, directory classification, identity bindings and captured modification dates remain owned by the original selected entries; dates are not looked up by new seed names. Generated targets still pass the same validation, sibling/intra-batch collision checks and safe cycle ordering. No automatic execution occurs.
+
+The optional text is part of RenameRule and saved presets, with an explicit UI hint. Disabled defaults/old JSON retain prior behavior; absent fields are omitted. Preset load/reset and launch review retain the same semantics. Existing overall session-size limits still apply. Wrong-count saved rules fail in the current context before filesystem actions.
+
+Tests cover parsing/BOM/CRLF/whitespace, empty/count/byte/row refusal, positional source mapping, modifier composition, collisions, cycles, original date ownership, cached preview/submit invalidation, rule/preset/session roundtrips and real two-file exchange with Undo/Redo/content preservation. Native multiline editing, list-file picker/import, starting from preview names, preset restart UI and alternate viewport layout remain open scope. This is the pasted/editor list adaptation, not the full upstream external-editor/file-import workflow or mask syntax.
+
+The real multiline editor retains an over-limit character sentinel, so oversized pasted text cannot be truncated into a valid maximum-size list. A real egui paste regression verifies the resulting byte-limit error and blocked submit. Preliminary seven-gate logs before this addition are retained separately; final gates follow the editor change.
+
+Final validation: all seven final gates exited 0; tests 3351 passed, 0 failed, 3 ignored. Ten focused name-list regressions passed, including the real oversized-paste editor test. Strict visual-qa Clippy passed; ordinary check retains the pre-existing diff_find.rs unused-response warning. Final source hashes and complete logs are retained.

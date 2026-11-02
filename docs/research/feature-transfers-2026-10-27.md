@@ -2574,3 +2574,7 @@ Production egui controls now have pointer/text regression coverage for enable, r
 ## Native invalid-character rename editor (2026-11-03)
 
 Native 34-phase pointer/text workflow now qualifies replacement, invalid input, empty stripping, disable and re-enable. Actual editor/cache snapshots independently checked against expected target/refusal states; source bytes preserved, zero native-port effects. [Evidence and explicit preview/apply/layout limits](../qualification/rename-sanitize-native-2026-11-03/README.md).
+
+## Ordered name lists for batch rename (2026-11-03)
+
+Independent adaptation of [Double Commander name lists and modifiers](https://doublecmd.github.io/doc/en/multirename.html): pasted/edited complete-name seeds in batch order, strict whole-batch count validation, original-name initialization, preset retention and shared preview/apply composition. Original source identity and date ownership remain intact; collisions/cycles use the existing planner. [Bounds, filesystem Undo/Redo evidence and remaining native/file-import scope](../qualification/rename-name-list-2026-11-03/README.md).

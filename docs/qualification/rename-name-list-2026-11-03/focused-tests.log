@@ -1,0 +1,20 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 48.95s
+     Running unittests src/main.rs (target/debug/build/commander/fceee63abddc28d9/out/commander-fceee63abddc28d9)
+
+running 9 tests
+test listing_export::tests::rename_lists_preserve_order_duplicates_and_escape_controls ... ok
+test name_list::tests::literal_names_preserve_spaces_globs_unicode_and_deduplicate ... ok
+test cmdtemplate::tests::empty_selection_expands_path_and_name_lists_to_nothing ... ok
+test app::batch_rename_dialog::tests::name_list_changes_rebuild_preview_and_block_wrong_counts_before_submit ... ok
+test name_list::tests::invalid_or_oversized_lists_fail_instead_of_truncating ... ok
+test rename::tests::ordered_name_list_parsing_and_final_mapping_preserve_original_sources ... ok
+test panel::tests::name_list_preview_and_apply_are_literal_filtered_and_atomic_on_error ... ok
+test panel::tests::selection_targets_restrict_both_mask_directions_and_name_list_counts ... ok
+test workspace::tests::ordered_name_list_refuses_partial_count_and_swaps_original_files_with_undo_redo ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 3344 filtered out; finished in 0.01s
+

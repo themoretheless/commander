@@ -9075,3 +9075,34 @@ fn invalid_character_rule_uses_same_target_on_disk_and_undo_redo() {
         b"payload"
     );
 }
+
+#[test]
+fn ordered_name_list_refuses_partial_count_and_swaps_original_files_with_undo_redo() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("a.txt", "A");
+    left.file("b.txt", "B");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("a.txt"));
+    ws.left.select_path(left.path().join("b.txt"));
+    let mut rule = crate::rename::RenameRule {
+        name_list: Some("only.txt".into()),
+        ..Default::default()
+    };
+    assert!(
+        apply_batch_rename(&mut ws, &rule)
+            .unwrap_err()
+            .contains("needs 2")
+    );
+    assert_eq!(std::fs::read(left.path().join("a.txt")).unwrap(), b"A");
+    assert_eq!(std::fs::read(left.path().join("b.txt")).unwrap(), b"B");
+    rule.name_list = Some("b.txt\na.txt".into());
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 2);
+    assert_eq!(std::fs::read(left.path().join("a.txt")).unwrap(), b"B");
+    assert_eq!(std::fs::read(left.path().join("b.txt")).unwrap(), b"A");
+    let _ = ws.perform_undo(|| {});
+    assert_eq!(std::fs::read(left.path().join("a.txt")).unwrap(), b"A");
+    assert_eq!(std::fs::read(left.path().join("b.txt")).unwrap(), b"B");
+    let _ = ws.perform_redo(|| {});
+    assert_eq!(std::fs::read(left.path().join("a.txt")).unwrap(), b"B");
+    assert_eq!(std::fs::read(left.path().join("b.txt")).unwrap(), b"A");
+}

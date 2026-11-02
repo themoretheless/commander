@@ -414,6 +414,9 @@ impl InsertText {
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenameRule {
+    /// Optional ordered complete-name seeds, one per LF/CRLF record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_list: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_stamp: Option<DateStamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -497,6 +500,44 @@ fn compile_pattern(value: &str, rule: &RenameRule) -> Result<Option<regex::Regex
         .map_err(|error| error.to_string())
 }
 
+pub const MAX_NAME_LIST_BYTES: usize = 256 * 1024;
+pub fn parse_name_list(input: &str) -> Result<Vec<&str>, String> {
+    if input.len() > MAX_NAME_LIST_BYTES {
+        return Err("Name lists are limited to 256 KiB".into());
+    }
+    let input = input.strip_prefix('\u{feff}').unwrap_or(input);
+    let mut rows = Vec::new();
+    for line in input.split_inclusive('\n') {
+        let name = if let Some(line) = line.strip_suffix('\n') {
+            line.strip_suffix('\r').unwrap_or(line)
+        } else {
+            line
+        };
+        if name.is_empty() {
+            return Err(format!("Name list row {} is empty", rows.len() + 1));
+        }
+        if rows.len() == 10000 {
+            return Err("Name lists are limited to 10000 rows".into());
+        }
+        rows.push(name);
+    }
+    if rows.is_empty() {
+        return Err("Enter one complete filename per row".into());
+    }
+    Ok(rows)
+}
+pub fn name_list_error(rule: &RenameRule, count: usize) -> Option<String> {
+    let input = rule.name_list.as_deref()?;
+    match parse_name_list(input) {
+        Err(error) => Some(error),
+        Ok(rows) if rows.len() != count => Some(format!(
+            "Name list has {} rows; this batch needs {count}",
+            rows.len()
+        )),
+        _ => None,
+    }
+}
+
 fn invalid_replacement_error(rule: &RenameRule) -> Option<&'static str> {
     rule.invalid_char_replacement.as_ref().and_then(|text| {
         (text.len() > 32 || text.contains(['/', '\0']))
@@ -504,6 +545,9 @@ fn invalid_replacement_error(rule: &RenameRule) -> Option<&'static str> {
     })
 }
 fn compile_find(rule: &RenameRule) -> Result<Vec<Option<regex::Regex>>, String> {
+    if let Some(input) = rule.name_list.as_deref() {
+        parse_name_list(input)?;
+    }
     if let Some(error) = invalid_replacement_error(rule) {
         return Err(error.into());
     }
@@ -1018,6 +1062,11 @@ pub fn plan_batch_rename_in_folder(
         }
     }
     let rule = &contextual;
+    let list_error = name_list_error(rule, names.len()).is_some();
+    let listed = rule
+        .name_list
+        .as_deref()
+        .and_then(|text| parse_name_list(text).ok());
     let batch_lower: HashSet<String> = names.iter().map(|name| folding.key(name)).collect();
     let existing_lower: HashSet<String> = existing.iter().map(|name| folding.key(name)).collect();
 
@@ -1047,8 +1096,13 @@ pub fn plan_batch_rename_in_folder(
                 rule
             };
             date_errors.push(false);
+            let seed = listed
+                .as_ref()
+                .and_then(|rows| rows.get(index))
+                .copied()
+                .unwrap_or(name);
             match rename_one_checked(
-                name,
+                seed,
                 dirs.contains(name),
                 index,
                 effective,
@@ -1079,7 +1133,7 @@ pub fn plan_batch_rename_in_folder(
         .zip(date_errors.iter())
         .map(|(((from, to), exceeded), date_error)| {
             let to_lower = folding.key(to);
-            let status = if invalid_replacement_error(rule).is_some() {
+            let status = if list_error || invalid_replacement_error(rule).is_some() {
                 PlanStatus::Invalid
             } else if folder_unavailable {
                 PlanStatus::FolderUnavailable
@@ -1144,6 +1198,103 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn ordered_name_list_parsing_and_final_mapping_preserve_original_sources() {
+        assert_eq!(
+            parse_name_list("\u{feff} first \r\nsecond\n").unwrap(),
+            [" first ", "second"]
+        );
+        assert_eq!(parse_name_list("last\r").unwrap(), ["last\r"]);
+        for invalid in ["", "\n", "a\n\n"] {
+            assert!(parse_name_list(invalid).is_err());
+        }
+        assert!(parse_name_list(&"x\n".repeat(10000)).is_ok());
+        assert!(parse_name_list(&"x\n".repeat(10001)).is_err());
+        assert!(parse_name_list(&"x".repeat(MAX_NAME_LIST_BYTES + 1)).is_err());
+        let original = names(&["a.txt", "b.bin"]);
+        let mut rule = RenameRule {
+            name_list: Some("ALPHA.CSV\nBETA.TSV\n".into()),
+            prefix: "P-".into(),
+            case: CaseMode::Lower,
+            extension_case: ExtensionCase::Lower,
+            ..Default::default()
+        };
+        let plans = plan_files(&original, &HashSet::new(), &rule);
+        assert_eq!(
+            (&*plans[0].from, &*plans[0].to, plans[0].status),
+            ("a.txt", "P-alpha.csv", PlanStatus::Ok)
+        );
+        assert_eq!((&*plans[1].from, &*plans[1].to), ("b.bin", "P-beta.tsv"));
+        for invalid in ["one.txt", "one.txt\ntwo.txt\nthree.txt", "one.txt\n\n"] {
+            rule.name_list = Some(invalid.into());
+            assert!(name_list_error(&rule, 2).is_some());
+            assert!(
+                plan_files(&original, &HashSet::new(), &rule)
+                    .iter()
+                    .all(|p| p.status == PlanStatus::Invalid)
+            );
+        }
+        rule = RenameRule {
+            name_list: Some("same.txt\nsame.txt".into()),
+            ..Default::default()
+        };
+        assert!(
+            plan_files(&original, &HashSet::new(), &rule)
+                .iter()
+                .all(|p| p.status == PlanStatus::Collision)
+        );
+        rule.name_list = Some("b.bin\na.txt".into());
+        assert!(
+            plan_files(&original, &HashSet::new(), &rule)
+                .iter()
+                .all(|p| p.status == PlanStatus::Ok)
+        );
+        assert_eq!(
+            serde_json::from_str::<RenameRule>(&serde_json::to_string(&rule).unwrap()).unwrap(),
+            rule
+        );
+        assert!(
+            serde_json::from_str::<RenameRule>("{}")
+                .unwrap()
+                .name_list
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(RenameRule::default())
+                .unwrap()
+                .get("name_list")
+                .is_none()
+        );
+        let modified = HashMap::from([
+            ("a.txt".into(), std::time::UNIX_EPOCH),
+            (
+                "b.bin".into(),
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(946684800),
+            ),
+        ]);
+        rule = RenameRule {
+            name_list: Some("one.txt\ntwo.txt".into()),
+            date_stamp: Some(DateStamp {
+                format: "%Y_".into(),
+                position: DatePosition::Prefix,
+            }),
+            ..Default::default()
+        };
+        let plans = plan_batch_rename_in_folder(
+            &original,
+            &HashSet::new(),
+            &rule,
+            &HashSet::new(),
+            crate::rename_order::NameFolding::CaseFolded,
+            &modified,
+            None,
+        );
+        assert_eq!(
+            plans.iter().map(|p| p.to.as_str()).collect::<Vec<_>>(),
+            ["1970_one.txt", "2000_two.txt"]
+        );
     }
 
     #[test]

@@ -149,6 +149,9 @@ pub fn apply_batch_rename_in(
     if context.targets.is_empty() {
         return Err("Nothing selected to rename".into());
     }
+    if let Some(error) = crate::rename::name_list_error(rule, context.targets.len()) {
+        return Err(error);
+    }
     if let Some(error) = crate::rename::regex_error(rule) {
         return Err(format!(
             "Invalid {}: {error}",

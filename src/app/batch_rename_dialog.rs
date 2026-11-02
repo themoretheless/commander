@@ -111,6 +111,18 @@ fn invalid_character_controls(
     (toggle, replacement)
 }
 
+fn name_list_editor(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
+    // Keep an over-limit sentinel: a truncated oversized paste must not become
+    // a valid MAX-byte list. UTF-8 byte validation remains in the shared parser.
+    ui.add(
+        egui::TextEdit::multiline(text)
+            .desired_rows(4)
+            .desired_width(f32::INFINITY)
+            .char_limit(crate::rename::MAX_NAME_LIST_BYTES + 1)
+            .hint_text("first-name.ext\nsecond-name.ext"),
+    )
+}
+
 fn modified_saved_preset(
     presets: &crate::rename_presets::Presets,
     selected: Option<&str>,
@@ -237,7 +249,8 @@ impl ValidatedBatchRename {
     }
 
     fn build(context: &BatchRenameContext, rule: RenameRule) -> Self {
-        let regex_err = crate::rename::regex_error(&rule);
+        let regex_err = crate::rename::name_list_error(&rule, context.targets.len())
+            .or_else(|| crate::rename::regex_error(&rule));
         let plans = plan_batch_rename_in_folder(
             &context.targets,
             &context.existing,
@@ -256,7 +269,7 @@ impl ValidatedBatchRename {
         // The regex error itself is shown under the Find field; the summary
         // only points there instead of repeating it.
         let (applicable, block_reason) = if regex_err.is_some() {
-            (false, Some("Fix the Find pattern to continue".to_string()))
+            (false, Some("Fix the rename rule to continue".to_string()))
         } else if plan_is_applicable(&plans) {
             (true, None)
         } else if plans
@@ -294,7 +307,13 @@ impl ValidatedBatchRename {
             }
         };
 
-        let error_kind = if rule.regex { "regex" } else { "find pattern" };
+        let error_kind = if rule.name_list.is_some() {
+            "name list or rule"
+        } else if rule.regex {
+            "regex"
+        } else {
+            "find pattern"
+        };
         Self {
             rule,
             plans,
@@ -367,6 +386,8 @@ impl App {
         let listing_generation = self.ws.active_panel_ref().entries_gen();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.batch_rename = Some(BatchRenameState {
+            name_list_on: false,
+            name_list_text: String::new(),
             confirm_preset_discard: false,
             parent_on: false,
             parent_depth: 1,
@@ -708,6 +729,20 @@ impl App {
                         ui.add(edit).labelled_by(label.id)
                     };
 
+                    ui.horizontal_wrapped(|ui| {
+                        let enabled=ui.checkbox(&mut state.name_list_on,"Use name list").on_hover_text("One complete filename per row, assigned in the current batch order before the other transforms. Saved in presets. Reordering changes assignments; excluding requires updating the count.");
+                        preset_interaction |= enabled.has_focus() || enabled.lost_focus() || enabled.changed();
+                        if ui.button("Start from original names").clicked() {
+                            preset_interaction=true;
+                            if state.context.targets.iter().any(|name|name.contains(['\r','\n'])) {state.error=Some("Original names contain line breaks and cannot be represented in a plain name list".into());}
+                            else {state.name_list_on=true;state.name_list_text=state.context.targets.join("\n");}
+                        }
+                    });
+                    if state.name_list_on {
+                        ui.small(format!("Exactly {} rows in the current file order · other transforms apply afterward",state.context.targets.len()));
+                        let list=name_list_editor(ui,&mut state.name_list_text);
+                        preset_interaction |= list.has_focus() || list.lost_focus() || list.changed();
+                    }
                     let mut text_fields = egui::Grid::new("batch_rename_fields")
                         .num_columns(4)
                         .spacing([10.0, 8.0])
@@ -1300,6 +1335,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn oversized_name_list_paste_remains_invalid_in_the_real_editor() {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        crate::testutil::discard_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+            name_list_editor(ui, &mut text).request_focus();
+        }));
+        crate::testutil::discard_egui_output(ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Paste(
+                    "x".repeat(crate::rename::MAX_NAME_LIST_BYTES + 500),
+                )],
+                ..Default::default()
+            },
+            |ui| {
+                name_list_editor(ui, &mut text);
+            },
+        ));
+        assert_eq!(text.len(), crate::rename::MAX_NAME_LIST_BYTES + 1);
+        let context = context(&["old.txt"], &[]);
+        let validation = ValidatedBatchRename::build(
+            &context,
+            RenameRule {
+                name_list: Some(text),
+                ..Default::default()
+            },
+        );
+        assert!(validation.regex_error.as_ref().unwrap().contains("256 KiB"));
+        assert!(validation.rule_for_submit(true).is_none());
+    }
+
+    #[test]
+    fn name_list_changes_rebuild_preview_and_block_wrong_counts_before_submit() {
+        let context = context(&["old.txt", "two.txt"], &[]);
+        let mut cache = None;
+        let mut rule = RenameRule {
+            name_list: Some("new.txt\nother.txt".into()),
+            ..Default::default()
+        };
+        let validation = ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+        assert_eq!(validation.plans[0].to, "new.txt");
+        assert_eq!(validation.rule_for_submit(true), Some(rule.clone()));
+        rule.name_list = Some("only.txt".into());
+        let validation = ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+        assert!(validation.regex_error.as_ref().unwrap().contains("needs 2"));
+        assert!(validation.rule_for_submit(true).is_none());
+        rule.name_list = None;
+        let validation = ValidatedBatchRename::cached(&mut cache, &context, rule);
+        assert_eq!(validation.plans[0].to, "old.txt");
+    }
+
+    #[test]
     fn invalid_character_controls_pointer_and_text_update_same_frame_submission() {
         let ctx = egui::Context::default();
         let context = context(&["a.txt"], &[]);
@@ -1648,6 +1734,8 @@ mod tests {
     #[test]
     fn reset_rule_clears_edits_and_stale_validation_but_keeps_context_identity() {
         let mut state = BatchRenameState {
+            name_list_on: true,
+            name_list_text: "Other.JPG".into(),
             confirm_preset_discard: false,
             parent_on: false,
             parent_depth: 1,
@@ -2562,7 +2650,7 @@ mod tests {
         assert!(!current.applicable);
         assert_eq!(
             current.block_reason.as_deref(),
-            Some("Fix the Find pattern to continue")
+            Some("Fix the rename rule to continue")
         );
         assert!(
             current

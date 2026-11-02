@@ -808,6 +808,7 @@ mod tests {
             first_only: true,
             literal_replacement: true,
             invalid_char_replacement: Some("_".into()),
+            name_list: Some("one.txt\ntwo.txt".into()),
             replace_target: crate::rename::ReplaceTarget::Stem,
             ..Default::default()
         };

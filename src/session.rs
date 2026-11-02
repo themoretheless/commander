@@ -889,6 +889,7 @@ mod tests {
         let mut session = sample(temp.path().into(), temp.path().into());
         let rule = crate::rename::RenameRule {
             prefix: "Фото_".into(),
+            name_list: Some("one.jpg\ntwo.jpg".into()),
             numbering: Some(crate::rename::Numbering {
                 start: 3,
                 step: 2,
