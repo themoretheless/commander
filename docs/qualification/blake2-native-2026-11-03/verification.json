@@ -1,0 +1,7 @@
+{
+  "native_checks": 14,
+  "observations": 317,
+  "clipboard_calls": 32,
+  "oracle": "Python hashlib.blake2s/blake2b + base64",
+  "source_and_binary_hashes_match": true
+}

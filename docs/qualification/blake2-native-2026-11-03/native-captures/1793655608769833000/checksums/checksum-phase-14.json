@@ -1,0 +1,15 @@
+{
+  "adler_match": false,
+  "blake2b_invalid": false,
+  "blake2b_match": false,
+  "blake2s_invalid": false,
+  "blake2s_match": false,
+  "clipboard": null,
+  "clipboard_calls": 0,
+  "phase": 14,
+  "relative": false,
+  "sha3_256_invalid": false,
+  "sha3_256_match": false,
+  "sha3_512_invalid": false,
+  "sha3_512_match": false
+}

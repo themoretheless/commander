@@ -1,0 +1,27 @@
+{
+  "adler_match": false,
+  "blake2b_invalid": false,
+  "blake2b_match": false,
+  "blake2s_invalid": false,
+  "blake2s_match": false,
+  "clip": [
+    661.0,
+    118.6875,
+    1249.0,
+    515.0
+  ],
+  "clipboard": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-92370-checksums/left/checksum.txt 352441C2\n",
+  "clipboard_calls": 9,
+  "copy_rect": [
+    756.21875,
+    491.09375,
+    885.625,
+    515.09375
+  ],
+  "phase": 79,
+  "relative": false,
+  "sha3_256_invalid": false,
+  "sha3_256_match": false,
+  "sha3_512_invalid": false,
+  "sha3_512_match": false
+}

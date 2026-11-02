@@ -1,0 +1,13 @@
+# Native BLAKE2s-256 and BLAKE2b-512 workflow
+
+The checksums scene extends the preceding SHA-3 workflow with actual BLAKE2s/BLAKE2b selector, Hex/Base64 expected-digest entry, digest/list/Base64 Copy, malformed Base64 refusal and recovery. Input phases are acknowledged only after UI processing; offscreen controls are revealed with the existing clip-aware wheel input. The 316-phase driver now uses u16 rather than overflowing its previous u8 counter.
+
+The result label width now derives from the shared algorithm labels, keeping the longer BLAKE2 labels and all digest values aligned. Existing independent SHA-3/BLAKE2 vector regressions continue to check displayed digest values without assuming a fixed label width.
+
+Python hashlib and base64 independently verify captured source abc, both BLAKE2 Hex/Base64/absolute GNU-list payloads, valid/invalid/recovered comparison snapshots, source/binary hashes and isolated native effects. Earlier SHA-3/Adler clipboard checks remain in the verifier. The port must record exactly 32 clipboard writes and zero other effects. The scene retains the normal ten-second interaction allowance plus existing copy-toast lifetime allowance.
+
+OS pasteboard, native checksum-list import and intermediate error layout remain separate scope. Final image inspection qualifies visible controls and digest labels/alignment; horizontally clipped long values require payload evidence rather than visual reading.
+
+Initial receipts 1793655608769833000 and 1793655723887449000 stopped at phase 20 without clipboard writes. The geometry receipt isolates subpixel rounding at maximum scroll: clip bottom 515.0, button bottom 515.09375. The input driver had demanded full containment and repeatedly scrolled despite a visible clickable interior. It now requires the rectangle inset by half a logical pixel; it still scrolls truly hidden controls and retains normal deadlines. Geometry observations and failed manifests are retained.
+
+Final receipt: 1793655797049174000/checksums, captured 14/14 with 32 isolated clipboard writes and no other native-port effects; owned process terminal. verify.py passed for 317 observations, both independent Python BLAKE2 Hex/Base64/absolute-list payload sets, valid/invalid/recovered comparison states and matching source/binary hashes. Final image inspected: both BLAKE2 result labels and aligned digest columns, selectors, successful Base64 comparison and copy controls are visible. Long values are horizontally clipped, so exact bytes are proved by payload artifacts. All seven gates exited 0; tests 3361 passed, 0 failed, 3 ignored. Strict visual-qa Clippy passed; ordinary check retains the pre-existing diff_find.rs unused-response warning.

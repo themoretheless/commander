@@ -1,0 +1,8 @@
+{
+  "scenario": "checksums",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/blake2-native-2026-11-03/native-captures/1793655723887449000",
+  "binary_sha256": "8d7fbc475e4e646ee652ab44ab5b773d7848a45e54d60daa68c6dab83c2c1e08",
+  "core_sha256": "8d7fbc475e4e646ee652ab44ab5b773d7848a45e54d60daa68c6dab83c2c1e08",
+  "wrapper_sha256": "1e9c8e61de746d52ebffa78cad13b20275f728384ac18151aa18ddb57088b478",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

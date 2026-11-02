@@ -28,18 +28,24 @@ pub struct ChecksumRow {
 }
 impl ChecksumRow {
     pub fn display_digests(&self) -> String {
+        let width = Algorithm::ALL
+            .iter()
+            .map(|algorithm| algorithm.label().len())
+            .max()
+            .unwrap_or(8);
         let mut lines = Algorithm::ALL
             .into_iter()
             .map(|algorithm| {
                 format!(
-                    "{:<8} {}",
+                    "{:<width$} {}",
                     algorithm.label(),
                     algorithm.digest(self).unwrap_or("-")
                 )
             })
             .collect::<Vec<_>>();
         lines.push(format!(
-            "Content  {}",
+            "{:<width$} {}",
+            "Content",
             self.content_hash
                 .map(|value| format!("{value:016x}"))
                 .unwrap_or_else(|| "-".into())
@@ -711,11 +717,10 @@ mod tests {
             ] {
                 let expected = vector[key].as_str().unwrap();
                 assert_eq!(report.single_digest(algorithm), Some(expected));
-                assert!(
-                    report.rows[0]
-                        .display_digests()
-                        .contains(&format!("{} {expected}", algorithm.label()))
-                );
+                assert!(report.rows[0].display_digests().lines().any(|line| {
+                    line.strip_prefix(algorithm.label())
+                        .is_some_and(|value| value.trim_start() == expected)
+                }));
                 assert_eq!(
                     report.single_digest_base64(algorithm).as_deref(),
                     vector[encoded].as_str()
@@ -784,11 +789,10 @@ mod tests {
             ] {
                 let expected = vector[key].as_str().unwrap();
                 assert_eq!(report.single_digest(algorithm), Some(expected));
-                assert!(
-                    report.rows[0]
-                        .display_digests()
-                        .contains(&format!("{} {expected}", algorithm.label()))
-                );
+                assert!(report.rows[0].display_digests().lines().any(|line| {
+                    line.strip_prefix(algorithm.label())
+                        .is_some_and(|value| value.trim_start() == expected)
+                }));
                 assert_eq!(
                     report.single_digest_base64(algorithm).as_deref(),
                     vector[encoded].as_str()

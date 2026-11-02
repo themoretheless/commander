@@ -2606,3 +2606,7 @@ Native qualification found the digest result label still enumerated only the pri
 ## BLAKE2s-256 and BLAKE2b-512 file checks (2026-11-03)
 
 Independent adaptation of [PeaZip BLAKE2 file checking](https://peazip.github.io/verify-checksum-hash.html): full-width unkeyed BLAKE2s/BLAKE2b streaming digests, shared result display, Hex/Base64 comparison/copy, and tagged/hinted/GNU checksum-list export/verification. Existing transitive blake2 is reused directly. [Independent Python vectors, integration regressions and native limits](../qualification/blake2-checksums-2026-11-03/README.md).
+
+## Native BLAKE2 workflow and digest alignment (2026-11-03)
+
+Native pointer/key/text flow exercises both BLAKE2 algorithms, Hex/Base64 copy/comparison, absolute list export, invalid comparison and recovery. Result columns size to the longest algorithm label so BLAKE2 and existing sums align. [Independent Python payload verification and native limits](../qualification/blake2-native-2026-11-03/README.md).
