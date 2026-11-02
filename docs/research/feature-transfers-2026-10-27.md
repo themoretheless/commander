@@ -2558,3 +2558,7 @@ Native keyboard workflow invokes the command palette for cursor-only and six-ent
 ## Spreadsheet text policy for TSV file details (2026-11-03)
 
 The Double Commander-inspired TSV command now uses the existing listing CSV apostrophe-prefix policy for formula-like cell starts (=, +, -, @, tab, CR). Prefix bytes participate in the export limit; ordinary cells retain exact quoting behavior. Existing full metadata JSON was verified present and not duplicated. [Regression evidence and importer/native limits](../qualification/file-details-formula-2026-11-03/README.md).
+
+## Native spreadsheet-prefix TSV copying (2026-11-03)
+
+The native palette workflow now exports twelve selected records including names beginning with all six CSV/TSV prefix markers. Python independently applies the prefix rule and verifies the actual quoted clipboard bytes. This qualifies emitted text; spreadsheet importer/OS pasteboard behavior remains separate. [Evidence](../qualification/file-details-formula-native-2026-11-03/README.md).

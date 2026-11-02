@@ -1,0 +1,8 @@
+{
+  "scenario": "copy_details",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/file-details-formula-native-2026-11-03/native-captures/1793650336641821000",
+  "binary_sha256": "2d4958312827077de3bf68bc5f1ee2050ae4a5eeae5278cd65d3ace064e02ba8",
+  "core_sha256": "2d4958312827077de3bf68bc5f1ee2050ae4a5eeae5278cd65d3ace064e02ba8",
+  "wrapper_sha256": "f4d6168ad0c4748650f9c17dcd50026d7293964048b63441e27ceb2602649335",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

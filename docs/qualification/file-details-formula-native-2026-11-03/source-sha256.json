@@ -1,0 +1,7 @@
+{
+  "src/visual_qa.rs": "ce052b18f43e40ebfdc043c0fcafaf4ed3f4d65784db05bd6d94bcf6afee5173",
+  "src/clipboard.rs": "8759bd09ac97c0f67787daa72796227e86d24fd36204fd89750c987cbb015469",
+  "src/listing_export.rs": "67e9ab8573694b2093426efe94ffb4bfba169325ea3d3e20b13712596eee85d9",
+  "src/workspace.rs": "61700479640780f9533fb96e841a73c9449002dc30a1e353d76b07ccab355c82",
+  "Cargo.lock": "4c43a342a7894d17bd7b3c6a920324c487d00e439ccb1429b75e3c574d8350a5"
+}

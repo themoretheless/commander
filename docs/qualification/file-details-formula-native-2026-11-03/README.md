@@ -1,0 +1,9 @@
+# Native spreadsheet-prefix TSV qualification
+
+The native copy_details fixture now includes six additional names beginning with =, +, -, @, tab and CR. The existing End / palette query / Enter workflow copies one cursor file, then Cmd+A and another palette invocation copies all twelve records. Input, navigation, selection and command execution use keyboard events acknowledged after inner UI handling; no direct export-handler invocation simulates either copy.
+
+verify.py uses the original captured display cells, independently applies the six-marker apostrophe rule in Python, parses actual recording-clipboard TSV and regenerates byte-identical output with csv.writer QUOTE_ALL. Fixed fixture names and counts prevent an incomplete selection from passing. Headers, ordinary rows, embedded control/Unicode text and the unchanged single-file copy are checked alongside the six prefixed names. Source/captured binary hashes and seven gates bind the evidence to final code.
+
+This proves the emitted text policy, not how every spreadsheet imports or evaluates that text. OS pasteboard and a live spreadsheet importer are not exercised. Prior byte/row-limit tests remain core evidence; native error-limit and filtered-selection paths remain separate scope. The existing six-second real-toast wait and derived sixteen-second total capture budget are retained.
+
+Final receipt: 1793650336641821000/copy_details, captured 14/14 with two recording clipboard writes and zero other native-port effects; owned process terminal. Final twelve-row selection was visually inspected after normal copy-toast expiry; control characters use the existing fallback glyphs. Independent verify.py passed with matching final source/captured binary hashes and exact raw-byte comparison. All seven gates exited 0; tests 3343 passed, 0 failed, 3 ignored. Strict visual-qa Clippy passed; ordinary check retains the pre-existing diff_find.rs unused-response warning.

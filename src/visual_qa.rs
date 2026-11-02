@@ -2334,6 +2334,16 @@ impl Fixture {
                 .map_err(|error| error.to_string())?;
         }
         if scenario == Scenario::CopyDetails {
+            for name in [
+                "=SUM(1,2).txt",
+                "+cmd.txt",
+                "-1.txt",
+                "@sum.txt",
+                "\tformula.txt",
+                "\rformula.txt",
+            ] {
+                std::fs::write(left.join(name), "cell").map_err(|error| error.to_string())?;
+            }
             std::fs::write(left.join("detail\tline\n\"ёж\".txt"), "TSV")
                 .map_err(|error| error.to_string())?;
         }
@@ -10039,7 +10049,7 @@ impl eframe::App for VisualQaApp {
                         ]
                     })
                     .collect();
-                if rows.len() != if phase == 2 { 1 } else { 6 } {
+                if rows.len() != if phase == 2 { 1 } else { 12 } {
                     return;
                 }
                 let _ = std::fs::write(
