@@ -1,0 +1,21 @@
+{
+  "column": null,
+  "error": null,
+  "exclude": true,
+  "fuzzy": false,
+  "heading": true,
+  "numeric_sort": false,
+  "query": "",
+  "regex": true,
+  "rows": [
+    2,
+    3,
+    1,
+    4
+  ],
+  "sort": [
+    0,
+    false
+  ],
+  "whole_words": true
+}

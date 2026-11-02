@@ -1,0 +1,16 @@
+{
+  "column": null,
+  "error": null,
+  "exclude": false,
+  "fuzzy": false,
+  "heading": true,
+  "numeric_sort": false,
+  "query": "fl2",
+  "regex": true,
+  "rows": [],
+  "sort": [
+    0,
+    false
+  ],
+  "whole_words": false
+}

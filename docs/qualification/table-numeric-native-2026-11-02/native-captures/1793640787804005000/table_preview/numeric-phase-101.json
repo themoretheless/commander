@@ -1,0 +1,23 @@
+{
+  "clipboard": "Name,Count\nfile2,-2\nfile2,9007199254740993\n",
+  "phase": 101,
+  "view": {
+    "column": null,
+    "error": null,
+    "exclude": false,
+    "fuzzy": false,
+    "heading": true,
+    "numeric_sort": false,
+    "query": "file2",
+    "regex": true,
+    "rows": [
+      2,
+      3
+    ],
+    "sort": [
+      0,
+      false
+    ],
+    "whole_words": true
+  }
+}

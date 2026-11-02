@@ -2321,7 +2321,7 @@ impl Fixture {
         if scenario == Scenario::TablePreview {
             std::fs::write(
                 left.join("preview.csv"),
-                "Name,Count\nfile10,2\nfile2,10\nfile2,1\nёж,3\n",
+                "Name,Count\nfile10,-10\nfile2,-2\nfile2,9007199254740993\nёж,9007199254740992\n",
             )
             .map_err(|error| error.to_string())?;
         }
@@ -2967,6 +2967,7 @@ struct VisualQaApp {
     book_choice_phase: u8,
     json_mode_phase: u8,
     table_phase: u8,
+    table_input_pending: bool,
     archive_copy_phase: u8,
     archive_copy_settle: u8,
     preset_click_phase: u8,
@@ -3246,6 +3247,7 @@ impl VisualQaApp {
             book_choice_phase: 0,
             json_mode_phase: 0,
             table_phase: 0,
+            table_input_pending: false,
             archive_copy_phase: 0,
             archive_copy_settle: 0,
             preset_click_phase: 0,
@@ -4551,6 +4553,7 @@ impl VisualQaApp {
 impl eframe::App for VisualQaApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         self.preset_input_pending = false;
+        self.table_input_pending = false;
         // Script waits and capture deadlines must advance even when the app
         // has no background work or user events requesting another frame.
         ctx.request_repaint_after(Duration::from_millis(16));
@@ -4590,7 +4593,7 @@ impl eframe::App for VisualQaApp {
             && !(matches!(self.scenario, Scenario::GpxPreview | Scenario::KmlPreview)
                 && self.json_mode_phase < 12)
             && !(self.scenario == Scenario::JsonPreview && self.json_mode_phase < 9)
-            && !(self.scenario == Scenario::TablePreview && self.table_phase < 100)
+            && !(self.scenario == Scenario::TablePreview && self.table_phase < 133)
             && !(matches!(
                 self.scenario,
                 Scenario::DocxPreview
@@ -9094,6 +9097,55 @@ impl eframe::App for VisualQaApp {
                 }
                 self.table_phase += 1;
                 return;
+            }
+        }
+        if self.scenario == Scenario::TablePreview && (100..=133).contains(&self.table_phase) {
+            let phase = self.table_phase;
+            if let Some(view) = crate::table_preview::filter_snapshot(ctx, "right") {
+                let clipboard = self
+                    .counters
+                    .clipboard_text
+                    .lock()
+                    .ok()
+                    .and_then(|value| value.clone());
+                let _ = serde_json::to_vec_pretty(
+                    &serde_json::json!({"phase":phase,"view":view,"clipboard":clipboard}),
+                )
+                .is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir
+                            .join(format!("numeric-phase-{phase}.json")),
+                        bytes,
+                    )
+                    .is_ok()
+                });
+                let _ = std::fs::copy(
+                    self.fixture.left.join("preview.csv"),
+                    self.scenario_dir.join("source.csv"),
+                );
+            }
+            if phase < 133 {
+                let stage = (phase - 100) / 3;
+                let local = (phase - 100) % 3;
+                let id = egui::Id::new(("table_preview", "right"));
+                let key = match stage {
+                    0 => id.with("clear-filter"),
+                    1 | 6 | 9 => id.with("numeric-sort"),
+                    2 | 4 | 7 | 8 => id.with(("column", 1usize)),
+                    _ => id.with("copy-records"),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.table_input_pending = true;
+                }
             }
         }
         if self.scenario == Scenario::TabSelectionSession && self.json_mode_phase < 24 {
@@ -17145,6 +17197,11 @@ impl eframe::App for VisualQaApp {
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
+        if self.scenario == Scenario::TablePreview && self.table_input_pending {
+            self.table_phase += 1;
+            self.table_input_pending = false;
+        }
+
         if self.scenario == Scenario::RenamePresets && self.preset_input_pending {
             self.preset_click_phase += 1;
             self.preset_input_pending = false;
@@ -18608,8 +18665,8 @@ impl eframe::App for VisualQaApp {
                     })
             }
             Scenario::TablePreview => {
-                self.table_phase == 100
-                    && self.counters.clipboard.load(Ordering::Relaxed) == 2
+                self.table_phase == 133
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 5
                     && self
                         .counters
                         .clipboard_text
@@ -18617,10 +18674,10 @@ impl eframe::App for VisualQaApp {
                         .ok()
                         .and_then(|value| value.clone())
                         .as_deref()
-                        == Some("Name,Count\nfile2,10\nfile2,1\n")
-                    && crate::table_preview::filter_is(&ctx, "right", "file2", false)
+                        == Some("Name,Count\nfile10,-10\nfile2,-2\nёж,9007199254740992\nfile2,9007199254740993\n")
+                    && crate::table_preview::filter_is(&ctx, "right", "", false)
                     && (0..17).all(|stage| self.scenario_dir.join(format!("filter-stage-{stage}.json")).is_file())
-                    && crate::table_preview::shown_order(&ctx, "right") == Some((true, vec![2, 3]))
+                    && crate::table_preview::shown_order(&ctx, "right") == Some((true, vec![1,2,4,3]))
             }
             Scenario::TabSelectionSession => self.json_mode_phase==24 && self.inner.ui.modals.palette_input.is_none()
                 && self.inner.ws.left.tab_selection.is_none() && self.inner.ws.left.selected_count()==2
@@ -20033,7 +20090,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         Scenario::SyncReview => 6,
         Scenario::Checksums => 16,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
-        Scenario::TablePreview => 2,
+        Scenario::TablePreview => 5,
         Scenario::JsonPreview
         | Scenario::DocxPreview
         | Scenario::OdtPreview
@@ -20459,7 +20516,7 @@ mod tests {
                 Scenario::SyncReview => 6,
                 Scenario::Checksums => 16,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
-                Scenario::TablePreview => 2,
+                Scenario::TablePreview => 5,
                 Scenario::JsonPreview
                 | Scenario::DocxPreview
                 | Scenario::OdtPreview

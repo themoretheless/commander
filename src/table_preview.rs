@@ -152,7 +152,7 @@ pub fn filter_is(ctx: &egui::Context, side: &str, query: &str, fuzzy: bool) -> b
 #[cfg(feature = "visual-qa")]
 pub fn filter_snapshot(ctx: &egui::Context, side: &str) -> Option<serde_json::Value> {
     ctx.data(|data| data.get_temp::<View>(egui::Id::new(("table_preview", side)).with("view")))
-        .map(|view| serde_json::json!({"query":view.filter.query,"fuzzy":view.filter.fuzzy,"regex":view.filter.regex,"whole_words":view.filter.whole_words,"column":view.filter.column,"exclude":view.filter.exclude,"error":view.filter_error,"rows":view.order.as_ref(),"heading":view.first_heading}))
+        .map(|view| serde_json::json!({"query":view.filter.query,"fuzzy":view.filter.fuzzy,"regex":view.filter.regex,"whole_words":view.filter.whole_words,"column":view.filter.column,"exclude":view.filter.exclude,"error":view.filter_error,"rows":view.order.as_ref(),"heading":view.first_heading,"numeric_sort":view.numeric_sort,"sort":view.sort}))
 }
 
 /// Exact finite decimal/scientific notation, bounded without expanding powers.
@@ -476,7 +476,11 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
         #[cfg(not(any(test, feature = "visual-qa")))]
         let _ = exclude;
     });
-    ui.small("Click a column: ascending, descending, original. Natural, case-sensitive text order; only loaded rows.");
+    ui.small(if view.numeric_sort {
+        "Click a column: ascending, descending, original. Exact numeric order; non-numeric cells last. Only loaded rows."
+    } else {
+        "Click a column: ascending, descending, original. Natural, case-sensitive text order; only loaded rows."
+    });
     let mut copy = None;
     let mut export_error = None;
     let mut rebuild = changed

@@ -1,0 +1,8 @@
+{
+  "scenario": "table_preview",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/table-numeric-native-2026-11-02/native-captures/1793640898630312000",
+  "binary_sha256": "bc1e91562fee11b4cbf0f14fd4f6652b15ff1c634f2a6eba2cdeff4842a4c32a",
+  "core_sha256": "bc1e91562fee11b4cbf0f14fd4f6652b15ff1c634f2a6eba2cdeff4842a4c32a",
+  "wrapper_sha256": "005a802c9e17e511e57c5c8a352427f167bc83ac1de5e3f44383aeae9fde0528",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

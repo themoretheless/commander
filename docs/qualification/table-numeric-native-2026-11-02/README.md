@@ -1,0 +1,11 @@
+# Native exact numeric table sorting
+
+The existing TablePreview native scene now runs 133 phases. Its source CSV includes -10, -2 and adjacent integers 9007199254740993 / 9007199254740992, so the final order demonstrates signed numeric comparison and precision beyond f64. After the prior 17 compound-filter states, pointer input clears the filter, toggles Numeric sort, sorts Count ascending and descending, switches back to text, restores original order and returns to numeric ascending. It copies actual displayed CSV for both directions and final state. New steps advance after UI processing; the general row hover waits until the scripted workflow ends.
+
+Final receipt: native-captures/1793640898630312000/table_preview. 14/14 checks passed; five recording clipboard calls and zero other native-port effects. `verify.py` independently parses the source CSV and uses Python Decimal to derive numeric orders, compares 12 numeric state observations and three actual clipboard CSV payloads, and revalidates all 17 preceding filter observations. Source cells are unchanged. The final frame was visually inspected; the active-mode help text now describes numeric ordering.
+
+The initial successful capture 1793640787804005000 revealed stale help text describing natural text sort while Numeric sort was active. The conditional wording was fixed and the entire native workflow repeated on the rebuilt binary. Both captures and preliminary checks are retained. CUA reported the app missing after launch; subsequent authoritative manifest/process inspection showed the process had already completed capture, so no retry was made.
+
+This closes the native numeric toggle/direction/copy success-path gap from table-numeric-sort. Native fractions/exponents, invalid-cell tails, source refresh and tooltip paths remain open; core/rational/pointer tests cover their separate scopes. Clipboard evidence uses the recording port, not the OS pasteboard. No full upstream/cohort parity claim. Seven final gates and source/binary hashes accompany the capture.
+
+Final result: seven gates passed; 3329 tests passed, 0 failed, 3 ignored. The verifier passed all source/binary hashes, exact Decimal orders, numeric CSV payloads and preceding filter observations.

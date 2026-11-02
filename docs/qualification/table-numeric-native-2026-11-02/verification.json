@@ -1,0 +1,19 @@
+{
+  "native_checks": 14,
+  "phases": 133,
+  "clipboard_calls": 5,
+  "numeric_ascending": [
+    1,
+    2,
+    4,
+    3
+  ],
+  "numeric_descending": [
+    3,
+    4,
+    2,
+    1
+  ],
+  "states": 12,
+  "old_filter_stages": 17
+}

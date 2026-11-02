@@ -2506,3 +2506,7 @@ Native controls now set UTC year prefix and containing-folder suffix/separator, 
 ## Exact numeric CSV/TSV column sorting (2026-11-02)
 
 Commander extension of the Strata-inspired table preview: Numeric sort compares signed decimal/scientific values without f64 rounding, preserves equal-value source order, keeps invalid/empty/missing cells last, and composes with existing headings, filters and exports. Original cell spelling is retained. This is an independently specified numeric policy, not an upstream parity claim. [Bounds, exact rational oracle, pointer-input tests and native scope](../qualification/table-numeric-sort-2026-11-02/README.md).
+
+## Native exact numeric table sorting (2026-11-02)
+
+Native pointer workflow now compares signed values and adjacent integers beyond f64 precision in both directions, switches between text/numeric/original orders and copies three actual numeric CSV payloads. Python Decimal independently checks 12 new observations plus all 17 existing filter states. Final capture: 133 phases, 14/14 checks and five isolated clipboard calls; active-mode help text corrected and frame inspected. [Evidence and remaining alternate/native OS pasteboard scope](../qualification/table-numeric-native-2026-11-02/README.md).
