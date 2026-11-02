@@ -1,0 +1,209 @@
+{
+  "producer": "Python stdlib zipfile LZMACompressor / liblzma",
+  "fixtures": {
+    "normal.zipx": {
+      "sha256": "32e886ccebc8162dde514f04a6d6ee793223db06815c7257a99e5dde2c65a247",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        },
+        {
+          "path": "nested/ёж.txt",
+          "bytes": 90,
+          "sha256": "f8f9c2426498f4dd0571799a9331547055c558d4988cb294b1bbe5a34ccca16f",
+          "method": 14,
+          "eos": true
+        },
+        {
+          "path": "empty.txt",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": false
+    },
+    "no-eos.zipx": {
+      "sha256": "31b615e682a46d2c0a36566ff8432c29cb474c51947f57558387f75ec7afe99d",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": false
+        }
+      ],
+      "invalid": false
+    },
+    "missing-required-eos.zipx": {
+      "sha256": "e837ee1703e388fe8d88d5774cddc5edac119eedb73b326910f6e1001b974a0a",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "eos"
+    },
+    "encrypted.zipx": {
+      "sha256": "caf187c9767caa4911facd653b35e7c483732da1b14eb8eb52a58a8c73fa9902",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "encrypted"
+    },
+    "symlinks.zipx": {
+      "sha256": "609f306caef327e97f6bcc9dc5e027d036bae9354cba3a960aa1931c2ff761f4",
+      "members": [
+        {
+          "path": "target.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        },
+        {
+          "path": "link-safe",
+          "bytes": 10,
+          "sha256": "199b3badd968634ea14e351d1134ada738894a90a2efa66983101ece99a33572",
+          "method": 14,
+          "eos": true
+        },
+        {
+          "path": "link-escape",
+          "bytes": 12,
+          "sha256": "efbf103bcec54b370d5fdbcd97c853944c0e6bf61a446c27f2552c06847c5df6",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": false
+    },
+    "bad-crc.zipx": {
+      "sha256": "16f5e37df3ab16c1d323a1879cea3954e0014042baf4d564a455b68f5cea89d9",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "crc"
+    },
+    "bad-size.zipx": {
+      "sha256": "0f3ea60a714016f3fca566ffecf9ca67f5ea1683afd612ae97e1adb5afb5f55d",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "size"
+    },
+    "truncated.zipx": {
+      "sha256": "f9a33856111d24b469a39fb8e579cee1b84823f6389a5b723e77d859a6087a7f",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "truncated"
+    },
+    "huge-dictionary.zipx": {
+      "sha256": "72578eeab9e93340ff3749e87321e20631e2266d5eabfe84fbcee81ee38b9e9c",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "dictionary"
+    },
+    "bad-properties.zipx": {
+      "sha256": "3bfc980e18fba6584a58d942b707d94a48caa2c0def611f73094d9839cf095ad",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "properties"
+    },
+    "memory-limit.zipx": {
+      "sha256": "23767977c2fc11f2fe33c7815264fc68a1814922593177cf226ea68368f55e96",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": "memory"
+    },
+    "ratio.zipx": {
+      "sha256": "33c19f6eebef2e409697fafdc3e3417286cdc71d83fd1a61b43e5105978a83ae",
+      "members": [
+        {
+          "path": "ratio.txt",
+          "bytes": 262144,
+          "sha256": "d509bff642a353f88582e8a846ecae041c333b79c57a7a24ff310fbdb7e914e9",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": false
+    },
+    "unsafe.zipx": {
+      "sha256": "f1bf49c15e1c0feca5d30a5160e3dc9e4c83a7cc49367aff72190b4af930b645",
+      "members": [
+        {
+          "path": "../escape.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        },
+        {
+          "path": "inside.txt",
+          "bytes": 30,
+          "sha256": "93467dce5a84a2fc2084e8cae76c190065af376d011e7369c31699bdccd0e24b",
+          "method": 14,
+          "eos": true
+        }
+      ],
+      "invalid": false
+    }
+  }
+}

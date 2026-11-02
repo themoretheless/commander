@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-lzma-2026-11-03/native-captures/1793662982111636000",
+  "binary_sha256": "835a08b0734969eafb2aaedbd26557b64bebd2b9f26b270b8ad700b377a25263",
+  "core_sha256": "835a08b0734969eafb2aaedbd26557b64bebd2b9f26b270b8ad700b377a25263",
+  "wrapper_sha256": "9f6c9e76e7500833d7d8c972c78a990e577fe4b05f30dd96d991c141caae1691",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

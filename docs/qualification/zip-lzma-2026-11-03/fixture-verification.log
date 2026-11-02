@@ -1,0 +1,13 @@
+normal.zipx verified
+no-eos.zipx verified
+missing-required-eos.zipx verified
+encrypted.zipx verified
+symlinks.zipx verified
+bad-crc.zipx verified
+bad-size.zipx verified
+truncated.zipx verified
+huge-dictionary.zipx verified
+bad-properties.zipx verified
+memory-limit.zipx verified
+ratio.zipx verified
+unsafe.zipx verified

@@ -1,0 +1,15 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "250a4298105f537f5b14b0319c7b561b9d963a5985748e0070e2e35d125e93fc",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-lzma-2026-11-03/native-captures/1793662982111636000/archive_metadata"
+  }
+}

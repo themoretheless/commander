@@ -175,8 +175,7 @@ fn check_with_limits(
         }
         for index in 0..zip.len() {
             cancel(cancelled)?;
-            let mut entry = zip
-                .by_index(index)
+            let mut entry = crate::zip_reader::open(&mut zip, index)
                 .map_err(|e| format!("Member #{index}: {e}"))?;
             if entry.size() > limit.saturating_sub(progress.load(Ordering::Relaxed)) {
                 return Err("Archive check incomplete: 128 MiB decoded-byte limit reached.".into());
@@ -287,6 +286,27 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use std::io::Write;
+    #[test]
+    fn lzma_integrity_keeps_decoded_byte_limit_and_cancellation() {
+        let temp = TempDir::new();
+        let path = temp.path().join("extended.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-lzma-2026-11-03/fixtures/normal.zipx"),
+        )
+        .unwrap();
+        let progress = AtomicU64::new(0);
+        assert!(
+            check_with_limits(&path, &|| false, &progress, 1, 100)
+                .unwrap_err()
+                .contains("limit")
+        );
+        assert!(
+            check(&path, &|| true, &progress)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+    }
     #[test]
     fn deflate64_integrity_keeps_decoded_byte_limit_and_cancellation() {
         let temp = TempDir::new();

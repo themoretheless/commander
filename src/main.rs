@@ -175,6 +175,7 @@ mod watcher_policy;
 pub mod workload;
 mod workspace;
 mod workspace_profile;
+mod zip_reader;
 
 #[cfg(test)]
 mod operation_verification;

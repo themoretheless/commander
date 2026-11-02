@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 27.97s
+     Running unittests src/main.rs (target/debug/build/commander/f26f5591bc046064/out/commander-f26f5591bc046064)
+
+running 7 tests
+test archive_check::tests::lzma_integrity_keeps_decoded_byte_limit_and_cancellation ... ok
+test archive::tests::lzma_zipx_keeps_path_ratio_and_cancellation_guards ... ok
+test zip_reader::tests::lzma_cached_properties_cannot_be_replaced_before_first_decode ... ok
+test zip_reader::tests::lzma_properties_reject_oversized_dictionary_and_invalid_property_bytes ... ok
+test archive::tests::lzma_zipx_reads_eos_and_known_size_without_eos ... ok
+test archive::tests::lzma_zipx_refuses_bad_streams_and_memory_requests_without_partial_output ... ok
+test search::tests::lzma_content_search_agrees_for_live_and_indexed_zipx ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 3390 filtered out; finished in 0.02s
+
