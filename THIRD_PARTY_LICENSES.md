@@ -20,3 +20,11 @@ Copyright KAMADA Ken'ichi, BSD-2-Clause. See
 [EXIF license](data/licenses/kamadak-exif-BSD-2-Clause.txt) and
 [mutate_once license](data/licenses/mutate-once-BSD-2-Clause.txt).
 The parser runs against a bounded in-memory snapshot on a preview worker.
+
+## Bzip2 decompression
+
+Archive support uses libbz2-rs-sys 0.2.5, a Rust translation derived from
+bzip2/libbzip2. Copyright 1996-2021 Julian R Seward, 2019-2020 Federico Mena
+Quintero, 2021 Micah Snyder, and 2024-2025 Trifecta Tech Foundation and contributors.
+Commander does not claim authorship of that implementation. See the complete
+[license and disclaimer](data/licenses/libbz2-rs-sys-bzip2-1.0.6.txt).

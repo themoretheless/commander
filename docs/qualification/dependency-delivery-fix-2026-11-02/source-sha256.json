@@ -1,0 +1,8 @@
+{
+  "Cargo.toml": "3f9419f2137db7c88e89eca5c61c799d787dfe5cfab9302cb9e91f6543b1c350",
+  "Cargo.lock": "74cf6ecdd7af1af9c14df20845b58bbba599e6d342d3b924e927eb1b963dc2ca",
+  "deny.toml": "f39d670a57d7b121f2e7207cc45f0d3065a779d0360066abd89c01af12471179",
+  "THIRD_PARTY_LICENSES.md": "2744ddd0b945845c5dc3266316e0f206324c5a01b89ba27c678426c8dc3f4ce1",
+  "data/licenses/libbz2-rs-sys-bzip2-1.0.6.txt": "54e1fd7bd53273e601c9599eb162a004dacddee031ae297ee7109a7beb93b1c2",
+  "target/debug/commander": "9caff4fbc86704ca8be4340e7fab8121a66a35cf8d66663a7c6c7fb4da0c5a98"
+}

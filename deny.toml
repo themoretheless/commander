@@ -34,6 +34,8 @@ allow = [
   "Zlib",
 ]
 exceptions = [
+  # Reviewed permissive license; preserve upstream attribution in bundled notices.
+  { allow = ["bzip2-1.0.6"], crate = "libbz2-rs-sys@0.2.5" },
   { allow = ["BSL-1.0"], crate = "clipboard-win@5.4.3" },
   { allow = ["BSL-1.0"], crate = "error-code@3.4.0" },
   { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts@0.36.2" },

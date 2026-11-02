@@ -7,3 +7,5 @@ Latest source validation: docs/qualification/diff-trailing-native-2026-11-02/che
 Push withheld under the invoked push-or-clear skill's failed-check rule. CI-equivalent cargo-deny 0.20.2 --all-features --locked check advisories bans licenses sources exited 5: advisories FAILED, bans ok, licenses FAILED, sources ok. Full current report retained in cargo-deny.log. It reports 14 advisory errors (pulldown-cmark 0.13.5 and zstd/zstd-safe dependency family) and rejected bzip2-1.0.6 license for libbz2-rs-sys 0.2.5. Dependency policy was not weakened and no waiver added.
 
 Next action: resolve dependency/advisory and license-policy blockers, rerun checks, then push main. No cleanup candidates exist besides the active main/worktree, which must be retained.
+
+Subsequent resolution: [dependency-delivery-fix-2026-11-02](../dependency-delivery-fix-2026-11-02/README.md) updates the affected crates and records reviewed license attribution/policy plus seven passing checks. This original failing audit is retained as historical evidence.

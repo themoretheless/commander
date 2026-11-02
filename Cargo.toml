@@ -27,7 +27,7 @@ doc_markdown = "warn"
 [dependencies]
 eframe = "0.36"
 egui = "0.36"
-pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-cmark = { version = "0.13.6", default-features = false }
 html5gum = "0.8"
 roxmltree = "0.20"
 encoding_rs = "0.8"
@@ -65,7 +65,7 @@ fastcdc = "5"
 flate2 = "1"
 bzip2 = "0.6.1"
 xz2 = { version = "0.1.7", features = ["static"] }
-zstd = { version = "0.13.3", default-features = false }
+zstd = { version = "0.13.4", default-features = false }
 tar = "0.4"
 unicode-normalization = "0.1.25"
 unicode-segmentation = "1"
