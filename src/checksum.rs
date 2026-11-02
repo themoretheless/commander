@@ -104,6 +104,17 @@ impl ChecksumReport {
         }
         algorithm.digest(row)
     }
+    /// Standard padded Base64 of the digest bytes in displayed hex order.
+    /// The same single-result/completion checks apply as hexadecimal copying.
+    pub fn single_digest_base64(&self, algorithm: Algorithm) -> Option<String> {
+        use base64::Engine;
+        let hex = self.single_digest(algorithm)?;
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        for offset in (0..hex.len()).step_by(2) {
+            bytes.push(u8::from_str_radix(&hex[offset..offset + 2], 16).ok()?);
+        }
+        Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
     pub fn successful(&self) -> usize {
         self.rows
             .iter()
@@ -546,6 +557,67 @@ mod tests {
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
     const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn base64_digest_encodes_bytes_for_every_algorithm_and_refuses_unavailable_results() {
+        let temp = TempDir::new();
+        let mut report = verify_paths([temp.file("data", "abc")]);
+        for (algorithm, expected) in [
+            (
+                Algorithm::Sha256,
+                "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
+            ),
+            (
+                Algorithm::Sha384,
+                "ywB1P0WjXou1oD1pmsZQBycsMqsO3tFjGotgWkP/W+2AhgcroefMI1i67KE0yCWn",
+            ),
+            (
+                Algorithm::Sha512,
+                "3a81oZNherrMQXNJriBBMRLm+k6JqX6iCp7u5ktV05ohkpkqJ0/BqDa6PCOj/uu9RU1EI2Q86A4qmslPpUyknw==",
+            ),
+            (
+                Algorithm::Blake3,
+                "ZDezrDhGUTP/tjt1JzqNtUjFWEZdedsD/TWcbNW9nYU=",
+            ),
+            (Algorithm::Crc32, "NSRBwg=="),
+            (Algorithm::Md5, "kAFQmDzST7DWlj99KOF/cg=="),
+            (Algorithm::Sha1, "qZk+NkcGgWq6PiVxeFDCbJzQ2J0="),
+            (Algorithm::Adler32, "Ak0BJw=="),
+        ] {
+            assert_eq!(
+                report.single_digest_base64(algorithm).as_deref(),
+                Some(expected)
+            );
+        }
+        report.rows[0].sha256_hex = report.rows[0].sha256_hex.as_ref().map(|v| v.to_uppercase());
+        assert_eq!(
+            report.single_digest_base64(Algorithm::Sha256).as_deref(),
+            Some("ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=")
+        );
+        for value in [
+            None,
+            Some("z".repeat(64)),
+            Some("f".repeat(63)),
+            Some("é".repeat(32)),
+        ] {
+            report.rows[0].sha256_hex = value;
+            assert!(report.single_digest_base64(Algorithm::Sha256).is_none());
+        }
+        report.rows[0].sha256_hex = Some("00".repeat(32));
+        report.cancelled = true;
+        assert!(report.single_digest_base64(Algorithm::Sha256).is_none());
+        report.cancelled = false;
+        report.rows[0].error = Some("changed".into());
+        assert!(report.single_digest_base64(Algorithm::Sha256).is_none());
+        report.rows[0].error = None;
+        report.rows[0].skipped = Some("symlink".into());
+        assert!(report.single_digest_base64(Algorithm::Sha256).is_none());
+        report.rows[0].skipped = None;
+        report.rows.push(report.rows[0].clone());
+        assert!(report.single_digest_base64(Algorithm::Sha256).is_none());
+        report.rows.clear();
+        assert!(report.single_digest_base64(Algorithm::Sha256).is_none());
+    }
 
     #[test]
     fn adler32_streams_known_vectors_and_block_boundaries_with_exact_export() {

@@ -4632,7 +4632,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::RtfPreview
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
-            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 143)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 146)
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -14924,6 +14924,30 @@ impl eframe::App for VisualQaApp {
             self.checksum_input_pending = true;
             return;
         }
+        if self.scenario == Scenario::Checksums && (143..146).contains(&self.checksum_click_phase) {
+            if self.checksum_click_phase == 143
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 19
+                    || !self.recorded_clipboard_dump("adler32-absolute.adler32"))
+            {
+                return;
+            }
+            if let Some(rect) =
+                ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new("checksum-copy-base64")))
+            {
+                let local = self.checksum_click_phase - 143;
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_input_pending = true;
+            }
+            return;
+        }
         if self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6 {
             let find_id = egui::Id::new(("text_preview", "right")).with("find");
             if self.regex_click_phase == 3
@@ -19601,13 +19625,13 @@ impl eframe::App for VisualQaApp {
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
             Scenario::Checksums => {
-                let expected=format!("024d0127 *{}\n", self.fixture.left.join("checksum.txt").display());
-                self.checksum_click_phase==143 && self.counters.clipboard.load(Ordering::Relaxed)==19
-                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected.as_str())
+                let expected="Ak0BJw==";
+                self.checksum_click_phase==146 && self.counters.clipboard.load(Ordering::Relaxed)==20
+                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected)
                     && !self.inner.checksum_relative_mode_is(true)
                     && self.inner.toasts.is_empty()
                     && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match)
-                    && self.recorded_clipboard_dump("adler32-absolute.adler32")
+                    && self.recorded_clipboard_dump("adler32-base64.txt")
                     && std::fs::copy(self.fixture.left.join("checksum.txt"),self.scenario_dir.join("checksum.txt")).is_ok()
             }
             Scenario::RenameOptions => {
@@ -20293,7 +20317,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         | Scenario::DiskCount => 3,
         Scenario::DuplicateCross => 6,
         Scenario::SyncReview => 6,
-        Scenario::Checksums => 19,
+        Scenario::Checksums => 20,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
         Scenario::TablePreview => 5,
         Scenario::TableDialect | Scenario::TableAmbiguous => 2,
@@ -20720,7 +20744,7 @@ mod tests {
                 | Scenario::DiskCount => 3,
                 Scenario::DuplicateCross => 6,
                 Scenario::SyncReview => 6,
-                Scenario::Checksums => 19,
+                Scenario::Checksums => 20,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
                 Scenario::TablePreview => 5,
                 Scenario::TableDialect | Scenario::TableAmbiguous => 2,

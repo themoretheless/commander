@@ -40,3 +40,8 @@ default; SHA-1 is exposed for compatibility with existing checksum lists.
 Streaming Adler-32 calculation uses `adler2` 2.0.1 under its
 [MIT license](data/licenses/adler2-MIT.txt). This is an error-detection checksum;
 SHA-256 remains the default for file digest comparison.
+
+## Base64 checksum output
+
+Digest byte encoding uses `base64` 0.22.1 under its
+[MIT license](data/licenses/base64-MIT.txt).

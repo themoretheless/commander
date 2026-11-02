@@ -1850,6 +1850,11 @@ impl App {
                         if copy_digest.clicked() {
                             copy = report.single_digest(algorithm).map(str::to_owned);
                         }
+                        let copy_base64 = ui.add_enabled(comparable, egui::Button::new("Copy Base64"))
+                            .on_hover_text(format!("Copy {} digest bytes as standard padded Base64. Expected values and checksum lists use hexadecimal.", algorithm.label()));
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-copy-base64"), copy_base64.rect));
+                        if copy_base64.clicked() { copy = report.single_digest_base64(algorithm); }
                         let list_algorithm = algorithm;
                         let list_label = if list_algorithm == crate::checksum::Algorithm::Crc32 { "SFV" } else { list_algorithm.label() };
                         let list_ready = !self.checksum_relative_paths || self.checksum_relative_base.as_ref().is_some_and(Result::is_ok);

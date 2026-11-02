@@ -799,6 +799,7 @@ dependencies = [
  "adler2",
  "arboard",
  "argon2",
+ "base64",
  "blake3",
  "bzip2",
  "chacha20poly1305",

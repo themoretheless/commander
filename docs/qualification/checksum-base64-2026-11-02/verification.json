@@ -1,0 +1,9 @@
+{
+  "native_checks": 14,
+  "observations": 147,
+  "clipboard_calls": 20,
+  "adler32": "024d0127",
+  "base64": "Ak0BJw==",
+  "oracle": "Python zlib.adler32 + base64",
+  "source_and_binary_hashes_match": true
+}

@@ -2538,3 +2538,7 @@ Independent adaptation of [PeaZip file checks](https://peazip.github.io/verify-c
 ## Native Adler-32 exports and checksum row spacing (2026-11-02)
 
 Native 143-phase checksum workflow selects Adler-32, compares uppercase expected text and copies digest plus relative/absolute lists: 14/14 checks, 19 isolated clipboard calls. Excessive per-newline item spacing in virtual result rows was corrected after live inspection revealed clipped copy buttons. Python zlib independently verifies actual new payloads. [Evidence, retained failures and scope](../qualification/adler32-native-2026-11-02/README.md).
+
+## Base64 checksum copying (2026-11-02)
+
+Independent adaptation of [PeaZip Base64 hash output](https://peazip.github.io/verify-checksum-hash.html): copy the selected completed digest as standard padded Base64 bytes, covering all eight algorithms and retaining the single-result validity guard. Hex comparison and list formats remain explicit. [Qualification and native scope](../qualification/checksum-base64-2026-11-02/README.md).
