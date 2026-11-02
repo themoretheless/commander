@@ -65,6 +65,22 @@ struct CachedTable {
     table: Arc<Table>,
 }
 
+#[derive(Clone)]
+struct DialectChoice {
+    content: Arc<str>,
+    file_delimiter: u8,
+    selected: Option<u8>,
+}
+fn delimiter_label(delimiter: u8) -> &'static str {
+    match delimiter {
+        b',' => "Comma",
+        b'\t' => "Tab",
+        b';' => "Semicolon",
+        b'|' => "Pipe",
+        _ => "Custom",
+    }
+}
+
 #[derive(Clone, Default)]
 struct View {
     first_heading: bool,
@@ -303,8 +319,8 @@ pub fn shown_order(ctx: &egui::Context, side: &str) -> Option<(bool, Vec<usize>)
 /// CSV quoting preserves cell contents; this exports records, not source bytes.
 fn export_rows(table: &Table, view: &View, delimiter: u8) -> Result<String, String> {
     const MAX_EXPORT_BYTES: usize = 1024 * 1024;
-    if !matches!(delimiter, b',' | b'\t') {
-        return Err("Choose CSV or TSV for table export".into());
+    if !matches!(delimiter, b',' | b'\t' | b';' | b'|') {
+        return Err("Choose comma, tab, semicolon or pipe for table export".into());
     }
     if !view.order_ready || view.order.is_empty() {
         return Err("No visible data records to copy".into());
@@ -337,8 +353,45 @@ fn export_rows(table: &Table, view: &View, delimiter: u8) -> Result<String, Stri
     String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
-pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) -> Option<String> {
+pub fn render(
+    ui: &mut egui::Ui,
+    content: &Arc<str>,
+    file_delimiter: u8,
+    side: &str,
+) -> Option<String> {
     let id = egui::Id::new(("table_preview", side));
+    let mut dialect = ui
+        .ctx()
+        .data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))
+        .filter(|choice| {
+            choice.file_delimiter == file_delimiter && Arc::ptr_eq(&choice.content, content)
+        })
+        .unwrap_or_else(|| DialectChoice {
+            content: content.clone(),
+            file_delimiter,
+            selected: None,
+        });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Delimiter");
+        let combo=egui::ComboBox::from_id_salt(id.with("delimiter-menu"))
+            .selected_text(dialect.selected.map(delimiter_label).unwrap_or("File default"))
+            .show_ui(ui,|ui| {
+                for (value,label) in [(None,"File default"),(Some(b','),"Comma"),(Some(b'\t'),"Tab"),(Some(b';'),"Semicolon"),(Some(b'|'),"Pipe")] {
+                    let option=ui.selectable_value(&mut dialect.selected,value,label);
+                    #[cfg(any(test,feature="visual-qa"))]
+                    ui.ctx().data_mut(|data|data.insert_temp(id.with(("delimiter-option",label)),option.rect));
+                    #[cfg(not(any(test,feature="visual-qa")))]
+                    let _=option;
+                }
+            });
+        #[cfg(any(test,feature="visual-qa"))]
+        ui.ctx().data_mut(|data|data.insert_temp(id.with("delimiter"),combo.response.rect));
+        combo.response.on_hover_text("Reparse loaded text with the chosen separator. Changing the effective separator resets headings, filtering and sorting. File default uses comma for CSV and tab for TSV.");
+        ui.small(format!("Using {}",delimiter_label(dialect.selected.unwrap_or(file_delimiter))));
+    });
+    let delimiter = dialect.selected.unwrap_or(file_delimiter);
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(id.with("dialect"), dialect));
     let cached = ui.ctx().data(|data| data.get_temp::<CachedTable>(id));
     let changed = cached.as_ref().is_none_or(|cached| {
         cached.delimiter != delimiter || !Arc::ptr_eq(&cached.content, content)
@@ -542,7 +595,7 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.small(format!("Showing {} of {} data rows", view.order.len(), table.rows.len() - usize::from(view.first_heading)));
-                let format = if delimiter == b'\t' { "TSV" } else { "CSV" };
+                let format = match delimiter { b'\t'=>"TSV", b';'=>"semicolon-separated", b'|'=>"pipe-separated", _=>"CSV" };
                 let response = ui.add_enabled(!view.order.is_empty(), egui::Button::new(format!("Copy visible {format} ({})", view.order.len())))
                     .on_hover_text("Copy shown records in the displayed order, with headings when enabled. Only loaded preview rows; quotes, separators and line breaks are escaped. Cell values are unchanged.");
                 #[cfg(any(test, feature = "visual-qa"))]
@@ -597,6 +650,138 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delimiter_menu_reparses_quotes_exports_actual_dialect_and_resets_source_owned_state() {
+        let ctx = egui::Context::default();
+        let content: Arc<str> =
+            Arc::from("Name;Value;Note\nb;2;\"one;two|three\"\na;-10;\"line\nbreak\"\n");
+        let original = content.to_string();
+        let id = egui::Id::new(("table_preview", "right"));
+        let frame = |content: &Arc<str>, side: &str, default: u8, events| {
+            let mut copied = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| copied = render(ui, content, default, side),
+            ));
+            copied
+        };
+        let click = |content: &Arc<str>, key| {
+            let pos = ctx
+                .data(|data| data.get_temp::<egui::Rect>(key))
+                .unwrap()
+                .center();
+            let mut copied = None;
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(pos)];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                if let Some(text) = frame(content, "right", b',', events) {
+                    copied = Some(text);
+                }
+            }
+            copied
+        };
+        let choose = |content: &Arc<str>, label| {
+            let _ = click(content, id.with("delimiter"));
+            let _ = click(content, id.with(("delimiter-option", label)));
+        };
+        frame(&content, "right", b',', vec![]);
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<CachedTable>(id))
+                .unwrap()
+                .table
+                .columns,
+            1
+        );
+        choose(&content, "Semicolon");
+        let cached = ctx.data(|data| data.get_temp::<CachedTable>(id)).unwrap();
+        assert_eq!(cached.delimiter, b';');
+        assert_eq!(cached.table.rows.len(), 3);
+        assert_eq!(cached.table.rows[1], ["b", "2", "one;two|three"]);
+        assert_eq!(cached.table.rows[2], ["a", "-10", "line\nbreak"]);
+        click(&content, id.with("heading"));
+        click(&content, id.with("numeric-sort"));
+        click(&content, id.with(("column", 1usize)));
+        click(&content, id.with("filter"));
+        frame(
+            &content,
+            "right",
+            b',',
+            vec![egui::Event::Text("one".into())],
+        );
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![1])));
+        assert_eq!(
+            click(&content, id.with("copy-records")).as_deref(),
+            Some("Name;Value;Note\nb;2;\"one;two|three\"\n")
+        );
+        choose(&content, "Pipe");
+        let reset = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        assert!(
+            !reset.first_heading
+                && !reset.numeric_sort
+                && reset.sort.is_none()
+                && reset.filter.query.is_empty()
+        );
+        assert_eq!(content.as_ref(), original);
+        let next: Arc<str> = Arc::from("Name|Value\nx|-2\n");
+        frame(&next, "right", b',', vec![]);
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))
+                .unwrap()
+                .selected,
+            None
+        );
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<CachedTable>(id))
+                .unwrap()
+                .delimiter,
+            b','
+        );
+        choose(&next, "Pipe");
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<CachedTable>(id))
+                .unwrap()
+                .table
+                .rows[1],
+            ["x", "-2"]
+        );
+        frame(&next, "left", b'\t', vec![]);
+        let left = egui::Id::new(("table_preview", "left"));
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<DialectChoice>(left.with("dialect")))
+                .unwrap()
+                .selected,
+            None
+        );
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<CachedTable>(left))
+                .unwrap()
+                .delimiter,
+            b'\t'
+        );
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))
+                .unwrap()
+                .selected,
+            Some(b'|')
+        );
+    }
+
     #[test]
     fn numeric_sort_preserves_precision_signed_values_ties_and_invalid_tail() {
         let values = [
@@ -1183,7 +1368,7 @@ mod tests {
             order: Arc::new(vec![3, 2, 4]),
             ..Default::default()
         };
-        for delimiter in *b",\t" {
+        for delimiter in *b",\t;|" {
             let exported = export_rows(&table, &view, delimiter).unwrap();
             let reparsed = parse(&exported, delimiter);
             assert_eq!(
@@ -1221,7 +1406,7 @@ mod tests {
             )
             .is_err()
         );
-        assert!(export_rows(&table, &view, b'|').is_err());
+        assert!(export_rows(&table, &view, b':').is_err());
         let invalid = View {
             first_heading: true,
             order_ready: true,

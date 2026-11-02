@@ -3,6 +3,9 @@
 CSV/TSV preview offers **Numeric sort** for signed decimals and scientific notation.
 Comparison preserves precision; empty, missing and non-numeric cells stay last.
 Filtering and copied rows retain original cell text and the displayed order.
+The **Delimiter** menu also supports semicolon and pipe-separated data. Copy uses
+the active separator. Changing it resets table filters and sorting; File default
+restores comma for CSV or tab for TSV. Source files are not modified.
 
 Batch rename can add a **Folder name** prefix or suffix with an ancestor level
 and separator: level 1 uses the containing folder, level 2 its parent. The captured

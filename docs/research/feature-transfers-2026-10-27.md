@@ -2510,3 +2510,7 @@ Commander extension of the Strata-inspired table preview: Numeric sort compares 
 ## Native exact numeric table sorting (2026-11-02)
 
 Native pointer workflow now compares signed values and adjacent integers beyond f64 precision in both directions, switches between text/numeric/original orders and copies three actual numeric CSV payloads. Python Decimal independently checks 12 new observations plus all 17 existing filter states. Final capture: 133 phases, 14/14 checks and five isolated clipboard calls; active-mode help text corrected and frame inspected. [Evidence and remaining alternate/native OS pasteboard scope](../qualification/table-numeric-native-2026-11-02/README.md).
+
+## Explicit table delimiters (2026-11-02)
+
+Independent adaptation of [Strata delimiter-parameterized parsing](https://github.com/lgse/strata/blob/ac5ab4f22d86798a40d7ad30eb3528d56eecf137/src/services/table.rs): File default / comma / tab / semicolon / pipe selection in CSV/TSV preview, with same-frame bounded reparse and matching escaped export. Choices belong to the pane and captured source; effective separator changes reset column-dependent view state, and new sources restore defaults. No automatic detection or source mutation. [Popup/pointer tests, roundtrip evidence and native scope](../qualification/table-delimiter-2026-11-02/README.md).
