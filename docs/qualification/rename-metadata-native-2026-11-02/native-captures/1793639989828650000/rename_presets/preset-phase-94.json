@@ -1,0 +1,107 @@
+{
+  "editor": {
+    "discard_prompt": false,
+    "name": "Album",
+    "rule": {
+      "case": "Keep",
+      "date_stamp": {
+        "format": "%Y_",
+        "position": "Prefix"
+      },
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "parent_affix": {
+        "depth": 1,
+        "separator": "_",
+        "suffix": false
+      },
+      "prefix": "Photo_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "selected": "Album"
+  },
+  "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42631-rename_presets/left",
+  "modified": {
+    "README.txt": 1793639994,
+    "notes.md": 1793639994
+  },
+  "phase": 94,
+  "presets": [
+    {
+      "at_launch": true,
+      "name": "Album",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    },
+    {
+      "name": "Copy",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    }
+  ],
+  "preview": {
+    "applicable": true,
+    "plans": [
+      {
+        "from": "notes.md",
+        "status": "Ok",
+        "to": "2026_left_Photo_notes01.md"
+      },
+      {
+        "from": "README.txt",
+        "status": "Ok",
+        "to": "2026_left_Photo_README02.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "date_stamp": {
+        "format": "%Y_",
+        "position": "Prefix"
+      },
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "parent_affix": {
+        "depth": 1,
+        "separator": "_",
+        "suffix": false
+      },
+      "prefix": "Photo_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    }
+  }
+}

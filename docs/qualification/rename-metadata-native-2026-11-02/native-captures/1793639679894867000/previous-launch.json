@@ -1,0 +1,8 @@
+{
+  "scenario": "rename_presets",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/rename-metadata-native-2026-11-02/native-captures/1793639557661023000",
+  "binary_sha256": "984ea9050957a41120735364e4697d4e9773d14cf43d28012d94592fe702caa2",
+  "core_sha256": "984ea9050957a41120735364e4697d4e9773d14cf43d28012d94592fe702caa2",
+  "wrapper_sha256": "e9e81e32c6b38cad09ae1a8b94a0a7f39bb7909645e44706d1a4d606ec913f3d",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

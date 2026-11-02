@@ -1,0 +1,89 @@
+{
+  "editor": {
+    "discard_prompt": true,
+    "name": "Album",
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "prefix": "Edited_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "selected": "Album"
+  },
+  "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-35409-rename_presets/left",
+  "modified": {
+    "README.txt": 1793639402,
+    "notes.md": 1793639402
+  },
+  "phase": 72,
+  "presets": [
+    {
+      "at_launch": true,
+      "name": "Album",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    },
+    {
+      "name": "Copy",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    }
+  ],
+  "preview": {
+    "applicable": true,
+    "plans": [
+      {
+        "from": "notes.md",
+        "status": "Ok",
+        "to": "Edited_notes01.md"
+      },
+      {
+        "from": "README.txt",
+        "status": "Ok",
+        "to": "Edited_README02.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "prefix": "Edited_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "src/app/batch_rename_dialog.rs": "bc05beb48de5deeabd77277c95e44792c8bf18fdadc5a3fe57104824c0ad093c",
+  "src/visual_qa.rs": "1e73a4a3efed8cfca73b75d29427ee5b3ac93fe540b3237610c1b37c324054d5",
+  "src/rename.rs": "790b7efb9a9eca50b017cf66748ed531dba6520c271215611e2a380f8224d3ed",
+  "Cargo.lock": "5f28d8632f3714ed5a59ada4ba93c390c6ead6de3efede1eda48bbb4e578df57"
+}

@@ -934,7 +934,7 @@ impl Scenario {
             | Self::ChangedSearch
             | Self::TimeGroups
             | Self::FindSort => Some("Find"),
-            Self::RenamePresets | Self::RenameTarget | Self::RenameOptions => Some("BatchRename"),
+            Self::RenameTarget | Self::RenameOptions => Some("BatchRename"),
             _ => None,
         }
     }
@@ -4561,6 +4561,7 @@ impl eframe::App for VisualQaApp {
             }
         }
         if self.scenario.modal_owner().is_none()
+            && !(self.scenario == Scenario::RenamePresets && self.preset_click_phase < 111)
             && !(self.scenario == Scenario::PdfPreview && self.pdf_click_phase < 9)
             && !(self.scenario == Scenario::PdfSearch && self.pdf_click_phase < 13)
             && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
@@ -16727,10 +16728,28 @@ impl eframe::App for VisualQaApp {
                 self.preset_input_pending = true;
             }
         }
-        if self.scenario == Scenario::RenamePresets && (10..78).contains(&self.preset_click_phase) {
+        if self.scenario == Scenario::RenamePresets && (10..111).contains(&self.preset_click_phase)
+        {
             let phase = self.preset_click_phase;
             let state = self.inner.ui.modals.batch_rename.as_ref();
-            let observation = serde_json::json!({"phase":phase,"presets":self.inner.rename_presets,"editor":state.map(|state|serde_json::json!({"selected":state.preset_selected,"name":state.preset_name,"rule":state.rule(),"discard_prompt":state.confirm_preset_discard}))});
+            if phase == 110
+                && (!self.fixture.left.join("notes.md").exists()
+                    || !self.fixture.left.join("README.txt").exists())
+            {
+                return;
+            }
+            if matches!(phase, 78 | 105 | 110) {
+                let files=std::fs::read_dir(&self.fixture.left).into_iter().flatten().filter_map(Result::ok).filter(|entry|entry.path().is_file()).map(|entry|serde_json::json!({"name":entry.file_name().to_string_lossy(),"bytes":std::fs::read(entry.path()).unwrap_or_default(),"modified":entry.metadata().ok().and_then(|metadata|metadata.modified().ok()).and_then(|time|time.duration_since(std::time::UNIX_EPOCH).ok()).map(|duration|duration.as_secs())})).collect::<Vec<_>>();
+                let _ = serde_json::to_vec_pretty(&files).is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir
+                            .join(format!("metadata-files-{phase}.json")),
+                        bytes,
+                    )
+                    .is_ok()
+                });
+            }
+            let observation = serde_json::json!({"phase":phase,"presets":self.inner.rename_presets,"folder":state.map(|state|&state.context.dir),"modified":state.map(|state|state.context.modified.iter().map(|(name,time)|(name,time.duration_since(std::time::UNIX_EPOCH).ok().map(|duration|duration.as_secs()))).collect::<std::collections::BTreeMap<_,_>>()),"preview":state.and_then(|state|state.validation.as_ref().map(|validation|validation.metadata_snapshot())),"editor":state.map(|state|serde_json::json!({"selected":state.preset_selected,"name":state.preset_name,"rule":state.rule(),"discard_prompt":state.confirm_preset_discard}))});
             let _ = serde_json::to_vec_pretty(&observation).is_ok_and(|bytes| {
                 std::fs::write(
                     self.scenario_dir.join(format!("preset-phase-{phase}.json")),
@@ -16765,12 +16784,27 @@ impl eframe::App for VisualQaApp {
                     | 75
                     | 76
                     | 77
+                    | 84
+                    | 85
+                    | 86
+                    | 93
+                    | 94
+                    | 95
+                    | 102
+                    | 103
+                    | 104
+                    | 105
+                    | 106
+                    | 107
+                    | 108
+                    | 109
+                    | 110
             ) {
                 let (key, pressed, modifiers) = match phase {
                     10 => (egui::Key::Enter, false, egui::Modifiers::NONE),
-                    14 | 15 | 23 | 24 | 59 | 60 => (
+                    14 | 15 | 23 | 24 | 59 | 60 | 84 | 85 | 93 | 94 => (
                         egui::Key::A,
-                        matches!(phase, 14 | 23 | 59),
+                        matches!(phase, 14 | 23 | 59 | 84 | 93),
                         egui::Modifiers::COMMAND,
                     ),
                     38 | 39 | 62 | 63 | 68 | 69 => (
@@ -16778,6 +16812,12 @@ impl eframe::App for VisualQaApp {
                         matches!(phase, 38 | 62 | 68),
                         egui::Modifiers::NONE,
                     ),
+                    102 | 103 | 108 | 109 => (
+                        egui::Key::Enter,
+                        matches!(phase, 102 | 108),
+                        egui::Modifiers::NONE,
+                    ),
+                    105 | 106 => (egui::Key::Z, phase == 105, egui::Modifiers::COMMAND),
                     _ => (
                         egui::Key::R,
                         matches!(phase, 41 | 75),
@@ -16790,7 +16830,7 @@ impl eframe::App for VisualQaApp {
                     ),
                 };
                 input.events.push(egui::Event::ModifiersChanged(modifiers));
-                if matches!(phase, 16 | 25 | 61) {
+                if matches!(phase, 16 | 25 | 61 | 86 | 95) {
                     input
                         .events
                         .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
@@ -16798,11 +16838,13 @@ impl eframe::App for VisualQaApp {
                         match phase {
                             16 => "Album",
                             25 => "Copy",
+                            86 => "%Y_",
+                            95 => "--",
                             _ => "Edited_",
                         }
                         .into(),
                     ));
-                } else if !matches!(phase, 40 | 55 | 64 | 70 | 74 | 77) {
+                } else if !matches!(phase, 40 | 55 | 64 | 70 | 74 | 77 | 104 | 107 | 110) {
                     input.events.push(egui::Event::Key {
                         key,
                         physical_key: None,
@@ -16828,10 +16870,29 @@ impl eframe::App for VisualQaApp {
                     56..=58 => ("rename-prefix", phase - 56),
                     65..=67 => ("rename-preset-keep", phase - 65),
                     71..=73 => ("rename-preset-discard", phase - 71),
+                    78..=80 => ("rename-date-on", phase - 78),
+                    81..=83 => ("rename-date-format", phase - 81),
+                    87..=89 => ("rename-parent-on", phase - 87),
+                    90..=92 => ("rename-parent-separator", phase - 90),
+                    96..=98 => ("rename-parent-suffix", phase - 96),
+                    99..=101 => ("rename-parent-separator", phase - 99),
                     _ => unreachable!(),
                 };
                 if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(id)))
                 {
+                    if phase >= 78 {
+                        let _ = serde_json::to_vec_pretty(
+                            &serde_json::json!({"phase":phase,"id":id,"rect":[rect.min.x,rect.min.y,rect.max.x,rect.max.y]}),
+                        )
+                        .is_ok_and(|bytes| {
+                            std::fs::write(
+                                self.scenario_dir
+                                    .join(format!("metadata-target-{phase}.json")),
+                                bytes,
+                            )
+                            .is_ok()
+                        });
+                    }
                     input
                         .events
                         .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
@@ -17087,7 +17148,7 @@ impl eframe::App for VisualQaApp {
         if self.scenario == Scenario::RenamePresets && self.preset_input_pending {
             self.preset_click_phase += 1;
             self.preset_input_pending = false;
-            if self.preset_click_phase == 78 {
+            if self.preset_click_phase == 111 {
                 self.preset_settled_at = Some(Instant::now());
             }
         }
@@ -19362,22 +19423,12 @@ impl eframe::App for VisualQaApp {
                     && !self.fixture.left.join("item.log").exists()
             }
             Scenario::RenamePresets => {
-                self.preset_click_phase == 78
+                self.preset_click_phase == 111
                     && self.preset_settled_at.is_some_and(|time|time.elapsed()>=Duration::from_millis(300))
                     && self.inner.rename_presets.items().iter().map(|preset|preset.name.as_str()).eq(["Album","Copy"])
                     && self.inner.rename_presets.launch_preset().is_some_and(|preset|preset.name=="Album")
                     && self.inner.rename_presets.get("Copy").is_some_and(|preset|!preset.at_launch && preset.rule.prefix=="Photo_")
-                    && self
-                        .inner
-                        .ui
-                        .modals
-                        .batch_rename
-                        .as_ref()
-                        .is_some_and(|state| {
-                            state.preset_selected.as_deref() == Some("Album")
-                                && state.rule().prefix == "Photo_"
-                                && state.rule().numbering.is_some()
-                        })
+                    && !self.inner.ui.modals.any_open()
                     && self.fixture.left.join("notes.md").exists()
                     && self.fixture.left.join("README.txt").exists()
             }

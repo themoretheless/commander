@@ -2498,3 +2498,7 @@ Independent adaptation of [Double Commander ancestor-name placeholders](https://
 ## Modified saved rename-rule cancellation (2026-11-02)
 
 Independent adaptation of [Double Commander modified-preset exit behavior](https://doublecmd.github.io/doc/en/multirename.html): Cancel/Escape on an edited selected saved rule requires explicit discard or keeps editing; Rename submission is blocked during the prompt. Native 78-phase workflow verifies both choices and reopening of the unchanged saved rule, 16/16 checks and zero native effects. [Evidence and explicit cancellation/application-quit limits](../qualification/rename-preset-discard-2026-11-02/README.md).
+
+## Native date/folder rename application and Undo (2026-11-02)
+
+Native controls now set UTC year prefix and containing-folder suffix/separator, apply with Enter, then execute the normal Cmd+Z confirmation. Independent Python checks cached proposals against filesystem timestamps/names, actual renamed bytes and complete restoration by Undo. Successful 111-phase workflow: 14/14 final main-pane checks, 101 retained observations, zero clipboard/opener/trash effects and verified owned-fixture mutations. Final restored pane inspected. [Receipts, failed attempts and remaining alternate/native scroll scope](../qualification/rename-metadata-native-2026-11-02/README.md).

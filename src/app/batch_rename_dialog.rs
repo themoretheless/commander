@@ -140,6 +140,11 @@ pub struct ValidatedBatchRename {
 
 impl ValidatedBatchRename {
     #[cfg(feature = "visual-qa")]
+    pub fn metadata_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"rule":self.rule,"applicable":self.applicable,"plans":self.plans.iter().map(|plan|serde_json::json!({"from":plan.from,"to":plan.to,"status":format!("{:?}",plan.status)})).collect::<Vec<_>>()})
+    }
+
+    #[cfg(feature = "visual-qa")]
     pub fn extension_case_preview(
         &self,
         mode: crate::rename::ExtensionCase,
@@ -877,6 +882,8 @@ impl App {
                     });
                     ui.horizontal_wrapped(|ui| {
                         let enabled = ui.checkbox(&mut state.parent_on, "Folder name").on_hover_text("Level 1 is the containing folder; level 2 is its parent. Uses the captured folder path without resolving links.");
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-parent-on"),enabled.rect));
                         preset_interaction |= enabled.changed();
                         ui.add_enabled_ui(state.parent_on, |ui| {
                             ui.label("level");
@@ -884,9 +891,14 @@ impl App {
                             ui.label("separator");
                             let input = ui.add(egui::TextEdit::singleline(&mut state.parent_separator).char_limit(32).desired_width(70.0));
                             text_fields.push(input.id);
+                            #[cfg(feature="visual-qa")]
+                            ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-parent-separator"),input.rect));
                             preset_interaction |= input.changed();
                             preset_interaction |= ui.selectable_value(&mut state.parent_suffix, false, "Folder prefix").changed();
-                            preset_interaction |= ui.selectable_value(&mut state.parent_suffix, true, "Folder suffix").changed();
+                            let suffix=ui.selectable_value(&mut state.parent_suffix, true, "Folder suffix");
+                            #[cfg(feature="visual-qa")]
+                            ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-parent-suffix"),suffix.rect));
+                            preset_interaction |= suffix.changed();
                         });
                     });
                     // ── Case + numbering ────────────────────────────────────
@@ -1083,7 +1095,7 @@ impl App {
                     // order and the mask/rename sheets.
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui
+                        let rename = ui
                             .add_enabled(
                                 validation.applicable && !state.confirm_preset_discard,
                                 super::dialog_button(
@@ -1091,11 +1103,10 @@ impl App {
                                     super::ButtonRole::Primary,
                                     egui::RichText::new("Rename").size(13.0),
                                 ),
-                            )
-                            .clicked()
-                        {
-                            submit_requested = true;
-                        }
+                            );
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-apply"),rename.rect));
+                        if rename.clicked() { submit_requested = true; }
                         ui.add_space(8.0);
                         if ui
                             .add(super::dialog_button(

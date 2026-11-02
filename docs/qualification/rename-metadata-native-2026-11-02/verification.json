@@ -1,0 +1,29 @@
+{
+  "checks": 14,
+  "phases": 111,
+  "observations": 101,
+  "native_effects": 0,
+  "verified": [
+    "rename",
+    "saved-copy",
+    "set-launch",
+    "clear-launch",
+    "set-again",
+    "close",
+    "keyboard-reopen-load",
+    "sort-desc",
+    "move-up",
+    "move-down",
+    "sort-asc",
+    "dirty-escape-guard",
+    "keep-editing",
+    "discard-close",
+    "reopen-saved-rule",
+    "date-input",
+    "folder-suffix-input",
+    "cached-preview",
+    "filesystem-apply",
+    "undo-restores-bytes"
+  ],
+  "frame_sha256": "50bc24f704bc926a0152b66ba95771a78070da65b05a7ac25a081879c7e04fda"
+}

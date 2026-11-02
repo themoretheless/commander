@@ -1,0 +1,72 @@
+{
+  "editor": {
+    "discard_prompt": false,
+    "name": "Album",
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "prefix": "Photo_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "selected": "Photos"
+  },
+  "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42631-rename_presets/left",
+  "modified": {
+    "README.txt": 1793639994,
+    "notes.md": 1793639994
+  },
+  "phase": 17,
+  "presets": [
+    {
+      "name": "Photos",
+      "rule": {
+        "case": "Keep",
+        "find": "",
+        "numbering": {
+          "pad": 2,
+          "start": 1,
+          "step": 1
+        },
+        "prefix": "Photo_",
+        "regex": false,
+        "replace": "",
+        "suffix": ""
+      }
+    }
+  ],
+  "preview": {
+    "applicable": true,
+    "plans": [
+      {
+        "from": "notes.md",
+        "status": "Ok",
+        "to": "Photo_notes01.md"
+      },
+      {
+        "from": "README.txt",
+        "status": "Ok",
+        "to": "Photo_README02.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "numbering": {
+        "pad": 2,
+        "start": 1,
+        "step": 1
+      },
+      "prefix": "Photo_",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    }
+  }
+}
