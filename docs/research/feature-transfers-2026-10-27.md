@@ -2486,3 +2486,7 @@ The native scenario now executes rename, saved-rule duplication, setting/clearin
 ## Saved rename preset ordering (2026-11-02)
 
 Independent adaptation of [Double Commander preset sorting](https://doublecmd.github.io/doc/en/multirename.html): ascending/descending canonical Unicode name ordering and manual selected-rule up/down. Saved array order persists; complete rule identity, launch preference and current editor remain intact. [Tests, evidence and native scope](../qualification/rename-preset-order-2026-11-02/README.md).
+
+## Native saved rename-rule ordering (2026-11-02)
+
+Success-path native interaction now covers both sorts and selected-rule up/down after the existing management/reopen workflow: 56 phases, 16/16 checks, 46 observations independently compared to expected order and rule/default ownership, zero native effects. A 300 ms post-input wait fixes the prior fade capture; the visible controls were visually inspected after settling. [Evidence and remaining error/restart/date scope](../qualification/rename-preset-order-native-2026-11-02/README.md).

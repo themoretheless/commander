@@ -2971,6 +2971,7 @@ struct VisualQaApp {
     archive_copy_settle: u8,
     preset_click_phase: u8,
     preset_input_pending: bool,
+    preset_settled_at: Option<Instant>,
     rename_target_phase: u8,
     rename_options_phase: u8,
     rename_range_phase: u8,
@@ -3249,6 +3250,7 @@ impl VisualQaApp {
             archive_copy_settle: 0,
             preset_click_phase: 0,
             preset_input_pending: false,
+            preset_settled_at: None,
             rename_target_phase: 0,
             rename_options_phase: 0,
             rename_range_phase: 0,
@@ -16725,7 +16727,7 @@ impl eframe::App for VisualQaApp {
                 self.preset_input_pending = true;
             }
         }
-        if self.scenario == Scenario::RenamePresets && (10..43).contains(&self.preset_click_phase) {
+        if self.scenario == Scenario::RenamePresets && (10..56).contains(&self.preset_click_phase) {
             let phase = self.preset_click_phase;
             let state = self.inner.ui.modals.batch_rename.as_ref();
             let observation = serde_json::json!({"phase":phase,"presets":self.inner.rename_presets,"editor":state.map(|state|serde_json::json!({"selected":state.preset_selected,"name":state.preset_name,"rule":state.rule()}))});
@@ -16738,7 +16740,7 @@ impl eframe::App for VisualQaApp {
             });
             if matches!(
                 phase,
-                10 | 14 | 15 | 16 | 23 | 24 | 25 | 38 | 39 | 40 | 41 | 42
+                10 | 14 | 15 | 16 | 23 | 24 | 25 | 38 | 39 | 40 | 41 | 42 | 55
             ) {
                 let (key, pressed, modifiers) = match phase {
                     10 => (egui::Key::Enter, false, egui::Modifiers::NONE),
@@ -16767,7 +16769,7 @@ impl eframe::App for VisualQaApp {
                     input.events.push(egui::Event::Text(
                         if phase == 16 { "Album" } else { "Copy" }.into(),
                     ));
-                } else if phase != 40 {
+                } else if phase != 40 && phase != 55 {
                     input.events.push(egui::Event::Key {
                         key,
                         physical_key: None,
@@ -16786,6 +16788,10 @@ impl eframe::App for VisualQaApp {
                     29..=31 => ("rename-preset-launch", phase - 29),
                     32..=34 => ("rename-preset-launch-clear", phase - 32),
                     35..=37 => ("rename-preset-launch", phase - 35),
+                    43..=45 => ("rename-preset-sort-desc", phase - 43),
+                    46..=48 => ("rename-preset-up", phase - 46),
+                    49..=51 => ("rename-preset-down", phase - 49),
+                    52..=54 => ("rename-preset-sort-asc", phase - 52),
                     _ => unreachable!(),
                 };
                 if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(id)))
@@ -17045,6 +17051,9 @@ impl eframe::App for VisualQaApp {
         if self.scenario == Scenario::RenamePresets && self.preset_input_pending {
             self.preset_click_phase += 1;
             self.preset_input_pending = false;
+            if self.preset_click_phase == 56 {
+                self.preset_settled_at = Some(Instant::now());
+            }
         }
 
         if self.scenario == Scenario::ProfileExchange
@@ -19317,7 +19326,9 @@ impl eframe::App for VisualQaApp {
                     && !self.fixture.left.join("item.log").exists()
             }
             Scenario::RenamePresets => {
-                self.preset_click_phase == 43
+                self.preset_click_phase == 56
+                    && self.preset_settled_at.is_some_and(|time|time.elapsed()>=Duration::from_millis(300))
+                    && self.inner.rename_presets.items().iter().map(|preset|preset.name.as_str()).eq(["Album","Copy"])
                     && self.inner.rename_presets.launch_preset().is_some_and(|preset|preset.name=="Album")
                     && self.inner.rename_presets.get("Copy").is_some_and(|preset|!preset.at_launch && preset.rule.prefix=="Photo_")
                     && self
