@@ -174,6 +174,7 @@ fn tagged_algorithm(tag: &str) -> Option<Algorithm> {
         "SHA384" | "SHA-384" | "SHA2-384" => Some(Algorithm::Sha384),
         "SHA512" | "SHA-512" | "SHA2-512" => Some(Algorithm::Sha512),
         "MD5" => Some(Algorithm::Md5),
+        "SHA1" | "SHA-1" => Some(Algorithm::Sha1),
         "BLAKE3" => Some(Algorithm::Blake3),
         "CRC32" => Some(Algorithm::Crc32),
         _ => None,
@@ -211,6 +212,7 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
     let name = path.file_name()?.to_str()?.to_ascii_lowercase();
     match name.as_str() {
         "md5sums" => return Some(Algorithm::Md5),
+        "sha1sums" => return Some(Algorithm::Sha1),
         "sha256sums" => return Some(Algorithm::Sha256),
         "sha384sums" => return Some(Algorithm::Sha384),
         "sha512sums" => return Some(Algorithm::Sha512),
@@ -222,6 +224,7 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
         "sha384" | "sha384sum" => Some(Algorithm::Sha384),
         "sha512" | "sha512sum" => Some(Algorithm::Sha512),
         "md5" | "md5sum" => Some(Algorithm::Md5),
+        "sha1" | "sha1sum" => Some(Algorithm::Sha1),
         "b3" | "blake3" => Some(Algorithm::Blake3),
         "sfv" | "crc32" => Some(Algorithm::Crc32),
         _ => None,
@@ -241,14 +244,7 @@ fn detect(
             format!("Filename indicates {}, but the list does not match: {error}. Choose the algorithm explicitly if the filename is misleading", algorithm.label()));
     }
     let mut detected = None;
-    for algorithm in [
-        Algorithm::Sha256,
-        Algorithm::Sha384,
-        Algorithm::Sha512,
-        Algorithm::Blake3,
-        Algorithm::Crc32,
-        Algorithm::Md5,
-    ] {
+    for algorithm in Algorithm::ALL {
         if let Ok(rows) = parse(text, algorithm) {
             if detected.is_some() {
                 return Err("Ambiguous checksum algorithm or record layout: choose explicitly (64-digit hashes may be SHA-256 or BLAKE3), or use a tagged list / recognized filename".into());
@@ -436,6 +432,50 @@ mod tests {
     }
 
     #[test]
+    fn sha1_lists_detect_gnu_bsd_and_filename_hints_and_verify_mismatches() {
+        let dir = TempDir::new();
+        dir.file("data", "abc");
+        let hash = "a9993e364706816aba3e25717850c26c9cd0d89d";
+        for (name, text) in [
+            ("checksums.txt", format!("{hash} *data\n")),
+            ("SHA1SUMS", format!("{hash}  data\n")),
+            (
+                "list.sha1sum",
+                format!("SHA-1 (data) = {}\n", hash.to_uppercase()),
+            ),
+        ] {
+            let manifest = dir.file(name, &text);
+            let report = verify(
+                &manifest,
+                None,
+                &|| false,
+                &AtomicUsize::new(0),
+                &AtomicUsize::new(0),
+            );
+            assert_eq!(report.algorithm, Some(Algorithm::Sha1));
+            assert_eq!(report.rows[0].status, Status::Match, "{:?}", report.error);
+        }
+        let manifest = dir.file("bad.sha1", &format!("{}  data\n", "0".repeat(40)));
+        let report = verify(
+            &manifest,
+            None,
+            &|| false,
+            &AtomicUsize::new(0),
+            &AtomicUsize::new(0),
+        );
+        assert_eq!(report.rows[0].status, Status::Mismatch);
+        assert!(detect(Path::new("SHA1SUMS"), &format!("{ABC}  data\n"), None).is_err());
+        assert!(
+            detect(
+                Path::new("mixed.txt"),
+                &format!("SHA1 (data) = {hash}\nMD5 (data) = 900150983cd24fb0d6963f7d28e17f72\n"),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn parser_preserves_escaped_names_spaces_crlf_and_sfv_comments() {
         let text = format!(
             "\u{feff}# comment\r\n\\{ABC} *dir\\\\name\\nline\\rreturn \r\n{ABC}  ./other\n"
@@ -555,13 +595,14 @@ mod tests {
         assert!(
             detect(
                 Path::new("list"),
-                &format!("SHA1 (a) = {}", "0".repeat(40)),
+                &format!("SHA3-256 (a) = {}", "0".repeat(64)),
                 None
             )
             .is_err()
         );
         for (algorithm, width) in [
             (Algorithm::Md5, 32),
+            (Algorithm::Sha1, 40),
             (Algorithm::Sha384, 96),
             (Algorithm::Sha512, 128),
         ] {
@@ -621,6 +662,7 @@ mod tests {
             ("-sha384", Algorithm::Sha384),
             ("-sha512", Algorithm::Sha512),
             ("-md5", Algorithm::Md5),
+            ("-sha1", Algorithm::Sha1),
         ] {
             let output = std::process::Command::new("/usr/bin/openssl")
                 .args(["dgst", argument])

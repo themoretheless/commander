@@ -1,0 +1,4 @@
+{
+  "pid": 72347,
+  "reason": "Main-thread sample shows eframe update_logic_only under window occlusion; raw input script was advancing without UI passes. Owned test process terminated; this attempt is not qualification."
+}

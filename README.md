@@ -1168,9 +1168,9 @@ module is a thin egui layer over it.
   no row-number column. This exports parsed preview records with LF terminators,
   rather than the original file bytes; hidden/unloaded records are omitted.
 - **Checksum / verify** (palette): hash the selection with the existing
-  content-hash, BLAKE3, SHA-256, SHA-384, SHA-512, CRC32 (IEEE) and MD5 in one fresh read pass.
+  content-hash, BLAKE3, SHA-256, SHA-384, SHA-512, CRC32 (IEEE), MD5 and SHA-1 in one fresh read pass.
   Compare a single file using an explicit algorithm selector and its required
-  digest length (8, 32, 64, 96 or 128 hexadecimal characters). Copy the selected digest,
+  digest length (8, 32, 40, 64, 96 or 128 hexadecimal characters). Copy the selected digest,
   a report or a checksum list for the selected algorithm: GNU-format binary SHA/MD5
   lists, or a BLAKE3 list for `b3sum --check`. Lists preserve UTF-8 names with
   escaped backslashes and line breaks, omit failed/skipped/unprocessed files,
@@ -1179,7 +1179,8 @@ module is a thin egui layer over it.
   LF records). SFV cannot escape filenames: NUL, CR/LF line breaks, backslashes
   and non-UTF-8 paths prevent export instead of changing names. Tabs and trailing
   spaces in names are preserved.
-  MD5 supports compatibility with existing checksum manifests; SHA-256 remains the default.
+  MD5 and SHA-1 support legacy checksum manifests; SHA-256 remains the default.
+  SHA-1 lists recognize GNU records, SHA1/SHA-1 tags and SHA1SUMS/.sha1/.sha1sum names.
   **Relative paths** makes SHA/MD5/BLAKE3/SFV lists portable with the folder. The
   dialog shows the common directory of completed files: save the list there and
   verify from that directory. Names start with `./`, preserving literal `-` and
@@ -1281,7 +1282,7 @@ module is a thin egui layer over it.
   pane zoom, lasts for this result view, and resets for a new run/window.
 
 - **Verify checksum list** (palette): highlight a checksum-list file and use
-  **Auto**, or choose SHA-256/384/512, MD5, BLAKE3 or CRC32/SFV, then **Verify list**.
+  **Auto**, or choose SHA-256/384/512, SHA-1, MD5, BLAKE3 or CRC32/SFV, then **Verify list**.
   Auto recognizes common list filenames/extensions or unambiguous complete
   contents; untagged 64-digit hashes need SHA-256/BLAKE3 selection. BSD/GNU tagged
   and OpenSSL-style lists are supported alongside GNU untagged and SFV records.

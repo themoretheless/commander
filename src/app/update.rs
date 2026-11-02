@@ -1781,7 +1781,7 @@ impl App {
                 }
                 if let Some(report) = &self.checksum_report {
                     ui.label(report.summary_line());
-                    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 7.0 * ui.text_style_height(&egui::TextStyle::Monospace) + 7.0 * ui.spacing().item_spacing.y + 8.0;
+                    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 8.0 * ui.text_style_height(&egui::TextStyle::Monospace) + 8.0 * ui.spacing().item_spacing.y + 8.0;
                     egui::ScrollArea::both().max_height(320.0).show_rows(ui, row_height, report.rows.len(), |ui, range| {
                         ui.set_min_width(550.0);
                         for row in &report.rows[range] {
@@ -1790,14 +1790,14 @@ impl App {
                                 let path = row.path.to_string_lossy().escape_debug().to_string();
                                 ui.add(egui::Label::new(&path).truncate()).on_hover_text(&path);
                                 if let Some(message) = row.error.as_ref().or(row.skipped.as_ref()) { ui.add(egui::Label::new(message).truncate()).on_hover_text(message); }
-                                else { ui.add(egui::Label::new(egui::RichText::new(format!("SHA-256 {}\nSHA-384 {}\nSHA-512 {}\nBLAKE3  {}\nCRC32   {}\nMD5     {}\nContent {}", row.sha256_hex.as_deref().unwrap_or("-"), row.sha384_hex.as_deref().unwrap_or("-"), row.sha512_hex.as_deref().unwrap_or("-"), row.blake3_hex.as_deref().unwrap_or("-"), row.crc32_hex.as_deref().unwrap_or("-"), row.md5_hex.as_deref().unwrap_or("-"), row.content_hash.map(|value| format!("{value:016x}")).unwrap_or_else(|| "-".into()))).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
+                                else { ui.add(egui::Label::new(egui::RichText::new(format!("SHA-256 {}\nSHA-384 {}\nSHA-512 {}\nBLAKE3  {}\nCRC32   {}\nMD5     {}\nSHA-1   {}\nContent {}", row.sha256_hex.as_deref().unwrap_or("-"), row.sha384_hex.as_deref().unwrap_or("-"), row.sha512_hex.as_deref().unwrap_or("-"), row.blake3_hex.as_deref().unwrap_or("-"), row.crc32_hex.as_deref().unwrap_or("-"), row.md5_hex.as_deref().unwrap_or("-"), row.sha1_hex.as_deref().unwrap_or("-"), row.content_hash.map(|value| format!("{value:016x}")).unwrap_or_else(|| "-".into()))).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
                             });
                         }
                     });
                     let old_algorithm = self.checksum_algorithm;
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Compare as");
-                        for algorithm in [crate::checksum::Algorithm::Sha256, crate::checksum::Algorithm::Sha384, crate::checksum::Algorithm::Sha512, crate::checksum::Algorithm::Blake3, crate::checksum::Algorithm::Crc32, crate::checksum::Algorithm::Md5] {
+                        for algorithm in crate::checksum::Algorithm::ALL {
                             let choice = ui.selectable_value(&mut self.checksum_algorithm, algorithm, algorithm.label());
                             #[cfg(feature = "visual-qa")]
                             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("checksum-algorithm", algorithm.label())), choice.rect));
@@ -1805,6 +1805,7 @@ impl App {
                             let _ = choice;
                         }
                     });
+                    if self.checksum_algorithm == crate::checksum::Algorithm::Sha1 { ui.small("SHA-1: legacy checksum compatibility; use SHA-256 for new security-sensitive checks."); }
                     let algorithm = self.checksum_algorithm;
                     let comparable = report.single_digest(algorithm).is_some();
                     let expected_label = format!("Expected {}", algorithm.label());

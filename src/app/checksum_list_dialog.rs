@@ -121,13 +121,14 @@ impl App {
                     #[cfg(feature = "visual-qa")]
                     ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("checksum-list-algorithm", "Auto")), auto.rect));
                     if auto.changed() { state.report = None; state.error = None; }
-                    for algorithm in [crate::checksum::Algorithm::Sha256, crate::checksum::Algorithm::Sha384, crate::checksum::Algorithm::Sha512, crate::checksum::Algorithm::Blake3, crate::checksum::Algorithm::Crc32, crate::checksum::Algorithm::Md5] {
+                    for algorithm in crate::checksum::Algorithm::ALL {
                         let response = ui.selectable_value(&mut state.algorithm, Some(algorithm), if algorithm == crate::checksum::Algorithm::Crc32 { "CRC32 / SFV" } else { algorithm.label() });
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("checksum-list-algorithm", algorithm.label())), response.rect));
                         if response.changed() { state.report = None; state.error = None; }
                     }
                 });
+                if state.algorithm==Some(crate::checksum::Algorithm::Sha1) { ui.small("SHA-1 is provided for legacy checksum compatibility."); }
                 let response = ui.button("Verify list");
                 #[cfg(feature = "visual-qa")]
                 ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-list-run"), response.rect));

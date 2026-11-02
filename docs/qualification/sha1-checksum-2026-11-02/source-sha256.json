@@ -1,0 +1,11 @@
+{
+  "Cargo.toml": "3aaec7c97229829505695d294100456b3d74e25d0f8d02f3e6b8885af7038f8b",
+  "Cargo.lock": "5f28d8632f3714ed5a59ada4ba93c390c6ead6de3efede1eda48bbb4e578df57",
+  "src/checksum.rs": "8e99e7663ec65d4555d6305a1f7607e97acd8d812516e3e563ad88a9a12cb97d",
+  "src/checksum_list.rs": "5bb980e72cc29c63be875bc1768a8d3d81bb1bef24476c8e06348df9da64aabd",
+  "src/app/update.rs": "dae0bb453b65ce7f6329354294f7392ac9319860d38beb86e9c3665f3938d484",
+  "src/app/checksum_list_dialog.rs": "965d6f6fe051857bb523bbf2fab0bf40dcfb685f11596257b35aab8f47be2575",
+  "src/visual_qa.rs": "ddddf51fbd38b230a50fcacaaad2ac384a808907686e77381e40b03710fcd5f0",
+  "data/licenses/RustCrypto-sha1-MIT.txt": "831e0f43ad0bf014c1c4fec5767aae470434c1d66d6e671be2d823e729063e25",
+  "target/debug/commander": "820c626f3e765a8538253096b0386cb8e279e71b2260e796e1578ec46e517a10"
+}

@@ -28,3 +28,9 @@ bzip2/libbzip2. Copyright 1996-2021 Julian R Seward, 2019-2020 Federico Mena
 Quintero, 2021 Micah Snyder, and 2024-2025 Trifecta Tech Foundation and contributors.
 Commander does not claim authorship of that implementation. See the complete
 [license and disclaimer](data/licenses/libbz2-rs-sys-bzip2-1.0.6.txt).
+
+## Legacy SHA-1 interoperability
+
+SHA-1 checksum calculation uses RustCrypto `sha1` 0.11.0, distributed under
+the [MIT license](data/licenses/RustCrypto-sha1-MIT.txt). SHA-256 remains the
+default; SHA-1 is exposed for compatibility with existing checksum lists.

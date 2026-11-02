@@ -3655,6 +3655,7 @@ impl VisualQaApp {
         };
         let hash = match algorithm {
             crate::checksum::Algorithm::Md5 => "900150983cd24fb0d6963f7d28e17f72",
+            crate::checksum::Algorithm::Sha1 => "a9993e364706816aba3e25717850c26c9cd0d89d",
             _ => "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         };
         if report.error.is_some()
@@ -4599,7 +4600,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::RtfPreview
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
-            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 103)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 123)
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -14625,6 +14626,68 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
+        if self.scenario == Scenario::Checksums && (103..123).contains(&self.checksum_click_phase) {
+            let phase = self.checksum_click_phase;
+            let digest = "a9993e364706816aba3e25717850c26c9cd0d89d";
+            if phase == 114
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 14
+                    || !self.recorded_clipboard_dump("sha1-digest.txt"))
+            {
+                return;
+            }
+            if phase == 117
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 15
+                    || !self.recorded_clipboard_dump("sha1-absolute.sha1"))
+            {
+                return;
+            }
+            if phase == 120 && !self.inner.checksum_relative_base_is(&self.fixture.left) {
+                return;
+            }
+            let (id, local) = match phase {
+                103..=105 => (egui::Id::new(("checksum-algorithm", "SHA-1")), phase - 103),
+                106..=110 => (egui::Id::new("checksum-expected"), phase - 106),
+                111..=113 => (egui::Id::new("checksum-copy-digest"), phase - 111),
+                114..=116 | 120..=122 => (
+                    egui::Id::new("checksum-copy-list"),
+                    if phase < 117 {
+                        phase - 114
+                    } else {
+                        phase - 120
+                    },
+                ),
+                _ => (egui::Id::new("checksum-relative-paths"), phase - 117),
+            };
+            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if phase == 109 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        command: true,
+                        mac_cmd: true,
+                        ..Default::default()
+                    },
+                });
+            } else if phase == 110 {
+                input.events.push(egui::Event::Text(digest.to_uppercase()));
+            } else if local > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.checksum_click_phase += 1;
+            return;
+        }
         if self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6 {
             let find_id = egui::Id::new(("text_preview", "right")).with("find");
             if self.regex_click_phase == 3
@@ -19082,25 +19145,13 @@ impl eframe::App for VisualQaApp {
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
             Scenario::Checksums => {
-                let expected = format!(
-                    "900150983cd24fb0d6963f7d28e17f72 *{}\n",
-                    self.fixture.left.join("checksum.txt").display()
-                );
-                self.checksum_click_phase == 103
-                    && self.counters.clipboard.load(Ordering::Relaxed) == 13
-                    && self
-                        .counters
-                        .clipboard_text
-                        .lock()
-                        .ok()
-                        .and_then(|value| value.clone())
-                        .as_deref()
-                        == Some(expected.as_str())
-                    && self.inner.checksum_relative_mode_is(false)
-                    && self.inner.checksum_comparison_is(
-                        crate::checksum::Algorithm::Md5,
-                        crate::checksum::ExpectedMatch::Match,
-                    )
+                let expected="a9993e364706816aba3e25717850c26c9cd0d89d *./checksum.txt\n";
+                self.checksum_click_phase==123 && self.counters.clipboard.load(Ordering::Relaxed)==16
+                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected)
+                    && self.inner.checksum_relative_mode_is(true)
+                    && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha1,crate::checksum::ExpectedMatch::Match)
+                    && self.recorded_clipboard_dump("sha1-relative.sha1")
+                    && std::fs::copy(self.fixture.left.join("checksum.txt"),self.scenario_dir.join("checksum.txt")).is_ok()
             }
             Scenario::RenameOptions => {
                 self.rename_options_phase == 97
@@ -19791,7 +19842,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         | Scenario::DiskCount => 3,
         Scenario::DuplicateCross => 6,
         Scenario::SyncReview => 6,
-        Scenario::Checksums => 13,
+        Scenario::Checksums => 16,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
         Scenario::TablePreview => 2,
         Scenario::JsonPreview
@@ -20217,7 +20268,7 @@ mod tests {
                 | Scenario::DiskCount => 3,
                 Scenario::DuplicateCross => 6,
                 Scenario::SyncReview => 6,
-                Scenario::Checksums => 13,
+                Scenario::Checksums => 16,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
                 Scenario::TablePreview => 2,
                 Scenario::JsonPreview
