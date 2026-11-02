@@ -169,6 +169,34 @@ impl Presets {
             .clone();
         self.add(destination, rule)
     }
+    /// Explicit sorting changes persisted order without modifying saved rules.
+    pub fn sort_names(&mut self, descending: bool) -> bool {
+        let before: Vec<String> = self.0.iter().map(|preset| preset.name.clone()).collect();
+        self.0.sort_by_cached_key(|preset| key(&preset.name));
+        if descending {
+            self.0.reverse();
+        }
+        self.0.iter().map(|preset| &preset.name).ne(before.iter())
+    }
+    pub fn position(&self, label: &str) -> Option<usize> {
+        let wanted = key(label);
+        self.0.iter().position(|preset| key(&preset.name) == wanted)
+    }
+    pub fn move_selected(&mut self, label: &str, down: bool) -> bool {
+        let Some(index) = self.position(label) else {
+            return false;
+        };
+        let target = if down {
+            index.checked_add(1).filter(|&next| next < self.0.len())
+        } else {
+            index.checked_sub(1)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        self.0.swap(index, target);
+        true
+    }
     pub fn remove(&mut self, label: &str) -> bool {
         let wanted = key(label);
         let before = self.0.len();
@@ -203,6 +231,51 @@ impl<'de> Deserialize<'de> for Presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordering_keeps_rule_identity_launch_choice_and_serialized_order() {
+        let mut presets = Presets::default();
+        for label in ["Zulu", "éclair", "alpha", "Бета"] {
+            presets
+                .add(
+                    label,
+                    RenameRule {
+                        prefix: label.into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        presets.set_launch(Some("éclair")).unwrap();
+        assert!(presets.sort_names(false));
+        assert_eq!(
+            presets
+                .items()
+                .iter()
+                .map(|preset| preset.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "Zulu", "éclair", "Бета"]
+        );
+        assert!(!presets.sort_names(false));
+        assert!(presets.move_selected("E\u{301}CLAIR", false));
+        assert_eq!(presets.position("éclair"), Some(1));
+        assert!(presets.move_selected("éclair", true));
+        assert!(presets.sort_names(true));
+        assert!(!presets.sort_names(true));
+        let before = presets.clone();
+        assert!(!presets.move_selected("Бета", false));
+        assert!(!presets.move_selected("alpha", true));
+        assert!(!presets.move_selected("missing", true));
+        assert_eq!(presets, before);
+        for preset in presets.items() {
+            assert_eq!(preset.rule.prefix, preset.name);
+        }
+        assert_eq!(presets.launch_preset().unwrap().name, "éclair");
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored, presets);
+        assert!(!Presets::default().sort_names(false));
+    }
+
     #[test]
     fn launch_selection_survives_rename_update_and_roundtrip_but_not_copy_or_removal() {
         let mut presets = Presets::default();

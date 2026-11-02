@@ -2482,3 +2482,7 @@ Independent adaptation of [Double Commander Preset at launch](https://doublecmd.
 ## Native saved rename-rule management (2026-11-02)
 
 The native scenario now executes rename, saved-rule duplication, setting/clearing/re-setting launch preference, Escape closure and Cmd+Shift+R reopening. Per-render-frame acknowledgement prevents raw-hook phase loss. Successful 43-phase capture: 16/16 checks, 33 observations independently compared with saved rule semantics, zero native effects. This closes the prior success-path native interaction gaps for these controls; post-animation layout, error paths, date controls and native restart remain open. [Receipts, failed attempts and limits](../qualification/rename-preset-native-2026-11-02/README.md).
+
+## Saved rename preset ordering (2026-11-02)
+
+Independent adaptation of [Double Commander preset sorting](https://doublecmd.github.io/doc/en/multirename.html): ascending/descending canonical Unicode name ordering and manual selected-rule up/down. Saved array order persists; complete rule identity, launch preference and current editor remain intact. [Tests, evidence and native scope](../qualification/rename-preset-order-2026-11-02/README.md).

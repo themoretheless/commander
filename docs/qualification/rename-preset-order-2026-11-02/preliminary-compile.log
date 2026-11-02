@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `run` found for struct `egui::Context` in the current scope
+    --> src/app/batch_rename_dialog.rs:1180:25
+     |
+1180 |             let _ = ctx.run(
+     |                     ----^^^
+     |
+help: there is a method `run_ui` with a similar name
+     |
+1180 |             let _ = ctx.run_ui(
+     |                            +++
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

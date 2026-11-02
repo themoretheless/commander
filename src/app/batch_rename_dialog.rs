@@ -12,6 +12,61 @@ use crate::workspace::BatchRenameContext;
 const PREVIEW_SCROLL_ID: &str = "batch_rename_preview";
 
 /// Tooltip for a flagged preview row, so the glyph says why it is flagged.
+/// Return persistence and interaction changes separately so Enter on a focused
+/// ordering button cannot submit the rename operation underneath it.
+fn preset_order_controls(
+    ui: &mut egui::Ui,
+    presets: &mut crate::rename_presets::Presets,
+    selected: Option<&str>,
+) -> (bool, bool) {
+    let mut changed = false;
+    let mut interaction = false;
+    ui.horizontal_wrapped(|ui| {
+        let position = selected.and_then(|name| presets.position(name));
+        for (id, label, enabled) in [
+            (
+                "rename-preset-up",
+                "Preset up",
+                position.is_some_and(|index| index > 0),
+            ),
+            (
+                "rename-preset-down",
+                "Preset down",
+                position.is_some_and(|index| index + 1 < presets.items().len()),
+            ),
+            (
+                "rename-preset-sort-asc",
+                "Sort A–Z",
+                presets.items().len() > 1,
+            ),
+            (
+                "rename-preset-sort-desc",
+                "Sort Z–A",
+                presets.items().len() > 1,
+            ),
+        ] {
+            let response = ui.add_enabled(enabled, egui::Button::new(label));
+            #[cfg(feature = "visual-qa")]
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(egui::Id::new(id), response.rect));
+            interaction |= response.has_focus() || response.lost_focus() || response.clicked();
+            if response.clicked() {
+                changed |= match id {
+                    "rename-preset-up" => {
+                        selected.is_some_and(|name| presets.move_selected(name, false))
+                    }
+                    "rename-preset-down" => {
+                        selected.is_some_and(|name| presets.move_selected(name, true))
+                    }
+                    "rename-preset-sort-asc" => presets.sort_names(false),
+                    _ => presets.sort_names(true),
+                };
+            }
+        }
+    });
+    (changed, interaction)
+}
+
 fn status_hint(status: PlanStatus) -> Option<&'static str> {
     match status {
         PlanStatus::Ok | PlanStatus::Unchanged => None,
@@ -528,6 +583,12 @@ impl App {
                             state.preset_status = Some(result.map(|()| "Launch preference saved; current editor retained".into()));
                         }
                     });
+                    let (order_changed, order_interaction) = preset_order_controls(ui, presets, state.preset_selected.as_deref());
+                    preset_interaction |= order_interaction;
+                    if order_changed {
+                        presets_changed = true;
+                        state.preset_status = Some(Ok("Preset order saved; current editor retained".into()));
+                    }
                     if let Some(status) = &state.preset_status {
                         match status {
                             Ok(message) => {
@@ -1104,6 +1165,70 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "visual-qa")]
+    #[test]
+    fn preset_order_buttons_use_pointer_input_and_retain_launch_identity() {
+        let ctx = egui::Context::default();
+        let mut presets = crate::rename_presets::Presets::default();
+        for name in ["Zulu", "Alpha", "Middle"] {
+            presets.add(name, RenameRule::default()).unwrap();
+        }
+        presets.set_launch(Some("Middle")).unwrap();
+        {
+            let mut frame = |events: Vec<egui::Event>| {
+                let mut changed = false;
+                crate::testutil::discard_egui_output(ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(900.0, 300.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        changed = preset_order_controls(ui, &mut presets, Some("Middle")).0;
+                    },
+                ));
+                changed
+            };
+            frame(vec![]);
+            for id in [
+                "rename-preset-up",
+                "rename-preset-sort-asc",
+                "rename-preset-sort-desc",
+                "rename-preset-down",
+            ] {
+                let pos = ctx
+                    .data(|data| data.get_temp::<egui::Rect>(egui::Id::new(id)))
+                    .unwrap()
+                    .center();
+                frame(vec![egui::Event::PointerMoved(pos)]);
+                frame(vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }]);
+                assert!(frame(vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default()
+                }]));
+            }
+        }
+        assert_eq!(
+            presets
+                .items()
+                .iter()
+                .map(|preset| preset.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Zulu", "Alpha", "Middle"]
+        );
+        assert_eq!(presets.launch_preset().unwrap().name, "Middle");
+    }
 
     #[test]
     fn date_preview_is_source_bound_and_blocks_missing_dates_before_submission() {

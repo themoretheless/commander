@@ -903,10 +903,20 @@ mod tests {
             .duplicate("Pictures", "Backup")
             .unwrap();
         session.rename_presets.set_launch(Some("Pictures")).unwrap();
+        assert!(session.rename_presets.sort_names(false));
         let mut gate = crate::persistence::StoreGate::missing();
         save_at(&persist, &path, &session, &mut gate).unwrap();
         let restored = load_at(&persist, &path).value.unwrap();
         assert!(restored.rename_presets.get("Photos").is_none());
+        assert_eq!(
+            restored
+                .rename_presets
+                .items()
+                .iter()
+                .map(|preset| preset.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Backup", "Pictures"]
+        );
         assert_eq!(restored.rename_presets.get("Pictures").unwrap().rule, rule);
         assert_eq!(restored.rename_presets.get("Backup").unwrap().rule, rule);
         assert_eq!(
