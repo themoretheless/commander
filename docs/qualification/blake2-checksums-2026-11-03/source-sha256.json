@@ -1,0 +1,10 @@
+{
+  "src/checksum.rs": "d5bb4d70c08f768096444b8373d95e71a40f63a3d781c044bf9b112941aaad9e",
+  "src/checksum_list.rs": "a5f7217d5741ab584ca37d20b232c288490ecc341be27e4b6124d1333cd656ff",
+  "src/app/update.rs": "480b67470a0844e2c8b86c06ee0c11ec9e68ac457937ac05d0c8213b25951368",
+  "src/app/checksum_list_dialog.rs": "965d6f6fe051857bb523bbf2fab0bf40dcfb685f11596257b35aab8f47be2575",
+  "Cargo.toml": "d66205689707fadfd7cddcebb5b6a669cf33739a7b9562b8fbe15a8a7d5f36ae",
+  "Cargo.lock": "27e2e2b43661547820418007ca96789c3afefac27cbffb3c72b3c292053b4bdb",
+  "THIRD_PARTY_LICENSES.md": "182bc6dbf9f5c9e2d7ba593b9f589254bcb49a6529465cc36c1841a20ffa302e",
+  "data/licenses/blake2-0.10.6-MIT.txt": "9c768944eb4a0422ca2efc25ea9fb2fb9e7fbd3fdb04e86b87366339cb7466db"
+}

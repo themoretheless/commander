@@ -51,3 +51,7 @@ and `sponge-cursor` 0.1.0 dependencies under their MIT license options:
 [sha3](data/licenses/sha3-0.12.0-MIT.txt),
 [keccak](data/licenses/keccak-0.2.2-MIT.txt),
 [sponge-cursor](data/licenses/sponge-cursor-0.1.0-MIT.txt).
+
+BLAKE2s-256 and BLAKE2b-512 file checks use the existing RustCrypto `blake2`
+0.10.6 dependency under its [MIT license](data/licenses/blake2-0.10.6-MIT.txt).
+The checksum feature adds it as a direct dependency without changing its version.

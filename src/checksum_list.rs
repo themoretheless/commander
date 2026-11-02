@@ -175,6 +175,8 @@ fn tagged_algorithm(tag: &str) -> Option<Algorithm> {
         "SHA512" | "SHA-512" | "SHA2-512" => Some(Algorithm::Sha512),
         "SHA3-256" | "SHA3_256" => Some(Algorithm::Sha3_256),
         "SHA3-512" | "SHA3_512" => Some(Algorithm::Sha3_512),
+        "BLAKE2S" | "BLAKE2S-256" => Some(Algorithm::Blake2s),
+        "BLAKE2B" | "BLAKE2B-512" => Some(Algorithm::Blake2b),
         "MD5" => Some(Algorithm::Md5),
         "SHA1" | "SHA-1" => Some(Algorithm::Sha1),
         "BLAKE3" => Some(Algorithm::Blake3),
@@ -216,6 +218,8 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
     match name.as_str() {
         "sha3-256sums" | "sha3_256sums" => return Some(Algorithm::Sha3_256),
         "sha3-512sums" | "sha3_512sums" => return Some(Algorithm::Sha3_512),
+        "blake2ssums" | "blake2s-256sums" => return Some(Algorithm::Blake2s),
+        "blake2bsums" | "blake2b-512sums" => return Some(Algorithm::Blake2b),
         "md5sums" => return Some(Algorithm::Md5),
         "sha1sums" => return Some(Algorithm::Sha1),
         "adler32sums" => return Some(Algorithm::Adler32),
@@ -231,6 +235,8 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
         "sha512" | "sha512sum" => Some(Algorithm::Sha512),
         "sha3-256" | "sha3_256" => Some(Algorithm::Sha3_256),
         "sha3-512" | "sha3_512" => Some(Algorithm::Sha3_512),
+        "blake2s" | "blake2s-256" => Some(Algorithm::Blake2s),
+        "blake2b" | "blake2b-512" => Some(Algorithm::Blake2b),
         "md5" | "md5sum" => Some(Algorithm::Md5),
         "sha1" | "sha1sum" => Some(Algorithm::Sha1),
         "adler32" | "adler32sum" => Some(Algorithm::Adler32),
@@ -256,7 +262,7 @@ fn detect(
     for algorithm in Algorithm::ALL {
         if let Ok(rows) = parse(text, algorithm) {
             if detected.is_some() {
-                return Err("Ambiguous checksum algorithm or record layout: choose explicitly (64-digit hashes may be SHA-256, SHA3-256 or BLAKE3; 128-digit hashes may be SHA-512 or SHA3-512), or use a tagged list / recognized filename".into());
+                return Err("Ambiguous checksum algorithm or record layout: choose explicitly (64/128-digit hashes match multiple SHA-2, SHA-3 and BLAKE variants), or use a tagged list / recognized filename".into());
             }
             detected = Some((algorithm, rows));
         }
@@ -473,6 +479,50 @@ mod tests {
                 parse(
                     &tagged,
                     if algorithm == Algorithm::Sha3_256 {
+                        Algorithm::Sha256
+                    } else {
+                        Algorithm::Sha512
+                    }
+                )
+                .is_err()
+            );
+            assert!(detect(&temp.path().join("list.sha256"), &tagged, None).is_err());
+        }
+    }
+
+    #[test]
+    fn blake2_tags_hints_and_ambiguous_widths_are_distinct_from_sha2() {
+        let temp = crate::testutil::TempDir::new();
+        for (algorithm, tag, extension) in [
+            (Algorithm::Blake2s, "BLAKE2S", "blake2s"),
+            (Algorithm::Blake2b, "BLAKE2B-512", "blake2b-512"),
+        ] {
+            let digest = "a".repeat(algorithm.hex_len());
+            let tagged = format!("{tag} (data) = {digest}\n");
+            assert_eq!(
+                detect(&temp.path().join("list"), &tagged, None).unwrap().0,
+                algorithm
+            );
+            let untagged = format!("{digest} *data\n");
+            assert!(detect(&temp.path().join("list"), &untagged, None).is_err());
+            assert_eq!(
+                detect(
+                    &temp.path().join(format!("list.{extension}")),
+                    &untagged,
+                    None
+                )
+                .unwrap()
+                .0,
+                algorithm
+            );
+            let sums = temp
+                .path()
+                .join(format!("{}sums", tag.to_ascii_lowercase()));
+            assert_eq!(detect(&sums, &untagged, None).unwrap().0, algorithm);
+            assert!(
+                parse(
+                    &tagged,
+                    if algorithm == Algorithm::Blake2s {
                         Algorithm::Sha256
                     } else {
                         Algorithm::Sha512

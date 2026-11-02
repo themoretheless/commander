@@ -1,0 +1,12 @@
+    Checking crypto-common v0.1.7
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Checking universal-hash v0.5.1
+    Checking digest v0.10.7
+    Checking cipher v0.4.4
+    Checking aead v0.5.2
+    Checking poly1305 v0.8.0
+    Checking blake2 v0.10.6
+    Checking chacha20 v0.9.1
+    Checking chacha20poly1305 v0.10.1
+    Checking argon2 v0.5.3
+    Finished `dev` profile [unoptimized] target(s) in 17.15s

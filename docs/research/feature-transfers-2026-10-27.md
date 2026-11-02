@@ -2602,3 +2602,7 @@ Independent adaptation of [PeaZip file-checking algorithms](https://peazip.githu
 ## Native SHA-3 workflow and complete digest display (2026-11-03)
 
 Native qualification found the digest result label still enumerated only the prior algorithms. Result display now follows the shared algorithm list and includes SHA3-256/SHA3-512. Pointer/key/text flow covers Hex/Base64 copying, absolute manifests, comparison, malformed-input refusal and recovery for both algorithms, with clip-aware native scrolling. [Independent Python payload checks and native limits](../qualification/sha3-native-2026-11-03/README.md).
+
+## BLAKE2s-256 and BLAKE2b-512 file checks (2026-11-03)
+
+Independent adaptation of [PeaZip BLAKE2 file checking](https://peazip.github.io/verify-checksum-hash.html): full-width unkeyed BLAKE2s/BLAKE2b streaming digests, shared result display, Hex/Base64 comparison/copy, and tagged/hinted/GNU checksum-list export/verification. Existing transitive blake2 is reused directly. [Independent Python vectors, integration regressions and native limits](../qualification/blake2-checksums-2026-11-03/README.md).

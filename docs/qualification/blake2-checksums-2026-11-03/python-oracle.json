@@ -1,0 +1,44 @@
+[
+  {
+    "size": 0,
+    "blake2s": "69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9",
+    "blake2b": "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce",
+    "base64_256": "aSF6MHmQgJThESHQQjVKfB9VtkgsoaUeGyUN/R7Q7vk=",
+    "base64_512": "eGoC90IBWQPGxv2FJVLScpEvR0DhWEdhiobiF/cfVBnSXhAxr+5YUxOJZESTTrBLkDpoWxRIt1XVb3Aa/pvizg=="
+  },
+  {
+    "size": 3,
+    "blake2s": "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982",
+    "blake2b": "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923",
+    "base64_256": "UIxejDJ8FOLhpyujTutFLzdFiyCe1jopTZmbTIZnWYI=",
+    "base64_512": "uoClP5gcTQ1qJ5e2nxL26UwhLxRoWsS3SxK7b9v/otF9h8U5Kqt5LcJS1d5FM8yVGNOKqNvxklq5I4bt1ACZIw=="
+  },
+  {
+    "size": 65535,
+    "blake2s": "35a5b14b3c76ebd60034ca73c9c38bcfceca880fad319ba2fde415a8d8811fa3",
+    "blake2b": "940ae1607305414891b91f056df2a7e133532ab8c5b8745e35850c725f08ed79388f9391f567ca0de12c7719a7f470d7b91421897467fe903624e912a74950ba",
+    "base64_256": "NaWxSzx269YANMpzycOLz87KiA+tMZui/eQVqNiBH6M=",
+    "base64_512": "lArhYHMFQUiRuR8FbfKn4TNTKrjFuHReNYUMcl8I7Xk4j5OR9WfKDeEsdxmn9HDXuRQhiXRn/pA2JOkSp0lQug=="
+  },
+  {
+    "size": 65536,
+    "blake2s": "3cb85f7ad0ad7719c3c248a47f1146f368c5ef690500e4ba5d2123ce284e5144",
+    "blake2b": "a361411a81b3ba0433ea66bfed6fedf9db97d913f185327988064d950e927d996dd8f0d74994eb1fa4be43ba41075271b389370c3cda7cc94363f5bffc9bafb5",
+    "base64_256": "PLhfetCtdxnDwkikfxFG82jF72kFAOS6XSEjzihOUUQ=",
+    "base64_512": "o2FBGoGzugQz6ma/7W/t+duX2RPxhTJ5iAZNlQ6SfZlt2PDXSZTrH6S+Q7pBB1Jxs4k3DDzafMlDY/W//JuvtQ=="
+  },
+  {
+    "size": 65537,
+    "blake2s": "70ecb9e5445ba18e0de598403e6ae5e36014fcc1efeda8c2322634b216b73212",
+    "blake2b": "f2959518a58a91b9558c18a879c404427b71a80bdf37f2059bcb3a43b27c6b5da913c6cfdfdb479eb4700542c7e34a0b087aed98a2adfe9501cc97f1cd117de3",
+    "base64_256": "cOy55URboY4N5ZhAPmrl42AU/MHv7ajCMiY0sha3MhI=",
+    "base64_512": "8pWVGKWKkblVjBioecQEQntxqAvfN/IFm8s6Q7J8a12pE8bP39tHnrRwBULH40oLCHrtmKKt/pUBzJfxzRF94w=="
+  },
+  {
+    "size": 700001,
+    "blake2s": "1dafe9e2e23b2a01a15aeb7e3aec7482591a754a040ef8acdd8160b61349294d",
+    "blake2b": "429ac00a81199b76cd347749fc94d7b0ea59d55293bbe3cb3e89dc90517a432e37fdf5e7c6393dff91da68bcc9be77b69f3c2f7d1a7ddbd11049bf9dce1720ad",
+    "base64_256": "Ha/p4uI7KgGhWut+Oux0glkadUoEDvis3YFgthNJKU0=",
+    "base64_512": "QprACoEZm3bNNHdJ/JTXsOpZ1VKTu+PLPonckFF6Qy43/fXnxjk9/5HaaLzJvne2nzwvfRp929EQSb+dzhcgrQ=="
+  }
+]
