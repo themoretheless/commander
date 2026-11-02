@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 53.42s
+     Running unittests src/main.rs (target/debug/build/commander/e4b0049b00cd0a43/out/commander-e4b0049b00cd0a43)
+
+running 5 tests
+test archive_check::tests::bzip2_zipx_integrity_preserves_decode_budget_and_cancellation ... ok
+test archive::tests::bzip2_zipx_keeps_path_and_ratio_guards ... ok
+test archive::tests::bzip2_zipx_rejects_bad_crc_without_retaining_partial_output ... ok
+test archive::tests::bzip2_zipx_lists_searches_checks_and_extracts_python_fixture ... ok
+test search::tests::bzip2_zip_and_zipx_content_agree_for_live_and_indexed_search ... FAILED
+
+failures:
+
+---- search::tests::bzip2_zip_and_zipx_content_agree_for_live_and_indexed_search stdout ----
+
+thread 'search::tests::bzip2_zip_and_zipx_content_agree_for_live_and_indexed_search' (17503392) panicked at src/search.rs:7976:13:
+assertion `left == right` failed
+  left: 2
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    search::tests::bzip2_zip_and_zipx_content_agree_for_live_and_indexed_search
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 3380 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--bin commander`

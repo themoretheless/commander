@@ -2650,3 +2650,7 @@ Independent adaptation of [PeaZip per-item method display](https://sourceforge.n
 ### ZIP metadata native acceptance and CSV regression — 2026-11-03
 
 Native ArchiveMetadata now clicks real Stored/Deflated/encrypted unsupported-method ZIP rows, opens Member details and requires all eight rendered fields visible before recording each state. Final encrypted framebuffer inspected; 14/14 common checks and zero native effects. Fresh ArchiveExport retains its five exact recording clipboard writes with two appended CSV columns blank for TAR; 14/14 common checks. Password extraction and encryption-method identification remain open. [Qualification](../qualification/archive-method-native-2026-11-03/README.md).
+
+### BZip2 inside ZIP/ZIPX — 2026-11-03
+
+Independent adaptation of [PeaZip alternative ZIP compression support](https://peazip.github.io/zip-files-utility.html), cohort #96. Enables BZip2 payload decoding using the existing locked dependency; listing, content search, ZIP CRC checks and extraction share the in-process decoder. Recognizes case-insensitive .zipx containers and classifies them as Archives. Python-authored fixtures exercise mixed codecs, Unicode/empty entries, CRC failure, traversal, ratio guards, live/indexed searches, limits and cancellation. Native ArchiveMetadata additionally clicks a BZip2 member in uppercase .ZIPX. Other ZIPX codecs and password extraction remain open. [Qualification](../qualification/zip-bzip2-2026-11-03/README.md).

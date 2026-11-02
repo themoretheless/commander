@@ -134,10 +134,9 @@ pub fn kind_of(path: &Path) -> Option<ArchiveKind> {
         Some(ArchiveKind::TarZstd)
     } else if name.ends_with(".tar") {
         Some(ArchiveKind::Tar)
-    } else if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
-    {
+    } else if path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("zip") || extension.eq_ignore_ascii_case("zipx")
+    }) {
         Some(ArchiveKind::Zip)
     } else {
         None
@@ -1426,6 +1425,154 @@ mod tests {
     }
 
     #[test]
+    fn bzip2_zipx_lists_searches_checks_and_extracts_python_fixture() {
+        let temp = TempDir::new();
+        let path = temp.path().join("mixed.ZIPX");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-bzip2-2026-11-03/fixtures/mixed.zipx"),
+        )
+        .unwrap();
+        let cancelled = AtomicBool::new(false);
+        let listing = list_archive(path.clone(), &cancelled).unwrap();
+        assert_eq!(listing.members.len(), 4);
+        assert!(!listing.truncated);
+        let unicode = listing
+            .members
+            .iter()
+            .find(|m| m.path == Path::new("nested/ёж.txt"))
+            .unwrap();
+        assert_eq!(unicode.zip_info.as_ref().unwrap().compression, "Bzip2");
+        let mut found = std::collections::BTreeMap::new();
+        let mut budget = SearchBudget::default();
+        let visit = visit_members(
+            &path,
+            true,
+            &mut budget,
+            || false,
+            |m| {
+                found.insert(m.member.path, m.content.unwrap().to_string());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(visit.emitted, 4);
+        assert_eq!(visit.content_skipped, 0);
+        assert_eq!(
+            found[Path::new("nested/ёж.txt")],
+            "BZip2 archive needle: ёж / café\n"
+        );
+        assert_eq!(found[Path::new("empty.txt")], "");
+        let progress = std::sync::atomic::AtomicU64::new(0);
+        let check = crate::archive_check::check(&path, &|| false, &progress).unwrap();
+        assert_eq!(check.members, 4);
+        assert_eq!(
+            check.decoded,
+            found.values().map(|s| s.len() as u64).sum::<u64>()
+        );
+        let destination = temp.path().join("out");
+        let indexes: Vec<_> = listing.members.iter().map(|m| m.index).collect();
+        let report = extract_members(&path, &destination, &indexes, &cancelled).unwrap();
+        assert_eq!(report.extracted, 4);
+        assert!(report.errors.is_empty());
+        for (name, content) in &found {
+            assert_eq!(
+                fs::read(destination.join(name)).unwrap(),
+                content.as_bytes()
+            );
+        }
+        fs::write(destination.join("nested/ёж.txt"), b"keep").unwrap();
+        let repeat = extract_members(&path, &destination, &indexes, &cancelled).unwrap();
+        assert_eq!(repeat.extracted, 0);
+        assert_eq!(repeat.skipped_existing, 4);
+        assert_eq!(
+            fs::read(destination.join("nested/ёж.txt")).unwrap(),
+            b"keep"
+        );
+    }
+
+    #[test]
+    fn bzip2_zipx_rejects_bad_crc_without_retaining_partial_output() {
+        let temp = TempDir::new();
+        let path = temp.path().join("bad.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-bzip2-2026-11-03/fixtures/bad-crc.zipx"),
+        )
+        .unwrap();
+        let mut budget = SearchBudget::default();
+        let summary = visit_members(
+            &path,
+            true,
+            &mut budget,
+            || false,
+            |m| {
+                assert!(m.content.is_none());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.content_skipped, 1);
+        assert!(
+            crate::archive_check::check(&path, &|| false, &std::sync::atomic::AtomicU64::new(0))
+                .is_err()
+        );
+        let dest = temp.path().join("out");
+        let report = extract_members(&path, &dest, &[0], &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.extracted, 0);
+        assert_eq!(report.errors.len(), 1);
+        assert!(!dest.join("payload.txt").exists());
+    }
+
+    #[test]
+    fn bzip2_zipx_keeps_path_and_ratio_guards() {
+        let temp = TempDir::new();
+        let path = temp.path().join("unsafe.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-bzip2-2026-11-03/fixtures/unsafe.zipx"),
+        )
+        .unwrap();
+        let listing = list_archive(path.clone(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(listing.unsafe_members, 1);
+        assert_eq!(listing.members.len(), 1);
+        let dest = temp.path().join("out");
+        let report = extract_members(&path, &dest, &[0, 1], &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.extracted, 1);
+        assert_eq!(report.errors.len(), 1);
+        assert!(!temp.path().join("escape.txt").exists());
+        let ratio = temp.path().join("ratio.zipx");
+        fs::write(
+            &ratio,
+            include_bytes!("../docs/qualification/zip-bzip2-2026-11-03/fixtures/ratio.zipx"),
+        )
+        .unwrap();
+        let mut budget = SearchBudget::default();
+        let summary = visit_members(
+            &ratio,
+            true,
+            &mut budget,
+            || false,
+            |m| {
+                assert!(m.content.is_none());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.content_skipped, 1);
+        assert_eq!(budget.content_bytes, 0);
+        let summary = visit_members(
+            &ratio,
+            true,
+            &mut budget,
+            || true,
+            |_| panic!("cancelled visit"),
+        )
+        .unwrap();
+        assert!(summary.cancelled);
+    }
+
+    #[test]
     fn zip_listing_reports_methods_and_encryption_without_decoding_payloads() {
         let temp = TempDir::new();
         let path = temp.path().join("metadata.zip");
@@ -1877,6 +2024,9 @@ mod tests {
     #[test]
     fn supported_archive_detection_is_case_insensitive() {
         assert!(is_supported(Path::new("bundle.ZIP")));
+        for name in ["bundle.zipx", "bundle.ZIPX"] {
+            assert_eq!(kind_of(Path::new(name)), Some(ArchiveKind::Zip));
+        }
         assert_eq!(kind_of(Path::new("bundle.tgz")), Some(ArchiveKind::TarGz));
         assert_eq!(
             kind_of(Path::new("bundle.tar.gz")),

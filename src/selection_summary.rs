@@ -51,8 +51,8 @@ pub fn kind_of(entry: &FileEntry) -> Kind {
         "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "aiff" | "alac" => Kind::Audio,
         "pdf" | "txt" | "md" | "rtf" | "doc" | "docx" | "pages" | "odt" | "tex" | "key" | "ppt"
         | "pptx" | "odp" | "xls" | "xlsx" | "ods" | "csv" | "epub" | "fb2" => Kind::Document,
-        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "tbz" | "tbz2" | "xz" | "txz"
-        | "zst" | "zstd" | "tzst" | "dmg" => Kind::Archive,
+        "zip" | "zipx" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "tbz" | "tbz2" | "xz"
+        | "txz" | "zst" | "zstd" | "tzst" | "dmg" => Kind::Archive,
         "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "c" | "cpp" | "cc" | "h" | "hpp"
         | "java" | "rb" | "swift" | "kt" | "sh" | "toml" | "json" | "yaml" | "yml" | "html"
         | "css" | "sql" | "lua" | "php" => Kind::Code,
@@ -311,6 +311,7 @@ mod tests {
         }
         assert_eq!(kind_of(&entry("a.rs", false, 1)), Kind::Code);
         assert_eq!(kind_of(&entry("a.zip", false, 1)), Kind::Archive);
+        assert_eq!(kind_of(&entry("a.zipx", false, 1)), Kind::Archive);
         assert_eq!(kind_of(&entry("a.xyz", false, 1)), Kind::Other);
         assert_eq!(kind_of(&entry("noext", false, 1)), Kind::Other);
     }

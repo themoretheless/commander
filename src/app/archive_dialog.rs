@@ -2418,8 +2418,11 @@ impl App {
                             *range_anchor = None;
                         }
                         let can_match_extension = focused.is_some_and(|id| visible.contains(&id) && listing.members.get(id).is_some_and(|member| member.is_regular && !member.is_dir));
-                        ui.add_enabled_ui(can_match_extension, |ui| {
-                            ui.menu_button("Same extension", |ui| {
+                        // A nested enabled UI consumes the remaining row width
+                        // before the parent can wrap this menu as one button.
+                        let extension_menu = ui.add_enabled(can_match_extension,
+                            egui::Button::new("Same extension").wrap_mode(egui::TextWrapMode::Extend));
+                        egui::Popup::menu(&extension_menu).show(|ui| {
                                 for (select, label) in [(true, "Select visible matches"), (false, "Deselect visible matches")] {
                                     if ui.button(label).on_hover_text("Use the focused regular file's final suffix, ignoring case. Only visible regular files change; hidden selections stay intact.").clicked() {
                                         let rows = same_extension_rows(listing, lower_paths.as_deref().unwrap_or(&[]), visible, *focused);
@@ -2429,7 +2432,6 @@ impl App {
                                         ui.close();
                                     }
                                 }
-                            });
                         });
                         for mode in [SimilarMember::Name, SimilarMember::Folder] {
                             if similar_selection_menu(ui, listing, lower_paths.as_deref().unwrap_or(&[]), visible, *focused, &mut state.selected, mode) {

@@ -7951,6 +7951,45 @@ mod tests {
     }
 
     #[test]
+    fn bzip2_zip_and_zipx_content_agree_for_live_and_indexed_search() {
+        let tmp = TempDir::new();
+        for name in ["one.zip", "two.ZIPX"] {
+            std::fs::write(
+                tmp.path().join(name),
+                include_bytes!("../docs/qualification/zip-bzip2-2026-11-03/fixtures/mixed.zipx"),
+            )
+            .unwrap();
+        }
+        let engine = SearchEngine::default();
+        for (expression, skipped) in [
+            ("content:needle archives:on", 2),
+            ("path:ёж.txt content:needle archives:on", 0),
+        ] {
+            let query = Query::parse(expression, MatchMode::Exact).unwrap();
+            let live = engine
+                .start(tmp.path().into(), query.clone(), 100, Arc::new(|| {}))
+                .unwrap();
+            let (live_hits, live_summary) = collect_run(&live);
+            let index = Arc::new(crate::content_index::build_test_index(tmp.path()));
+            let indexed = engine
+                .start_indexed(index, query, 100, Arc::new(|| {}))
+                .unwrap();
+            let (indexed_hits, indexed_summary) = collect_run(&indexed);
+            for (hits, summary) in [(live_hits, live_summary), (indexed_hits, indexed_summary)] {
+                assert_eq!(summary.matched, 2);
+                assert_eq!(summary.content_skipped, skipped, "{expression}");
+                assert!(!summary.truncated);
+                assert_eq!(hits.len(), 2);
+                for hit in hits {
+                    assert!(
+                        matches!(hit.location,SearchLocation::ArchiveMember {member,..} if member==Path::new("nested/ёж.txt"))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn indexed_provider_delegates_zip_paths_to_the_archive_provider() {
         let tmp = TempDir::new();
         let archive = tmp.path().join("indexed-bundle.zip");

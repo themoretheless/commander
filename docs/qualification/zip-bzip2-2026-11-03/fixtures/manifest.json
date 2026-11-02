@@ -1,0 +1,74 @@
+{
+  "producer": "Python stdlib zipfile (independent of zip-rs)",
+  "fixtures": {
+    "mixed.zipx": {
+      "sha256": "10521b272bf1f738212329735e7d5159e0a85d1ed27cd631a41ab2521c97ff9d",
+      "members": [
+        {
+          "path": "stored.txt",
+          "bytes": 7,
+          "sha256": "d5d52eb1da8d32a33d92da2151eccf790a297de64217094d16475a4962d1a0ed",
+          "method": 0
+        },
+        {
+          "path": "deflated.txt",
+          "bytes": 9,
+          "sha256": "7ac9e2335bc2cff33e3ee306817fa0aa2f08d197c87a63b1fba194326ac038e9",
+          "method": 8
+        },
+        {
+          "path": "nested/ёж.txt",
+          "bytes": 35,
+          "sha256": "56a01553d360a71fb0e9872c200c2b4d295541cc62be0e9747f38da33ab7ff87",
+          "method": 12
+        },
+        {
+          "path": "empty.txt",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "method": 12
+        }
+      ]
+    },
+    "bad-crc.zipx": {
+      "sha256": "af2a67766940d9be4a5f1e1d89bc99911dc0567d2a73c342d9267949fa8cc219",
+      "members": [
+        {
+          "path": "payload.txt",
+          "bytes": 35,
+          "sha256": "56a01553d360a71fb0e9872c200c2b4d295541cc62be0e9747f38da33ab7ff87",
+          "method": 12
+        }
+      ],
+      "invalid": "Deliberately incorrect CRC in local and central headers"
+    },
+    "unsafe.zipx": {
+      "sha256": "1498ad809022f12ebea5ba7d57743819a0974c831dbfb6462d7fd3e4a2714b89",
+      "members": [
+        {
+          "path": "../escape.txt",
+          "bytes": 7,
+          "sha256": "31207a2065f46a5b948fce6fe5c13e85abaf5631e2f894b47dcd4fce14f6c57b",
+          "method": 12
+        },
+        {
+          "path": "inside.txt",
+          "bytes": 35,
+          "sha256": "56a01553d360a71fb0e9872c200c2b4d295541cc62be0e9747f38da33ab7ff87",
+          "method": 12
+        }
+      ]
+    },
+    "ratio.zipx": {
+      "sha256": "a4a1fa1b248b11556148a12955a5d6be89f27cdb8294f3c6da37650badfea21c",
+      "members": [
+        {
+          "path": "ratio.txt",
+          "bytes": 262144,
+          "sha256": "d509bff642a353f88582e8a846ecae041c333b79c57a7a24ff310fbdb7e914e9",
+          "method": 12
+        }
+      ]
+    }
+  }
+}

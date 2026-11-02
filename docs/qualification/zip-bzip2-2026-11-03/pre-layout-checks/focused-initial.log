@@ -1,0 +1,41 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling zip v9.0.5
+error[E0283]: type annotations needed
+    --> src/archive.rs:1469:74
+     |
+1469 |         assert_eq!(check.decoded, found.values().map(|s| s.len() as u64).sum());
+     |                                                                          ^^^ cannot infer type of the type parameter `S` declared on the method `sum`
+     |
+     = note: the type must implement `Sum<u64>`
+help: the trait `Sum` is implemented for `u64`
+    --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/iter/traits/accum.rs:50:8
+    ::: /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/iter/traits/accum.rs:206:0
+     |
+     = note: in this macro invocation
+note: required by a bound in `std::iter::Iterator::sum`
+    --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/iter/traits/iterator.rs:3663:4
+     = note: this error originates in the macro `integer_sum_product` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider specifying a concrete type for the type parameter `S`
+     |
+1469 |         assert_eq!(check.decoded, found.values().map(|s| s.len() as u64).sum::</* Type */>());
+     |                                                                             ++++++++++++++
+
+error[E0283]: type annotations needed
+    --> src/archive.rs:1469:74
+     |
+1469 |         assert_eq!(check.decoded, found.values().map(|s| s.len() as u64).sum());
+     |         -----------------------------------------------------------------^^^---
+     |         |                                                                |
+     |         |                                                                cannot infer type of the type parameter `S` declared on the method `sum`
+     |         type must be known at this point
+     |
+     = note: multiple `impl`s satisfying `u64: PartialEq<_>` found in the following crates: `core`, `serde_json`:
+             - impl PartialEq for u64;
+             - impl PartialEq<serde_json::Value> for u64;
+help: consider specifying a concrete type for the type parameter `S`
+     |
+1469 |         assert_eq!(check.decoded, found.values().map(|s| s.len() as u64).sum::</* Type */>());
+     |                                                                             ++++++++++++++
+
+For more information about this error, try `rustc --explain E0283`.
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

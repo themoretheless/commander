@@ -287,6 +287,27 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use std::io::Write;
+    #[test]
+    fn bzip2_zipx_integrity_preserves_decode_budget_and_cancellation() {
+        let temp = TempDir::new();
+        let path = temp.path().join("mixed.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-bzip2-2026-11-03/fixtures/mixed.zipx"),
+        )
+        .unwrap();
+        let progress = AtomicU64::new(0);
+        assert!(
+            check_with_limits(&path, &|| false, &progress, 1, 100)
+                .unwrap_err()
+                .contains("limit")
+        );
+        assert!(
+            check(&path, &|| true, &progress)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+    }
     fn tar_bytes(data: &[u8]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
         for name in ["first.bin", "second.bin"] {
