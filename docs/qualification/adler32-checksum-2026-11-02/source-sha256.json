@@ -1,0 +1,8 @@
+{
+  "Cargo.toml": "9bff478527bf829d00529915f4610d9697dfba37c08f104b4d02be4de821c90f",
+  "Cargo.lock": "0dd5aa06bfd26f39916f42dfe17634552e9cdfd1c5c14badb814f87700c3e9d1",
+  "src/checksum.rs": "8418e7cef50199516184a083a73219e5ec7c762a26627aa22315d7d636a7789b",
+  "src/checksum_list.rs": "89d4e415a1daea7a2c24294043c626abe2e4c217086385c89be58f4c2855aec6",
+  "src/app/update.rs": "0657306f959fb6b49b4e03c5b986ead8fb5eb8353bf598877f3e6f650d796e92",
+  "data/licenses/adler2-MIT.txt": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+}

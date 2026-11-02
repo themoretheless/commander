@@ -1,0 +1,18 @@
+    Checking adler2 v2.0.1
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Checking miniz_oxide v0.9.1
+    Checking miniz_oxide v0.8.9
+    Checking flate2 v1.1.10
+    Checking tiff v0.11.3
+    Checking png v0.18.1
+    Checking png v0.17.16
+    Checking usvg v0.45.1
+    Checking zip v9.0.5
+    Checking tiny-skia v0.11.4
+    Checking image v0.25.10
+    Checking resvg v0.45.1
+    Checking arboard v3.6.1
+    Checking egui_extras v0.36.2
+    Checking egui-winit v0.36.2
+    Checking eframe v0.36.2
+    Finished `dev` profile [unoptimized] target(s) in 17.76s

@@ -1,0 +1,40 @@
+   Compiling adler2 v2.0.1
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling miniz_oxide v0.9.1
+   Compiling miniz_oxide v0.8.9
+   Compiling flate2 v1.1.10
+   Compiling tiff v0.11.3
+   Compiling png v0.18.1
+   Compiling png v0.17.16
+   Compiling usvg v0.45.1
+   Compiling zip v9.0.5
+   Compiling tiny-skia v0.11.4
+   Compiling image v0.25.10
+   Compiling resvg v0.45.1
+   Compiling arboard v3.6.1
+   Compiling egui_extras v0.36.2
+   Compiling egui-winit v0.36.2
+   Compiling eframe v0.36.2
+error[E0004]: non-exhaustive patterns: `checksum::Algorithm::Adler32` not covered
+   --> src/checksum.rs:915:37
+    |
+915 |                 let command = match algorithm {
+    |                                     ^^^^^^^^^ pattern `checksum::Algorithm::Adler32` not covered
+    |
+note: `checksum::Algorithm` defined here
+   --> src/checksum.rs:37:10
+    |
+ 37 | pub enum Algorithm {
+    |          ^^^^^^^^^
+...
+ 46 |     Adler32,
+    |     ------- not covered
+    = note: the matched value is of type `checksum::Algorithm`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+    |
+938 ~                         }),
+939 ~                     checksum::Algorithm::Adler32 => todo!(),
+    |
+
+For more information about this error, try `rustc --explain E0004`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

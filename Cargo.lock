@@ -796,6 +796,7 @@ dependencies = [
 name = "commander"
 version = "0.2.0"
 dependencies = [
+ "adler2",
  "arboard",
  "argon2",
  "blake3",

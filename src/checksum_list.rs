@@ -177,6 +177,7 @@ fn tagged_algorithm(tag: &str) -> Option<Algorithm> {
         "SHA1" | "SHA-1" => Some(Algorithm::Sha1),
         "BLAKE3" => Some(Algorithm::Blake3),
         "CRC32" => Some(Algorithm::Crc32),
+        "ADLER32" | "ADLER-32" => Some(Algorithm::Adler32),
         _ => None,
     }
 }
@@ -213,6 +214,7 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
     match name.as_str() {
         "md5sums" => return Some(Algorithm::Md5),
         "sha1sums" => return Some(Algorithm::Sha1),
+        "adler32sums" => return Some(Algorithm::Adler32),
         "sha256sums" => return Some(Algorithm::Sha256),
         "sha384sums" => return Some(Algorithm::Sha384),
         "sha512sums" => return Some(Algorithm::Sha512),
@@ -225,6 +227,7 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
         "sha512" | "sha512sum" => Some(Algorithm::Sha512),
         "md5" | "md5sum" => Some(Algorithm::Md5),
         "sha1" | "sha1sum" => Some(Algorithm::Sha1),
+        "adler32" | "adler32sum" => Some(Algorithm::Adler32),
         "b3" | "blake3" => Some(Algorithm::Blake3),
         "sfv" | "crc32" => Some(Algorithm::Crc32),
         _ => None,
@@ -429,6 +432,42 @@ mod tests {
             &AtomicUsize::new(0),
             &AtomicUsize::new(0),
         )
+    }
+
+    #[test]
+    fn adler32_lists_support_tags_hints_and_gnu_layout_without_crc_confusion() {
+        let dir = TempDir::new();
+        dir.file("data", "Wikipedia");
+        for (name, text) in [
+            ("checksums.txt", "11e60398  data\n"),
+            ("ADLER32SUMS", "11E60398 *data\n"),
+            ("list.adler32", "ADLER-32 (data) = 11e60398\n"),
+            ("list.adler32sum", "ADLER32 (data) = 11e60398\n"),
+        ] {
+            let path = dir.file(name, text);
+            let report = verify(
+                &path,
+                None,
+                &|| false,
+                &AtomicUsize::new(0),
+                &AtomicUsize::new(0),
+            );
+            assert_eq!(
+                report.algorithm,
+                Some(Algorithm::Adler32),
+                "{:?}",
+                report.error
+            );
+            assert_eq!(report.rows[0].status, Status::Match);
+        }
+        let path = dir.file("bad.adler32", "00000000  data\n");
+        assert_eq!(
+            run(&path, Algorithm::Adler32).rows[0].status,
+            Status::Mismatch
+        );
+        assert!(parse("CRC32 (data) = 11e60398\n", Algorithm::Adler32).is_err());
+        assert!(parse("ADLER32 (data) = 11e60398\n", Algorithm::Crc32).is_err());
+        assert!(detect(Path::new("list.sfv"), "11e60398  data\n", None).is_err());
     }
 
     #[test]

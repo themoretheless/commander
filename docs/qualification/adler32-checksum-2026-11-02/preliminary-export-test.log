@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 26.72s
+     Running unittests src/main.rs (target/debug/build/commander/13ed44b609323ae3/out/commander-13ed44b609323ae3)
+
+running 2 tests
+test checksum::tests::adler32_streams_known_vectors_and_block_boundaries_with_exact_export ... FAILED
+test checksum_list::tests::adler32_lists_support_tags_hints_and_gnu_layout_without_crc_confusion ... ok
+
+failures:
+
+---- checksum::tests::adler32_streams_known_vectors_and_block_boundaries_with_exact_export stdout ----
+
+thread 'checksum::tests::adler32_streams_known_vectors_and_block_boundaries_with_exact_export' (15526047) panicked at src/checksum.rs:575:13:
+assertion `left == right` failed
+  left: "00000001 *./data\n"
+ right: "00000001  ./data\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    checksum::tests::adler32_streams_known_vectors_and_block_boundaries_with_exact_export
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 3339 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

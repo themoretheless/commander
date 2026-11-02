@@ -16,6 +16,7 @@ pub struct ChecksumRow {
     pub crc32_hex: Option<String>,
     pub md5_hex: Option<String>,
     pub sha1_hex: Option<String>,
+    pub adler32_hex: Option<String>,
     pub error: Option<String>,
     pub skipped: Option<String>,
 }
@@ -42,9 +43,10 @@ pub enum Algorithm {
     Crc32,
     Md5,
     Sha1,
+    Adler32,
 }
 impl Algorithm {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Sha256,
         Self::Sha384,
         Self::Sha512,
@@ -52,6 +54,7 @@ impl Algorithm {
         Self::Crc32,
         Self::Md5,
         Self::Sha1,
+        Self::Adler32,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -62,6 +65,7 @@ impl Algorithm {
             Self::Crc32 => "CRC32",
             Self::Md5 => "MD5",
             Self::Sha1 => "SHA-1",
+            Self::Adler32 => "Adler-32",
         }
     }
     pub const fn hex_len(self) -> usize {
@@ -69,7 +73,7 @@ impl Algorithm {
             Self::Sha256 | Self::Blake3 => 64,
             Self::Sha384 => 96,
             Self::Sha512 => 128,
-            Self::Crc32 => 8,
+            Self::Crc32 | Self::Adler32 => 8,
             Self::Md5 => 32,
             Self::Sha1 => 40,
         }
@@ -83,6 +87,7 @@ impl Algorithm {
             Self::Crc32 => row.crc32_hex.as_deref(),
             Self::Md5 => row.md5_hex.as_deref(),
             Self::Sha1 => row.sha1_hex.as_deref(),
+            Self::Adler32 => row.adler32_hex.as_deref(),
         };
         value.filter(|value| valid_digest(value, self.hex_len()))
     }
@@ -137,7 +142,7 @@ impl ChecksumReport {
                     return format!("{path}: skipped ({reason})");
                 }
                 format!(
-                    "{path}: content={} blake3={} sha256={} sha384={} sha512={} crc32={} md5={} sha1={}",
+                    "{path}: content={} blake3={} sha256={} sha384={} sha512={} crc32={} md5={} sha1={} adler32={}",
                     row.content_hash
                         .map(|hash| format!("{hash:016x}"))
                         .unwrap_or_else(|| "-".into()),
@@ -147,7 +152,8 @@ impl ChecksumReport {
                     row.sha512_hex.as_deref().unwrap_or("-"),
                     row.crc32_hex.as_deref().unwrap_or("-"),
                     row.md5_hex.as_deref().unwrap_or("-"),
-                    row.sha1_hex.as_deref().unwrap_or("-")
+                    row.sha1_hex.as_deref().unwrap_or("-"),
+                    row.adler32_hex.as_deref().unwrap_or("-")
                 )
             })
             .collect::<Vec<_>>()
@@ -399,6 +405,7 @@ pub fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
             row.crc32_hex = Some(digests.crc32);
             row.md5_hex = Some(digests.md5);
             row.sha1_hex = Some(digests.sha1);
+            row.adler32_hex = Some(digests.adler32);
         }
         Err(error) => row.error = Some(error.to_string()),
     }
@@ -418,6 +425,7 @@ struct FileDigests {
     crc32: String,
     md5: String,
     sha1: String,
+    adler32: String,
 }
 fn digests(
     path: &Path,
@@ -461,6 +469,7 @@ fn digests(
     let mut crc32 = crc32fast::Hasher::new();
     let mut md5 = md5::Md5::new();
     let mut sha1 = sha1::Sha1::new();
+    let mut adler32 = adler2::Adler32::new();
     loop {
         cancel()?;
         let limit = remaining.saturating_add(1).min(buffer.len() as u64) as usize;
@@ -482,6 +491,7 @@ fn digests(
         crc32.update(&buffer[..count]);
         md5.update(&buffer[..count]);
         sha1.update(&buffer[..count]);
+        adler32.write_slice(&buffer[..count]);
     }
     let after = file.metadata()?;
     if remaining != 0
@@ -504,6 +514,7 @@ fn digests(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     Ok(FileDigests {
+        adler32: format!("{:08x}", adler32.checksum()),
         sha1: sha1
             .finalize()
             .iter()
@@ -535,6 +546,62 @@ mod tests {
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
     const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn adler32_streams_known_vectors_and_block_boundaries_with_exact_export() {
+        let temp = TempDir::new();
+        for (bytes, expected) in [
+            (b"".as_slice(), "00000001"),
+            (b"abc".as_slice(), "024d0127"),
+            (b"Wikipedia".as_slice(), "11e60398"),
+        ] {
+            let path = temp.file("data", "");
+            std::fs::write(&path, bytes).unwrap();
+            let report = verify_paths([path.clone()]);
+            assert_eq!(report.single_digest(Algorithm::Adler32), Some(expected));
+            assert_eq!(
+                report.compare_expected_algorithm(&expected.to_uppercase(), Algorithm::Adler32),
+                ExpectedMatch::Match
+            );
+            assert_eq!(
+                report.compare_expected_algorithm("00000000", Algorithm::Adler32),
+                ExpectedMatch::Mismatch
+            );
+            assert!(
+                report
+                    .detailed_text()
+                    .contains(&format!("adler32={expected}"))
+            );
+            assert_eq!(
+                report
+                    .checksum_list_at(Algorithm::Adler32, Some(temp.path()))
+                    .unwrap(),
+                format!("{expected} *./data\n")
+            );
+        }
+        for size in [65535, 65536, 65537, 700001] {
+            let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            // Independent mathematical definition, no adler2 or chunked state.
+            let a = (1 + bytes.iter().map(|&v| u64::from(v)).sum::<u64>()) % 65521;
+            let b = (size as u64
+                + bytes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| (size - i) as u64 * u64::from(v))
+                    .sum::<u64>())
+                % 65521;
+            let expected = format!("{:08x}", (b << 16) | a);
+            let path = temp.file("boundary", "");
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(
+                verify_paths([path]).single_digest(Algorithm::Adler32),
+                Some(expected.as_str())
+            );
+        }
+        let mut report = verify_paths([temp.file("final", "abc")]);
+        report.cancelled = true;
+        assert!(report.single_digest(Algorithm::Adler32).is_none());
+    }
 
     #[test]
     fn sha1_legacy_vectors_streaming_exports_and_explicit_comparison() {
@@ -863,12 +930,13 @@ mod tests {
                         command.arg("--check");
                         command
                     }),
-                    Algorithm::Crc32 | Algorithm::Md5 => std::env::var_os("COMMANDER_RHASH_VERIFY")
-                        .map(|exe| {
+                    Algorithm::Crc32 | Algorithm::Md5 | Algorithm::Adler32 => {
+                        std::env::var_os("COMMANDER_RHASH_VERIFY").map(|exe| {
                             let mut command = std::process::Command::new(exe);
                             command.arg("--check");
                             command
-                        }),
+                        })
+                    }
                     #[cfg(not(target_os = "macos"))]
                     _ => None,
                 };
@@ -1540,6 +1608,7 @@ mod tests {
             crc32_hex: None,
             md5_hex: None,
             sha1_hex: None,
+            adler32_hex: None,
             error: None,
             skipped: None,
         }
@@ -1570,10 +1639,10 @@ mod tests {
         };
         assert_eq!(
             report.detailed_text(),
-            "/data/ok.bin: content=00000000000000ab blake3=cafe sha256=- sha384=- sha512=- crc32=- md5=- sha1=-\n\
+            "/data/ok.bin: content=00000000000000ab blake3=cafe sha256=- sha384=- sha512=- crc32=- md5=- sha1=- adler32=-\n\
              /data/bad.bin: ERROR permission denied\n\
              /data/link: skipped (symlinks are not hashed)\n\
-             /data/unknown.bin: content=- blake3=- sha256=- sha384=- sha512=- crc32=- md5=- sha1=-"
+             /data/unknown.bin: content=- blake3=- sha256=- sha384=- sha512=- crc32=- md5=- sha1=- adler32=-"
         );
         // A path without a file name (the root) falls back to the full path.
         let root = ChecksumReport {
@@ -1582,7 +1651,7 @@ mod tests {
         };
         assert_eq!(
             root.detailed_text(),
-            "/: content=- blake3=- sha256=- sha384=- sha512=- crc32=- md5=- sha1=-"
+            "/: content=- blake3=- sha256=- sha384=- sha512=- crc32=- md5=- sha1=- adler32=-"
         );
     }
 

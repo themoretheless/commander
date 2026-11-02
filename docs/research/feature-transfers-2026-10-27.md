@@ -2530,3 +2530,7 @@ Independent adaptation of [Double Commander regex substitution control](https://
 ## Regex literal-replacement pointer input (2026-11-02)
 
 Actual egui pointer input now checks enabling, disabled-click refusal/choice retention and disabling the production control, including same-frame preview and submit-rule changes. Test feature gating corrected. This is headless egui qualification; native window/layout remains open. [Evidence](../qualification/rename-literal-pointer-2026-11-02/README.md).
+
+## Adler-32 file checks and lists (2026-11-02)
+
+Independent adaptation of [PeaZip file checks](https://peazip.github.io/verify-checksum-hash.html), cohort entry 96: streaming Adler-32 joins the existing guarded hash pass, explicit comparison/copy/report/export and checksum-list verification. SHA-256 stays default; tagged/hinted/GNU lists retain separate CRC32 SFV semantics. [Qualification and native scope](../qualification/adler32-checksum-2026-11-02/README.md).

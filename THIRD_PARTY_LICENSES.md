@@ -34,3 +34,9 @@ Commander does not claim authorship of that implementation. See the complete
 SHA-1 checksum calculation uses RustCrypto `sha1` 0.11.0, distributed under
 the [MIT license](data/licenses/RustCrypto-sha1-MIT.txt). SHA-256 remains the
 default; SHA-1 is exposed for compatibility with existing checksum lists.
+
+## Adler-32 checksums
+
+Streaming Adler-32 calculation uses `adler2` 2.0.1 under its
+[MIT license](data/licenses/adler2-MIT.txt). This is an error-detection checksum;
+SHA-256 remains the default for file digest comparison.
