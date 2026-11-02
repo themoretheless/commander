@@ -217,15 +217,23 @@ pub fn iso_8601_utc_precision(
 /// export shows a hostile file name such as `=HYPERLINK(...)` as text instead
 /// of evaluating it as a formula.
 pub fn csv_escape(s: &str) -> String {
-    let s: Cow<'_, str> = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
-        Cow::Owned(format!("'{s}"))
-    } else {
-        Cow::Borrowed(s)
-    };
+    let s = spreadsheet_cell(s);
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.into_owned()
+    }
+}
+
+/// Shared CSV/TSV policy for cells spreadsheet applications may treat as formulas.
+pub fn needs_spreadsheet_prefix(s: &str) -> bool {
+    s.starts_with(['=', '+', '-', '@', '\t', '\r'])
+}
+pub fn spreadsheet_cell(s: &str) -> Cow<'_, str> {
+    if needs_spreadsheet_prefix(s) {
+        Cow::Owned(format!("'{s}"))
+    } else {
+        Cow::Borrowed(s)
     }
 }
 

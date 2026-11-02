@@ -2554,3 +2554,7 @@ Independent adaptation of [Double Commander copy file details](https://doublecmd
 ## Native TSV file-details copying (2026-11-02)
 
 Native keyboard workflow invokes the command palette for cursor-only and six-entry selected exports, including a control-character/Unicode filename: 14/14 checks and two isolated clipboard calls. Python csv independently verifies captured cells and exact quoting. [Evidence and native scope](../qualification/file-details-native-2026-11-02/README.md).
+
+## Spreadsheet text policy for TSV file details (2026-11-03)
+
+The Double Commander-inspired TSV command now uses the existing listing CSV apostrophe-prefix policy for formula-like cell starts (=, +, -, @, tab, CR). Prefix bytes participate in the export limit; ordinary cells retain exact quoting behavior. Existing full metadata JSON was verified present and not duplicated. [Regression evidence and importer/native limits](../qualification/file-details-formula-2026-11-03/README.md).

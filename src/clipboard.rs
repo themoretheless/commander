@@ -25,6 +25,7 @@ pub enum PathStyle {
 
 /// Copy the captured Name/Size/Modified display cells as quoted TSV.
 /// No metadata is re-read. Bound both row count and encoded clipboard bytes.
+/// Formula-like cells receive the same apostrophe prefix as CSV listing exports.
 pub fn file_details<'a>(rows: impl IntoIterator<Item = [&'a str; 3]>) -> Result<String, String> {
     const MAX_BYTES: usize = 1024 * 1024;
     const MAX_ROWS: usize = 10_000;
@@ -32,6 +33,9 @@ pub fn file_details<'a>(rows: impl IntoIterator<Item = [&'a str; 3]>) -> Result<
         row.iter().try_fold(3usize, |total, cell| {
             total
                 .checked_add(cell.len())?
+                .checked_add(usize::from(
+                    crate::listing_export::needs_spreadsheet_prefix(cell),
+                ))?
                 .checked_add(2)?
                 .checked_add(cell.bytes().filter(|&byte| byte == b'"').count())
         })
@@ -54,8 +58,9 @@ pub fn file_details<'a>(rows: impl IntoIterator<Item = [&'a str; 3]>) -> Result<
             .checked_add(encoded_len(row).ok_or("File details exceed 1 MiB")?)
             .filter(|&size| size <= MAX_BYTES)
             .ok_or("File details exceed 1 MiB")?;
+        let row = row.map(crate::listing_export::spreadsheet_cell);
         writer
-            .write_record(row)
+            .write_record(row.iter().map(|cell| cell.as_bytes()))
             .map_err(|error| error.to_string())?;
         any = true;
     }
@@ -198,6 +203,55 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn file_details_uses_csv_formula_policy_before_quoting_and_byte_limit() {
+        for value in [
+            "=SUM(1,2)",
+            "+cmd",
+            "-1",
+            "@SUM(A1)",
+            "\tformula",
+            "\rformula",
+            "=\"quoted\"\nline",
+        ] {
+            let text = file_details([[value, value, value]]).unwrap();
+            let record = csv::ReaderBuilder::new()
+                .delimiter(b'\t')
+                .from_reader(text.as_bytes())
+                .records()
+                .next()
+                .unwrap()
+                .unwrap();
+            for field in &record {
+                assert_eq!(field, format!("'{value}"));
+            }
+            let csv = crate::listing_export::csv_escape(value);
+            let csv_record = csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(csv.as_bytes())
+                .records()
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.get(0), csv_record.get(0));
+        }
+        for unchanged in ["normal", "O'Brien", "'=literal", "text=1", "ёж"] {
+            let text = file_details([[unchanged, "", ""]]).unwrap();
+            let record = csv::ReaderBuilder::new()
+                .delimiter(b'\t')
+                .from_reader(text.as_bytes())
+                .records()
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.get(0), Some(unchanged));
+        }
+        let overhead = file_details([["", "", ""]]).unwrap().len();
+        let exact = format!("={}", "a".repeat(1024 * 1024 - overhead - 2));
+        assert_eq!(file_details([[&exact, "", ""]]).unwrap().len(), 1024 * 1024);
+        assert!(file_details([[&(exact + "a"), "", ""]]).is_err());
     }
 
     #[test]
