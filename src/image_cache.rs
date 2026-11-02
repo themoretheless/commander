@@ -583,7 +583,8 @@ impl TextPreviewProvider for FsTextPreviewProvider {
         if crate::rtf_preview::supported(&identity.path) {
             crate::rtf_preview::extract(&bytes, cancelled).map(Arc::from)
         } else if crate::fictionbook_preview::supported(&identity.path) {
-            crate::fictionbook_preview::extract(&bytes, cancelled).map(Arc::from)
+            crate::fictionbook_preview::extract_file(&identity.path, bytes, cancelled)
+                .map(Arc::from)
         } else if crate::office_preview::supported(&identity.path) {
             crate::office_preview::extract(&identity.path, bytes, cancelled).map(Arc::from)
         } else {
@@ -806,6 +807,8 @@ impl TextPreviewPipeline<IsolatedTextPreviewExecutor> {
 fn text_input_limit(path: &Path) -> u64 {
     if crate::rtf_preview::supported(path) {
         crate::rtf_preview::MAX_INPUT_BYTES as u64
+    } else if crate::fictionbook_preview::compressed(path) {
+        crate::office_preview::MAX_PACKAGE_BYTES
     } else if crate::fictionbook_preview::supported(path) {
         crate::fictionbook_preview::MAX_INPUT_BYTES as u64
     } else if crate::office_preview::supported(path) {
@@ -3504,6 +3507,46 @@ mod tests {
         assert_eq!(
             super::text_input_limit(std::path::Path::new("ordinary.txt")),
             MAX_TEXT_PREVIEW_BYTES
+        );
+    }
+
+    #[test]
+    fn zipped_fb2_provider_uses_guarded_snapshot_and_package_budget() {
+        use std::io::{Cursor, Write};
+        let temp = TempDir::new();
+        let path = temp.path().join("book.FB2.ZIP");
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("book.fb2", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&crate::fictionbook_preview::fixture())
+            .unwrap();
+        std::fs::write(&path, zip.finish().unwrap().into_inner()).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let identity = PreviewIdentity {
+            path: path.clone(),
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        let provider = FsTextPreviewProvider::default();
+        let stamp = super::TextPreviewProvider::fingerprint(&provider, &identity).unwrap();
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| false)
+                .unwrap()
+                .as_ref(),
+            crate::fictionbook_preview::FIXTURE_TEXT
+        );
+        assert_eq!(
+            super::text_input_limit(&path),
+            crate::office_preview::MAX_PACKAGE_BYTES
+        );
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| true),
+            Err(PreviewError::Cancelled)
+        );
+        std::fs::write(&path, b"changed source").unwrap();
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| false),
+            Err(PreviewError::Changed)
         );
     }
 

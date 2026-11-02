@@ -3,15 +3,80 @@ use crate::image_cache::PreviewError;
 use crate::office_preview::{append, parse_xml};
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use roxmltree::Node;
-use std::path::Path;
+use std::{io::Read, path::Path};
 
 const FB2: &str = "http://www.gribuser.ru/xml/fictionbook/2.0";
 pub const MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
+pub fn compressed(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.to_ascii_lowercase().ends_with(".fb2.zip"))
+}
 pub fn supported(path: &Path) -> bool {
+    if compressed(path) {
+        return true;
+    }
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.eq_ignore_ascii_case("fb2"))
 }
+/// Decode a single captured file snapshot; ZIP members are never written to disk.
+pub fn extract_file(
+    path: &Path,
+    bytes: Vec<u8>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<String, PreviewError> {
+    if !compressed(path) {
+        return extract(&bytes, cancelled);
+    }
+    if cancelled() {
+        return Err(PreviewError::Cancelled);
+    }
+    let mut archive = crate::office_preview::open_package(bytes)?;
+    let mut chosen = None;
+    for index in 0..archive.len() {
+        if cancelled() {
+            return Err(PreviewError::Cancelled);
+        }
+        let file = archive.by_index(index).map_err(|_| invalid())?;
+        let name = file.name().map_err(|_| invalid())?;
+        if file.is_dir() || !name.to_ascii_lowercase().ends_with(".fb2") {
+            continue;
+        }
+        if name.contains(['\\', '\0'])
+            || name.split('/').any(|part| matches!(part, "" | "." | ".."))
+            || file
+                .unix_mode()
+                .is_some_and(|mode| matches!(mode & 0o170000, 0o120000 | 0o040000))
+            || chosen.replace(index).is_some()
+        {
+            return Err(invalid());
+        }
+    }
+    let mut file = archive
+        .by_index(chosen.ok_or_else(invalid)?)
+        .map_err(|_| invalid())?;
+    if file.size() > MAX_INPUT_BYTES as u64 {
+        return Err(PreviewError::TooLarge);
+    }
+    let mut xml = Vec::new();
+    let mut chunk = [0; 32 * 1024];
+    loop {
+        if cancelled() {
+            return Err(PreviewError::Cancelled);
+        }
+        let n = file.read(&mut chunk).map_err(|_| invalid())?;
+        if n == 0 {
+            break;
+        }
+        if xml.len() + n > MAX_INPUT_BYTES {
+            return Err(PreviewError::TooLarge);
+        }
+        xml.extend_from_slice(&chunk[..n]);
+    }
+    extract(&xml, cancelled)
+}
+
 fn invalid() -> PreviewError {
     PreviewError::InvalidDocument
 }
@@ -202,6 +267,79 @@ pub fn fixture() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn zip_files(files: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn zipped_book_preserves_encoding_and_refuses_ambiguous_or_unsafe_members() {
+        let bytes = fixture();
+        let path = Path::new("book.FB2.ZIP");
+        assert!(supported(path) && compressed(path));
+        assert!(!supported(Path::new("book.zip")));
+        assert_eq!(
+            extract_file(
+                path,
+                zip_files(&[("folder/BOOK.FB2", &bytes), ("cover.png", b"unused")]),
+                &|| false
+            )
+            .unwrap(),
+            FIXTURE_TEXT
+        );
+        for files in [
+            vec![("one.fb2", bytes.as_slice()), ("two.fb2", bytes.as_slice())],
+            vec![("../book.fb2", bytes.as_slice())],
+            vec![("/book.fb2", bytes.as_slice())],
+            vec![("cover.png", b"no book".as_slice())],
+        ] {
+            assert!(extract_file(path, zip_files(&files), &|| false).is_err());
+        }
+        assert!(extract_file(path, b"not a zip".to_vec(), &|| false).is_err());
+        assert_eq!(
+            extract_file(path, zip_files(&[("book.fb2", &bytes)]), &|| true),
+            Err(PreviewError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn zipped_book_bounds_expansion_and_checks_member_integrity() {
+        let path = Path::new("book.fb2.zip");
+        let large = vec![b' '; MAX_INPUT_BYTES + 1];
+        assert_eq!(
+            extract_file(path, zip_files(&[("book.fb2", &large)]), &|| false),
+            Err(PreviewError::TooLarge)
+        );
+        let bytes = fixture();
+        use std::io::{Cursor, Write};
+        let mut stored = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        stored
+            .start_file(
+                "book.fb2",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        stored.write_all(&bytes).unwrap();
+        let mut zip = stored.finish().unwrap().into_inner();
+        let index = zip
+            .windows(bytes.len())
+            .position(|part| part == bytes)
+            .unwrap();
+        zip[index] ^= 1;
+        assert!(extract_file(path, zip, &|| false).is_err());
+        assert_eq!(
+            extract_file(Path::new("raw.fb2"), bytes, &|| false).unwrap(),
+            FIXTURE_TEXT
+        );
+    }
 
     #[test]
     fn windows_1251_book_preserves_title_bodies_poetry_and_tables_without_payloads() {

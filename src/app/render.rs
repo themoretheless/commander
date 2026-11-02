@@ -206,7 +206,7 @@ fn render_text_preview(
                 ui.small("RTF document · text only");
             }
             if crate::fictionbook_preview::supported(path) {
-                ui.small("FB2 book · text only");
+                ui.small(if crate::fictionbook_preview::compressed(path) { "Zipped FB2 book · text only" } else { "FB2 book · text only" });
             }
             if crate::office_preview::supported(path) {
                 ui.small(if crate::epub_preview::supported(path) { "EPUB book · text only" } else { "Office document · text only" });
