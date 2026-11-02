@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-deflate64-2026-11-03/native-captures/1793662069533671000",
+  "binary_sha256": "565690971466a94064d45752f8de47daa8b57baba1c05c812a1b97ca977f01b9",
+  "core_sha256": "565690971466a94064d45752f8de47daa8b57baba1c05c812a1b97ca977f01b9",
+  "wrapper_sha256": "dbb29bc886d741a99b5577d502c4e00bd6baf96159e0611ec7332230ee39b2bc",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

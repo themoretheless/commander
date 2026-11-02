@@ -1425,6 +1425,174 @@ mod tests {
     }
 
     #[test]
+    fn deflate64_reads_extended_lengths_and_full_window_fixture() {
+        let temp = TempDir::new();
+        let path = temp.path().join("extended.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-deflate64-2026-11-03/fixtures/extended.zipx"),
+        )
+        .unwrap();
+        let expected = [
+            (
+                "extended.txt",
+                include_bytes!(
+                    "../docs/qualification/zip-deflate64-2026-11-03/fixtures/expected-extended.txt"
+                )
+                .as_slice(),
+            ),
+            (
+                "nested/ёж.txt",
+                include_bytes!(
+                    "../docs/qualification/zip-deflate64-2026-11-03/fixtures/expected-distance.txt"
+                )
+                .as_slice(),
+            ),
+            ("empty.txt", b"".as_slice()),
+        ];
+        let cancel = AtomicBool::new(false);
+        let listing = list_archive(path.clone(), &cancel).unwrap();
+        assert_eq!(listing.members.len(), 3);
+        assert!(
+            listing
+                .members
+                .iter()
+                .all(|m| m.zip_info.as_ref().unwrap().compression == "Deflate64")
+        );
+        let mut budget = SearchBudget::default();
+        let mut contents = std::collections::BTreeMap::new();
+        let summary = visit_members(
+            &path,
+            true,
+            &mut budget,
+            || false,
+            |m| {
+                contents.insert(m.member.path, m.content.unwrap());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.content_skipped, 0);
+        assert_eq!(summary.emitted, 3);
+        let decoded = expected
+            .iter()
+            .map(|(_, bytes)| bytes.len() as u64)
+            .sum::<u64>();
+        assert_eq!(budget.content_bytes, decoded);
+        let check =
+            crate::archive_check::check(&path, &|| false, &std::sync::atomic::AtomicU64::new(0))
+                .unwrap();
+        assert_eq!(check.members, 3);
+        assert_eq!(check.decoded, decoded);
+        let dest = temp.path().join("out");
+        let indexes: Vec<_> = listing.members.iter().map(|m| m.index).collect();
+        let report = extract_members(&path, &dest, &indexes, &cancel).unwrap();
+        assert_eq!(report.extracted, 3);
+        assert!(report.errors.is_empty());
+        for (name, bytes) in expected {
+            assert_eq!(contents[Path::new(name)].as_bytes(), bytes);
+            assert_eq!(fs::read(dest.join(name)).unwrap(), bytes);
+        }
+        fs::write(dest.join("extended.txt"), b"keep").unwrap();
+        let repeat = extract_members(&path, &dest, &indexes, &cancel).unwrap();
+        assert_eq!(repeat.skipped_existing, 3);
+        assert_eq!(fs::read(dest.join("extended.txt")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn deflate64_corrupt_and_truncated_members_leave_no_partial_file() {
+        let temp = TempDir::new();
+        for (name, bytes) in [
+            (
+                "bad-crc",
+                include_bytes!(
+                    "../docs/qualification/zip-deflate64-2026-11-03/fixtures/bad-crc.zipx"
+                )
+                .as_slice(),
+            ),
+            (
+                "truncated",
+                include_bytes!(
+                    "../docs/qualification/zip-deflate64-2026-11-03/fixtures/truncated.zipx"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let path = temp.path().join(format!("{name}.zipx"));
+            fs::write(&path, bytes).unwrap();
+            let mut budget = SearchBudget::default();
+            let summary = visit_members(
+                &path,
+                true,
+                &mut budget,
+                || false,
+                |m| {
+                    assert!(m.content.is_none());
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(summary.content_skipped, 1, "{name}");
+            assert!(
+                crate::archive_check::check(
+                    &path,
+                    &|| false,
+                    &std::sync::atomic::AtomicU64::new(0)
+                )
+                .is_err()
+            );
+            let dest = temp.path().join(name);
+            let report = extract_members(&path, &dest, &[0], &AtomicBool::new(false)).unwrap();
+            assert_eq!(report.extracted, 0, "{name}");
+            assert_eq!(report.errors.len(), 1, "{name}");
+            assert!(!dest.join("bad.txt").exists(), "{name}");
+        }
+    }
+
+    #[test]
+    fn deflate64_maximum_length_preserves_ratio_and_cancel_guards() {
+        let temp = TempDir::new();
+        let path = temp.path().join("ratio.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-deflate64-2026-11-03/fixtures/ratio.zipx"),
+        )
+        .unwrap();
+        let mut budget = SearchBudget::default();
+        let summary = visit_members(
+            &path,
+            true,
+            &mut budget,
+            || false,
+            |m| {
+                assert!(m.content.is_none());
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.content_skipped, 1);
+        assert_eq!(budget.content_bytes, 0);
+        let check =
+            crate::archive_check::check(&path, &|| false, &std::sync::atomic::AtomicU64::new(0))
+                .unwrap();
+        assert_eq!(check.decoded, 65539);
+        let dest = temp.path().join("out");
+        let report = extract_members(&path, &dest, &[0], &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.extracted, 1);
+        assert!(report.errors.is_empty());
+        assert_eq!(fs::read(dest.join("ratio.txt")).unwrap(), vec![b'A'; 65539]);
+        let cancelled = visit_members(
+            &path,
+            true,
+            &mut budget,
+            || true,
+            |_| panic!("cancelled visit"),
+        )
+        .unwrap();
+        assert!(cancelled.cancelled);
+    }
+
+    #[test]
     fn bzip2_zipx_lists_searches_checks_and_extracts_python_fixture() {
         let temp = TempDir::new();
         let path = temp.path().join("mixed.ZIPX");

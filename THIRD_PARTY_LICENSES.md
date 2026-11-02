@@ -55,3 +55,7 @@ and `sponge-cursor` 0.1.0 dependencies under their MIT license options:
 BLAKE2s-256 and BLAKE2b-512 file checks use the existing RustCrypto `blake2`
 0.10.6 dependency under its [MIT license](data/licenses/blake2-0.10.6-MIT.txt).
 The checksum feature adds it as a direct dependency without changing its version.
+
+## Deflate64 ZIP decompression
+
+ZIP method 9 decoding uses `deflate64` 0.1.12, derived from the .NET implementation, copyright .NET Foundation and Contributors and anatawa12. See its complete [MIT license](data/licenses/deflate64-0.1.12-MIT.txt). Commander does not claim authorship of the decoder.

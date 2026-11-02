@@ -1,0 +1,10 @@
+{
+  "Cargo.toml": "956755865b51b9287e81df66dce230b5808d3f985d26a3cfbdd27da128462223",
+  "Cargo.lock": "89d8814c227c8f7716fb2e3ac69178c45e52a0c71abefb5007b2aa1ef95d0c3d",
+  "THIRD_PARTY_LICENSES.md": "cc77aada54637e206cfd9d3a4e8f0347809f7ca49f8bb05017f9be90622b5b0d",
+  "data/licenses/deflate64-0.1.12-MIT.txt": "86b5aedec040ac6eab419af61a8f0aea48ab0037c4b764e5cff5df15bee40df2",
+  "src/archive.rs": "2f584af7b4c54a668124992d0cb17dc4c3aed56543306fbccbb9da2214f0fe2b",
+  "src/archive_check.rs": "523fa2221a6da64e703a190857f24063ac691ff6e8db70a112dc2d139cca4673",
+  "src/search.rs": "67f784d749ebf5bfbae95ce61af90a375f34cb2826527b1d5f951cae78495393",
+  "src/visual_qa.rs": "ddd3c176af38a3fc404bf2309dff9f4b9679d1f62351cea1723ca83e45983195"
+}

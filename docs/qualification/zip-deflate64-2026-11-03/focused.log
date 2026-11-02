@@ -1,0 +1,15 @@
+   Compiling deflate64 v0.1.12
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling zip v9.0.5
+    Finished `test` profile [unoptimized] target(s) in 28.81s
+     Running unittests src/main.rs (target/debug/build/commander/f26f5591bc046064/out/commander-f26f5591bc046064)
+
+running 5 tests
+test archive_check::tests::deflate64_integrity_keeps_decoded_byte_limit_and_cancellation ... ok
+test archive::tests::deflate64_corrupt_and_truncated_members_leave_no_partial_file ... ok
+test archive::tests::deflate64_maximum_length_preserves_ratio_and_cancel_guards ... ok
+test archive::tests::deflate64_reads_extended_lengths_and_full_window_fixture ... ok
+test search::tests::deflate64_content_search_agrees_for_live_and_indexed_zipx ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3385 filtered out; finished in 0.03s
+

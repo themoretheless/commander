@@ -1,0 +1,66 @@
+{
+  "producer": "Independent fixed-Huffman Deflate64 fixture encoder",
+  "oracle": "/usr/bin/unzip -p (Info-ZIP USE_DEFLATE64)",
+  "fixtures": {
+    "extended.zipx": {
+      "sha256": "4d96659b04432a13d6c9a7c81ad227a557772a767632217321b4f3b90846dddd",
+      "members": [
+        {
+          "path": "extended.txt",
+          "bytes": 301,
+          "sha256": "3a1298da0b001efd418e657c608c8a4ef0a164dbfc14a4ef4ba014c716e5e9be",
+          "method": 9
+        },
+        {
+          "path": "nested/ёж.txt",
+          "bytes": 65539,
+          "sha256": "5b8589e0b772d1c7c64367b63556fb6d61a87501dd4c5d33e6897965525eba7d",
+          "method": 9
+        },
+        {
+          "path": "empty.txt",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "method": 9
+        }
+      ],
+      "invalid": false
+    },
+    "bad-crc.zipx": {
+      "sha256": "cf5fababab2335ef3b2c0bad0be28fbdb99b31c31720119aa8875a254f113d62",
+      "members": [
+        {
+          "path": "bad.txt",
+          "bytes": 301,
+          "sha256": "3a1298da0b001efd418e657c608c8a4ef0a164dbfc14a4ef4ba014c716e5e9be",
+          "method": 9
+        }
+      ],
+      "invalid": "crc"
+    },
+    "truncated.zipx": {
+      "sha256": "3193fe56492ea0f2d7f5f5fc9b221fec1ba44848087ce6027143e004d8fbadf9",
+      "members": [
+        {
+          "path": "bad.txt",
+          "bytes": 301,
+          "sha256": "3a1298da0b001efd418e657c608c8a4ef0a164dbfc14a4ef4ba014c716e5e9be",
+          "method": 9
+        }
+      ],
+      "invalid": "truncated"
+    },
+    "ratio.zipx": {
+      "sha256": "f2e1ee07c400c09d31cd182e943fcda2965e0fad32ce41defa41314281b758d1",
+      "members": [
+        {
+          "path": "ratio.txt",
+          "bytes": 65539,
+          "sha256": "2548571936ec94827963864d3199caad85c8cf935d00eb5ce46d1e99585b3803",
+          "method": 9
+        }
+      ],
+      "invalid": false
+    }
+  }
+}

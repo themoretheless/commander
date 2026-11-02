@@ -2654,3 +2654,7 @@ Native ArchiveMetadata now clicks real Stored/Deflated/encrypted unsupported-met
 ### BZip2 inside ZIP/ZIPX — 2026-11-03
 
 Independent adaptation of [PeaZip alternative ZIP compression support](https://peazip.github.io/zip-files-utility.html), cohort #96. Enables BZip2 payload decoding using the existing locked dependency; listing, content search, ZIP CRC checks and extraction share the in-process decoder. Recognizes case-insensitive .zipx containers and classifies them as Archives. Python-authored fixtures exercise mixed codecs, Unicode/empty entries, CRC failure, traversal, ratio guards, live/indexed searches, limits and cancellation. Native ArchiveMetadata additionally clicks a BZip2 member in uppercase .ZIPX. Other ZIPX codecs and password extraction remain open. [Qualification](../qualification/zip-bzip2-2026-11-03/README.md).
+
+### Deflate64 ZIP/ZIPX reading — 2026-11-03
+
+Independent integration of [PeaZip alternative ZIP codecs](https://peazip.github.io/zip-files-utility.html), cohort #96. Enables Deflate64 method 9 for listing, bounded content search, CRC checks and extraction, with MIT attribution for deflate64 0.1.12. Independent fixture encoder and system Info-ZIP oracle cover actual extended length 285, full 65536-byte distance, maximum match, empty entry, CRC error and truncated payload. Five new Rust tests plus native ZIPX method visibility cover this feature. Archive creation, other ZIPX codecs and passwords remain open. [Qualification](../qualification/zip-deflate64-2026-11-03/README.md).

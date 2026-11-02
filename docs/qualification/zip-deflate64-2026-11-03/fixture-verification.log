@@ -1,0 +1,27 @@
+extended.zipx verified by Info-ZIP
+bad-crc.zipx verified by Info-ZIP
+truncated.zipx verified by Info-ZIP
+ratio.zipx verified by Info-ZIP
+UnZip 6.00 of 20 April 2009, by Info-ZIP, with modifications by Apple Inc.
+Please report bugs to Apple.
+
+Latest sources and executables are at ftp://ftp.info-zip.org/pub/infozip/ ;
+see ftp://ftp.info-zip.org/pub/infozip/UnZip.html for other sites.
+
+Compiled with gcc Apple LLVM 21.0.0 (clang-2100.0.123.2) [+internal-os] for Unix Mac OS X on Oct 12 2026.
+
+UnZip special compilation options:
+        COPYRIGHT_CLEAN (PKZIP 0.9x unreducing method not supported)
+        SET_DIR_ATTRIB
+        SYMLINKS (symbolic links supported, if RTL and file system permit)
+        TIMESTAMP
+        UNIXBACKUP
+        USE_EF_UT_TIME
+        USE_UNSHRINK (PKZIP/Zip 1.x unshrinking method supported)
+        USE_DEFLATE64 (PKZIP 4.x Deflate64(tm) supported)
+        LARGE_FILE_SUPPORT (large files over 2 GiB supported)
+        ZIP64_SUPPORT (archives using Zip64 for large files supported)
+        VMS_TEXT_CONV
+        [decryption, version 2.11 of 05 Jan 2007]
+
+

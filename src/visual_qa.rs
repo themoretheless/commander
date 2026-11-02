@@ -2578,6 +2578,15 @@ fn main() {
                     )?;
                     writer.write_all(b"Native metadata fixture\n")?;
                 }
+                // Keep the independently encoded method-9 bytes intact; zip-rs
+                // intentionally has no Deflate64 encoder.
+                let mut deflate64 = zip::ZipArchive::new(std::io::Cursor::new(
+                    include_bytes!(
+                        "../docs/qualification/zip-deflate64-2026-11-03/fixtures/extended.zipx"
+                    )
+                    .as_slice(),
+                ))?;
+                writer.raw_copy_file_rename(deflate64.by_index_raw(0)?, "e-deflate64.txt")?;
                 writer.finish()?;
                 let mut bytes = std::fs::read(&path)?;
                 for offset in 0..bytes.len().saturating_sub(46) {
@@ -4901,7 +4910,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveExport && self.archive_copy_phase < 43)
             && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
-            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 15)
+            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 18)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -16622,7 +16631,7 @@ impl eframe::App for VisualQaApp {
             }
         }
         if self.scenario == Scenario::ArchiveMetadata
-            && self.archive_copy_phase == 15
+            && self.archive_copy_phase == 18
             && ctx
                 .data(|d| {
                     d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
@@ -16643,18 +16652,19 @@ impl eframe::App for VisualQaApp {
                 modifiers: Default::default(),
             });
         }
-        if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 15 {
+        if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 18 {
             let phase = self.archive_copy_phase;
             let observed = ctx.data(|d| {
                 d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
                     "archive-rendered-details",
                 ))
             });
-            if matches!(phase, 6 | 9 | 12) {
+            if matches!(phase, 6 | 9 | 12 | 15) {
                 let expected = match phase {
                     6 => "a-stored.txt",
                     9 => "b-deflated.txt",
-                    _ => "c-encrypted.txt",
+                    12 => "c-encrypted.txt",
+                    _ => "d-bzip2.txt",
                 };
                 if !self
                     .scenario_dir
@@ -16701,9 +16711,13 @@ impl eframe::App for VisualQaApp {
                     egui::Id::new(("archive-member-row", PathBuf::from("c-encrypted.txt"))),
                     phase - 9,
                 ),
-                _ => (
+                12..=14 => (
                     egui::Id::new(("archive-member-row", PathBuf::from("d-bzip2.txt"))),
                     phase - 12,
+                ),
+                _ => (
+                    egui::Id::new(("archive-member-row", PathBuf::from("e-deflate64.txt"))),
+                    phase - 15,
                 ),
             };
             if let (Some(rect), Some(clip)) = (
@@ -20818,9 +20832,9 @@ impl eframe::App for VisualQaApp {
             }
             Scenario::ArchiveMetadata => {
                 let observed = ctx.data(|d| d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")));
-                let ready = self.archive_copy_phase == 15 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("d-bzip2.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Bzip2" && rows[7].1 == "No");
-                if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-d-bzip2.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
-                ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file()
+                let ready = self.archive_copy_phase == 18 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("e-deflate64.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Deflate64" && rows[7].1 == "No");
+                if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-e-deflate64.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
+                ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file() && self.scenario_dir.join("metadata-d-bzip2.txt.json").is_file()
             }
             Scenario::ArchiveFuzzy => {
                 self.archive_copy_phase == 7
