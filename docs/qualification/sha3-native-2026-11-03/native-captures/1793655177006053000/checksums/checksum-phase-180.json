@@ -1,0 +1,11 @@
+{
+  "adler_match": false,
+  "clipboard": "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532",
+  "clipboard_calls": 21,
+  "phase": 180,
+  "relative": false,
+  "sha3_256_invalid": false,
+  "sha3_256_match": true,
+  "sha3_512_invalid": false,
+  "sha3_512_match": false
+}

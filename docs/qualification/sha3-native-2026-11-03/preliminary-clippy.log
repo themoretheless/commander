@@ -1,0 +1,27 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: mismatched closing delimiter: `}`
+    --> src/app/update.rs:1777:18
+     |
+1777 |             .show(ctx, |ui| {
+     |                  ^ unclosed delimiter
+...
+1890 |                 });
+     |                 ^ mismatched closing delimiter
+
+error: unexpected closing delimiter: `}`
+    --> src/app/update.rs:1891:13
+     |
+ 986 | ...pp {
+     |       - the nearest open delimiter
+...
+1799 | ...                          else { ui.add(egui::Label::new(egui::RichText::new(row.display_digests())).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
+     |                                   - the nearest open delimiter                                                                                            - missing open `(` for this delimiter
+...
+1890 | ...          });
+     |               - missing open `(` for this delimiter
+1891 | ...      });
+     |          ^ unexpected closing delimiter
+
+error: could not compile `commander` (bin "commander") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

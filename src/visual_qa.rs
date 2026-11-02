@@ -150,6 +150,43 @@ fn diff_fixture_text(right: bool) -> String {
         })
         .collect()
 }
+fn checksum_input_rect(
+    ctx: &egui::Context,
+    key: egui::Id,
+    input: &mut egui::RawInput,
+) -> Option<egui::Rect> {
+    let rect = ctx.data(|data| data.get_temp::<egui::Rect>(key))?;
+    if let Some(clip) =
+        ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new("checksum-sheet-clip")))
+        && !clip.contains_rect(rect)
+    {
+        input.events.push(egui::Event::PointerMoved(egui::pos2(
+            clip.center().x,
+            clip.max.y - 12.0,
+        )));
+        input.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: egui::vec2(
+                0.0,
+                if rect.min.y < clip.min.y {
+                    120.0
+                } else {
+                    -120.0
+                },
+            ),
+            modifiers: Default::default(),
+        });
+        return None;
+    }
+    Some(rect)
+}
+
+const ABC_SHA3_256: &str = "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532";
+const ABC_SHA3_256_BASE64: &str = "Ophdp0/iJbIEXBcta9OQvYVfCG4+nVJbRr/iRRFDFTI=";
+const ABC_SHA3_512: &str = "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0";
+const ABC_SHA3_512_BASE64: &str =
+    "t1GFCxpXFopWk82SS2sJbgj2IYJ0RPcNiE9dAkDScS4Q4RbpGSrzyRp+xXZH45NAVzQLTPQI1aVlkvgnTuxT8A==";
 const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
 const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
 const CAPTURE_RETRY_AFTER: Duration = Duration::from_secs(2);
@@ -4678,7 +4715,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::RtfPreview
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
-            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 164)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 240)
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -14464,7 +14501,7 @@ impl eframe::App for VisualQaApp {
                 .lock()
                 .ok()
                 .and_then(|v| v.clone());
-            let snapshot = serde_json::json!({"phase":self.checksum_click_phase,"clipboard_calls":self.counters.clipboard.load(Ordering::Relaxed),"clipboard":clipboard,"relative":self.inner.checksum_relative_mode_is(true),"adler_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match)});
+            let snapshot = serde_json::json!({"phase":self.checksum_click_phase,"clipboard_calls":self.counters.clipboard.load(Ordering::Relaxed),"clipboard":clipboard,"relative":self.inner.checksum_relative_mode_is(true),"adler_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match),"sha3_256_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_256,crate::checksum::ExpectedMatch::Match),"sha3_256_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_256,crate::checksum::ExpectedMatch::Invalid),"sha3_512_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_512,crate::checksum::ExpectedMatch::Match),"sha3_512_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_512,crate::checksum::ExpectedMatch::Invalid)});
             if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
                 let _ = std::fs::write(
                     self.scenario_dir
@@ -14496,7 +14533,7 @@ impl eframe::App for VisualQaApp {
             } else {
                 egui::Id::new("checksum-expected")
             };
-            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+            if let Some(rect) = checksum_input_rect(ctx, key, input) {
                 let pos = rect.center();
                 input.events.push(egui::Event::PointerMoved(pos));
                 match phase {
@@ -14599,7 +14636,7 @@ impl eframe::App for VisualQaApp {
                 34..=36 => (egui::Id::new("checksum-copy-digest"), phase - 34),
                 _ => (egui::Id::new("checksum-copy-list"), phase - 37),
             };
-            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+            if let Some(rect) = checksum_input_rect(ctx, key, input) {
                 let pos = rect.center();
                 input.events.push(egui::Event::PointerMoved(pos));
                 if matches!(phase, 18 | 32) {
@@ -14663,7 +14700,7 @@ impl eframe::App for VisualQaApp {
                 43..=47 => (egui::Id::new("checksum-expected"), phase - 43),
                 _ => (egui::Id::new("checksum-copy-list"), phase - 48),
             };
-            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+            if let Some(rect) = checksum_input_rect(ctx, key, input) {
                 let pos = rect.center();
                 input.events.push(egui::Event::PointerMoved(pos));
                 if phase == 46 {
@@ -14748,7 +14785,7 @@ impl eframe::App for VisualQaApp {
                 59..=61 => (egui::Id::new("checksum-copy-digest"), phase - 59),
                 _ => (egui::Id::new("checksum-copy-list"), phase - 62),
             };
-            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+            if let Some(rect) = checksum_input_rect(ctx, key, input) {
                 let pos = rect.center();
                 input.events.push(egui::Event::PointerMoved(pos));
                 if phase == 57 {
@@ -14814,7 +14851,7 @@ impl eframe::App for VisualQaApp {
             } else {
                 "checksum-copy-list"
             };
-            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key))) {
+            if let Some(rect) = checksum_input_rect(ctx, egui::Id::new(key), input) {
                 let pos = rect.center();
                 input.events.push(egui::Event::PointerMoved(pos));
                 if !local.is_multiple_of(3) {
@@ -14903,7 +14940,7 @@ impl eframe::App for VisualQaApp {
                 97..=99 => (egui::Id::new("checksum-relative-paths"), phase - 97),
                 _ => (egui::Id::new("checksum-copy-list"), phase - 100),
             };
-            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+            if let Some(rect) = checksum_input_rect(ctx, id, input) {
                 let pos = rect.center();
                 input.events.push(egui::Event::PointerMoved(pos));
                 if phase == 89 {
@@ -14964,7 +15001,7 @@ impl eframe::App for VisualQaApp {
                 ),
                 _ => (egui::Id::new("checksum-relative-paths"), phase - 117),
             };
-            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) else {
+            let Some(rect) = checksum_input_rect(ctx, id, input) else {
                 return;
             };
             let pos = rect.center();
@@ -15028,7 +15065,7 @@ impl eframe::App for VisualQaApp {
                 137..=139 => (egui::Id::new("checksum-relative-paths"), phase - 137),
                 _ => (egui::Id::new("checksum-copy-list"), phase - 140),
             };
-            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) else {
+            let Some(rect) = checksum_input_rect(ctx, id, input) else {
                 return;
             };
             let pos = rect.center();
@@ -15066,7 +15103,7 @@ impl eframe::App for VisualQaApp {
                 return;
             }
             if let Some(rect) =
-                ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new("checksum-copy-base64")))
+                checksum_input_rect(ctx, egui::Id::new("checksum-copy-base64"), input)
             {
                 let local = self.checksum_click_phase - 143;
                 input.events.push(egui::Event::PointerMoved(rect.center()));
@@ -15104,7 +15141,7 @@ impl eframe::App for VisualQaApp {
             } else {
                 (egui::Id::new("checksum-expected"), (phase - 149) % 5)
             };
-            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+            if let Some(rect) = checksum_input_rect(ctx, key, input) {
                 input.events.push(egui::Event::PointerMoved(rect.center()));
                 if phase >= 149 && local == 3 {
                     input.events.push(egui::Event::Key {
@@ -15122,6 +15159,109 @@ impl eframe::App for VisualQaApp {
                     input.events.push(egui::Event::Text(
                         if phase == 158 { "Ak0BJw" } else { "Ak0BJw==" }.into(),
                     ));
+                } else if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_input_pending = true;
+            }
+            return;
+        }
+        if self.scenario == Scenario::Checksums && (164..240).contains(&self.checksum_click_phase) {
+            let phase = self.checksum_click_phase;
+            let offset = (phase - 164) % 38;
+            let (algorithm, hex, encoded, stem) = if phase < 202 {
+                (
+                    crate::checksum::Algorithm::Sha3_256,
+                    ABC_SHA3_256,
+                    ABC_SHA3_256_BASE64,
+                    "sha3-256",
+                )
+            } else {
+                (
+                    crate::checksum::Algorithm::Sha3_512,
+                    ABC_SHA3_512,
+                    ABC_SHA3_512_BASE64,
+                    "sha3-512",
+                )
+            };
+            if matches!(offset, 11 | 28 | 33)
+                && !self.inner.checksum_comparison_is(
+                    algorithm,
+                    if offset == 33 {
+                        crate::checksum::ExpectedMatch::Invalid
+                    } else {
+                        crate::checksum::ExpectedMatch::Match
+                    },
+                )
+            {
+                return;
+            }
+            let artifact = match offset {
+                14 => Some(format!("{stem}-digest.txt")),
+                17 => Some(format!("{stem}-absolute.sums")),
+                20 => Some(format!("{stem}-base64.txt")),
+                _ => None,
+            };
+            if let Some(name) = artifact
+                && !self.recorded_clipboard_dump(&name)
+            {
+                return;
+            }
+            let (key, local, text) = match offset {
+                0..=2 => (
+                    egui::Id::new(("checksum-algorithm", algorithm.label())),
+                    offset,
+                    None,
+                ),
+                3..=5 => (
+                    egui::Id::new(("checksum-encoding", "Hex")),
+                    offset - 3,
+                    None,
+                ),
+                6..=10 => (egui::Id::new("checksum-expected"), offset - 6, Some(hex)),
+                11..=13 => (egui::Id::new("checksum-copy-digest"), offset - 11, None),
+                14..=16 => (egui::Id::new("checksum-copy-list"), offset - 14, None),
+                17..=19 => (egui::Id::new("checksum-copy-base64"), offset - 17, None),
+                20..=22 => (
+                    egui::Id::new(("checksum-encoding", "Base64")),
+                    offset - 20,
+                    None,
+                ),
+                23..=27 => (
+                    egui::Id::new("checksum-expected"),
+                    offset - 23,
+                    Some(encoded),
+                ),
+                28..=32 => (
+                    egui::Id::new("checksum-expected"),
+                    offset - 28,
+                    Some("not-base64"),
+                ),
+                _ => (
+                    egui::Id::new("checksum-expected"),
+                    offset - 33,
+                    Some(encoded),
+                ),
+            };
+            if let Some(rect) = checksum_input_rect(ctx, key, input) {
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                if local == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    });
+                } else if local == 4 {
+                    input
+                        .events
+                        .push(egui::Event::Text(text.unwrap_or_default().into()));
                 } else if local > 0 {
                     input.events.push(egui::Event::PointerButton {
                         pos: rect.center(),
@@ -19960,13 +20100,13 @@ impl eframe::App for VisualQaApp {
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
             Scenario::Checksums => {
-                let expected="Ak0BJw==";
-                self.checksum_click_phase==164 && self.counters.clipboard.load(Ordering::Relaxed)==20
+                let expected=ABC_SHA3_512_BASE64;
+                self.checksum_click_phase==240 && self.counters.clipboard.load(Ordering::Relaxed)==26
                     && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected)
                     && !self.inner.checksum_relative_mode_is(true)
                     && self.inner.toasts.is_empty()
-                    && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match)
-                    && self.recorded_clipboard_dump("adler32-base64.txt")
+                    && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_512,crate::checksum::ExpectedMatch::Match)
+                    && self.recorded_clipboard_dump("sha3-512-base64.txt")
                     && std::fs::copy(self.fixture.left.join("checksum.txt"),self.scenario_dir.join("checksum.txt")).is_ok()
             }
             Scenario::RenameOptions => {
@@ -20652,7 +20792,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         | Scenario::DiskCount => 3,
         Scenario::DuplicateCross => 6,
         Scenario::SyncReview => 6,
-        Scenario::Checksums => 20,
+        Scenario::Checksums => 26,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
         Scenario::TablePreview => 5,
         Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::CopyDetails => 2,
@@ -21079,7 +21219,7 @@ mod tests {
                 | Scenario::DiskCount => 3,
                 Scenario::DuplicateCross => 6,
                 Scenario::SyncReview => 6,
-                Scenario::Checksums => 20,
+                Scenario::Checksums => 26,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
                 Scenario::TablePreview => 5,
                 Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::CopyDetails => 2,

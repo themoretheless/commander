@@ -1,0 +1,8 @@
+{
+  "scenario": "checksums",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/sha3-native-2026-11-03/native-captures/1793655040928376000",
+  "binary_sha256": "a3a4e87ba4208edd4e1b4c80997d8a6c3839d34c10a90536f7838d617cb3c2ff",
+  "core_sha256": "a3a4e87ba4208edd4e1b4c80997d8a6c3839d34c10a90536f7838d617cb3c2ff",
+  "wrapper_sha256": "1c2b5ec58a0030f7c5599484399fc456112e5f621382b28d185ce6aaa93a5c1a",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

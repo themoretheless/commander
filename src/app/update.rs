@@ -1776,6 +1776,8 @@ impl App {
             .resizable(true)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().id_salt("checksum-sheet").max_height((ctx.input(|input| input.viewport_rect().height()) - 160.0).max(120.0)).show(ui, |ui| {
+                #[cfg(feature = "visual-qa")]
+                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-sheet-clip"), ui.clip_rect()));
                 if let Some(task) = &self.checksum_task {
                     let completed = task.completed.load(std::sync::atomic::Ordering::Acquire);
                     ui.label(format!("Hashing {completed} of {} files…", task.total));
@@ -1796,7 +1798,7 @@ impl App {
                                 let path = row.path.to_string_lossy().escape_debug().to_string();
                                 ui.add(egui::Label::new(&path).truncate()).on_hover_text(&path);
                                 if let Some(message) = row.error.as_ref().or(row.skipped.as_ref()) { ui.add(egui::Label::new(message).truncate()).on_hover_text(message); }
-                                else { ui.add(egui::Label::new(egui::RichText::new(format!("SHA-256 {}\nSHA-384 {}\nSHA-512 {}\nBLAKE3  {}\nCRC32   {}\nMD5     {}\nSHA-1   {}\nAdler32 {}\nContent {}", row.sha256_hex.as_deref().unwrap_or("-"), row.sha384_hex.as_deref().unwrap_or("-"), row.sha512_hex.as_deref().unwrap_or("-"), row.blake3_hex.as_deref().unwrap_or("-"), row.crc32_hex.as_deref().unwrap_or("-"), row.md5_hex.as_deref().unwrap_or("-"), row.sha1_hex.as_deref().unwrap_or("-"), row.adler32_hex.as_deref().unwrap_or("-"), row.content_hash.map(|value| format!("{value:016x}")).unwrap_or_else(|| "-".into()))).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
+                                else { ui.add(egui::Label::new(egui::RichText::new(row.display_digests()).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
                             });
                         }
                     });

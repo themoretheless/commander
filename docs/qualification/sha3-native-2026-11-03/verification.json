@@ -1,0 +1,7 @@
+{
+  "native_checks": 14,
+  "observations": 241,
+  "clipboard_calls": 26,
+  "oracle": "Python hashlib.sha3_256/sha3_512 + base64",
+  "source_and_binary_hashes_match": true
+}

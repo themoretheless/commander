@@ -23,6 +23,27 @@ pub struct ChecksumRow {
     pub error: Option<String>,
     pub skipped: Option<String>,
 }
+impl ChecksumRow {
+    pub fn display_digests(&self) -> String {
+        let mut lines = Algorithm::ALL
+            .into_iter()
+            .map(|algorithm| {
+                format!(
+                    "{:<8} {}",
+                    algorithm.label(),
+                    algorithm.digest(self).unwrap_or("-")
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.push(format!(
+            "Content  {}",
+            self.content_hash
+                .map(|value| format!("{value:016x}"))
+                .unwrap_or_else(|| "-".into())
+        ));
+        lines.join("\n")
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChecksumReport {
     pub rows: Vec<ChecksumRow>,
@@ -659,6 +680,11 @@ mod tests {
             ] {
                 let expected = vector[key].as_str().unwrap();
                 assert_eq!(report.single_digest(algorithm), Some(expected));
+                assert!(
+                    report.rows[0]
+                        .display_digests()
+                        .contains(&format!("{} {expected}", algorithm.label()))
+                );
                 assert_eq!(
                     report.single_digest_base64(algorithm).as_deref(),
                     vector[encoded].as_str()

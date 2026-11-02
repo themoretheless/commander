@@ -1,0 +1,11 @@
+{
+  "adler_match": false,
+  "clipboard": "./checksum.txt 352441C2\n",
+  "clipboard_calls": 10,
+  "phase": 92,
+  "relative": true,
+  "sha3_256_invalid": false,
+  "sha3_256_match": false,
+  "sha3_512_invalid": false,
+  "sha3_512_match": false
+}

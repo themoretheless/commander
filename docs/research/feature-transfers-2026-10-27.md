@@ -2598,3 +2598,7 @@ Real native pointer/text actions load a wrong-count file, demonstrate disabled a
 ## SHA3-256 and SHA3-512 file checks (2026-11-03)
 
 Independent adaptation of [PeaZip file-checking algorithms](https://peazip.github.io/pea-archiving-utility.html): two SHA-3 digests in the guarded streaming reader, Hex/Base64 comparison and copying, and tagged/hinted/GNU checksum-list import/export. Identical SHA-2/SHA-3 digest widths require explicit selection when no tag or filename hint resolves them. [Python oracle, regression and dependency audit evidence; native limits](../qualification/sha3-checksums-2026-11-03/README.md).
+
+## Native SHA-3 workflow and complete digest display (2026-11-03)
+
+Native qualification found the digest result label still enumerated only the prior algorithms. Result display now follows the shared algorithm list and includes SHA3-256/SHA3-512. Pointer/key/text flow covers Hex/Base64 copying, absolute manifests, comparison, malformed-input refusal and recovery for both algorithms, with clip-aware native scrolling. [Independent Python payload checks and native limits](../qualification/sha3-native-2026-11-03/README.md).
