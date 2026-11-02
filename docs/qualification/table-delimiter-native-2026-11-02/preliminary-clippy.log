@@ -1,0 +1,52 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: can't compare `[&str; 132]` with `[&str; 130]`
+     --> src/visual_qa.rs:20665:9
+      |
+20665 | /         assert_eq!(
+20666 | |             Scenario::ALL.map(Scenario::name),
+20667 | |             [
+20668 | |                 "desktop_base",
+...     |
+20799 | |         );
+      | |_________^ no implementation for `[&str; 132] == [&str; 130]`
+      |
+      = help: the trait `std::cmp::PartialEq<[&str; 130]>` is not implemented for `[&str; 132]`
+      = help: the following other types implement trait `std::cmp::PartialEq<Rhs>`:
+                `&[T]` implements `std::cmp::PartialEq<[U; N]>`
+                `&[T]` implements `std::cmp::PartialEq<std::borrow::Cow<'_, [U]>>`
+                `&[T]` implements `std::cmp::PartialEq<std::vec::Vec<U, A>>`
+                `&[u8; N]` implements `std::cmp::PartialEq<bstr::bstr::BStr>`
+                `&[u8; N]` implements `std::cmp::PartialEq<bstr::bstring::BString>`
+                `&[u8; N]` implements `std::cmp::PartialEq<html5gum::HtmlString>`
+                `&[u8; N]` implements `std::cmp::PartialEq<std::bstr::ByteStr>`
+                `&[u8; N]` implements `std::cmp::PartialEq<std::bstr::ByteString>`
+              and 45 others
+
+error: this `if` statement can be collapsed
+    --> src/visual_qa.rs:9181:13
+     |
+9181 | /             if phase <= end {
+9182 | |                 if let Some(snapshot) = crate::table_preview::dialect_snapshot(ctx, "right") {
+9183 | |                     let clipboard = self
+9184 | |                         .counters
+...    |
+9244 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+9181 ~             if phase <= end
+9182 ~                 && let Some(snapshot) = crate::table_preview::dialect_snapshot(ctx, "right") {
+9183 |                     let clipboard = self
+ ...
+9242 |                     }
+9243 ~                 }
+     |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

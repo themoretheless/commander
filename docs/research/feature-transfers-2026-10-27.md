@@ -2518,3 +2518,7 @@ Independent adaptation of [Strata delimiter-parameterized parsing](https://githu
 ## Bounded delimiter detection (2026-11-02)
 
 Commander extension of the Strata-inspired table workflow: Detect delimiter uses quote-aware readers for four separators on the first 32 bounded records, requiring a unique consistent multi-column candidate. Ambiguous or insufficient samples retain the current parse/filter/sort/copy state and expose manual recovery. Success uses the existing active-dialect parse/export path. [Sample limits, allocation/copy ownership tests and native scope](../qualification/table-delimiter-detect-2026-11-02/README.md).
+
+## Native delimiter detection and manual recovery (2026-11-02)
+
+Two native scenarios now qualify a real semicolon file with quoted/multiline data and an ambiguous comma/semicolon file: detect, numeric sort, exact export, manual reset/override, refusal retaining current state and reselecting the same manual delimiter to clear the message. Final captures each 14/14; four isolated clipboard payloads independently checked with Python csv/Decimal. Toast-free final frames inspected; explicit toast-expiry wait is included in these scenes' capture budget. [Receipts, timeout evidence and remaining alternate/native scope](../qualification/table-delimiter-native-2026-11-02/README.md).

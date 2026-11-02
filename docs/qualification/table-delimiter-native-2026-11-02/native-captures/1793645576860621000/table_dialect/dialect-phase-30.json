@@ -1,0 +1,43 @@
+{
+  "clipboard": "Name;Count;Note\nbeta;2;\"one;two|three\"\nalpha;-10;\"line\nbreak\"\n",
+  "phase": 30,
+  "table": {
+    "delimiter": 59,
+    "detection_error": false,
+    "rows": [
+      [
+        "Name",
+        "Count",
+        "Note"
+      ],
+      [
+        "beta",
+        "2",
+        "one;two|three"
+      ],
+      [
+        "alpha",
+        "-10",
+        "line\nbreak"
+      ]
+    ],
+    "selected": 59,
+    "view": {
+      "column": null,
+      "error": null,
+      "exclude": false,
+      "fuzzy": false,
+      "heading": false,
+      "numeric_sort": false,
+      "query": "",
+      "regex": false,
+      "rows": [
+        0,
+        1,
+        2
+      ],
+      "sort": null,
+      "whole_words": false
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "clipboard": null,
+  "phase": 10,
+  "table": {
+    "delimiter": 59,
+    "detection_error": false,
+    "rows": [
+      [
+        "Name",
+        "Count",
+        "Note"
+      ],
+      [
+        "beta",
+        "2",
+        "one;two|three"
+      ],
+      [
+        "alpha",
+        "-10",
+        "line\nbreak"
+      ]
+    ],
+    "selected": 59,
+    "view": {
+      "column": null,
+      "error": null,
+      "exclude": false,
+      "fuzzy": false,
+      "heading": true,
+      "numeric_sort": true,
+      "query": "",
+      "regex": false,
+      "rows": [
+        1,
+        2
+      ],
+      "sort": null,
+      "whole_words": false
+    }
+  }
+}

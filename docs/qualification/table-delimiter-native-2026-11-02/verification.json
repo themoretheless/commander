@@ -1,0 +1,16 @@
+[
+  {
+    "scene": "table_dialect",
+    "native_checks": 14,
+    "phases": 30,
+    "observations": 31,
+    "clipboard_calls": 2
+  },
+  {
+    "scene": "table_ambiguous",
+    "native_checks": 14,
+    "phases": 33,
+    "observations": 34,
+    "clipboard_calls": 2
+  }
+]

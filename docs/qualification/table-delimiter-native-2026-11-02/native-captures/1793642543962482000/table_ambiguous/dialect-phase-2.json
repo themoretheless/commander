@@ -1,0 +1,40 @@
+{
+  "clipboard": null,
+  "phase": 2,
+  "table": {
+    "delimiter": 44,
+    "detection_error": false,
+    "rows": [
+      [
+        "A",
+        "B;C"
+      ],
+      [
+        "1",
+        "2;3"
+      ],
+      [
+        "4",
+        "5;6"
+      ]
+    ],
+    "selected": null,
+    "view": {
+      "column": null,
+      "error": null,
+      "exclude": false,
+      "fuzzy": false,
+      "heading": false,
+      "numeric_sort": false,
+      "query": "",
+      "regex": false,
+      "rows": [
+        0,
+        1,
+        2
+      ],
+      "sort": null,
+      "whole_words": false
+    }
+  }
+}

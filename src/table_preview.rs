@@ -214,6 +214,16 @@ pub fn filter_snapshot(ctx: &egui::Context, side: &str) -> Option<serde_json::Va
         .map(|view| serde_json::json!({"query":view.filter.query,"fuzzy":view.filter.fuzzy,"regex":view.filter.regex,"whole_words":view.filter.whole_words,"column":view.filter.column,"exclude":view.filter.exclude,"error":view.filter_error,"rows":view.order.as_ref(),"heading":view.first_heading,"numeric_sort":view.numeric_sort,"sort":view.sort}))
 }
 
+#[cfg(feature = "visual-qa")]
+pub fn dialect_snapshot(ctx: &egui::Context, side: &str) -> Option<serde_json::Value> {
+    let id = egui::Id::new(("table_preview", side));
+    let cached = ctx.data(|data| data.get_temp::<CachedTable>(id))?;
+    let choice = ctx.data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))?;
+    Some(
+        serde_json::json!({"delimiter":cached.delimiter,"selected":choice.selected,"detection_error":choice.detection_error,"rows":cached.table.rows,"view":filter_snapshot(ctx,side)}),
+    )
+}
+
 /// Exact finite decimal/scientific notation, bounded without expanding powers.
 /// Canonical significant digits share an implied decimal position `magnitude`.
 #[derive(Debug, PartialEq, Eq)]

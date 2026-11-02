@@ -1,0 +1,8 @@
+{
+  "scenario": "table_dialect",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/table-delimiter-native-2026-11-02/native-captures/1793643028450061000",
+  "binary_sha256": "58e6c550bb4b5a097f5d7418cf100849120c26135d4bf613ff474cbb397a34ad",
+  "core_sha256": "58e6c550bb4b5a097f5d7418cf100849120c26135d4bf613ff474cbb397a34ad",
+  "wrapper_sha256": "f16572dd421712500b38747b8f8934980b833dde0ff89cc6ad61a06d208ec1c8",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

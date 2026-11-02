@@ -278,6 +278,8 @@ enum Scenario {
     ShortcutExchange,
     TabSelectionSession,
     TablePreview,
+    TableDialect,
+    TableAmbiguous,
     ArchiveBrowser,
     ArchiveFuzzy,
     ArchiveExport,
@@ -343,7 +345,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 130] = [
+    const ALL: [Self; 132] = [
         Self::DesktopBase,
         Self::IconsGrid,
         Self::ImagePreview,
@@ -464,6 +466,8 @@ impl Scenario {
         Self::ShortcutExchange,
         Self::TabSelectionSession,
         Self::TablePreview,
+        Self::TableDialect,
+        Self::TableAmbiguous,
         Self::ArchiveBrowser,
         Self::ArchiveFuzzy,
         Self::ArchiveExport,
@@ -605,6 +609,8 @@ impl Scenario {
             Self::ShortcutExchange => "shortcut_exchange",
             Self::TabSelectionSession => "tab_selection_session",
             Self::TablePreview => "table_preview",
+            Self::TableDialect => "table_dialect",
+            Self::TableAmbiguous => "table_ambiguous",
             Self::ArchiveBrowser => "archive_browser",
             Self::ArchiveFuzzy => "archive_fuzzy",
             Self::ArchiveExport => "archive_export",
@@ -741,6 +747,8 @@ impl Scenario {
             | Self::GpxPreview
             | Self::JsonPreview
             | Self::TablePreview
+            | Self::TableDialect
+            | Self::TableAmbiguous
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -887,6 +895,8 @@ impl Scenario {
             | Self::GpxPreview
             | Self::JsonPreview
             | Self::TablePreview
+            | Self::TableDialect
+            | Self::TableAmbiguous
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -2317,6 +2327,14 @@ impl Fixture {
         ) {
             std::fs::write(left.join("preview.pdf"), crate::pdf_preview::fixture())
                 .map_err(|error| error.to_string())?;
+        }
+        if matches!(scenario, Scenario::TableDialect | Scenario::TableAmbiguous) {
+            let source = if scenario == Scenario::TableDialect {
+                "Name;Count;Note\nbeta;2;\"one;two|three\"\nalpha;-10;\"line\nbreak\"\n"
+            } else {
+                "A,B;C\n1,2;3\n4,5;6\n"
+            };
+            std::fs::write(left.join("preview.csv"), source).map_err(|error| error.to_string())?;
         }
         if scenario == Scenario::TablePreview {
             std::fs::write(
@@ -4594,6 +4612,8 @@ impl eframe::App for VisualQaApp {
                 && self.json_mode_phase < 12)
             && !(self.scenario == Scenario::JsonPreview && self.json_mode_phase < 9)
             && !(self.scenario == Scenario::TablePreview && self.table_phase < 133)
+            && !(self.scenario == Scenario::TableDialect && self.table_phase < 30)
+            && !(self.scenario == Scenario::TableAmbiguous && self.table_phase < 33)
             && !(matches!(
                 self.scenario,
                 Scenario::DocxPreview
@@ -9145,6 +9165,81 @@ impl eframe::App for VisualQaApp {
                         });
                     }
                     self.table_input_pending = true;
+                }
+            }
+        }
+        if matches!(
+            self.scenario,
+            Scenario::TableDialect | Scenario::TableAmbiguous
+        ) {
+            let phase = self.table_phase;
+            let end = if self.scenario == Scenario::TableDialect {
+                30
+            } else {
+                33
+            };
+            if phase <= end
+                && let Some(snapshot) = crate::table_preview::dialect_snapshot(ctx, "right")
+            {
+                let clipboard = self
+                    .counters
+                    .clipboard_text
+                    .lock()
+                    .ok()
+                    .and_then(|text| text.clone());
+                let _ = serde_json::to_vec_pretty(
+                    &serde_json::json!({"phase":phase,"table":snapshot,"clipboard":clipboard}),
+                )
+                .is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir
+                            .join(format!("dialect-phase-{phase}.json")),
+                        bytes,
+                    )
+                    .is_ok()
+                });
+                let _ = std::fs::copy(
+                    self.fixture.left.join("preview.csv"),
+                    self.scenario_dir.join("source.csv"),
+                );
+                if phase < end {
+                    let id = egui::Id::new(("table_preview", "right"));
+                    let stage = phase / 3;
+                    let local = phase % 3;
+                    let key = if self.scenario == Scenario::TableDialect {
+                        match stage {
+                            0 => id.with("detect-delimiter"),
+                            1 => id.with("heading"),
+                            2 => id.with("numeric-sort"),
+                            3 => id.with(("column", 1usize)),
+                            4 | 9 => id.with("copy-records"),
+                            5 | 7 => id.with("delimiter"),
+                            6 => id.with(("delimiter-option", "File default")),
+                            _ => id.with(("delimiter-option", "Semicolon")),
+                        }
+                    } else {
+                        match stage {
+                            0 => id.with("heading"),
+                            1 => id.with("numeric-sort"),
+                            2 => id.with(("column", 0usize)),
+                            3 | 7 => id.with("detect-delimiter"),
+                            4 | 10 => id.with("copy-records"),
+                            5 | 8 => id.with("delimiter"),
+                            _ => id.with(("delimiter-option", "Semicolon")),
+                        }
+                    };
+                    if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                        input.events.push(egui::Event::PointerMoved(rect.center()));
+                        if local > 0 {
+                            input.events.push(egui::Event::PointerButton {
+                                pos: rect.center(),
+                                button: egui::PointerButton::Primary,
+                                pressed: local == 1,
+                                modifiers: Default::default(),
+                            });
+                        }
+                        self.table_input_pending = true;
+                    }
                 }
             }
         }
@@ -17175,6 +17270,13 @@ impl eframe::App for VisualQaApp {
         self.frames = self.frames.saturating_add(1);
         let timeout = if self.scenario == Scenario::SearchResults {
             Duration::from_secs(30)
+        } else if matches!(
+            self.scenario,
+            Scenario::TableDialect | Scenario::TableAmbiguous
+        ) {
+            // These scenes deliberately wait for the last copy toast to expire
+            // before requesting an unobscured frame; retain the capture budget.
+            TIMEOUT + Duration::from_secs_f64(crate::toasts::DEFAULT_TTL)
         } else {
             TIMEOUT
         };
@@ -17197,7 +17299,11 @@ impl eframe::App for VisualQaApp {
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
-        if self.scenario == Scenario::TablePreview && self.table_input_pending {
+        if matches!(
+            self.scenario,
+            Scenario::TablePreview | Scenario::TableDialect | Scenario::TableAmbiguous
+        ) && self.table_input_pending
+        {
             self.table_phase += 1;
             self.table_input_pending = false;
         }
@@ -18403,9 +18509,14 @@ impl eframe::App for VisualQaApp {
                 | Scenario::GpxPreview
                 | Scenario::JsonPreview
                 | Scenario::TablePreview
+                | Scenario::TableDialect
+                | Scenario::TableAmbiguous
         ) && !self.pane_tool_opened
         {
-            let filename = if self.scenario == Scenario::TablePreview {
+            let filename = if matches!(
+                self.scenario,
+                Scenario::TablePreview | Scenario::TableDialect | Scenario::TableAmbiguous
+            ) {
                 "preview.csv"
             } else if self.scenario == Scenario::KmlPreview {
                 "preview.kml"
@@ -18663,6 +18774,12 @@ impl eframe::App for VisualQaApp {
                             && state.matched == 3
                             && state.hidden_results.is_empty()
                     })
+            }
+            Scenario::TableDialect | Scenario::TableAmbiguous => {
+                self.table_phase==if self.scenario==Scenario::TableDialect {30} else {33}
+                    && self.counters.clipboard.load(Ordering::Relaxed)==2
+                    && self.inner.toasts.is_empty()
+                    && crate::table_preview::dialect_snapshot(&ctx,"right").is_some_and(|snapshot|snapshot["delimiter"]==59 && snapshot["detection_error"]==false && snapshot["rows"].as_array().is_some_and(|rows|rows.len()==3) && snapshot["view"]["heading"]==false && snapshot["view"]["rows"]==serde_json::json!([0,1,2]))
             }
             Scenario::TablePreview => {
                 self.table_phase == 133
@@ -20091,6 +20208,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         Scenario::Checksums => 16,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
         Scenario::TablePreview => 5,
+        Scenario::TableDialect | Scenario::TableAmbiguous => 2,
         Scenario::JsonPreview
         | Scenario::DocxPreview
         | Scenario::OdtPreview
@@ -20517,6 +20635,7 @@ mod tests {
                 Scenario::Checksums => 16,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
                 Scenario::TablePreview => 5,
+                Scenario::TableDialect | Scenario::TableAmbiguous => 2,
                 Scenario::JsonPreview
                 | Scenario::DocxPreview
                 | Scenario::OdtPreview
@@ -20674,6 +20793,8 @@ mod tests {
                 "shortcut_exchange",
                 "tab_selection_session",
                 "table_preview",
+                "table_dialect",
+                "table_ambiguous",
                 "archive_browser",
                 "archive_fuzzy",
                 "archive_export",
