@@ -5,6 +5,9 @@ strftime format such as `%Y-%m-%d_`. Dates come from the listing captured when
 the dialog opens and stay attached to each original file when rows are reordered.
 Missing dates or invalid formats block the batch. Saved rename presets retain
 the format and position, without storing file timestamps.
+Saved rename rules also support **Rename selected** and **Duplicate saved** using
+the name field. Duplication copies the saved rule and keeps the source selected;
+load the copy to edit it. Current unsaved editor changes are retained.
 
 Panels offer **Columns** alongside List and Icons: scroll through parent folders
 beside the current folder, descend with one click, or bring an ancestor file

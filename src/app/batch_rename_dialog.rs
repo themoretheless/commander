@@ -483,6 +483,29 @@ impl App {
                             state.preset_status = Some(result.map(|_| "Preset saved".into()));
                         }
                     });
+                    ui.horizontal_wrapped(|ui| {
+                        for (duplicate, label, hint) in [
+                            (false, "Rename selected", "Use the name above; preserve the saved rule and current editor changes"),
+                            (true, "Duplicate saved", "Copy the selected saved rule under the name above; unsaved editor changes are not copied"),
+                        ] {
+                            let response = ui.add_enabled(state.preset_selected.is_some(), egui::Button::new(label)).on_hover_text(hint);
+                            preset_interaction |= response.has_focus() || response.lost_focus() || response.clicked();
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(if duplicate { "rename-preset-duplicate" } else { "rename-preset-rename" }), response.rect));
+                            if response.clicked() {
+                                let source = state.preset_selected.as_deref().unwrap();
+                                let result = if duplicate { presets.duplicate(source, &state.preset_name) } else { presets.rename(source, &state.preset_name) };
+                                if let Ok(name) = &result {
+                                    // Keep selection on the source for duplication: the editor may
+                                    // contain unsaved changes belonging to that source.
+                                    if !duplicate { state.preset_selected = Some(name.clone()); }
+                                    state.preset_name = name.clone();
+                                    presets_changed = true;
+                                }
+                                state.preset_status = Some(result.map(|_| if duplicate { "Saved rule duplicated; current editor retained".into() } else { "Preset renamed; current editor retained".into() }));
+                            }
+                        }
+                    });
                     if let Some(status) = &state.preset_status {
                         match status {
                             Ok(message) => {

@@ -116,6 +116,35 @@ impl Presets {
         preset.rule = rule;
         Ok(())
     }
+    /// Rename only the saved label, preserving its rule and list position.
+    pub fn rename(&mut self, source: &str, destination: &str) -> Result<String, String> {
+        let destination = name(destination)?;
+        let source_key = key(source);
+        let index = self
+            .0
+            .iter()
+            .position(|preset| key(&preset.name) == source_key)
+            .ok_or("Select a saved preset first")?;
+        if self
+            .0
+            .iter()
+            .enumerate()
+            .any(|(other, preset)| other != index && key(&preset.name) == key(&destination))
+        {
+            return Err("A preset with this name exists".into());
+        }
+        self.0[index].name = destination.clone();
+        Ok(destination)
+    }
+    /// Copy the saved rule, never the editor's potentially unsaved changes.
+    pub fn duplicate(&mut self, source: &str, destination: &str) -> Result<String, String> {
+        let rule = self
+            .get(source)
+            .ok_or("Select a saved preset first")?
+            .rule
+            .clone();
+        self.add(destination, rule)
+    }
     pub fn remove(&mut self, label: &str) -> bool {
         let wanted = key(label);
         let before = self.0.len();
@@ -142,6 +171,68 @@ impl<'de> Deserialize<'de> for Presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rename_and_duplicate_preserve_saved_rules_and_reject_collisions_atomically() {
+        let mut presets = Presets::default();
+        let rule = RenameRule {
+            prefix: "saved_".into(),
+            date_stamp: Some(crate::rename::DateStamp::default()),
+            ..Default::default()
+        };
+        presets.add("Photos", rule.clone()).unwrap();
+        presets.add("Other", RenameRule::default()).unwrap();
+        assert_eq!(presets.rename("PHOTOS", "  ФОТО  ").unwrap(), "ФОТО");
+        assert_eq!(presets.items()[0].name, "ФОТО");
+        assert_eq!(presets.get("фото").unwrap().rule, rule);
+        // Own case-only rename is allowed, another canonical name is not.
+        presets.rename("фото", "Фото").unwrap();
+        for (source, target) in [
+            ("Фото", "OTHER"),
+            ("Фото", ""),
+            ("missing", "new"),
+            ("Фото", "bad\nname"),
+        ] {
+            let before = presets.clone();
+            assert!(presets.rename(source, target).is_err());
+            assert_eq!(presets, before);
+        }
+        presets.duplicate("фото", "Copy").unwrap();
+        presets
+            .update(
+                "Copy",
+                RenameRule {
+                    suffix: "_edited".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(presets.get("Фото").unwrap().rule, rule);
+        for (source, target) in [("Фото", "copy"), ("missing", "new"), ("Фото", "")] {
+            let before = presets.clone();
+            assert!(presets.duplicate(source, target).is_err());
+            assert_eq!(presets, before);
+        }
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored, presets);
+    }
+
+    #[test]
+    fn duplicate_respects_capacity_but_rename_works_at_capacity() {
+        let mut presets = Presets::default();
+        for index in 0..MAX_PRESETS {
+            presets
+                .add(&format!("Rule {index}"), RenameRule::default())
+                .unwrap();
+        }
+        let before = presets.clone();
+        assert!(presets.duplicate("Rule 0", "Extra").is_err());
+        assert_eq!(presets, before);
+        presets.rename("Rule 0", "Renamed").unwrap();
+        assert_eq!(presets.items().len(), MAX_PRESETS);
+        assert_eq!(presets.items()[0].name, "Renamed");
+    }
+
     #[test]
     fn captured_date_policy_round_trips_without_saving_file_timestamps() {
         let mut presets = Presets::default();

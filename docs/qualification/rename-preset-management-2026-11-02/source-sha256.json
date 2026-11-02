@@ -1,0 +1,6 @@
+{
+  "src/rename_presets.rs": "13ca1696d3c714c230837581a7e1682ceec097eeaf2531e0af09be80b1bc11a1",
+  "src/session.rs": "7d99347dd362863be7d84bcff2132270d0467a28154b920728eff6ebed552454",
+  "src/app/batch_rename_dialog.rs": "a86570b2f9564092fb78b11af9e663df66370a138a638e6800a68c3986f4330b",
+  "Cargo.lock": "5f28d8632f3714ed5a59ada4ba93c390c6ead6de3efede1eda48bbb4e578df57"
+}

@@ -1,0 +1,29 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 26.89s
+     Running unittests src/main.rs (target/debug/build/commander/ae736cd21cb52eff/out/commander-ae736cd21cb52eff)
+
+running 21 tests
+test rename_presets::tests::duplicate_respects_capacity_but_rename_works_at_capacity ... ok
+test rename_presets::tests::capitalization_presets_round_trip ... ok
+test rename_presets::tests::character_targets_round_trip_in_presets ... ok
+test rename_presets::tests::independent_extension_case_round_trips_in_named_presets ... ok
+test rename_presets::tests::captured_date_policy_round_trips_without_saving_file_timestamps ... ok
+test rename_presets::tests::keep_and_remove_range_actions_round_trip_in_presets ... ok
+test rename_presets::tests::insertion_presets_round_trip_and_reject_unsupported_text_or_offset ... ok
+test rename_presets::tests::letter_counter_formats_round_trip_with_signed_numbering ... ok
+test rename_presets::tests::number_position_round_trips_in_named_presets ... ok
+test rename_presets::tests::normalization_presets_round_trip_all_forms ... ok
+test rename_presets::tests::removal_affixes_round_trip_and_enforce_field_bounds ... ok
+test rename_presets::tests::presets_round_trip_and_update_only_when_explicitly_requested ... ok
+test rename_presets::tests::removal_range_presets_round_trip_and_reject_editor_overflow ... ok
+test rename_presets::tests::replacement_chain_presets_validate_bounds_and_round_trip ... ok
+test rename_presets::tests::imported_rules_cannot_request_unbounded_padding_or_invalid_patterns ... ok
+test rename_presets::tests::replacement_target_round_trips_in_presets_and_old_rules_keep_whole_name ... ok
+test rename_presets::tests::rename_and_duplicate_preserve_saved_rules_and_reject_collisions_atomically ... ok
+test rename_presets::tests::stem_limit_presets_round_trip_and_reject_unsupported_bounds ... ok
+test rename_presets::tests::signed_numbering_round_trips_in_presets ... ok
+test rename_presets::tests::first_only_and_ignore_case_are_persisted_with_component_scope ... ok
+test session::tests::rename_presets_survive_atomic_session_save_and_legacy_sessions_default_empty ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 3299 filtered out; finished in 0.02s
+

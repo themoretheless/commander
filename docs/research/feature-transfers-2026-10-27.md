@@ -2470,3 +2470,7 @@ Independent adaptation of [PeaZip multi-algorithm file checks](https://peazip.gi
 Inspired by [Double Commander multi-rename date placeholders](https://doublecmd.github.io/doc/en/multirename.html), independently implemented in Rust. The dialog adds a UTC strftime date prefix or suffix to the existing rule. Opening-listing timestamps are keyed by original name, so reordering does not exchange dates. Preview and apply use the same captured snapshot even if a file's modification time subsequently changes. Reopen to refresh the snapshot.
 
 Formats are limited to 64 bytes and formatted output to 512 bytes; unrenderable formats or missing captured timestamps block the whole batch. Existing filename validation and collision detection still apply. Presets save only format/position. This is not Double Commander's mask syntax or a port of its implementation. See [qualification](../qualification/rename-modified-date-2026-11-02/README.md); native pointer-driven date-control qualification remains open.
+
+## Rename and duplicate saved rename presets (2026-11-02)
+
+Independent adaptation of [Double Commander preset management](https://doublecmd.github.io/doc/en/multirename.html): rename a saved label without rewriting its rule, or duplicate a saved rule under a new name. Editor changes remain intact; duplication retains source selection. Canonical name collisions and capacity errors fail atomically. Existing session format is unchanged. [Qualification and interaction limits](../qualification/rename-preset-management-2026-11-02/README.md).
