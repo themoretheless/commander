@@ -111,6 +111,129 @@ fn invalid_character_controls(
     (toggle, replacement)
 }
 
+#[derive(Default)]
+pub struct NameListImport {
+    path: String,
+    task: Option<NameListTask>,
+    ready: Option<String>,
+    error: Option<String>,
+}
+struct NameListTask {
+    receiver: std::sync::mpsc::Receiver<Result<String, String>>,
+    handle: crate::workload::TaskHandle,
+}
+impl Drop for NameListTask {
+    fn drop(&mut self) {
+        self.handle.cancel();
+    }
+}
+impl NameListImport {
+    fn controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        workload: &crate::workload::WorkloadHandle,
+        context: &BatchRenameContext,
+        nonce: u64,
+    ) -> (bool, Option<String>) {
+        if let Some(task) = &self.task {
+            let result = match task.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Name-list loader stopped".into()))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                self.task = None;
+                match result {
+                    Ok(text) => {
+                        self.ready = Some(text);
+                        self.error = None;
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+            }
+        }
+        let mut interaction = false;
+        let mut apply = None;
+        ui.horizontal_wrapped(|ui| {
+            let path = ui.add(
+                egui::TextEdit::singleline(&mut self.path)
+                    .desired_width(230.0)
+                    .char_limit(4096)
+                    .hint_text("UTF-8 list file path"),
+            );
+            interaction |= path.has_focus() || path.lost_focus() || path.changed();
+            if path.changed() {
+                self.ready = None;
+                self.error = None;
+                self.task = None;
+            }
+            let load = ui.add_enabled(
+                self.task.is_none() && !self.path.is_empty(),
+                egui::Button::new("Load names from file"),
+            );
+            #[cfg(any(test, feature = "visual-qa"))]
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new("rename-load-list-file"), load.rect)
+            });
+            interaction |= load.has_focus() || load.lost_focus() || load.clicked();
+            if load.clicked() {
+                self.ready = None;
+                self.error = None;
+                let path = context.dir.join(&self.path);
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                let repaint = ui.ctx().clone();
+                match workload.submit(
+                    crate::workload::TaskSpec::new(
+                        crate::workload::TaskKind::Preview,
+                        context.dir.clone(),
+                        nonce,
+                    )
+                    .priority(crate::workload::Priority::Interactive),
+                    move |cancelled| {
+                        let result =
+                            crate::name_list_file::read(&path, &|| cancelled.is_cancelled());
+                        let _ = sender.send(result);
+                        repaint.request_repaint();
+                    },
+                ) {
+                    Ok(handle) => self.task = Some(NameListTask { receiver, handle }),
+                    Err(error) => self.error = Some(format!("Could not load name list: {error}")),
+                }
+            }
+            if self.task.is_some() {
+                ui.spinner();
+                let cancel = ui.button("Cancel loading");
+                interaction |= cancel.has_focus() || cancel.lost_focus() || cancel.clicked();
+                if cancel.clicked() {
+                    self.task = None;
+                }
+            }
+        });
+        if let Some(text) = &self.ready {
+            let count = crate::rename::parse_name_list(text).map_or(0, |rows| rows.len());
+            ui.small(format!("Loaded {count} names; current batch needs {}. Existing transforms will still apply.", context.targets.len()));
+            let use_list = ui.add_enabled(
+                count == context.targets.len(),
+                egui::Button::new("Use loaded names"),
+            );
+            #[cfg(any(test, feature = "visual-qa"))]
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new("rename-use-loaded-list"), use_list.rect)
+            });
+            interaction |= use_list.has_focus() || use_list.lost_focus() || use_list.clicked();
+            if use_list.clicked() {
+                apply = self.ready.take();
+            }
+        }
+        if let Some(error) = &self.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        (interaction, apply)
+    }
+}
+
 fn name_list_editor(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
     // Keep an over-limit sentinel: a truncated oversized paste must not become
     // a valid MAX-byte list. UTF-8 byte validation remains in the shared parser.
@@ -418,6 +541,7 @@ impl App {
         let listing_generation = self.ws.active_panel_ref().entries_gen();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.batch_rename = Some(BatchRenameState {
+            name_list_import: NameListImport::default(),
             name_list_on: false,
             name_list_text: String::new(),
             confirm_preset_discard: false,
@@ -503,6 +627,7 @@ impl App {
                     .collect(),
             )
         });
+        let workload = &self.workload;
         let Some(state) = &mut self.ui.modals.batch_rename else {
             return;
         };
@@ -785,6 +910,14 @@ impl App {
                             }
                         }
                     });
+                    let (interaction, imported) = state.name_list_import.controls(ui, workload, &state.context, state.scroll_nonce);
+                    preset_interaction |= interaction;
+                    if let Some(text) = imported {
+                        state.name_list_on = true;
+                        state.name_list_text = text;
+                        state.error = None;
+                        state.preset_status = Some(Ok("File names loaded; review the preview before renaming".into()));
+                    }
                     if state.name_list_on {
                         ui.small(format!("Exactly {} rows in the current file order · other transforms apply afterward",state.context.targets.len()));
                         let list=name_list_editor(ui,&mut state.name_list_text);
@@ -1382,6 +1515,108 @@ mod tests {
     use super::*;
 
     #[test]
+    fn imported_name_list_requires_explicit_click_and_current_count() {
+        let ctx = egui::Context::default();
+        let workload = crate::workload::global_handle();
+        let mut context = context(&["old.txt"], &[]);
+        let dir = crate::testutil::TempDir::new();
+        dir.file("names.txt", "new.txt");
+        context.dir = dir.path().to_path_buf();
+        let mut import = NameListImport {
+            path: "names.txt".into(),
+            ..Default::default()
+        };
+        let mut applied = None;
+        let frame = |import: &mut NameListImport, context: &BatchRenameContext, events| {
+            let mut result = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    result = import.controls(ui, &workload, context, 1).1;
+                },
+            ));
+            result
+        };
+        assert_eq!(frame(&mut import, &context, vec![]), None);
+        let load_rect = ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new("rename-load-list-file"))
+                .unwrap()
+        });
+        let load_click = |pressed| egui::Event::PointerButton {
+            pos: load_rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            &mut import,
+            &context,
+            vec![
+                egui::Event::PointerMoved(load_rect.center()),
+                load_click(true),
+            ],
+        );
+        assert_eq!(frame(&mut import, &context, vec![load_click(false)]), None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while import.ready.is_none() {
+            assert!(import.error.is_none(), "{:?}", import.error);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "loader did not finish"
+            );
+            assert_eq!(frame(&mut import, &context, vec![]), None);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("names.txt")).unwrap(),
+            "new.txt"
+        );
+        frame(&mut import, &context, vec![]);
+        let rect = ctx.data(|data| {
+            data.get_temp::<egui::Rect>(egui::Id::new("rename-use-loaded-list"))
+                .unwrap()
+        });
+        let click = |pressed| egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        context.targets.push("second.txt".into());
+        frame(
+            &mut import,
+            &context,
+            vec![egui::Event::PointerMoved(rect.center()), click(true)],
+        );
+        assert_eq!(frame(&mut import, &context, vec![click(false)]), None);
+        assert_eq!(import.ready.as_deref(), Some("new.txt"));
+        context.targets.pop();
+        frame(&mut import, &context, vec![]);
+        frame(
+            &mut import,
+            &context,
+            vec![egui::Event::PointerMoved(rect.center()), click(true)],
+        );
+        applied = applied.or(frame(&mut import, &context, vec![click(false)]));
+        assert_eq!(applied.as_deref(), Some("new.txt"));
+        assert!(import.ready.is_none());
+        let validation = ValidatedBatchRename::build(
+            &context,
+            RenameRule {
+                name_list: applied,
+                prefix: "P_".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(validation.plans[0].from, "old.txt");
+        assert_eq!(validation.plans[0].to, "P_new.txt");
+        assert!(validation.applicable);
+    }
+
+    #[test]
     fn preview_name_list_preserves_reviewed_targets_without_double_transforms() {
         let context = context(&["alpha.txt", "beta.txt"], &[]);
         let mut rule = RenameRule {
@@ -1832,6 +2067,7 @@ mod tests {
     #[test]
     fn reset_rule_clears_edits_and_stale_validation_but_keeps_context_identity() {
         let mut state = BatchRenameState {
+            name_list_import: NameListImport::default(),
             name_list_on: true,
             name_list_text: "Other.JPG".into(),
             confirm_preset_discard: false,

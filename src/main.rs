@@ -91,6 +91,7 @@ pub mod measurement;
 mod mount_guard;
 mod name_filter;
 mod name_list;
+mod name_list_file;
 #[cfg_attr(not(target_os = "macos"), path = "native_copy_portable.rs")]
 mod native_copy;
 mod native_effect;

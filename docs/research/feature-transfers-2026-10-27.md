@@ -2586,3 +2586,7 @@ Independent adaptation of [Double Commander proposed-name list editing](https://
 ## Native rename name-list editing (2026-11-03)
 
 Native pointer/text flow now exercises preview promotion without repeated modifiers, multiline count refusal/recovery, original-name initialization and a final manual target. Actual editor/cache observations independently checked against fixed expected states; source bytes preserved and zero native-port effects. [Receipts and native apply/layout limits](../qualification/rename-name-lists-native-2026-11-03/README.md).
+
+## Load rename names from a file (2026-11-03)
+
+Independent adaptation of [Double Commander existing name lists, section 5.1](https://doublecmd.github.io/doc/en/multirename.html): bounded cancellable background UTF-8 file loading, then explicit adoption into the list editor with current batch-count checking. Existing modifiers and preview/apply semantics remain active. [Reader, workload/pointer regression evidence and native capture limits](../qualification/rename-name-list-file-2026-11-03/README.md).

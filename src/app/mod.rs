@@ -765,6 +765,7 @@ pub struct SyncState {
 /// UI state for the batch-rename studio. The transform itself lives in
 /// `crate::rename`; this only holds the editable rule fields.
 pub struct BatchRenameState {
+    pub name_list_import: batch_rename_dialog::NameListImport,
     pub name_list_on: bool,
     pub name_list_text: String,
     pub confirm_preset_discard: bool,

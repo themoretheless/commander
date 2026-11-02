@@ -1,0 +1,10 @@
+{
+  "src/app/batch_rename_dialog.rs": "0896a23e9d54f7482c4cc29c392b3b052563c7acf0d1e827ef171e662637b9d4",
+  "src/app/mod.rs": "f0474927b73d09218302d93c2f1558bdb79e60253d433da32cd92b7e31234a1f",
+  "src/main.rs": "fe303b86ea43406d1f4a8eed338d306a5cb807360d7c16b12da180d3559d73a2",
+  "src/name_list_file.rs": "9d1eeafb057ca724fe0b1c02831aca4c224e49f69cd2a27b4a4dfb32cc9fe189",
+  "src/rename.rs": "a85a4aaecc0d814e95b2f38746f8579f664f6b3af9a98c6d12f66bbeaa64b5f0",
+  "src/workload.rs": "f0003faecd70bd01276842d4e1340cff660b631ca34e543358dd4a10c628e4c5",
+  "Cargo.toml": "e72153133243a6c2ec6b66250692c362baa40eaeb6815acdc8398afd8a965212",
+  "Cargo.lock": "4c43a342a7894d17bd7b3c6a920324c487d00e439ccb1429b75e3c574d8350a5"
+}
