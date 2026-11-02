@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 24.90s
+     Running unittests src/main.rs (target/debug/build/commander/ae736cd21cb52eff/out/commander-ae736cd21cb52eff)
+
+running 5 tests
+test search::tests::hidden_search_query_dot_detection_preserves_non_utf8_name_bytes ... ok
+test archive::tests::supported_archive_detection_is_case_insensitive ... ok
+test checksum_list::tests::automatic_detection_requires_an_unambiguous_complete_list_and_respects_manual_override ... ok
+test table_preview::tests::delimiter_detection_is_quote_aware_unique_and_sample_bounded ... ok
+test table_preview::tests::ambiguous_detection_keeps_current_table_filter_sort_and_copy_until_manual_choice ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3330 filtered out; finished in 0.07s
+

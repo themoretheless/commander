@@ -70,7 +70,50 @@ struct DialectChoice {
     content: Arc<str>,
     file_delimiter: u8,
     selected: Option<u8>,
+    detection_error: bool,
 }
+/// Choose only a unique consistent multi-column dialect in a bounded sample.
+/// CSV parsing, rather than counting raw separators, respects quoted newlines.
+fn detect_delimiter(input: &str) -> Option<u8> {
+    let mut end = input.len().min(MAX_BYTES);
+    while !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let sample = input[..end].trim_start_matches('\u{feff}');
+    let mut winner = None;
+    for delimiter in *b",\t;|" {
+        let mut reader = csv::ReaderBuilder::new()
+            .delimiter(delimiter)
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(sample.as_bytes());
+        let mut width = None;
+        let mut count = 0;
+        let mut valid = true;
+        for record in reader.records().take(32) {
+            let Ok(record) = record else {
+                valid = false;
+                break;
+            };
+            let columns = record.len();
+            if !(2..=MAX_COLUMNS).contains(&columns) || width.is_some_and(|width| width != columns)
+            {
+                valid = false;
+                break;
+            }
+            width = Some(columns);
+            count += 1;
+        }
+        if valid && count >= 2 {
+            if winner.is_some() {
+                return None;
+            }
+            winner = Some(delimiter);
+        }
+    }
+    winner
+}
+
 fn delimiter_label(delimiter: u8) -> &'static str {
     match delimiter {
         b',' => "Comma",
@@ -370,14 +413,17 @@ pub fn render(
             content: content.clone(),
             file_delimiter,
             selected: None,
+            detection_error: false,
         });
     ui.horizontal_wrapped(|ui| {
         ui.label("Delimiter");
+        let previous=dialect.selected;
         let combo=egui::ComboBox::from_id_salt(id.with("delimiter-menu"))
             .selected_text(dialect.selected.map(delimiter_label).unwrap_or("File default"))
             .show_ui(ui,|ui| {
                 for (value,label) in [(None,"File default"),(Some(b','),"Comma"),(Some(b'\t'),"Tab"),(Some(b';'),"Semicolon"),(Some(b'|'),"Pipe")] {
                     let option=ui.selectable_value(&mut dialect.selected,value,label);
+                    if option.clicked() {dialect.detection_error=false;}
                     #[cfg(any(test,feature="visual-qa"))]
                     ui.ctx().data_mut(|data|data.insert_temp(id.with(("delimiter-option",label)),option.rect));
                     #[cfg(not(any(test,feature="visual-qa")))]
@@ -387,8 +433,19 @@ pub fn render(
         #[cfg(any(test,feature="visual-qa"))]
         ui.ctx().data_mut(|data|data.insert_temp(id.with("delimiter"),combo.response.rect));
         combo.response.on_hover_text("Reparse loaded text with the chosen separator. Changing the effective separator resets headings, filtering and sorting. File default uses comma for CSV and tab for TSV.");
+        if dialect.selected!=previous {dialect.detection_error=false;}
+        let detect=ui.button("Detect delimiter").on_hover_text("Inspect at most 32 loaded CSV records. Require at least two records with the same 2–64 columns and exactly one matching separator. Ambiguous samples keep the current choice.");
+        #[cfg(any(test,feature="visual-qa"))]
+        ui.ctx().data_mut(|data|data.insert_temp(id.with("detect-delimiter"),detect.rect));
+        if detect.clicked() {
+            if let Some(delimiter)=detect_delimiter(content) {dialect.selected=Some(delimiter);dialect.detection_error=false;}
+            else {dialect.detection_error=true;}
+        }
         ui.small(format!("Using {}",delimiter_label(dialect.selected.unwrap_or(file_delimiter))));
     });
+    if dialect.detection_error {
+        ui.colored_label(ui.visuals().error_fg_color,"No unique delimiter found in the sampled records; choose one manually. Current table is unchanged.");
+    }
     let delimiter = dialect.selected.unwrap_or(file_delimiter);
     ui.ctx()
         .data_mut(|data| data.insert_temp(id.with("dialect"), dialect));
@@ -651,6 +708,131 @@ pub fn render(
 mod tests {
     use super::*;
     #[test]
+    fn delimiter_detection_is_quote_aware_unique_and_sample_bounded() {
+        for delimiter in *b",\t;|" {
+            let d = char::from(delimiter);
+            let source = format!("\u{feff}Left{d}Right\none{d}\"a,b;|two\nline\"\nthree{d}four\n");
+            assert_eq!(detect_delimiter(&source), Some(delimiter));
+        }
+        for source in [
+            "",
+            "a,b",
+            "one\ntwo\n",
+            "a,b;c\n1,2;3\n",
+            "a,b\n1,2,3\n",
+            "a:b\n1:2\n",
+        ] {
+            assert_eq!(detect_delimiter(source), None, "{source}");
+        }
+        let wide = format!("{}\n{}\n", vec!["x"; 65].join(","), vec!["1"; 65].join(","));
+        assert_eq!(detect_delimiter(&wide), None);
+        let sampled = format!("{}a;b;c\n", "a;b\n".repeat(32));
+        assert_eq!(detect_delimiter(&sampled), Some(b';'));
+        assert_eq!(
+            detect_delimiter(&format!("z{}", "ё".repeat(MAX_BYTES / 2 + 1))),
+            None
+        );
+    }
+
+    #[test]
+    fn ambiguous_detection_keeps_current_table_filter_sort_and_copy_until_manual_choice() {
+        let ctx = egui::Context::default();
+        let content: Arc<str> = Arc::from("A,B;C\n1,2;3\n4,5;6\n");
+        let id = egui::Id::new(("table_preview", "right"));
+        let frame = |content: &Arc<str>, events| {
+            let mut copied = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| copied = render(ui, content, b',', "right"),
+            ));
+            copied
+        };
+        let click = |key| {
+            let pos = ctx
+                .data(|data| data.get_temp::<egui::Rect>(key))
+                .unwrap()
+                .center();
+            let mut copied = None;
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(pos)];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                if let Some(text) = frame(&content, events) {
+                    copied = Some(text);
+                }
+            }
+            copied
+        };
+        let choose_comma = || {
+            click(id.with("delimiter"));
+            click(id.with(("delimiter-option", "Comma")));
+        };
+        frame(&content, vec![]);
+        choose_comma();
+        click(id.with("heading"));
+        click(id.with("numeric-sort"));
+        click(id.with(("column", 0usize)));
+        click(id.with("filter"));
+        frame(&content, vec![egui::Event::Text("1".into())]);
+        let before = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        let parsed = ctx.data(|data| data.get_temp::<CachedTable>(id)).unwrap();
+        click(id.with("detect-delimiter"));
+        let choice = ctx
+            .data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))
+            .unwrap();
+        assert!(choice.detection_error && choice.selected == Some(b','));
+        let after = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        assert_eq!(*after.order, [1]);
+        assert!(
+            after.first_heading
+                && after.numeric_sort
+                && after.sort == before.sort
+                && after.filter == before.filter
+        );
+        assert!(Arc::ptr_eq(&before.order, &after.order));
+        assert!(Arc::ptr_eq(
+            &parsed.table,
+            &ctx.data(|data| data.get_temp::<CachedTable>(id))
+                .unwrap()
+                .table
+        ));
+        assert_eq!(
+            click(id.with("copy-records")).as_deref(),
+            Some("A,B;C\n1,2;3\n")
+        );
+        choose_comma();
+        assert!(
+            !ctx.data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))
+                .unwrap()
+                .detection_error
+        );
+        click(id.with("detect-delimiter"));
+        let refreshed: Arc<str> = Arc::from(content.as_ref());
+        frame(&refreshed, vec![]);
+        let reset = ctx
+            .data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))
+            .unwrap();
+        assert!(!reset.detection_error && reset.selected.is_none());
+    }
+
+    #[test]
     fn delimiter_menu_reparses_quotes_exports_actual_dialect_and_resets_source_owned_state() {
         let ctx = egui::Context::default();
         let content: Arc<str> =
@@ -706,7 +888,13 @@ mod tests {
                 .columns,
             1
         );
-        choose(&content, "Semicolon");
+        click(&content, id.with("detect-delimiter"));
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<DialectChoice>(id.with("dialect")))
+                .unwrap()
+                .selected,
+            Some(b';')
+        );
         let cached = ctx.data(|data| data.get_temp::<CachedTable>(id)).unwrap();
         assert_eq!(cached.delimiter, b';');
         assert_eq!(cached.table.rows.len(), 3);

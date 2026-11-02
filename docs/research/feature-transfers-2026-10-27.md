@@ -2514,3 +2514,7 @@ Native pointer workflow now compares signed values and adjacent integers beyond 
 ## Explicit table delimiters (2026-11-02)
 
 Independent adaptation of [Strata delimiter-parameterized parsing](https://github.com/lgse/strata/blob/ac5ab4f22d86798a40d7ad30eb3528d56eecf137/src/services/table.rs): File default / comma / tab / semicolon / pipe selection in CSV/TSV preview, with same-frame bounded reparse and matching escaped export. Choices belong to the pane and captured source; effective separator changes reset column-dependent view state, and new sources restore defaults. No automatic detection or source mutation. [Popup/pointer tests, roundtrip evidence and native scope](../qualification/table-delimiter-2026-11-02/README.md).
+
+## Bounded delimiter detection (2026-11-02)
+
+Commander extension of the Strata-inspired table workflow: Detect delimiter uses quote-aware readers for four separators on the first 32 bounded records, requiring a unique consistent multi-column candidate. Ambiguous or insufficient samples retain the current parse/filter/sort/copy state and expose manual recovery. Success uses the existing active-dialect parse/export path. [Sample limits, allocation/copy ownership tests and native scope](../qualification/table-delimiter-detect-2026-11-02/README.md).

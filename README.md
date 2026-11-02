@@ -6,6 +6,8 @@ Filtering and copied rows retain original cell text and the displayed order.
 The **Delimiter** menu also supports semicolon and pipe-separated data. Copy uses
 the active separator. Changing it resets table filters and sorting; File default
 restores comma for CSV or tab for TSV. Source files are not modified.
+**Detect delimiter** checks the first 32 loaded records and selects only a unique,
+consistent separator. Ambiguous samples keep the current table and allow manual choice.
 
 Batch rename can add a **Folder name** prefix or suffix with an ancestor level
 and separator: level 1 uses the containing folder, level 2 its parent. The captured
