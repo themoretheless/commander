@@ -357,6 +357,8 @@ impl App {
             first_only: false,
             literal_replacement: false,
             trim_spaces: false,
+            invalid_chars_on: false,
+            invalid_chars_text: "_".into(),
             collapse_repeats: false,
             normalization: crate::rename::NameNormalization::Keep,
             character_target: crate::rename::CharacterTarget::Stem,
@@ -843,6 +845,14 @@ impl App {
                         });
                     });
                     ui.horizontal_wrapped(|ui| {
+                    let sanitize = ui.checkbox(&mut state.invalid_chars_on, "Replace invalid characters")
+                        .on_hover_text("Replace slash and NUL in the final target name after other edits. Empty replacement strips them. Preview and collision validation still apply; other platform filename policies are unchanged.");
+                    preset_interaction |= sanitize.changed();
+                    ui.add_enabled_ui(state.invalid_chars_on, |ui| {
+                        ui.label("with");
+                        let replacement = ui.add(egui::TextEdit::singleline(&mut state.invalid_chars_text).desired_width(90.0).char_limit(32).hint_text("empty = strip"));
+                        preset_interaction |= replacement.has_focus() || replacement.lost_focus() || replacement.changed();
+                    });
                     let trim = ui.checkbox(&mut state.trim_spaces, "Trim spaces")
                         .on_hover_text("Remove whitespace at the beginning and end of the final name");
                     preset_interaction |= trim.has_focus() || trim.lost_focus() || trim.clicked();
@@ -1266,6 +1276,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invalid_character_option_rebuilds_cached_preview_before_submit() {
+        let context = context(&["a.txt"], &[]);
+        let mut slot = None;
+        let mut rule = RenameRule {
+            prefix: "dir/".into(),
+            ..Default::default()
+        };
+        assert!(
+            ValidatedBatchRename::cached(&mut slot, &context, rule.clone())
+                .rule_for_submit(true)
+                .is_none()
+        );
+        rule.invalid_char_replacement = Some("_".into());
+        let validation = ValidatedBatchRename::cached(&mut slot, &context, rule.clone());
+        assert_eq!(validation.plans[0].to, "dir_a.txt");
+        assert_eq!(validation.rule_for_submit(true), Some(rule.clone()));
+        rule.invalid_char_replacement = Some("/".into());
+        let validation = ValidatedBatchRename::cached(&mut slot, &context, rule);
+        assert!(validation.regex_error.is_some() && validation.rule_for_submit(true).is_none());
+    }
+
+    #[test]
     fn literal_replacement_pointer_input_updates_same_frame_plan_and_retains_disabled_choice() {
         let ctx = egui::Context::default();
         let context = context(&["old.txt"], &[]);
@@ -1506,6 +1538,8 @@ mod tests {
             first_only: true,
             literal_replacement: true,
             trim_spaces: true,
+            invalid_chars_on: true,
+            invalid_chars_text: "_".into(),
             collapse_repeats: true,
             normalization: crate::rename::NameNormalization::Nfkd,
             character_target: crate::rename::CharacterTarget::WholeName,

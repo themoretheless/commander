@@ -9048,3 +9048,30 @@ fn copy_file_details_uses_captured_selection_and_cursor_without_restat_or_mutati
     ws.execute(Command::CopyFileDetails);
     assert!(ws.drain_ui_requests().is_empty());
 }
+
+#[test]
+fn invalid_character_rule_uses_same_target_on_disk_and_undo_redo() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("old.txt", "payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("old.txt"));
+    let mut rule = crate::rename::RenameRule {
+        prefix: "folder/".into(),
+        ..Default::default()
+    };
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert!(left.path().join("old.txt").is_file());
+    rule.invalid_char_replacement = Some("_".into());
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("folder_old.txt")).unwrap(),
+        b"payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("old.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert_eq!(
+        std::fs::read(left.path().join("folder_old.txt")).unwrap(),
+        b"payload"
+    );
+}

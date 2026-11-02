@@ -807,6 +807,7 @@ mod tests {
             ignore_case: true,
             first_only: true,
             literal_replacement: true,
+            invalid_char_replacement: Some("_".into()),
             replace_target: crate::rename::ReplaceTarget::Stem,
             ..Default::default()
         };

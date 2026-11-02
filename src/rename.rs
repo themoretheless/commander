@@ -451,6 +451,9 @@ pub struct RenameRule {
     /// Trim Unicode whitespace from the final complete name.
     #[serde(skip_serializing_if = "is_false")]
     pub trim_spaces: bool,
+    /// Replace slash/NUL in the final target; empty text removes them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalid_char_replacement: Option<String>,
     /// Collapse identical consecutive non-alphanumeric graphemes in the final name.
     #[serde(skip_serializing_if = "is_false")]
     pub collapse_repeats: bool,
@@ -494,7 +497,16 @@ fn compile_pattern(value: &str, rule: &RenameRule) -> Result<Option<regex::Regex
         .map_err(|error| error.to_string())
 }
 
+fn invalid_replacement_error(rule: &RenameRule) -> Option<&'static str> {
+    rule.invalid_char_replacement.as_ref().and_then(|text| {
+        (text.len() > 32 || text.contains(['/', '\0']))
+            .then_some("Invalid-character replacement needs at most 32 bytes without slash or NUL")
+    })
+}
 fn compile_find(rule: &RenameRule) -> Result<Vec<Option<regex::Regex>>, String> {
+    if let Some(error) = invalid_replacement_error(rule) {
+        return Err(error.into());
+    }
     if rule.extra_replacements.len() > MAX_EXTRA_REPLACEMENTS {
         return Err("At most 16 additional replacements are allowed".into());
     }
@@ -874,7 +886,7 @@ fn rename_one_checked(
         name
     };
     let name = rule.normalization.apply(name);
-    Ok(if let Some(limit) = rule.stem_limit {
+    let name = if let Some(limit) = rule.stem_limit {
         use unicode_segmentation::UnicodeSegmentation;
         let (stem, ext) = if is_dir {
             (name.as_str(), "")
@@ -885,7 +897,26 @@ fn rename_one_checked(
         format!("{shortened}{ext}")
     } else {
         name
-    })
+    };
+    if let Some(replacement) = &rule.invalid_char_replacement {
+        let count = name.chars().filter(|&ch| matches!(ch, '/' | '\0')).count();
+        if count > 0 && invalid_replacement_error(rule).is_none() {
+            let length = name
+                .len()
+                .checked_sub(count)
+                .and_then(|n| {
+                    count
+                        .checked_mul(replacement.len())
+                        .and_then(|extra| n.checked_add(extra))
+                })
+                .ok_or(())?;
+            if length > MAX_REPLACEMENT_OUTPUT_BYTES {
+                return Err(());
+            }
+            return Ok(name.replace(['/', '\0'], replacement));
+        }
+    }
+    Ok(name)
 }
 
 fn collapse_repeats(name: &str) -> String {
@@ -1048,7 +1079,9 @@ pub fn plan_batch_rename_in_folder(
         .zip(date_errors.iter())
         .map(|(((from, to), exceeded), date_error)| {
             let to_lower = folding.key(to);
-            let status = if folder_unavailable {
+            let status = if invalid_replacement_error(rule).is_some() {
+                PlanStatus::Invalid
+            } else if folder_unavailable {
                 PlanStatus::FolderUnavailable
             } else if *date_error {
                 PlanStatus::DateUnavailable
@@ -1111,6 +1144,102 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn invalid_character_replacement_is_opt_in_bounded_and_collision_checked() {
+        let names = vec!["a.txt".to_owned()];
+        let mut rule = RenameRule {
+            prefix: "dir/\0".into(),
+            suffix: "?".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_files(&names, &HashSet::new(), &rule)[0].status,
+            PlanStatus::Invalid
+        );
+        rule.invalid_char_replacement = Some("_".into());
+        let plan = plan_files(&names, &HashSet::new(), &rule);
+        assert_eq!(
+            (&*plan[0].to, plan[0].status),
+            ("dir__a?.txt", PlanStatus::Ok)
+        );
+        rule.invalid_char_replacement = Some(String::new());
+        assert_eq!(
+            plan_files(&names, &HashSet::new(), &rule)[0].to,
+            "dira?.txt"
+        );
+        assert_eq!(
+            serde_json::from_str::<RenameRule>(&serde_json::to_string(&rule).unwrap()).unwrap(),
+            rule
+        );
+        assert!(
+            serde_json::from_str::<RenameRule>("{}")
+                .unwrap()
+                .invalid_char_replacement
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(RenameRule::default())
+                .unwrap()
+                .get("invalid_char_replacement")
+                .is_none()
+        );
+        for replacement in ["/".into(), "\0".into(), "x".repeat(33)] {
+            rule.invalid_char_replacement = Some(replacement);
+            assert!(regex_error(&rule).is_some());
+            assert_eq!(
+                plan_files(&names, &HashSet::new(), &rule)[0].status,
+                PlanStatus::Invalid
+            );
+        }
+        rule = RenameRule {
+            find: "[- ]".into(),
+            replace: "/".into(),
+            regex: true,
+            invalid_char_replacement: Some("_".into()),
+            ..Default::default()
+        };
+        let collision = plan_files(
+            &["a-b.txt".into(), "a b.txt".into()],
+            &HashSet::new(),
+            &rule,
+        );
+        assert!(
+            collision
+                .iter()
+                .all(|p| p.to == "a_b.txt" && p.status == PlanStatus::Collision)
+        );
+        assert_eq!(
+            plan_files(
+                &["a-b.txt".into()],
+                &HashSet::from(["a_b.txt".into()]),
+                &rule
+            )[0]
+            .status,
+            PlanStatus::Collision
+        );
+        rule = RenameRule {
+            find: "a".into(),
+            invalid_char_replacement: Some(String::new()),
+            ..Default::default()
+        };
+        for replacement in ["/", "./", "../"] {
+            rule.replace = replacement.into();
+            assert_eq!(
+                plan_files(&["a".into()], &HashSet::new(), &rule)[0].status,
+                PlanStatus::Invalid
+            );
+        }
+        rule = RenameRule {
+            prefix: "/".repeat(3000),
+            invalid_char_replacement: Some("_".repeat(32)),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_files(&names, &HashSet::new(), &rule)[0].status,
+            PlanStatus::ExpansionLimit
+        );
     }
 
     #[test]

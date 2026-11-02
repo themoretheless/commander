@@ -789,6 +789,8 @@ pub struct BatchRenameState {
     pub first_only: bool,
     pub literal_replacement: bool,
     pub trim_spaces: bool,
+    pub invalid_chars_on: bool,
+    pub invalid_chars_text: String,
     pub collapse_repeats: bool,
     pub normalization: crate::rename::NameNormalization,
     pub character_target: crate::rename::CharacterTarget,
@@ -890,6 +892,11 @@ impl BatchRenameState {
         self.first_only = rule.first_only;
         self.literal_replacement = rule.literal_replacement;
         self.trim_spaces = rule.trim_spaces;
+        self.invalid_chars_on = rule.invalid_char_replacement.is_some();
+        self.invalid_chars_text = rule
+            .invalid_char_replacement
+            .clone()
+            .unwrap_or_else(|| "_".into());
         self.collapse_repeats = rule.collapse_repeats;
         self.normalization = rule.normalization;
         self.stem_limit_on = rule.stem_limit.is_some();
@@ -946,6 +953,9 @@ impl BatchRenameState {
             first_only: self.first_only,
             literal_replacement: self.literal_replacement,
             trim_spaces: self.trim_spaces,
+            invalid_char_replacement: self
+                .invalid_chars_on
+                .then(|| self.invalid_chars_text.clone()),
             collapse_repeats: self.collapse_repeats,
             normalization: self.normalization,
             stem_limit: self.stem_limit_on.then_some(self.stem_limit as usize),

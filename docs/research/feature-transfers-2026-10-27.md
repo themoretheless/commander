@@ -2562,3 +2562,7 @@ The Double Commander-inspired TSV command now uses the existing listing CSV apos
 ## Native spreadsheet-prefix TSV copying (2026-11-03)
 
 The native palette workflow now exports twelve selected records including names beginning with all six CSV/TSV prefix markers. Python independently applies the prefix rule and verifies the actual quoted clipboard bytes. This qualifies emitted text; spreadsheet importer/OS pasteboard behavior remains separate. [Evidence](../qualification/file-details-formula-native-2026-11-03/README.md).
+
+## Replace prohibited characters in rename targets (2026-11-03)
+
+Independent adaptation of [Double Commander invalid-character replacement](https://doublecmd.github.io/doc/en/multirename.html): optional literal replacement or removal of slash/NUL in final generated names, before validation/collision checks. Default refusal behavior remains; presets and shared preview/apply planner retain the policy. [Bounds, regressions and native/platform limits](../qualification/rename-invalid-characters-2026-11-03/README.md).
