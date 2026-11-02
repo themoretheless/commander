@@ -1,0 +1,8 @@
+{
+  "src/query.rs": "676465b1f0cdd8369467819dc179aeb4450ddde7b893497a2d9ff2536d53e25c",
+  "src/search.rs": "05b9ceac8bbcc2115d4959ef79fe1ce25264c053ab45e585d5e7ad07e023ddc9",
+  "src/content_index.rs": "b953428a7d6e5d457691c350430e5733f2e17d8db14cb72ced0b97918e695af2",
+  "src/fs_util.rs": "511a71808fbc75b852c60557c727dbe8d395b0b9d6a46125ca9ddce889e92b7c",
+  "README.md": "cfbf02bcfe55c6a38b4db3179651265ba6bf5e3e34957b6fac0466f03546993a",
+  "docs/research/feature-transfers-2026-10-27.md": "2dded07a7144b9cdd86f6c8cbc782db0311778ab93e20d47c0d85386bcd5311f"
+}

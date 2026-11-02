@@ -1,0 +1,11 @@
+{
+  "README.md": "24c60fc696294aede8ff680b1b778e3552f8f726e5e5993e250db3c4ab1e1abd",
+  "src/query.rs": "3c582a2130eeeaca9721753b899a86c844cde8799776078b3bfa902b422d036d",
+  "src/search.rs": "fda13465b2cd6b9f79f89bc106fd97e458e7b7e37c4a448b1da6383997b09754",
+  "src/content_index.rs": "31155ad9b61f5ca637c0dc0781b031ba5396f4a6eb8fd2861e7478b0d0dc679c",
+  "src/archive.rs": "fa262802fb7714a744a672237ed2d4d52ac3dd07dbec9fefbae38572e737c76f",
+  "src/archive_tree.rs": "cb7cee494a9371dd351951713d61d5ffbeb444c945f626385a548f8c711cc442",
+  "src/archive_order.rs": "071c236e3fc2f19a05017ad1ca12fc6b1288dbefbd82844f4134e50415ddd816",
+  "src/app/archive_dialog.rs": "b07e722ea0796a61f3a71969d613a30b8880fc503f8ca32cf7979c07578059b3",
+  "docs/research/feature-transfers-2026-10-27.md": "357414af9adcc56562e648cabbe1d9b720db98580c8ecd8e3dd8a224cb30b151"
+}

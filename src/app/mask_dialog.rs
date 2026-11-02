@@ -18,6 +18,8 @@ fn change_count_label(count: usize) -> String {
 struct MaskCountKey {
     mask: String,
     names_mode: bool,
+    names_action: crate::name_list::Action,
+    selection_revision: u64,
     case_sensitive: bool,
     ignore_accents: bool,
     extensionless_star: bool,
@@ -65,6 +67,10 @@ impl App {
         ctx.data_mut(|data| {
             data.remove::<(MaskCountKey, Result<usize, String>)>(egui::Id::new(MASK_COUNT_CACHE));
             data.insert_temp(egui::Id::new("mask-names-mode"), false);
+            data.insert_temp(
+                egui::Id::new("mask-names-action"),
+                crate::name_list::Action::Add,
+            );
             data.insert_temp(egui::Id::new("mask-case-sensitive"), false);
             data.insert_temp(egui::Id::new("mask-ignore-accents"), false);
             data.insert_temp(egui::Id::new("mask-extensionless-star"), false);
@@ -92,6 +98,9 @@ impl App {
             data.get_temp::<bool>(egui::Id::new("mask-names-mode"))
                 .unwrap_or(false)
         });
+        let mut names_action = ctx
+            .data(|d| d.get_temp::<crate::name_list::Action>(egui::Id::new("mask-names-action")))
+            .unwrap_or_default();
         let mut case_sensitive = ctx.data(|data| {
             data.get_temp::<bool>(egui::Id::new("mask-case-sensitive"))
                 .unwrap_or(false)
@@ -140,6 +149,17 @@ impl App {
             });
             controls_interacting |=
                 names_toggle.clicked() || names_toggle.has_focus() || names_toggle.lost_focus();
+            {
+                ui.horizontal(|ui| {
+                    ui.label("Selection action");
+                    for action in [crate::name_list::Action::Add, crate::name_list::Action::Remove, crate::name_list::Action::Invert] {
+                        let response = ui.selectable_value(&mut names_action, action, action.label());
+                        controls_interacting |= response.clicked() || response.has_focus() || response.lost_focus();
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("names-selection-action", action.label())), response.rect));
+                    }
+                });
+            }
             let case = ui
                 .add_enabled(
                     !names_mode,
@@ -164,6 +184,9 @@ impl App {
                 .size(12.0)
                 .color(t.text_muted),
             );
+            if !names_mode && names_action != crate::name_list::Action::Add {
+                ui.small("Remove / Invert affect positive matches; !exclusions stay unchanged.");
+            }
             ui.add_space(6.0);
 
             let edit = if names_mode {
@@ -196,6 +219,8 @@ impl App {
             let key = MaskCountKey {
                 mask: buffer.clone(),
                 names_mode,
+                names_action,
+                selection_revision: active_panel.selection_revision(),
                 case_sensitive,
                 ignore_accents,
                 extensionless_star,
@@ -207,11 +232,13 @@ impl App {
             };
             let result = cached_mask_count(ui.ctx(), key, || {
                 if names_mode {
-                    if target == crate::panel::SelectionTarget::Both {
-                        active_panel.names_match_count(buffer)
-                    } else {
-                        active_panel.names_match_count_target(buffer, target)
+                    match names_action {
+                        crate::name_list::Action::Add if target == crate::panel::SelectionTarget::Both => active_panel.names_match_count(buffer),
+                        crate::name_list::Action::Add => active_panel.names_match_count_target(buffer, target),
+                        action => active_panel.names_action_count(buffer, target, action),
                     }
+                } else if names_action != crate::name_list::Action::Add {
+                    Ok(active_panel.mask_action_count(buffer, crate::panel::SelectionMaskOptions {target,case_sensitive,ignore_accents,extensionless_star}, names_action))
                 } else {
                     Ok(if extensionless_star {
                         active_panel.mask_match_count_compatibility(buffer, target, case_sensitive, ignore_accents, true)
@@ -227,6 +254,8 @@ impl App {
                 }
             });
             let valid = result.is_ok();
+            #[cfg(feature = "visual-qa")]
+            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("mask-action-preview"),result.as_ref().ok().copied()));
             #[cfg(feature = "visual-qa")]
             ui.ctx().data_mut(|data| {
                 data.insert_temp(
@@ -258,19 +287,19 @@ impl App {
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui
+                let apply = ui
                     .add_enabled(
                         valid,
                         super::dialog_button(
                             t,
                             super::ButtonRole::Primary,
-                            egui::RichText::new("Select").size(13.0),
+                            egui::RichText::new(if names_mode || names_action != crate::name_list::Action::Add {names_action.label()} else {"Select"}).size(13.0),
                         ),
                     )
-                    .clicked()
-                {
-                    commit = true;
-                }
+;
+                #[cfg(feature = "visual-qa")]
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("names-selection-apply"), apply.rect));
+                if apply.clicked() { commit = true; }
                 ui.add_space(8.0);
                 if ui
                     .add(super::dialog_button(
@@ -308,6 +337,7 @@ impl App {
         }
         ctx.data_mut(|data| {
             data.insert_temp(egui::Id::new("mask-names-mode"), names_mode);
+            data.insert_temp(egui::Id::new("mask-names-action"), names_action);
             data.insert_temp(egui::Id::new("mask-selection-target"), target);
             data.insert_temp(egui::Id::new("mask-case-sensitive"), case_sensitive);
             data.insert_temp(egui::Id::new("mask-ignore-accents"), ignore_accents);
@@ -319,7 +349,11 @@ impl App {
         }
         if commit && let Some(buf) = self.ui.modals.mask_input.take() {
             if names_mode {
-                let result = if target == crate::panel::SelectionTarget::Both {
+                let result = if names_action != crate::name_list::Action::Add {
+                    self.ws
+                        .active_panel()
+                        .apply_names(&buf, target, names_action)
+                } else if target == crate::panel::SelectionTarget::Both {
                     self.ws.active_panel().select_by_names(&buf)
                 } else {
                     self.ws.active_panel().select_by_names_target(&buf, target)
@@ -328,7 +362,18 @@ impl App {
                     self.toast(ctx, crate::toasts::ToastKind::Error, error, false);
                 }
             } else {
-                if extensionless_star {
+                if names_action != crate::name_list::Action::Add {
+                    self.ws.active_panel().apply_mask_action(
+                        &buf,
+                        crate::panel::SelectionMaskOptions {
+                            target,
+                            case_sensitive,
+                            ignore_accents,
+                            extensionless_star,
+                        },
+                        names_action,
+                    );
+                } else if extensionless_star {
                     self.ws.active_panel().select_by_mask_compatibility(
                         &buf,
                         target,
@@ -363,11 +408,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn names_preview_cache_tracks_action_and_selection_revision() {
+        let ctx = egui::Context::default();
+        let mut key = MaskCountKey {
+            mask: "a.txt\nb.txt".into(),
+            names_mode: true,
+            names_action: crate::name_list::Action::Add,
+            selection_revision: 1,
+            case_sensitive: false,
+            ignore_accents: false,
+            extensionless_star: false,
+            target: crate::panel::SelectionTarget::Both,
+            folder: "/fixture".into(),
+            entries_gen: 1,
+            shown: 2,
+            selected: 1,
+        };
+        assert_eq!(cached_mask_count(&ctx, key.clone(), || 1usize), 1);
+        assert_eq!(cached_mask_count(&ctx, key.clone(), || 99usize), 1);
+        key.names_action = crate::name_list::Action::Remove;
+        assert_eq!(cached_mask_count(&ctx, key.clone(), || 2usize), 2);
+        // A different selected file with the same count must invalidate the preview.
+        key.selection_revision += 1;
+        assert_eq!(cached_mask_count(&ctx, key, || 3usize), 3);
+    }
+
+    #[test]
     fn mask_count_is_recomputed_only_when_its_inputs_change() {
         let ctx = egui::Context::default();
         let key = |mask: &str, selected| MaskCountKey {
             mask: mask.to_string(),
             names_mode: false,
+            names_action: crate::name_list::Action::Add,
+            selection_revision: 0,
             case_sensitive: false,
             ignore_accents: false,
             extensionless_star: false,

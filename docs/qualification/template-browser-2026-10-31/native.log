@@ -1,0 +1,18 @@
+2026-10-31T06:45:31 INFO  commander::logging: logging initialized
+2026-10-31T06:45:31 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: template_browser
+2026-10-31T06:45:31 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-template-browser-1793414719625264000
+2026-10-31T06:45:31 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T06:45:31 INFO  commander::visual_qa: Template browser QA phase 0, target Id::new(("template-browser", "query")), rect [[467.4 348.0] - [647.4 367.0]]
+2026-10-31T06:45:31 INFO  commander::visual_qa: Template browser QA phase 1, target Id::new(("template-browser", "query")), rect [[467.4 348.0] - [647.4 367.0]]
+2026-10-31T06:45:31 INFO  commander::visual_qa: Template browser QA phase 2, target Id::new(("template-browser", "query")), rect [[467.4 348.0] - [647.4 367.0]]
+2026-10-31T06:45:31 INFO  commander::visual_qa: Template browser QA phase 3, target Id::new(("template-browser", "query")), rect [[467.4 348.0] - [647.4 367.0]]
+2026-10-31T06:45:31 INFO  commander::visual_qa: Template browser QA phase 4, target Id::new(("template-browser", "query")), rect [[467.4 348.0] - [647.4 367.0]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 6, target Id::new(("template-browser", "all")), rect [[709.2 345.5] - [803.8 369.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 7, target Id::new(("template-browser", "all")), rect [[709.2 345.5] - [803.8 369.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 8, target Id::new(("template-browser", "all")), rect [[709.2 345.5] - [803.8 369.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 9, target Id::new(("run-template-row", 0)), rect [[375.0 413.5] - [526.1 437.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 10, target Id::new(("run-template-row", 0)), rect [[375.0 413.5] - [526.1 437.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 11, target Id::new(("run-template-row", 0)), rect [[375.0 413.5] - [526.1 437.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 12, target Id::new(("template-browser", "clear")), rect [[653.4 371.5] - [703.2 395.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 13, target Id::new(("template-browser", "clear")), rect [[653.4 371.5] - [703.2 395.5]]
+2026-10-31T06:45:32 INFO  commander::visual_qa: Template browser QA phase 14, target Id::new(("template-browser", "clear")), rect [[653.4 371.5] - [703.2 395.5]]

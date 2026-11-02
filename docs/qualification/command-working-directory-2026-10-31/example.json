@@ -1,0 +1,12 @@
+{
+  "format": "commander.command-templates",
+  "version": 6,
+  "templates": [
+    {
+      "name": "Other pane working folder",
+      "raw": "pwd",
+      "exts": [],
+      "working_dir": "other_pane"
+    }
+  ]
+}

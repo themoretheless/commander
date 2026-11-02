@@ -1,0 +1,18 @@
+{
+  "src/custom_theme.rs": "77b5530eb1986f4152739f33cd1c3cb72addd22edcc15adefb0488073155fdce",
+  "src/theme.rs": "9c8e4df6c4ed0f7630a8b88b792187d9b4df9d8c4f0330b4b4ddbb0d06b51e9c",
+  "src/theme_catalog.rs": "8a3341831706e6f44c6f0f462d98c155798c13cdc196c97659c6d91a0014d1ea",
+  "src/app/custom_theme_dialog.rs": "b85bafc5dac193478325b534fb68da2626155a6afdb755f5982fc0f33b95728e",
+  "src/app/toolbar.rs": "b447d4ec56afaced8e0b88a3670b01580166c7820013bbda1b410eb13f728159",
+  "src/app/mod.rs": "500a8963ed6b63bdf35d1376816d983a553ac17872215f15aa1717615c50252e",
+  "src/app/update.rs": "fe4168e7e5353948bbf3d461d1d39e5be1db4ea4e8370b292a0560521ef53614",
+  "src/app/ui_state.rs": "b3c78ea98a181e24b9a0d1a0673da47bff8699456a45cd9ab0de450c059192c1",
+  "src/ui_request.rs": "60a6bf57b1c58a15ad0b7f5404fd5315f2a6a0a7622454b455a1a68d21e0a293",
+  "src/accessibility.rs": "395ccdeb35273dcf8b6c025c4252928f3377682b1a2349af1c2391cf380ae5cf",
+  "src/session.rs": "7ac7b95fa257f83935f748c5970e2c9080d0441eb1bbce5558e406c6e29e2c4f",
+  "src/visual_qa.rs": "3629585d0625677a0cf4626168291e8e69761a2000c5a808a6edcff04ed4b42c",
+  "src/main.rs": "270f46edacf8440f62562f7a0a35bdd94d51cd700deec5a6e439294a4fd177eb",
+  ".github/workflows/ci.yml": "f04587fa4e70f2048a47fe3817d80f5fdef8caf7f301cf57f16dfd342d0ddfcc",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969"
+}

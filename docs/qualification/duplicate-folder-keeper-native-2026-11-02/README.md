@@ -1,0 +1,11 @@
+# Native duplicate folder-keeper preference
+
+Extends the existing duplicate_cross CI scene: scan both trees, isolate cross-root groups, click Prefer primary folder, verify each keeper belongs to the primary captured root, click Prefer other folder, verify the opposite ownership, and copy the resulting JSON report. The controls use actual pointer events and retained row/member indices. Intermediate keeper-24/27/30.json snapshots retain proposals before and after both choices. The primary fixture has two verified groups, each with one copy in each root; nested ownership and unmatched/Keep-all behavior are covered separately by model regressions.
+
+The final readiness check requires every duplicate member still to exist and both cross.bin files to retain their known fixture bytes. No Trash action is invoked. The neighboring duplicate_roots scene is the control. Both use owned temporary fixtures and recording clipboard ports. Scene effect counts now expect two clipboard exports for the extended cross workflow and one for the control, with all other effects zero.
+
+Reports expose actual per-file keep/trash proposals; the selected automatic policy remains unchanged because folder preference is an explicit override. This is one retained copy per group, not protection for all copies in the preferred tree or fclones --keep-path compatibility. Native maximum-size/unmatched/nested-root scenarios are not claimed here. No dependencies changed; broad cohort parity and prior dependency audit failures remain open.
+
+The initial build failure is retained in initial-failed: the QA byte assertion attempted Result equality with io::Error, which has no PartialEq. It now checks only successful reads against the expected bytes. The final gate run uses the corrected assertion.
+
+Final validation: all six gates passed, full suite 3282 passed / 3 ignored. Native root preference and two-root control each passed 14/14. Independent verifier confirms exact root ownership of keep/trash rows, unchanged group/member identities, identical scan context, two proposed files / 23 bytes, control group count, expected clipboard-only effects and source/binary identities. Both final frames were visually inspected; preference buttons, ownership labels and one-keeper explanatory text are readable. The cross scene remains in the existing CI entry.

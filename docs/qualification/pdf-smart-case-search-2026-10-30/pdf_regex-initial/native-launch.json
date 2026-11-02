@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793358288.6086972,
+  "binary_sha256": "701c6689a74b13fa377ce433c77af26df94d6dec53c839519ca2eb2d795acaae",
+  "scenario": "pdf_regex",
+  "output_root": "/tmp/commander-native-pdf-smart-1793358288608317000"
+}

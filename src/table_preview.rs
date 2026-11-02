@@ -65,7 +65,161 @@ struct CachedTable {
     table: Arc<Table>,
 }
 
-pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) {
+#[derive(Clone, Default)]
+struct View {
+    first_heading: bool,
+    sort: Option<(usize, bool)>,
+    filter: RowFilter,
+    filter_error: Option<String>,
+    order_ready: bool,
+    order: Arc<Vec<usize>>,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct RowFilter {
+    query: String,
+    fuzzy: bool,
+    regex: bool,
+    whole_words: bool,
+    match_case: bool,
+    smart_case: bool,
+    column: Option<usize>,
+    exclude: bool,
+}
+
+impl RowFilter {
+    fn retain(&self, table: &Table, order: &mut Vec<usize>) -> Result<(), String> {
+        // UI and non-UI callers share the query bound; overlong input fails closed.
+        if self.query.chars().take(257).count() > 256 {
+            order.clear();
+            return Err("Table filter queries are limited to 256 characters".into());
+        }
+        if self.column.is_some_and(|column| column >= table.columns) {
+            order.clear();
+            return Err("The selected table column is unavailable".into());
+        }
+        let query = self.query.trim();
+        if query.is_empty() {
+            return Ok(());
+        }
+        let sensitive =
+            crate::preview_find::search_case_sensitive(query, self.match_case, self.smart_case);
+        let pattern = if self.regex || self.whole_words {
+            match crate::preview_find::compile_search_pattern(
+                query,
+                sensitive,
+                self.regex,
+                self.whole_words,
+            ) {
+                Ok(pattern) => Some(pattern),
+                Err(error) => {
+                    order.clear();
+                    return Err(format!("Invalid table filter: {error}"));
+                }
+            }
+        } else {
+            None
+        };
+        let lower = (!sensitive && !self.fuzzy && pattern.is_none()).then(|| query.to_lowercase());
+        order.retain(|&row| {
+            let matched = table.rows[row].iter().enumerate().any(|(column, cell)| {
+                if self.column.is_some_and(|chosen| chosen != column) {
+                    return false;
+                }
+                if let Some(pattern) = &pattern {
+                    pattern.is_match(cell)
+                } else if self.fuzzy {
+                    crate::fuzzy::is_match_case(query, cell, sensitive)
+                } else if let Some(query) = &lower {
+                    cell.to_lowercase().contains(query)
+                } else {
+                    cell.contains(query)
+                }
+            });
+            matched != self.exclude
+        });
+        Ok(())
+    }
+}
+
+#[cfg(feature = "visual-qa")]
+pub fn filter_is(ctx: &egui::Context, side: &str, query: &str, fuzzy: bool) -> bool {
+    ctx.data(|data| data.get_temp::<View>(egui::Id::new(("table_preview", side)).with("view")))
+        .is_some_and(|view| view.filter.query == query && view.filter.fuzzy == fuzzy)
+}
+
+#[cfg(feature = "visual-qa")]
+pub fn filter_snapshot(ctx: &egui::Context, side: &str) -> Option<serde_json::Value> {
+    ctx.data(|data| data.get_temp::<View>(egui::Id::new(("table_preview", side)).with("view")))
+        .map(|view| serde_json::json!({"query":view.filter.query,"fuzzy":view.filter.fuzzy,"regex":view.filter.regex,"whole_words":view.filter.whole_words,"column":view.filter.column,"exclude":view.filter.exclude,"error":view.filter_error,"rows":view.order.as_ref(),"heading":view.first_heading}))
+}
+
+fn ordered_rows(table: &Table, heading: bool, sort: Option<(usize, bool)>) -> Vec<usize> {
+    let mut order: Vec<_> =
+        (usize::from(heading && !table.rows.is_empty())..table.rows.len()).collect();
+    if let Some((column, descending)) = sort.filter(|(column, _)| *column < table.columns) {
+        order.sort_by(|&a, &b| {
+            let value = |row: usize| table.rows[row].get(column).map_or("", String::as_str);
+            let cmp = crate::natural_sort::compare(value(a), value(b));
+            (if descending { cmp.reverse() } else { cmp }).then_with(|| a.cmp(&b))
+        });
+    }
+    order
+}
+
+fn choose_column(view: &mut View, column: usize) {
+    view.sort = match view.sort {
+        Some((current, false)) if current == column => Some((column, true)),
+        Some((current, true)) if current == column => None,
+        _ => Some((column, false)),
+    };
+}
+
+#[cfg(any(test, feature = "visual-qa"))]
+pub fn shown_order(ctx: &egui::Context, side: &str) -> Option<(bool, Vec<usize>)> {
+    ctx.data(|data| data.get_temp::<View>(egui::Id::new(("table_preview", side)).with("view")))
+        .map(|view| (view.first_heading, view.order.as_ref().clone()))
+}
+
+/// Serialize exactly the current loaded records, with optional headings.
+/// CSV quoting preserves cell contents; this exports records, not source bytes.
+fn export_rows(table: &Table, view: &View, delimiter: u8) -> Result<String, String> {
+    const MAX_EXPORT_BYTES: usize = 1024 * 1024;
+    if !matches!(delimiter, b',' | b'\t') {
+        return Err("Choose CSV or TSV for table export".into());
+    }
+    if !view.order_ready || view.order.is_empty() {
+        return Err("No visible data records to copy".into());
+    }
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(delimiter)
+        .flexible(true)
+        .terminator(csv::Terminator::Any(b'\n'))
+        .from_writer(Vec::new());
+    let heading = view.first_heading.then_some(0);
+    for row in heading.into_iter().chain(view.order.iter().copied()) {
+        let cells = table
+            .rows
+            .get(row)
+            .ok_or("Table view no longer matches its records")?;
+        if view.first_heading && row == 0 && view.order.contains(&0) {
+            return Err("Heading cannot also be a visible data record".into());
+        }
+        writer
+            .write_record(cells)
+            .map_err(|error| error.to_string())?;
+        if writer.get_ref().len() > MAX_EXPORT_BYTES {
+            return Err("Table export exceeds 1 MiB".into());
+        }
+    }
+    let bytes = writer.into_inner().map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_EXPORT_BYTES {
+        return Err("Table export exceeds 1 MiB".into());
+    }
+    String::from_utf8(bytes).map_err(|error| error.to_string())
+}
+
+pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) -> Option<String> {
     let id = egui::Id::new(("table_preview", side));
     let cached = ui.ctx().data(|data| data.get_temp::<CachedTable>(id));
     let changed = cached.as_ref().is_none_or(|cached| {
@@ -102,40 +256,777 @@ pub fn render(ui: &mut egui::Ui, content: &Arc<str>, delimiter: u8, side: &str) 
         ui.colored_label(ui.visuals().error_fg_color, error);
     }
     if table.rows.is_empty() {
+        ui.ctx().data_mut(|data| {
+            data.remove_temp::<View>(id.with("view"));
+        });
         ui.label("No table rows.");
-        return;
+        return None;
     }
-    let mut scroll = egui::ScrollArea::both().id_salt(id.with("scroll"));
-    if changed {
-        scroll = scroll.scroll_offset(egui::Vec2::ZERO);
-    }
-    scroll.show_rows(ui, 22.0, table.rows.len(), |ui, range| {
-        egui::Grid::new(id.with("grid"))
-            .striped(true)
-            .min_col_width(100.0)
-            .show(ui, |ui| {
-                for row in range {
-                    ui.label(egui::RichText::new((row + 1).to_string()).weak());
-                    for column in 0..table.columns {
-                        let value = table.rows[row]
-                            .get(column)
-                            .map(String::as_str)
-                            .unwrap_or("");
-                        ui.add_sized(
-                            [160.0, 22.0],
-                            egui::Label::new(value).truncate().selectable(true),
-                        )
-                        .on_hover_text(value);
+    let mut view = if changed {
+        View::default()
+    } else {
+        ui.ctx()
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap_or_default()
+    };
+    let before = (view.first_heading, view.sort, view.filter.clone());
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let heading = ui.checkbox(&mut view.first_heading, "First row is headings")
+            .on_hover_text("Keep record 1 above the scrolling data. Disable for files without headings; no row is discarded.");
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| data.insert_temp(id.with("heading"), heading.rect));
+        #[cfg(not(any(test, feature = "visual-qa")))]
+        let _ = heading;
+        if ui.add_enabled(view.sort.is_some(), egui::Button::new("Original order")).clicked() {
+            view.sort = None;
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label("Filter rows");
+        let query = ui.add(egui::TextEdit::singleline(&mut view.filter.query)
+            .id(id.with("filter-input")).char_limit(256).desired_width(180.0)
+            .hint_text("Text in chosen columns"))
+            .on_hover_text("Match within one cell of the selected columns. Outer spaces are trimmed; inner spaces are literal. Only loaded records are searched; headings stay visible.");
+        query.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, query.enabled(), "Table row filter"));
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| data.insert_temp(id.with("filter"), query.rect));
+        let clear = ui.add_enabled(!view.filter.query.is_empty(), egui::Button::new("Clear filter"));
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| data.insert_temp(id.with("clear-filter"), clear.rect));
+        if clear.clicked() { view.filter.query.clear(); query.request_focus(); }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let fuzzy = ui.checkbox(&mut view.filter.fuzzy, "Fuzzy")
+            .on_hover_text("Match query characters in order with gaps inside one cell; preserves the chosen column/source order.");
+        if fuzzy.changed() && view.filter.fuzzy { view.filter.regex = false; view.filter.whole_words = false; }
+        let regex = ui.checkbox(&mut view.filter.regex, "Regex");
+        if regex.changed() && view.filter.regex { view.filter.fuzzy = false; }
+        let words = ui.checkbox(&mut view.filter.whole_words, "Whole words")
+            .on_hover_text("Unicode word boundaries inside each cell; composes with literal or Regex mode.");
+        if words.changed() && view.filter.whole_words { view.filter.fuzzy = false; }
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| { data.insert_temp(id.with("regex"), regex.rect); data.insert_temp(id.with("whole-words"), words.rect); });
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| data.insert_temp(id.with("fuzzy"), fuzzy.rect));
+        #[cfg(not(any(test, feature = "visual-qa")))]
+        let _ = fuzzy;
+        ui.checkbox(&mut view.filter.match_case, "Match case");
+        ui.checkbox(&mut view.filter.smart_case, "Smart case")
+            .on_hover_text("Uppercase in the query makes matching case-sensitive; Match case always takes precedence.");
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Search in");
+        let scope = egui::ComboBox::from_id_salt(id.with("filter-column"))
+            .selected_text(view.filter.column.map_or_else(|| "All columns".to_owned(), |column| format!("Column {}", column + 1)))
+            .show_ui(ui, |ui| {
+                let all = ui.selectable_value(&mut view.filter.column, None, "All columns");
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|data| data.insert_temp(id.with("filter-all"), all.rect));
+                #[cfg(not(any(test, feature = "visual-qa")))]
+                let _ = all;
+                for column in 0..table.columns {
+                    let label = format!("Column {}", column + 1);
+                    let response = ui.selectable_value(&mut view.filter.column, Some(column), label);
+                    #[cfg(any(test, feature = "visual-qa"))]
+                    ui.ctx().data_mut(|data| data.insert_temp(id.with(("filter-column-option", column)), response.rect));
+                    if view.first_heading {
+                        response.on_hover_text(table.rows[0].get(column).map_or("", String::as_str));
                     }
-                    ui.end_row();
                 }
             });
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| data.insert_temp(id.with("filter-scope"), scope.response.rect));
+        #[cfg(not(any(test, feature = "visual-qa")))]
+        let _ = scope;
+        let exclude = ui.checkbox(&mut view.filter.exclude, "Exclude matches")
+            .on_hover_text("Hide rows matching the nonempty query in the selected columns. Missing cells do not match. An empty query shows all rows.");
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| data.insert_temp(id.with("exclude-filter"), exclude.rect));
+        #[cfg(not(any(test, feature = "visual-qa")))]
+        let _ = exclude;
     });
+    ui.small("Click a column: ascending, descending, original. Natural, case-sensitive text order; only loaded rows.");
+    let mut copy = None;
+    let mut export_error = None;
+    let mut rebuild = changed || before != (view.first_heading, view.sort, view.filter.clone());
+    egui::ScrollArea::horizontal()
+        .id_salt(id.with("horizontal"))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_sized([40.0, 22.0], egui::Label::new("Row"));
+                for column in 0..table.columns {
+                    let label = if view.first_heading {
+                        table.rows[0]
+                            .get(column)
+                            .map_or("", String::as_str)
+                            .to_owned()
+                    } else {
+                        format!("Column {}", column + 1)
+                    };
+                    let arrow = match view.sort {
+                        Some((current, false)) if current == column => " [asc]",
+                        Some((current, true)) if current == column => " [desc]",
+                        _ => "",
+                    };
+                    let button = ui
+                        .add_sized(
+                            [160.0, 22.0],
+                            egui::Button::new(
+                                egui::RichText::new(format!("{label}{arrow}")).strong(),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(format!(
+                            "Column {}: {label}\nSort ascending / descending / original order",
+                            column + 1
+                        ));
+                    #[cfg(any(test, feature = "visual-qa"))]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(id.with(("column", column)), button.rect)
+                    });
+                    if button.clicked() {
+                        choose_column(&mut view, column);
+                        rebuild = true;
+                    }
+                }
+            });
+            if rebuild || !view.order_ready {
+                let mut order = ordered_rows(&table, view.first_heading, view.sort);
+                view.filter_error = view.filter.retain(&table, &mut order).err();
+                view.order = Arc::new(order);
+                view.order_ready = true;
+            }
+            if let Some(error) = &view.filter_error { ui.colored_label(ui.visuals().error_fg_color, error); }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.small(format!("Showing {} of {} data rows", view.order.len(), table.rows.len() - usize::from(view.first_heading)));
+                let format = if delimiter == b'\t' { "TSV" } else { "CSV" };
+                let response = ui.add_enabled(!view.order.is_empty(), egui::Button::new(format!("Copy visible {format} ({})", view.order.len())))
+                    .on_hover_text("Copy shown records in the displayed order, with headings when enabled. Only loaded preview rows; quotes, separators and line breaks are escaped. Cell values are unchanged.");
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|data| data.insert_temp(id.with("copy-records"), response.rect));
+                if response.clicked() {
+                    match export_rows(&table, &view, delimiter) {
+                        Ok(text) => copy = Some(text),
+                        Err(error) => export_error = Some(error),
+                    }
+                }
+            });
+            if let Some(error) = &export_error { ui.colored_label(ui.visuals().error_fg_color, error); }
+            if view.order.is_empty() {
+                ui.label("No matching rows.");
+            }
+            let mut scroll = egui::ScrollArea::vertical().id_salt(id.with("scroll"));
+            if rebuild {
+                scroll = scroll.scroll_offset(egui::Vec2::ZERO);
+            }
+            scroll.show_rows(ui, 22.0, view.order.len(), |ui, range| {
+                egui::Grid::new(id.with("grid"))
+                    .striped(true)
+                    .min_col_width(0.0)
+                    .show(ui, |ui| {
+                        for position in range {
+                            let row = view.order[position];
+                            ui.add_sized(
+                                [40.0, 22.0],
+                                egui::Label::new(egui::RichText::new((row + 1).to_string()).weak()),
+                            );
+                            for column in 0..table.columns {
+                                let value = table.rows[row]
+                                    .get(column)
+                                    .map(String::as_str)
+                                    .unwrap_or("");
+                                ui.add_sized(
+                                    [160.0, 22.0],
+                                    egui::Label::new(value).truncate().selectable(true),
+                                )
+                                .on_hover_text(value);
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+        });
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(id.with("view"), view));
+    copy
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn heading_and_natural_sort_preserve_record_identity_and_equal_key_order() {
+        let table = parse(
+            "Name,Value\nfile10,2\nfile2,10\nfile2,1\nёж,3\nlast\n",
+            b',',
+        );
+        assert_eq!(ordered_rows(&table, false, None), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(
+            ordered_rows(&table, true, Some((0, false))),
+            vec![2, 3, 1, 5, 4]
+        );
+        assert_eq!(
+            ordered_rows(&table, true, Some((0, true))),
+            vec![4, 5, 1, 2, 3]
+        );
+        assert_eq!(
+            ordered_rows(&table, true, Some((1, false))),
+            vec![5, 3, 1, 4, 2]
+        );
+        assert_eq!(
+            ordered_rows(&table, true, Some((64, false))),
+            vec![1, 2, 3, 4, 5]
+        );
+        let mut view = View::default();
+        choose_column(&mut view, 0);
+        assert_eq!(view.sort, Some((0, false)));
+        choose_column(&mut view, 0);
+        assert_eq!(view.sort, Some((0, true)));
+        choose_column(&mut view, 0);
+        assert_eq!(view.sort, None);
+        choose_column(&mut view, 1);
+        assert_eq!(view.sort, Some((1, false)));
+        assert!(ordered_rows(&parse("heading", b','), true, Some((0, false))).is_empty());
+        assert!(ordered_rows(&parse("", b','), true, None).is_empty());
+    }
+
+    #[test]
+    fn pointer_heading_sort_and_reload_keep_panes_and_source_independent() {
+        let ctx = egui::Context::default();
+        let content: Arc<str> = Arc::from("Name,Count\nfile10,2\nfile2,10\nfile2,1\nёж,3\n");
+        let original = content.to_string();
+        let frame = |content: &Arc<str>, side: &str, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(700.0, 400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let _ = render(ui, content, b',', side);
+            });
+            output.textures_delta.clear();
+        };
+        frame(&content, "right", vec![]);
+        assert_eq!(
+            shown_order(&ctx, "right"),
+            Some((false, vec![0, 1, 2, 3, 4]))
+        );
+        let id = egui::Id::new(("table_preview", "right"));
+        for (key, expected) in [
+            (id.with("heading"), (true, vec![1, 2, 3, 4])),
+            (id.with(("column", 0usize)), (true, vec![2, 3, 1, 4])),
+            (id.with(("column", 0usize)), (true, vec![4, 1, 2, 3])),
+            (id.with(("column", 0usize)), (true, vec![1, 2, 3, 4])),
+        ] {
+            let pos = ctx
+                .data(|data| data.get_temp::<egui::Rect>(key))
+                .unwrap()
+                .center();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(pos)];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(&content, "right", events);
+            }
+            assert_eq!(shown_order(&ctx, "right"), Some(expected));
+        }
+        frame(&content, "left", vec![]);
+        assert_eq!(
+            shown_order(&ctx, "left"),
+            Some((false, vec![0, 1, 2, 3, 4]))
+        );
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![1, 2, 3, 4])));
+        let reloaded: Arc<str> = Arc::from(content.as_ref());
+        frame(&reloaded, "right", vec![]);
+        assert_eq!(
+            shown_order(&ctx, "right"),
+            Some((false, vec![0, 1, 2, 3, 4]))
+        );
+        frame(&Arc::from(""), "right", vec![]);
+        assert!(shown_order(&ctx, "right").is_none());
+        assert_eq!(content.as_ref(), original);
+    }
+
+    #[test]
+    fn row_filter_composes_with_heading_sort_unicode_and_literal_cell_boundaries() {
+        let table = parse(
+            "Name,Note\nfile10,ёж\nfile2,one two\nfile2,ONE\nФАЙЛ,other\nleft,right\n",
+            b',',
+        );
+        let filtered = |filter: RowFilter, heading| {
+            let mut rows = ordered_rows(&table, heading, Some((0, false)));
+            let _ = filter.retain(&table, &mut rows);
+            rows
+        };
+        let query = |text: &str| RowFilter {
+            query: text.into(),
+            ..Default::default()
+        };
+        assert_eq!(filtered(query("file2"), true), vec![2, 3]);
+        assert!(filtered(query("fl2"), true).is_empty());
+        assert_eq!(
+            filtered(
+                RowFilter {
+                    fuzzy: true,
+                    ..query("fl2")
+                },
+                true
+            ),
+            vec![2, 3]
+        );
+        assert_eq!(filtered(query(" ЁЖ "), true), vec![1]);
+        assert_eq!(filtered(query("файл"), true), vec![4]);
+        assert!(
+            filtered(
+                RowFilter {
+                    match_case: true,
+                    ..query("файл")
+                },
+                true
+            )
+            .is_empty()
+        );
+        assert!(
+            filtered(
+                RowFilter {
+                    smart_case: true,
+                    ..query("Файл")
+                },
+                true
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            filtered(
+                RowFilter {
+                    smart_case: true,
+                    ..query("ФАЙЛ")
+                },
+                true
+            ),
+            vec![4]
+        );
+        assert_eq!(filtered(query("one two"), true), vec![2]);
+        assert!(filtered(query("leftright"), true).is_empty());
+        assert!(
+            filtered(
+                RowFilter {
+                    fuzzy: true,
+                    ..query("leftright")
+                },
+                true
+            )
+            .is_empty()
+        );
+        assert!(filtered(query("Name"), true).is_empty());
+        assert_eq!(filtered(query("Name"), false), vec![0]);
+        assert_eq!(filtered(query("   "), true), vec![2, 3, 1, 5, 4]);
+        assert!(filtered(query(&"ё".repeat(257)), true).is_empty());
+        assert_eq!(table.rows[0], ["Name", "Note"]);
+    }
+
+    #[test]
+    fn regex_word_filters_bound_errors_and_preserve_cell_boundaries() {
+        let table = parse(
+            "Name,Note\ncat,ЁЖ\nconcatenate,ёжик\ncat_dog,other\nleft,right\n",
+            b',',
+        );
+        let run = |filter: RowFilter| {
+            let mut rows = ordered_rows(&table, true, None);
+            let result = filter.retain(&table, &mut rows);
+            (rows, result)
+        };
+        let words = RowFilter {
+            query: "cat".into(),
+            whole_words: true,
+            ..Default::default()
+        };
+        assert_eq!(run(words.clone()).0, [1]);
+        assert_eq!(
+            run(RowFilter {
+                exclude: true,
+                ..words
+            })
+            .0,
+            [2, 3, 4]
+        );
+        let regex = RowFilter {
+            query: "^ёж$".into(),
+            regex: true,
+            column: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(run(regex.clone()).0, [1]);
+        assert!(
+            run(RowFilter {
+                match_case: true,
+                ..regex
+            })
+            .0
+            .is_empty()
+        );
+        assert!(
+            run(RowFilter {
+                query: "left.*right".into(),
+                regex: true,
+                ..Default::default()
+            })
+            .0
+            .is_empty()
+        );
+        assert_eq!(
+            run(RowFilter {
+                query: "(?x) cat # comment".into(),
+                regex: true,
+                whole_words: true,
+                ..Default::default()
+            })
+            .0,
+            [1]
+        );
+        for query in ["[".to_owned(), "(".repeat(40), "ё".repeat(257)] {
+            for exclude in [false, true] {
+                let (rows, result) = run(RowFilter {
+                    query: query.clone(),
+                    regex: true,
+                    exclude,
+                    ..Default::default()
+                });
+                assert!(result.is_err() && rows.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_inverse_filter_preserves_record_order_and_export_ownership() {
+        let table = parse("Name,Note\nfile10,keep\nkeep,FILE2\nfile2\nother,\n", b',');
+        let mut view = View {
+            first_heading: true,
+            sort: Some((0, false)),
+            filter: RowFilter {
+                query: "file2".into(),
+                column: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let update = |view: &mut View| {
+            let mut order = ordered_rows(&table, view.first_heading, view.sort);
+            view.filter_error = view.filter.retain(&table, &mut order).err();
+            view.order = Arc::new(order);
+            view.order_ready = true;
+        };
+        update(&mut view);
+        assert_eq!(*view.order, [2]);
+        view.filter.exclude = true;
+        update(&mut view);
+        assert_eq!(*view.order, [3, 1, 4]);
+        assert_eq!(
+            export_rows(&table, &view, b',').unwrap(),
+            "Name,Note\nfile2\nfile10,keep\nother,\n"
+        );
+        view.filter.column = None;
+        update(&mut view);
+        assert_eq!(*view.order, [1, 4]);
+        view.filter.query = "fl2".into();
+        view.filter.fuzzy = true;
+        view.filter.column = Some(1);
+        update(&mut view);
+        assert_eq!(*view.order, [3, 1, 4]);
+        view.filter.match_case = true;
+        update(&mut view);
+        assert_eq!(*view.order, [3, 1, 2, 4]);
+        view.filter.query = "   ".into();
+        update(&mut view);
+        assert_eq!(*view.order, [3, 1, 2, 4]);
+        view.filter.query = "ё".repeat(257);
+        update(&mut view);
+        assert!(view.order.is_empty());
+        view.filter.query = "file2".into();
+        view.filter.column = Some(2);
+        update(&mut view);
+        assert!(view.order.is_empty());
+        assert_eq!(table.rows[2], ["keep", "FILE2"]);
+    }
+
+    #[test]
+    fn pointer_row_filter_fuzzy_clear_and_cached_empty_results_preserve_sort() {
+        let ctx = egui::Context::default();
+        let content: Arc<str> = Arc::from("Name,Count\nfile10,2\nfile2,10\nfile2,1\nёж,3\n");
+        let frame = |content: &Arc<str>, side, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 550.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = render(ui, content, b',', side);
+                },
+            );
+            output.textures_delta.clear();
+        };
+        let id = egui::Id::new(("table_preview", "right"));
+        let click = |key| {
+            let pos = ctx
+                .data(|data| data.get_temp::<egui::Rect>(key))
+                .unwrap()
+                .center();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(pos)];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(&content, "right", events);
+            }
+        };
+        frame(&content, "right", vec![]);
+        click(id.with("heading"));
+        click(id.with(("column", 0usize)));
+        click(id.with("filter"));
+        frame(&content, "right", vec![egui::Event::Text("fl2".into())]);
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![])));
+        let before = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        frame(&content, "right", vec![]);
+        let after = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        assert!(Arc::ptr_eq(&before.order, &after.order));
+        click(id.with("fuzzy"));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![2, 3])));
+        click(id.with("regex"));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![])));
+        assert!(
+            !ctx.data(|data| data.get_temp::<View>(id.with("view")))
+                .unwrap()
+                .filter
+                .fuzzy
+        );
+        click(id.with("fuzzy"));
+        click(id.with("whole-words"));
+        let mode = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        assert!(!mode.filter.fuzzy && !mode.filter.regex && mode.filter.whole_words);
+        click(id.with("fuzzy"));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![2, 3])));
+
+        click(id.with("filter-scope"));
+        click(id.with(("filter-column-option", 1usize)));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![])));
+        click(id.with("exclude-filter"));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![2, 3, 1, 4])));
+        click(id.with("filter-scope"));
+        click(id.with("filter-all"));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![1, 4])));
+        click(id.with("exclude-filter"));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![2, 3])));
+        click(id.with("clear-filter"));
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![2, 3, 1, 4])));
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(id.with("filter-input"))
+        );
+        frame(&content, "right", vec![egui::Event::Text("fl2".into())]);
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![2, 3])));
+        frame(&content, "left", vec![]);
+        assert_eq!(
+            shown_order(&ctx, "left"),
+            Some((false, vec![0, 1, 2, 3, 4]))
+        );
+        let reloaded: Arc<str> = Arc::from(content.as_ref());
+        frame(&reloaded, "right", vec![]);
+        let reset = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        assert!(reset.filter.query.is_empty() && !reset.filter.fuzzy && !reset.first_heading);
+        assert!(reset.sort.is_none());
+    }
+
+    #[test]
+    fn visible_record_export_round_trips_csv_tsv_headings_ragged_and_literal_values() {
+        let table = parse(
+            "Name,Note,End\nfile10,hidden\nfile2,\"comma, quote \"\" and\nline\",\nёж,=SUM(A1:A2)\nlast\n",
+            b',',
+        );
+        let view = View {
+            first_heading: true,
+            order_ready: true,
+            order: Arc::new(vec![3, 2, 4]),
+            ..Default::default()
+        };
+        for delimiter in *b",\t" {
+            let exported = export_rows(&table, &view, delimiter).unwrap();
+            let reparsed = parse(&exported, delimiter);
+            assert_eq!(
+                reparsed.rows,
+                [
+                    table.rows[0].clone(),
+                    table.rows[3].clone(),
+                    table.rows[2].clone(),
+                    table.rows[4].clone()
+                ]
+            );
+            assert!(!exported.contains("hidden"));
+            assert!(exported.contains("=SUM(A1:A2)"));
+            assert!(exported.ends_with("last\n"));
+            assert!(exported.contains("and\nline"));
+        }
+        let headerless = View {
+            order_ready: true,
+            order: Arc::new(vec![0, 2]),
+            ..Default::default()
+        };
+        assert_eq!(
+            parse(&export_rows(&table, &headerless, b',').unwrap(), b',').rows,
+            [table.rows[0].clone(), table.rows[2].clone()]
+        );
+        assert!(export_rows(&table, &View::default(), b',').is_err());
+        assert!(
+            export_rows(
+                &table,
+                &View {
+                    order_ready: true,
+                    ..Default::default()
+                },
+                b','
+            )
+            .is_err()
+        );
+        assert!(export_rows(&table, &view, b'|').is_err());
+        let invalid = View {
+            first_heading: true,
+            order_ready: true,
+            order: Arc::new(vec![0]),
+            ..Default::default()
+        };
+        assert!(export_rows(&table, &invalid, b',').is_err());
+        let invalid = View {
+            order_ready: true,
+            order: Arc::new(vec![100]),
+            ..Default::default()
+        };
+        assert!(export_rows(&table, &invalid, b',').is_err());
+        let oversized = Table {
+            rows: vec![vec!["\"".repeat(1024 * 1024)]],
+            columns: 1,
+            limited: false,
+            error: None,
+        };
+        assert!(
+            export_rows(
+                &oversized,
+                &View {
+                    order_ready: true,
+                    order: Arc::new(vec![0]),
+                    ..Default::default()
+                },
+                b','
+            )
+            .unwrap_err()
+            .contains("1 MiB")
+        );
+    }
+
+    #[test]
+    fn pointer_record_copy_requests_exact_filtered_records_once_and_blocks_empty_views() {
+        let ctx = egui::Context::default();
+        let content: Arc<str> = Arc::from("Name,Count\nfile10,2\nfile2,10\nfile2,1\nёж,3\n");
+        let requests = std::cell::RefCell::new(Vec::new());
+        let frame = |events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 550.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    if let Some(text) = render(ui, &content, b',', "right") {
+                        requests.borrow_mut().push(text);
+                    }
+                },
+            );
+            output.textures_delta.clear();
+        };
+        frame(vec![]);
+        let id = egui::Id::new(("table_preview", "right"));
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                id.with("view"),
+                View {
+                    first_heading: true,
+                    sort: Some((0, true)),
+                    filter: RowFilter {
+                        query: "file2".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+        });
+        frame(vec![]);
+        let click = || {
+            let pos = ctx
+                .data(|data| data.get_temp::<egui::Rect>(id.with("copy-records")))
+                .unwrap()
+                .center();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(pos)];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(events);
+            }
+        };
+        click();
+        assert_eq!(*requests.borrow(), ["Name,Count\nfile2,10\nfile2,1\n"]);
+        let mut empty = ctx
+            .data(|data| data.get_temp::<View>(id.with("view")))
+            .unwrap();
+        empty.filter.query = "absent".into();
+        empty.order_ready = false;
+        ctx.data_mut(|data| data.insert_temp(id.with("view"), empty));
+        frame(vec![]);
+        click();
+        assert_eq!(requests.borrow().len(), 1);
+        assert_eq!(shown_order(&ctx, "right"), Some((true, vec![])));
+        assert_eq!(
+            content.as_ref(),
+            "Name,Count\nfile10,2\nfile2,10\nfile2,1\nёж,3\n"
+        );
+    }
+
     #[test]
     fn quoted_multiline_unicode_and_ragged_rows() {
         let table = parse(

@@ -1,0 +1,13 @@
+{
+  "src/selection_snapshot.rs": "1863e61be7f7e941540604de58206a187e1beca3b224e0cc9806dedcb6ab4068",
+  "src/panel.rs": "4246f4fe8cf44075ee85a56e73576550fc0fa25be3d1880aefd8a0b6a273632e",
+  "src/session.rs": "d521fa6a1d84adcbeb7535d9f6da939b3fd8bfa15aa73e9e4b00851f4f448f3b",
+  "src/workspace/tabs.rs": "f6c157948111ba97bb6f1cc04cac3eb4510b98a490b2891c3d7324de1ad5b766",
+  "src/workspace.rs": "f3fe1cf8bd5158332beec01ef0c168d358a01019534787d6e97b428dbe456611",
+  "src/command.rs": "90d091b9516f1d234ee5e79e9f6199283d5dc7bd1ddd2fe875c3ad4bf3165fb0",
+  "src/main.rs": "1947420674fb58432ec4f0291a70c982302566f2fe800dbcb4ec56ba7eabcf01",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "src/visual_qa.rs": "ae0f7fcc9eeac934b9d44400374f070a402b603b6ff677ac72bda57a6e49a5f2",
+  ".github/workflows/ci.yml": "881aafae431989e03b8184baf1a6f1cf724b345a8ec7a71c8793b16221924e08"
+}

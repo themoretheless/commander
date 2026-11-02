@@ -1,0 +1,6 @@
+{
+  "scenario": "duplicate_sizes",
+  "out": "/tmp/commander-native-duplicate_sizes-1793432520047796000",
+  "binary_sha256": "2e44465e30a0d31ede98b81d8d801c43e0d23f9f6683e1fc3443d89e43e7032b",
+  "core_sha256": "2e44465e30a0d31ede98b81d8d801c43e0d23f9f6683e1fc3443d89e43e7032b"
+}

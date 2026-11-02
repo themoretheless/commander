@@ -1,0 +1,20 @@
+{
+  "status": "unverified",
+  "attempts": [
+    {
+      "directory": "initial-header-overflow",
+      "phase": 7
+    },
+    {
+      "directory": "second-search-pointer-timeout",
+      "phase": 24
+    }
+  ],
+  "alignment_stage_reached": false,
+  "remaining": [
+    "native alignment",
+    "physical OS keys",
+    "VoiceOver",
+    "native empty/busy/error cases"
+  ]
+}

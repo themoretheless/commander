@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+    --> src/visual_qa.rs:2325:9
+     |
+2325 | /         if matches!(self.scenario, Scenario::DocxPreview | Scenario::OdtPreview)
+2326 | |             && self.json_mode_phase < 3
+2327 | |             && matches!(&self.inner.ws.right.preview, Some(crate::panel::PreviewContent::Text { content, .. })
+2328 | |                 if content.as_ref() == "Office preview\nmessage: café / ёж 🌍\nA\tB\n")
+...    |
+2346 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+2328 ~                 if content.as_ref() == "Office preview\nmessage: café / ёж 🌍\nA\tB\n")
+2329 ~             && let Some(rect) = ctx.data(|data| {
+2330 |                 data.get_temp::<egui::Rect>(egui::Id::new(("copy-preview-text", "right")))
+ ...
+2343 |                 self.json_mode_phase += 1;
+2344 ~             }
+     |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

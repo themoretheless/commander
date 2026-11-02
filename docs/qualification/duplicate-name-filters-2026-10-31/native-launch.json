@@ -1,0 +1,6 @@
+{
+  "scenario": "duplicate_names",
+  "out": "/tmp/commander-native-duplicate_names-1793430695448546000",
+  "binary_sha256": "e7244657e2d3c7409fe50a3ad6b4ff6c2e1f210855df56dae6118ff3787b0db8",
+  "core_sha256": "e7244657e2d3c7409fe50a3ad6b4ff6c2e1f210855df56dae6118ff3787b0db8"
+}

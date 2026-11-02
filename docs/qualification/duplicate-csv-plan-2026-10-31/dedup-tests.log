@@ -1,0 +1,33 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.11s
+     Running unittests src/main.rs (target/debug/build/commander/46bdd2423b30e094/out/commander-46bdd2423b30e094)
+
+running 25 tests
+test dedup::tests::keep_oldest_picks_smallest_mtime_unknown_last ... ok
+test dedup::tests::newest_policy_prefers_known_times_stably_and_handles_pre_epoch_dates ... ok
+test dedup::tests::keep_shortest_path_and_tie_breaks_to_first ... ok
+test dedup::tests::keep_oldest_ties_and_all_unknown_keep_the_first_file ... ok
+test dedup::tests::delete_count_is_members_minus_one_per_group ... ok
+test dedup::tests::bytes_reclaimed_counts_every_copy_but_one ... ok
+test dedup::tests::policy_reapply_keep_all_and_invalid_keepers_never_trash_an_entire_group ... ok
+test dedup::tests::trashed_members_skip_the_kept_file_and_kept_groups ... ok
+test dedup::tests::no_duplicates_yields_no_groups ... ok
+test dedup::tests::hard_links_to_one_file_are_not_duplicates ... ok
+test dedup::tests::groups_byte_identical_drops_singletons ... ok
+test version_dedup::tests::store_usage_uses_app_size_units_below_one_mib ... ok
+test version_dedup::tests::quota_evicts_oldest_first_and_always_keeps_the_newest_record ... ok
+test version_dedup::tests::corrupt_huge_blob_sizes_saturate_usage_and_quota ... ok
+test version_dedup::tests::prehashed_registration_uses_copy_time_digest_without_rereading_for_hashing ... ok
+test version_dedup::tests::dedup_keeps_a_separate_copy_when_permissions_differ ... ok
+test dedup::tests::csv_plan_preserves_order_exact_paths_and_authoritative_keep_trash_skip_actions ... ok
+test version_dedup::tests::dedup_of_an_existing_hard_link_leaves_no_temp_link ... ok
+test version_dedup::tests::dedup_never_deletes_a_payload_file_named_like_its_temp ... ok
+test version_dedup::tests::releasing_the_new_exemplar_keeps_both_copies_counted ... ok
+test version_dedup::tests::duplicates_after_the_exemplar_is_pruned_are_counted_and_relinked ... ok
+test version_dedup::tests::releasing_the_old_link_group_drops_its_copy ... ok
+test version_dedup::tests::quota_overflow_frees_a_copy_only_when_its_group_empties ... ok
+test version_dedup::tests::identical_files_share_one_blob ... ok
+test dedup::tests::csv_plan_refuses_empty_lossy_relative_nul_and_oversized_exports ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 2873 filtered out; finished in 0.12s
+

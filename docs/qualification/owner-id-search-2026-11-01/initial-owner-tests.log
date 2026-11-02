@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 44s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 3 tests
+test search::tests::owner_id_unknown_fields_do_not_match_even_when_excluded ... ok
+test query::tests::owner_id_queries_roundtrip_and_reject_ambiguous_ids ... ok
+
+thread 'search::tests::owner_id_search_agrees_across_native_cached_tar_and_unknown_zip' (1026249) panicked at src/search.rs:4204:21:
+assertion `left == right` failed: false: Exact: uid:18446744073709551615 gid:0 name:owned-
+  left: []
+ right: ["owned-alpha", "owned-link"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test search::tests::owner_id_search_agrees_across_native_cached_tar_and_unknown_zip ... FAILED
+
+failures:
+
+failures:
+    search::tests::owner_id_search_agrees_across_native_cached_tar_and_unknown_zip
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 3125 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin commander`

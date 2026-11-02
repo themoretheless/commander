@@ -1,0 +1,11 @@
+{
+  "src/checksum.rs": "83817c8dc1e3ac619b7d4c8425d61a99ee915be099649a61784dbac371bd11bc",
+  "src/app/mod.rs": "bd522b8f3c68e90d124cd5c751b255888152ed89b37f1f099db047fe0f915cdd",
+  "src/app/update.rs": "e2b35a531805da60882fdc1c30f4199dd12eda710b1071839b6f8f1f52711430",
+  "src/visual_qa.rs": "eceb5a497fe3df9fbe1edb3f1ee7664f846b00b2a72c1cb7032eb7d2d99099d6",
+  "Cargo.toml": "c3f25fb56384559f6071ae5834ab12e8d2da6dc55529bd8db29c7d9cbf372e38",
+  "Cargo.lock": "a628000a4ab8712b626abec8a762ee8fddc37b0206d5ab17092e30a92da3d9bc",
+  "README.md": "8dfa49bfa508a5f85f93e0d64dc7a85e22b2a5483456595c62f2ff40107bd485",
+  "docs/research/feature-transfers-2026-10-27.md": "d6a5923f3334bf1d225c6dddf4cff6e6082e75dbb0be2623d03f8819c9236af5",
+  "docs/strata-parity.md": "de3b9c76c6e57426d11a16df8ee8a5de936cd7027578c6d219d4049d5c813b1f"
+}

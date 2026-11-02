@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "scope": "Extended native HexSearch recent recall/resumed search and corrected menu-trigger layout",
+  "binary_sha256": "414aeaebae8a8e16673b7cc44101fdf31a7c0aae274e9fb876961da919c4dcf3",
+  "checks_passed": 14,
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "frame_inspected": true,
+  "initial_layout_capture": "rejected visually; preserved in hex_search-initial-layout",
+  "remaining_gates": "Other earlier codepage/archive/keyboard/clipboard workflows remain pending"
+}

@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+    --> src/visual_qa.rs:3143:9
+     |
+3143 | /         if self.scenario == Scenario::ArchiveExport && (21..43).contains(&self.archive_copy_phase) {
+3144 | |             if let Some(pane) = ProbeSnapshot::read(ctx).right_pane {
+3145 | |                 let pos = egui::pos2(pane.rect.center().x, pane.rect.top() + 65.0);
+3146 | |                 input.events.push(egui::Event::PointerMoved(pos));
+...    |
+3157 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+3143 ~         if self.scenario == Scenario::ArchiveExport && (21..43).contains(&self.archive_copy_phase)
+3144 ~             && let Some(pane) = ProbeSnapshot::read(ctx).right_pane {
+3145 |                 let pos = egui::pos2(pane.rect.center().x, pane.rect.top() + 65.0);
+ ...
+3155 |                 self.archive_copy_phase += 1;
+3156 ~             }
+     |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -1,0 +1,3 @@
+file:///var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-56530-favorite_import/left Existing Workspace
+file:///var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-56530-favorite_import/left/Design Проект GTK
+file:///var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-56530-favorite_import/right Other imported

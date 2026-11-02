@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Back/Forward click, cursor reveal or layout capture",
+  "binary_sha256": "8a021673fd6f4ddd02e84b151e5ae92476ad41e038dc666c46a3984276ef68cb",
+  "prior_archive_export_filter_check_native_gates": "remain pending"
+}

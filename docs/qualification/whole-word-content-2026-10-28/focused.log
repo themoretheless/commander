@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 59.09s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 4 tests
+test search::tests::content_word_query_handles_unicode_punctuation_and_unknown_boundaries ... ok
+test search::tests::content_word_query_agrees_across_native_index_zip_and_tar ... ok
+test search::tests::content_word_query_retains_safe_prefix_hits_but_requires_eof_for_tail ... ok
+test query::tests::content_word_query_preserves_literals_modes_and_saved_predicates ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2562 filtered out; finished in 1.05s
+

@@ -1,0 +1,159 @@
+{
+  "schema": 1,
+  "scope": "bounded_disk_usage_snapshot",
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left",
+  "directory_rows_are_nested_totals": true,
+  "summary": {
+    "logical_bytes": 306,
+    "entries": 24,
+    "files": 10,
+    "directories": 15
+  },
+  "status": {
+    "cancelled": false,
+    "tree_truncated": false,
+    "map_truncated": false,
+    "inaccessible_count": 0,
+    "inaccessible_paths_truncated": false,
+    "inaccessible_paths": []
+  },
+  "map_items": [
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/beta",
+      "relative_path": "beta",
+      "is_directory": true,
+      "logical_bytes": 70
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/delta",
+      "relative_path": "delta",
+      "is_directory": true,
+      "logical_bytes": 60
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/gamma",
+      "relative_path": "gamma",
+      "is_directory": true,
+      "logical_bytes": 50
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/photo.png",
+      "relative_path": "photo.png",
+      "is_directory": false,
+      "logical_bytes": 34
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/alpha",
+      "relative_path": "alpha",
+      "is_directory": true,
+      "logical_bytes": 30
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/README.txt",
+      "relative_path": "README.txt",
+      "is_directory": false,
+      "logical_bytes": 28
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/notes.md",
+      "relative_path": "notes.md",
+      "is_directory": false,
+      "logical_bytes": 24
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "relative_path": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "is_directory": false,
+      "logical_bytes": 10
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/Design",
+      "relative_path": "Design",
+      "is_directory": true,
+      "logical_bytes": 0
+    }
+  ],
+  "directories": [
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/beta",
+      "relative_path": "beta",
+      "label": "beta",
+      "depth": 0,
+      "logical_bytes": 70,
+      "files": 2,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/beta/other",
+      "relative_path": "beta/other",
+      "label": "other",
+      "depth": 1,
+      "logical_bytes": 40,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/beta/shared/target-two",
+      "relative_path": "beta/shared/target-two",
+      "label": "shared/target-two",
+      "depth": 1,
+      "logical_bytes": 30,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/delta/shared/target-three",
+      "relative_path": "delta/shared/target-three",
+      "label": "delta/shared/target-three",
+      "depth": 0,
+      "logical_bytes": 60,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/gamma/unrelated",
+      "relative_path": "gamma/unrelated",
+      "label": "gamma/unrelated",
+      "depth": 0,
+      "logical_bytes": 50,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/alpha",
+      "relative_path": "alpha",
+      "label": "alpha",
+      "depth": 0,
+      "logical_bytes": 30,
+      "files": 2,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/alpha/other",
+      "relative_path": "alpha/other",
+      "label": "other",
+      "depth": 1,
+      "logical_bytes": 20,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/alpha/shared/target-one",
+      "relative_path": "alpha/shared/target-one",
+      "label": "shared/target-one",
+      "depth": 1,
+      "logical_bytes": 10,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93250-disk_usage_export/left/Design",
+      "relative_path": "Design",
+      "label": "Design",
+      "depth": 0,
+      "logical_bytes": 0,
+      "files": 0,
+      "unreadable": false
+    }
+  ]
+}

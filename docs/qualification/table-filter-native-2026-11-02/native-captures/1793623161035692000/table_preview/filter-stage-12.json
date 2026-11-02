@@ -1,0 +1,11 @@
+{
+  "column": null,
+  "error": "Invalid table filter: regex parse error:\n    \\b(?:[)\\b\n         ^\nerror: unclosed character class",
+  "exclude": false,
+  "fuzzy": false,
+  "heading": true,
+  "query": "[",
+  "regex": true,
+  "rows": [],
+  "whole_words": true
+}

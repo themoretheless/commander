@@ -1,0 +1,3 @@
+2026-11-01T01:59:11 INFO  commander::logging: logging initialized
+2026-11-01T01:59:11 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: file_identity_info
+2026-11-01T01:59:11 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

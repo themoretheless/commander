@@ -1,0 +1,54 @@
+{
+  "apply": {
+    "clicked": false,
+    "down": false,
+    "enabled": false,
+    "hovered": false,
+    "id": "Id::new(18217098283948351898)",
+    "kind": "apply",
+    "pointer": [
+      555.578125,
+      561.5
+    ],
+    "rect": [
+      360.0,
+      549.5,
+      483.96875,
+      573.5
+    ]
+  },
+  "phase": 21,
+  "reset": {
+    "clicked": false,
+    "down": false,
+    "enabled": true,
+    "hovered": false,
+    "id": "Id::new(7191319803250058260)",
+    "kind": "reset",
+    "pointer": [
+      555.578125,
+      561.5
+    ],
+    "rect": [
+      482.5625,
+      360.0,
+      615.21875,
+      384.0
+    ]
+  },
+  "state": {
+    "accessed": "",
+    "busy": true,
+    "error": null,
+    "modified": "",
+    "needs_reload": false,
+    "report": {
+      "cancelled": false,
+      "changed": 2,
+      "errors": [],
+      "unchanged": 0
+    },
+    "rows": null,
+    "timestamps": true
+  }
+}

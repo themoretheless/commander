@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native folder Suggestions selection/overflow/layout capture",
+  "binary_sha256": "e4d132b827c34d6d7e0a8554686192261be52fb49ae4a6de12f734cc75d548a2",
+  "earlier_archive_native_gates": "remain pending"
+}

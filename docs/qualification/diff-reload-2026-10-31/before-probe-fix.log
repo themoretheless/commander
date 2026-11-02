@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0425]: cannot find value `visible` in this scope
+    --> src/visual_qa.rs:4844:663
+     |
+4844 | ...croll_offset.x,state.scroll_offset.y],"visible":visible,"left_text":diff_fixture_text(false),"right_text":diff_fixture_text(tru...
+     |                                                    ^^^^^^^ not found in this scope
+     |
+note: function `crate::rtf_preview::visible` exists but is inaccessible
+    --> src/rtf_preview.rs:154:1
+     |
+ 154 | fn visible(state: &State) -> bool {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not accessible
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

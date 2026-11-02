@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "checks": 15,
+  "difference_blocks": 3,
+  "current_block": 2,
+  "visible_selected_block": true,
+  "source_reconstruction": true,
+  "native_effect_calls": 0,
+  "binary_matches_launch": true
+}

@@ -1,0 +1,46 @@
+{
+  "files": [
+    {
+      "accessed": "2022-01-01T00:00:00Z",
+      "modified": "2020-01-01T00:00:00Z",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84107-timestamps/left/times-a.txt",
+      "size": 18
+    },
+    {
+      "accessed": "2022-01-01T00:00:00Z",
+      "modified": "2021-01-01T00:00:00Z",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84107-timestamps/left/times-b.txt",
+      "size": 18
+    },
+    {
+      "accessed": "2022-01-01T00:00:00Z",
+      "modified": "1999-01-01T00:00:00Z",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84107-timestamps/left/times-untouched.txt",
+      "size": 18
+    }
+  ],
+  "phase": 4,
+  "view": {
+    "accessed": "",
+    "busy": false,
+    "error": null,
+    "modified": "not a date",
+    "needs_reload": false,
+    "report": null,
+    "rows": [
+      {
+        "accessed": "2022-01-01T00:00:00Z",
+        "error": null,
+        "modified": "2020-01-01T00:00:00Z",
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84107-timestamps/left/times-a.txt"
+      },
+      {
+        "accessed": "2022-01-01T00:00:00Z",
+        "error": null,
+        "modified": "2021-01-01T00:00:00Z",
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84107-timestamps/left/times-b.txt"
+      }
+    ],
+    "timestamps": true
+  }
+}

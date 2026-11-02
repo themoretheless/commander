@@ -1,0 +1,54 @@
+{
+  "command": "cargo deny --all-features --locked check advisories bans licenses sources",
+  "current_exit_code": 5,
+  "baseline_without_exif_exit_code": 5,
+  "same_diagnostics": true,
+  "added_packages": [
+    [
+      "kamadak-exif",
+      "0.6.1"
+    ],
+    [
+      "mutate_once",
+      "0.1.2"
+    ]
+  ],
+  "diagnostics": {
+    "advisories": [
+      "RUSTSEC-2026-0391",
+      "RUSTSEC-2026-0395",
+      "RUSTSEC-2026-0396",
+      "RUSTSEC-2026-0397",
+      "RUSTSEC-2026-0398",
+      "RUSTSEC-2026-0399",
+      "RUSTSEC-2026-0400",
+      "RUSTSEC-2026-0401",
+      "RUSTSEC-2026-0402",
+      "RUSTSEC-2026-0403",
+      "RUSTSEC-2026-0404",
+      "RUSTSEC-2026-0405",
+      "RUSTSEC-2026-0406"
+    ],
+    "errors": [
+      "error[rejected]: failed to satisfy license requirements",
+      "error[unsound]: Double free in `DCtx::try_clone`",
+      "error[unsound]: Heap buffer overflow in `CCtx::try_clone` on a multithreaded context",
+      "error[unsound]: Out-of-bounds read in `train_from_buffer` when sample sizes overflow",
+      "error[unsound]: Out-of-bounds read with an out-of-range `InBuffer::pos`",
+      "error[unsound]: Use-after-free of a dictionary after a one-shot call on a context with an open stream",
+      "error[unsound]: Use-after-free through `init_using_cdict` and `init_using_ddict`",
+      "error[unsound]: Use-after-free when changing a multithreaded context with an unfinished frame",
+      "error[unsound]: Use-after-free with `CParameter::StableInBuffer`",
+      "error[unsound]: `OutBuffer::around_pos` exposes uninitialized memory",
+      "error[unsound]: `Seekable` reads a NULL or out-of-bounds seek table",
+      "error[vulnerability]: Data from an abandoned stream leaks into the next stream on a reused context",
+      "error[vulnerability]: Uninitialized memory exposed when streaming decompression of a legacy frame fails",
+      "error[vulnerability]: `Seekable::decompress` sets a `Vec` length beyond its capacity for offsets past the end"
+    ],
+    "licenses": [
+      "bzip2-1.0.6"
+    ]
+  },
+  "cargo_lock_sha256": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "deny_policy_sha256": "094e72ea6213c365bfc698825170b65d6d60b06eec7ec8a99be6efaae11ca219"
+}

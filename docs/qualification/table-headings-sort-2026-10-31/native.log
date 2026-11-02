@@ -1,0 +1,4 @@
+2026-10-31T02:15:52 INFO  commander::logging: logging initialized
+2026-10-31T02:15:52 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: table_preview
+2026-10-31T02:15:52 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-table-sort-final-1793398548362267000
+2026-10-31T02:15:52 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

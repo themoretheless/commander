@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.64s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test app::archive_dialog::tests::archive_exclusion_glob_intersects_query_and_excludes_directory_descendants ... ok
+test app::archive_dialog::tests::archive_exclusion_glob_pointer_entry_preserves_active_query_and_selection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2848 filtered out; finished in 0.02s
+

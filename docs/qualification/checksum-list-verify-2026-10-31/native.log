@@ -1,0 +1,17 @@
+2026-10-31T04:08:31 INFO  commander::logging: logging initialized
+2026-10-31T04:08:31 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: checksum_list
+2026-10-31T04:08:31 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-checksum-list-1793405303259988000
+2026-10-31T04:08:31 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA dispatched cursor-file command
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 0, target Id::new("checksum-list-run"), rect [[591.0 180.2] - [665.0 204.2]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 1, target Id::new("checksum-list-run"), rect [[591.0 180.2] - [665.0 204.2]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 2, target Id::new("checksum-list-run"), rect [[591.0 180.2] - [665.0 204.2]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 3, target Id::new("checksum-list-copy"), rect [[591.0 551.8] - [748.1 575.8]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 4, target Id::new("checksum-list-copy"), rect [[591.0 551.8] - [748.1 575.8]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 5, target Id::new("checksum-list-copy"), rect [[591.0 551.8] - [748.1 575.8]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 6, target Id::new("checksum-list-run"), rect [[591.0 180.2] - [665.0 204.2]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 7, target Id::new("checksum-list-run"), rect [[591.0 180.2] - [665.0 204.2]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 8, target Id::new("checksum-list-run"), rect [[591.0 180.2] - [665.0 204.2]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 9, target Id::new("checksum-list-copy"), rect [[591.0 551.8] - [748.1 575.8]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 10, target Id::new("checksum-list-copy"), rect [[591.0 551.8] - [748.1 575.8]]
+2026-10-31T04:08:31 INFO  commander::visual_qa: Checksum-list QA phase 11, target Id::new("checksum-list-copy"), rect [[591.0 551.8] - [748.1 575.8]]

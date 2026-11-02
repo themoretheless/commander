@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.53s
+     Running unittests src/main.rs (target/debug/build/commander/817fc3ac52ddf8fd/out/commander-817fc3ac52ddf8fd)
+
+running 2 tests
+test search_text::tests::search_text_bom_decodes_both_orders_and_preserves_payload_bom ... ok
+test search_text::tests::search_text_bom_malformed_units_remain_lossy_and_prefixes_do_not_panic ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2578 filtered out; finished in 0.00s
+

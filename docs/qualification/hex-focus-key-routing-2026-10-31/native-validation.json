@@ -1,0 +1,32 @@
+{
+  "status": "passed_scoped",
+  "scenario": "hex_search",
+  "capture_phase": 144,
+  "focus_sequence": [
+    "hex-offset-input",
+    "hex-search-query",
+    "hex-search-query after F3 completion"
+  ],
+  "matched_offset": 110001,
+  "operation_dialogs_closed": true,
+  "copied_fixture_absent": true,
+  "background_cursor": "bytes.bin",
+  "checks_passed": 14,
+  "checks_total": 14,
+  "frame_inspected": true,
+  "input_method": "egui key events in CUA-launched native runtime",
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "remaining_gates": [
+    "physical macOS function keys and VoiceOver",
+    "native busy/popup focus suppression",
+    "standalone native copy-dialog animation lifecycle",
+    "other viewer shortcut routes"
+  ]
+}

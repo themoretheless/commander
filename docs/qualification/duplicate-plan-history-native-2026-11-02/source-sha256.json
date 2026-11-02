@@ -1,0 +1,19 @@
+{
+  "src/sync_profiles.rs": "da486af989179d9f6b8f7fa3484578e69a1bb64d1511578ba2d9ab448d92147a",
+  "src/main.rs": "2c13fe8c3e9ed4cf1068168d7804d2dddd4500682df180224ba6747766160ff0",
+  "src/session.rs": "b77865a96e3b8b6975590e17c226732507e0bff1410fd3e8061439964b04ed29",
+  "src/app/mod.rs": "d06353e720847f7f4d1f71c52b3a92982fac6bf65f6b8deb4a8d0eab86977613",
+  "src/app/sync_dialog.rs": "3fae324dc6c40d496f4854bf488c515e47d346e26c426e15600a763ba0563e0f",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "target/debug/commander": "36677442d3f83975038163f8d2b987450621cde552b5032cafa23730cbb691fe",
+  "src/sync_review.rs": "ff8edb8bcb6348188e5f626faeda22063154150c213fb2167d2be33b5a208be0",
+  "src/panel.rs": "3eadece25c829cfa30ace665de345a258347fad51700650ec3c25f5240698e7e",
+  "src/visual_qa.rs": "9a4284d13216b7c967a6810a25dbaa0137c5eb2b0fd92020d35d8c82bba0027c",
+  "src/sync_report.rs": "78a53b4d3e4e44b2c2da0a22c1977f1c3cdca2233f6fb7b44e7cd21ac89f3e04",
+  "src/app/duplicates_dialog.rs": "656d005db6e195a5e0c26bf599b1b3f247e18a6e4bf973e9d189c68f27978638",
+  "src/dedup_scan.rs": "006ff5d2d2e2f5b63b1d259ad07251ae6b59fa47a2fd739d19d226473080850f",
+  "src/dedup.rs": "11f337388964285ab47a0de157be159f5d6821f69f052772022abd05a5b0a7fe",
+  "src/duplicate_report.rs": "d58a6d3c48f0213998e4eb12a44860786c759112279a8fdc0f6dc73c4877a5a6",
+  "src/duplicate_history.rs": "ae47b84139ddfca7749437b58a81b978651fba033f74d7b3266f35ea2471394b"
+}

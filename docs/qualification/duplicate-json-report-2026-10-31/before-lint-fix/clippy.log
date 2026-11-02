@@ -1,0 +1,37 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: pub(crate) function inside private module
+   --> src/dedup.rs:164:1
+    |
+164 | pub(crate) fn plan_action(group: &DupGroup, keep: Option<usize>, member: usize) -> &'static str {
+    | ----------^^^^^^^^^^^^^^^
+    | |
+    | help: consider using: `pub`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+    = note: `-D clippy::redundant-pub-crate` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::redundant_pub_crate)]`
+
+error: pub(crate) function inside private module
+   --> src/dedup.rs:174:1
+    |
+174 | pub(crate) fn validate_group_order(group_count: usize, order: &[usize]) -> Result<(), String> {
+    | ----------^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | help: consider using: `pub`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+
+error: could not compile `commander` (bin "commander") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: unreachable pattern
+     --> src/visual_qa.rs:12456:19
+      |
+12455 |                 | Scenario::DuplicateReport
+      |                   ------------------------- matches all the relevant values
+12456 |                 | Scenario::DuplicateReport
+      |                   ^^^^^^^^^^^^^^^^^^^^^^^^^ no value can reach this
+      |
+      = note: `-D unreachable-patterns` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(unreachable_patterns)]`
+
+error: could not compile `commander` (bin "commander" test) due to 3 previous errors

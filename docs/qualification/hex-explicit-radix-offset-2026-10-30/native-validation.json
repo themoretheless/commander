@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native explicit-radix Go/Enter/hover/layout capture",
+  "binary_sha256": "ac7d9c227eddb8870ee9e9c1353985e20c93a34595259c4fb0d8fa857f38f8f9",
+  "core_coverage": "radix parser and deterministic worker byte positions passed",
+  "earlier_native_gates": "remain pending"
+}

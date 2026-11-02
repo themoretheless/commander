@@ -1,0 +1,17 @@
+{
+  "explanations": [
+    [
+      "uid:501",
+      "gid:20",
+      "archives:off",
+      "literal \"owned-\""
+    ]
+  ],
+  "expression": "uid:501 gid:20 archives:off name:owned-",
+  "matched": 1,
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13332-owner_search/left/owned-native.txt"
+  ],
+  "skipped": 0,
+  "source": "Live (archives off)"
+}

@@ -1,0 +1,91 @@
+{
+  "counts": [
+    2,
+    1
+  ],
+  "enabled": true,
+  "phase": 9,
+  "ranges": {
+    "1": [
+      {
+        "end": 15,
+        "start": 12
+      },
+      {
+        "end": 31,
+        "start": 30
+      }
+    ],
+    "2": [
+      {
+        "end": 13,
+        "start": 12
+      },
+      {
+        "end": 15,
+        "start": 14
+      },
+      {
+        "end": 30,
+        "start": 29
+      }
+    ]
+  },
+  "rows": [
+    {
+      "kind": "Equal",
+      "text": "header"
+    },
+    {
+      "kind": "Delete",
+      "text": "let color = blue; let size = 13;"
+    },
+    {
+      "kind": "Insert",
+      "text": "let color = red; let size = 12;"
+    },
+    {
+      "kind": "Equal",
+      "text": "unchanged"
+    },
+    {
+      "kind": "Insert",
+      "text": "removed only"
+    },
+    {
+      "kind": "Equal",
+      "text": "end"
+    }
+  ],
+  "simplified_pairs": 0,
+  "source": [
+    "header\nlet color = blue; let size = 13;\nunchanged\nend\n",
+    "header\nlet color = red; let size = 12;\nunchanged\nremoved only\nend\n"
+  ],
+  "source_numbers": [
+    [
+      1,
+      1
+    ],
+    [
+      2,
+      null
+    ],
+    [
+      null,
+      2
+    ],
+    [
+      3,
+      3
+    ],
+    [
+      null,
+      4
+    ],
+    [
+      4,
+      5
+    ]
+  ]
+}

@@ -1,0 +1,11 @@
+# UTF-8 text search inside the hex viewer — 2026-10-30
+
+Independent Rust adaptation of [Double Commander viewer text/hexadecimal search choices](https://doublecmd.github.io/doc/en/viewer.html), cohort repository #3. Public viewer documentation describes text search and the hexadecimal alternative. No upstream code copied. Commander explicitly offers UTF-8 literal search; this does not claim upstream encoding/regex/case-insensitive search parity.
+
+The existing streaming hex viewer now has Hex bytes and UTF-8 text input modes, independent of HEX/Decimal byte display. Default remains hex. UTF-8 converts the exact input to bytes without trimming, normalization or case folding; whitespace is meaningful. Empty input and more than 256 encoded bytes are rejected. Invalid UTF-8 elsewhere in a file does not matter because the file is searched as bytes. Switching mode preserves input but clears prior match state and feedback. Mode controls are disabled during work.
+
+Both modes share the bounded KMP reader, forward/backward inclusive candidate bounds, overlapping-match progression, cancellation/progress and file stamp checks. No whole-file decoding or extra dependency. Match highlighting covers the matched byte rows, and offsets remain byte offsets.
+
+Two new tests verify exact whitespace/NUL/Unicode representation, composed/decomposed distinctions, encoded byte limits, unchanged hex parsing, actual UTF-8 sequences across 4096/65536-byte boundaries in both directions, case sensitivity and unchanged binary contents. Native HexSearch retains its original hex forward/backward sequence, then selects UTF-8, replaces input with Привет🌍, finds offsets 8190 and 70000 and goes backward to 8190. Final readiness requires phase 30, UTF-8 mode and an actual match at 8190.
+
+Validation: locked visual-qa suite **2670 passed, 0 failed, 3 ignored**; all-target Clippy with warnings denied, locked build, cargo fmt --check and git diff --check passed. Fresh CUA-launched native HexSearch capture **14/14**, all native effect counters zero; manifest newer than launch record. Frame inspected: UTF-8 selected, Cyrillic/emoji query visible, match at 0x1FFE (8190), matched bytes highlighted. No commit or push; further transfers remain open.

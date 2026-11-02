@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.70s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 5 tests
+test archive_export::tests::names_and_paths_keep_order_duplicates_and_escape_controls ... ok
+test archive_export::tests::stems_remove_only_final_suffix_and_preserve_duplicate_member_identity ... ok
+test archive_export::tests::csv_keeps_identity_raw_fields_metadata_partial_state_and_neutralizes_formulas ... ok
+test archive_export::tests::parent_folders_are_internal_distinct_ordered_and_root_is_explicit ... ok
+test archive_export::tests::output_budget_empty_stale_ids_and_non_utf8_never_return_partial_output ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2799 filtered out; finished in 0.22s
+

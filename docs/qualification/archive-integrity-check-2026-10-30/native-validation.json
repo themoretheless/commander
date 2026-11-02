@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Test/Stop capture",
+  "binary_sha256": "20a70d675efd0f3bb52b6b755154e1c08ba5b72b9f21dbddfc549266ede4def9",
+  "prior_archive_export_filter_native_gates": "remain pending"
+}

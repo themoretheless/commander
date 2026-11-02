@@ -1,0 +1,17 @@
+# Named workspace profiles
+
+Inspired by [Krusader panel profiles](https://docs.kde.org/trunk_kf6/en/krusader/krusader/profiles.html), implemented independently using Commander's existing workspace-profile format. The new Workspace profiles palette command exposes several named configurations rather than only the old default-profile commands.
+
+The window lists profiles, previews both root paths and filters plus durability/name/symlink policies, captures current panels as a new name, explicitly replaces a selected profile, reloads external changes and applies a selected profile. Long roots/filters truncate with full hover text. Names are 1–80 non-control characters; new books are limited to 128 profiles and filters to 4 KiB each. Duplicate new names are refused; replacement is explicit. No delete/import/rename action is included yet.
+
+These profiles capture the active folder and filter of each panel and existing operation policies, not a complete tab set or view/theme settings. Applying reuses the established missing-folder behavior: a missing side retains its current folder and filter; existing/background tabs remain. Pending confirmations, deletes and queued modals block named application. No command templates are executed by profile application.
+
+The editor uses the existing atomic store and checks the current disk book against its opening snapshot before each save. Conflicts require Reload. Failed writes retain the editor's previous book. The old save helper now publishes its cache only after a committed save. New tests cover duplicate/bounded names, explicit replacement, disk reopen, stale-editor rejection, unreadable-store preservation, active-panel capture, background-tab preservation, missing-side filters and modal guards.
+
+The native workspace_profiles scenario saves Work through the actual dialog, retargets panels as fixture setup, explicitly replaces Work through its button, retargets back and applies Work through its button. Actual on-disk envelopes and final workspace/tab snapshots are recorded. QA's existing storage-root override keeps all profile writes inside its owned temporary fixture. The previous folder_tabs scene is the control. This is egui event injection, not physical OS input or a process-restart claim.
+
+Validation: all six gates passed (build, full tests: 3,264 passed / 3 ignored, strict Clippy, ordinary check, formatting and diff whitespace). Named-profile and prior folder-tabs native workflows each passed 14/14. Independent verification matched actual store generations 1 -> 2, replacement roots, applied workspace and retained background tab; source/binary/tool hashes agree. Both final screenshots were visually inspected and all native effect counters are zero. The first attempted capture is preserved: actions succeeded but both target folders were empty, so the mandatory file-row hover probe could not run. Final fixtures contain one file per target; no deadline changed. Native multi-profile switching, nonempty filters/policies, Reload conflict feedback and process restart remain additional coverage work; their model/store boundaries are covered by tests.
+
+No dependencies changed. Existing dependency audit failures and the broader 99-repository transfer goal remain open.
+
+Follow-up: [complete profile tab sets](../profile-tab-sets-2026-11-02/README.md) extend the initial current-folder format. See that report for current capture/application semantics.

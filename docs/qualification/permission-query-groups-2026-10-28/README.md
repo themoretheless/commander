@@ -1,0 +1,13 @@
+# Permission alternatives, negation and octal masks — 2026-10-28
+
+Follow-up independent adaptation of Double Commander advanced Unix attribute patterns ([primary documentation](https://doublecmd.github.io/doc/en/findfiles.html), sections 3.1–3.1.2) from the 99-repository cohort. No upstream implementation copied.
+
+perm: now supports OR-separated groups, a leading ! to negate a whole group, and signed one-to-four-digit octal masks mixed with the existing symbolic terms. For example, uw+|gw+|ow+ requires any write bit, !700+ requires at least one owner-access bit missing, and !500+002-|us+ negates the whole first conjunction before OR-ing the setuid condition. Repeated perm: fields remain AND. Numeric + requires every mask bit; numeric - requires every mask bit clear, leaving other bits unconstrained. No shell or external command is involved.
+
+Missing observed mode never satisfies a condition, including ! and zero masks. For known metadata 0+ is unconstrained and !0+ cannot match. Contradictory requirements inside any group, empty groups, misplaced/repeated negation, parentheses, invalid digits and over-wide octal masks are rejected rather than guessed. Each condition is bounded to 64 groups and 4096 bytes, with boundary regressions. All existing symbolic predicates and saved JSON strings keep their meaning; the compiled pattern remains internal and introduces no index field/schema change.
+
+Regressions compare octal and symbolic equivalents over every one of the 4096 permission combinations, check independently calculated OR/whole-group-negation truth tables and repeated-field precedence, and exercise expression/JSON round trips in all text modes. Unknown mode checks include negated and zero-mask expressions. The native/serialized-index/ZIP/TAR matrix now includes OR, negation, special-bit alternatives, octal masks and repeated predicates; old index missing-mode accounting uses a negated OR expression. Existing native symlink, special bits and cached post-chmod checks remain.
+
+The first fixture compile needed its old tuple assertions updated to the new compiled-pattern representation (fixture-compile.log). The first provider fixture then correctly returned writable ZIP/TAR container files too; fixture-scope.log retains that run. The final fixture explicitly restricts the intended comparison to ext:txt and retains normal container behavior. No product behavior was changed to suppress these valid hits.
+
+No UI widget changed, no new native capture, commit or push. Validation: **2551 passed, 0 failed, 3 ignored** in the full locked visual-qa suite. All five focused tests passed. All-target visual-qa Clippy with warnings denied, formatting and whitespace checks passed.

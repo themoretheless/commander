@@ -1,0 +1,4 @@
+MD5 checksum list
+Verified 4 of 4 records: 3 match, 0 mismatch, 1 failed
+Visible records: 1 of 4 completed; status=Matches; query="nested"
+MATCH ./nested/verify-good.txt expected=900150983cd24fb0d6963f7d28e17f72 actual=900150983cd24fb0d6963f7d28e17f72

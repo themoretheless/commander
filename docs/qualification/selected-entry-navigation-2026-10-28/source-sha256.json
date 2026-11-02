@@ -1,0 +1,7 @@
+{
+  "README.md": "ab4943b5ff2ba09537c69757829b9a1cd2b8c8de2aa772146e495c1bf019ba0f",
+  "src/panel.rs": "e66ef4579287cf977afab7f1ddff68a3b24f8242f0d6ebaae1b94b0f2c46fb72",
+  "src/command.rs": "c62a38cfcf6812c00ba0c47917551bb7c7002937dbafe0e9235a4ad4e2a50cc0",
+  "src/workspace.rs": "35622bf37913299aff266a65da562fac5e03a5b7514d4852ab56867657630810",
+  "src/workspace/tests.rs": "bf67e12722dc8012d4376e2f64e670272060e49c8cc8d9bce16ca7a99d2ef338"
+}

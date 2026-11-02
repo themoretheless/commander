@@ -1,0 +1,13 @@
+# Native saved sync profile management
+
+Extends the existing sync_review CI workflow with pointer/key events on the real profile section: expand it, enter Work, Save comparison as new, select the name field and enter Renamed, Rename selected to name, Delete selected profile, then collapse the section. The name field now says Profile name (new / rename), clarifying its two uses. Rectangle probes store response geometry only and do not call egui input methods inside data_mut.
+
+Actual snapshots after save, rename and deletion retain the saved versioned book and selected owner. The verifier requires only the name to change on rename, the same original comparison roots/settings, and a valid empty collection after deleting the sole record. Existing final-plan verification proves the profile operations do not change comparison row actions; native effect counters exclude filesystem transfers/openers/trash. Saved session reopen is covered by the existing atomic-session regression; this native scene does not restart the process or test profile loading/replacement, collisions, corruption recovery, maximum counts or Swap comparison sides.
+
+The previous mask review and neighboring sync_contents control remain included. QA uses owned temporary storage and recording clipboard ports. Gate logs, validator/source/binary hashes, launch receipts, state snapshots and final screenshots are retained alongside this document. No dependencies were added; the broader cohort transfer objective and prior dependency audit failures remain open.
+
+The first captures and pre-animation-fix checks are retained. Visual inspection found the primary screenshot was taken during section-collapse animation, with a clipped name field still visible. Readiness now waits until the collapsing response has no body before capture, rather than extending the deadline or treating an intermediate frame as visual qualification. Final captures use the rebuilt binary and fresh output directories.
+
+Final validation: all six gates passed, full suite 3281 passed / 3 ignored. Native review/profile management and content control each passed 15/15; independent verifier passed exact profile payload changes, unchanged plan, report metadata, content results and source/binary hashes. Both final frames were visually inspected after collapse animation. Only the expected five/two recording clipboard exports occur; all other effect counters are zero. The scenario remains in the existing CI sync_review entry.
+
+Later native loading/side-swap qualification: [fresh root/stamp workflow and scope](../sync-profile-load-native-2026-11-02/README.md).

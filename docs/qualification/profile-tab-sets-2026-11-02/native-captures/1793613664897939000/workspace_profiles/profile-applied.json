@@ -1,0 +1,38 @@
+{
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74586-workspace_profiles/left/Design",
+  "phase": 17,
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74586-workspace_profiles/right/Archive",
+  "tabs": {
+    "active": 0,
+    "entries": [
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74586-workspace_profiles/left/Design",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "List",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74586-workspace_profiles/right",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "List",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      }
+    ]
+  }
+}

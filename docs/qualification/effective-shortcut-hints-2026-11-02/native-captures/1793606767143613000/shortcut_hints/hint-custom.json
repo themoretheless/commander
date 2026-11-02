@@ -1,0 +1,19 @@
+{
+  "bindings": [
+    {
+      "command": "Reverse sort order",
+      "keys": "F5"
+    },
+    {
+      "command": "Toggle hidden files",
+      "keys": "Alt+G H"
+    }
+  ],
+  "copy_keybar_hint": "",
+  "hint": "Alt+G H / Cmd+H",
+  "label": "Toggle hidden files",
+  "query": ">Alt+G H",
+  "visible": [
+    "Toggle hidden files"
+  ]
+}

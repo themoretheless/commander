@@ -22,6 +22,90 @@ impl ListingFormat {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RenamePlanFormat {
+    OriginalNames,
+    ProposedNames,
+    MappingCsv,
+}
+
+impl RenamePlanFormat {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OriginalNames => "original names",
+            Self::ProposedNames => "proposed names",
+            Self::MappingCsv => "rename mapping",
+        }
+    }
+}
+
+pub fn can_copy_rename_plan(
+    plans: &[crate::rename::RenamePlan],
+    format: RenamePlanFormat,
+    error: Option<&str>,
+) -> bool {
+    !plans.is_empty()
+        && (format != RenamePlanFormat::ProposedNames
+            || (error.is_none()
+                && plans.iter().all(|plan| {
+                    matches!(
+                        plan.status,
+                        crate::rename::PlanStatus::Ok | crate::rename::PlanStatus::Unchanged
+                    )
+                })))
+}
+
+/// Export the complete current plan, preserving order and duplicate text. Plain
+/// display lists escape line controls; CSV retains raw fields and validation state.
+pub fn rename_plan(
+    plans: &[crate::rename::RenamePlan],
+    format: RenamePlanFormat,
+    error: Option<&str>,
+) -> Option<String> {
+    if !can_copy_rename_plan(plans, format, error) {
+        return None;
+    }
+    if format != RenamePlanFormat::MappingCsv {
+        return Some(
+            plans
+                .iter()
+                .map(|plan| {
+                    escape_controls(if format == RenamePlanFormat::OriginalNames {
+                        &plan.from
+                    } else {
+                        &plan.to
+                    })
+                    .into_owned()
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    let mut text = String::from("Old name,New name,Status,Rule error\n");
+    for plan in plans {
+        let status = if error.is_some() {
+            "invalid_rule"
+        } else {
+            match plan.status {
+                crate::rename::PlanStatus::Ok => "ok",
+                crate::rename::PlanStatus::Unchanged => "unchanged",
+                crate::rename::PlanStatus::Invalid => "invalid",
+                crate::rename::PlanStatus::Collision => "collision",
+                crate::rename::PlanStatus::ExpansionLimit => "expansion_limit",
+            }
+        };
+        text.push_str(&csv_escape(&plan.from));
+        text.push(',');
+        text.push_str(&csv_escape(&plan.to));
+        text.push(',');
+        text.push_str(status);
+        text.push(',');
+        text.push_str(&csv_escape(error.unwrap_or("")));
+        text.push('\n');
+    }
+    Some(text)
+}
+
 /// Render `entries` (Name / Size / Modified) in the chosen format. Text is
 /// tab-separated with the human size string; CSV is RFC-4180-escaped with a
 /// Kind column, raw byte sizes (empty for folders) and ISO 8601 UTC modified
@@ -76,13 +160,53 @@ pub fn format(entries: &[&FileEntry], fmt: ListingFormat) -> String {
     }
 }
 
+/// Find result metadata, retaining the full (possibly virtual archive) path.
+pub fn search_csv(entries: &[&FileEntry]) -> String {
+    let mut out = String::from("Path,Name,Kind,Size (bytes),Modified\n");
+    for entry in entries {
+        out.push_str(&csv_escape(&entry.path.to_string_lossy()));
+        out.push(',');
+        out.push_str(&csv_escape(&entry.name));
+        out.push_str(if entry.is_dir { ",folder," } else { ",file," });
+        if !entry.is_dir {
+            out.push_str(&entry.size.to_string());
+        }
+        out.push(',');
+        if let Some(modified) = entry.modified {
+            out.push_str(&csv_escape(&iso_8601_utc_precision(
+                modified,
+                chrono::SecondsFormat::AutoSi,
+            )));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn human_size_cell(entry: &FileEntry) -> &str {
     if entry.is_dir { "" } else { &entry.size_str }
 }
 
 /// `time` as an ISO 8601 / RFC 3339 UTC timestamp to the second.
-fn iso_8601_utc(time: std::time::SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+pub fn iso_8601_utc(time: std::time::SystemTime) -> String {
+    iso_8601_utc_precision(time, chrono::SecondsFormat::Secs)
+}
+
+pub fn iso_8601_utc_precision(
+    time: std::time::SystemTime,
+    precision: chrono::SecondsFormat,
+) -> String {
+    let converted = || {
+        let nanos = match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => i128::try_from(duration.as_nanos()).ok()?,
+            Err(error) => -i128::try_from(error.duration().as_nanos()).ok()?,
+        };
+        let seconds = i64::try_from(nanos.div_euclid(1_000_000_000)).ok()?;
+        let subsec = u32::try_from(nanos.rem_euclid(1_000_000_000)).ok()?;
+        chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, subsec)
+            .map(|date| date.to_rfc3339_opts(precision, true))
+    };
+    converted().unwrap_or_default()
 }
 
 /// Quote a CSV field when it contains a comma, quote, or newline, doubling any
@@ -90,7 +214,7 @@ fn iso_8601_utc(time: std::time::SystemTime) -> String {
 /// carriage return is first prefixed with `'`, so a spreadsheet opening the
 /// export shows a hostile file name such as `=HYPERLINK(...)` as text instead
 /// of evaluating it as a formula.
-fn csv_escape(s: &str) -> String {
+pub fn csv_escape(s: &str) -> String {
     let s: Cow<'_, str> = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
         Cow::Owned(format!("'{s}"))
     } else {
@@ -149,9 +273,83 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn rename_row(
+        from: &str,
+        to: &str,
+        status: crate::rename::PlanStatus,
+    ) -> crate::rename::RenamePlan {
+        crate::rename::RenamePlan {
+            from: from.into(),
+            to: to.into(),
+            status,
+        }
+    }
+
+    #[test]
+    fn rename_lists_preserve_order_duplicates_and_escape_controls() {
+        use crate::rename::PlanStatus::*;
+        use RenamePlanFormat::*;
+        let rows = [
+            rename_row("я\n\t\r", "二", Ok),
+            rename_row("same", "二", Unchanged),
+        ];
+        assert_eq!(
+            rename_plan(&rows, OriginalNames, None).unwrap(),
+            "я\\n\\t\\r\nsame"
+        );
+        assert_eq!(rename_plan(&rows, ProposedNames, None).unwrap(), "二\n二");
+        for format in [OriginalNames, ProposedNames, MappingCsv] {
+            assert!(rename_plan(&[], format, None).is_none());
+        }
+    }
+
+    #[test]
+    fn rename_proposals_require_valid_rows_but_review_exports_remain_available() {
+        use crate::rename::PlanStatus::*;
+        use RenamePlanFormat::*;
+        for status in [Invalid, Collision, ExpansionLimit] {
+            let rows = [rename_row("old", "new", status)];
+            assert!(rename_plan(&rows, ProposedNames, None).is_none());
+            assert!(rename_plan(&rows, OriginalNames, None).is_some());
+            assert!(rename_plan(&rows, MappingCsv, None).is_some());
+        }
+        let rows = [rename_row("same", "same", Unchanged)];
+        assert_eq!(rename_plan(&rows, ProposedNames, None).unwrap(), "same");
+        assert!(rename_plan(&rows, ProposedNames, Some("bad regex")).is_none());
+    }
+
+    #[test]
+    fn rename_csv_quotes_raw_names_and_validation_errors() {
+        use crate::rename::PlanStatus::*;
+        use RenamePlanFormat::*;
+        let rows = [
+            rename_row("a,\"b", "c\nd", Collision),
+            rename_row("x", "y", ExpansionLimit),
+        ];
+        assert_eq!(
+            rename_plan(&rows, MappingCsv, None).unwrap(),
+            "Old name,New name,Status,Rule error\n\"a,\"\"b\",\"c\nd\",collision,\nx,y,expansion_limit,\n"
+        );
+        assert_eq!(
+            rename_plan(&rows[..1], MappingCsv, Some("bad,\"rule\"\n")).unwrap(),
+            "Old name,New name,Status,Rule error\n\"a,\"\"b\",\"c\nd\",invalid_rule,\"bad,\"\"rule\"\"\n\"\n"
+        );
+    }
+
     fn entry(name: &str, size: u64) -> FileEntry {
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
@@ -168,6 +366,28 @@ mod tests {
 
     fn refs(v: &[FileEntry]) -> Vec<&FileEntry> {
         v.iter().collect()
+    }
+
+    #[test]
+    fn search_details_csv_preserves_paths_bytes_and_unknown_folder_cells() {
+        let mut file = entry("=SUM(1,2)\n\"x\".txt", u64::MAX);
+        file.modified = Some(std::time::UNIX_EPOCH - std::time::Duration::from_millis(500));
+        let mut folder = entry("folder", u64::MAX);
+        folder.is_dir = true;
+        let text = search_csv(&[&file, &folder]);
+        assert_eq!(
+            text,
+            "Path,Name,Kind,Size (bytes),Modified\n\"/x/=SUM(1,2)\n\"\"x\"\".txt\",\"'=SUM(1,2)\n\"\"x\"\".txt\",file,18446744073709551615,1969-12-31T23:59:59.500Z\n/x/folder,folder,folder,,\n"
+        );
+        if let Some(far) =
+            std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(1 << 43))
+        {
+            file.modified = Some(far);
+            assert!(search_csv(&[&file]).ends_with(",file,18446744073709551615,\n"));
+            assert!(
+                format(&[&file], ListingFormat::Csv).ends_with(",file,18446744073709551615,\n")
+            );
+        }
     }
 
     #[test]

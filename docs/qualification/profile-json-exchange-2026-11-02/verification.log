@@ -1,0 +1,1 @@
+PASS: six gates; 3272 passed / 3 ignored; reviewed profile JSON exchange native 16/16 and full-tab restore 14/14; actual clipboard documents, non-mutating review, explicit add generation, malformed-review preservation and unchanged current roots; source/binary/tool hashes. Existing dependency audit failures remain open.

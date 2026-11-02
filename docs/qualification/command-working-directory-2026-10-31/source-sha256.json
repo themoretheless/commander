@@ -1,0 +1,10 @@
+{
+  "src/cmdtemplate.rs": "0802405a9086748880d1a226716c1373d2d094d98d4a650939206ce3dbee2333",
+  "src/command_recipes.rs": "80be9713f21bf5b89080f87fc6e82fe5504f4a5b108973c0e9e6dbc44897d0dd",
+  "src/template_exchange.rs": "14de8875b9d0bd7ff453991f96ea95771325a7349921abe44efaa6d234309965",
+  "src/template_browser.rs": "7793fd68c606c59140a3884bd572b0c091b22727f29aa3ba3947634fa110346f",
+  "src/app/mod.rs": "29a6d49a8e1d72181d9311019cd6dcfadcb99d3881f4c4f9ef2c4bc929952627",
+  "src/app/run_command_dialog.rs": "acc03836c94f410e8a2630a7f668ec0df914b69a51e749d9e74fac678052ee41",
+  "src/visual_qa.rs": "e8ab5a572cd10e1aeab2dae3df9db7a35c5ea07a22e2509ec19562cee870feea",
+  "src/command_batch.rs": "22a912e65abcf1a041c20412ace9077fc5c8618b88c5ea8f91a923847d45df91"
+}

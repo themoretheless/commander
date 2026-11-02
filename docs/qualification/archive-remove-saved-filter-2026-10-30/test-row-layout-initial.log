@@ -1,0 +1,36 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.72s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 5 tests
+test app::archive_dialog::tests::saved_archive_filters_bound_text_count_and_deduplicate_complete_settings ... ok
+test app::archive_dialog::tests::removing_one_saved_archive_filter_uses_all_settings_and_preserves_active_state ... ok
+test app::archive_dialog::tests::saved_archive_filter_restore_rebuilds_rows_and_preserves_location_and_selection_owners ... ok
+test app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry ... FAILED
+test app::archive_dialog::tests::saved_archive_filter_pointer_recall_restores_query_and_flags ... FAILED
+
+failures:
+
+---- app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry stdout ----
+
+thread 'app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry' (24705341) panicked at src/app/archive_dialog.rs:3035:9:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- app::archive_dialog::tests::saved_archive_filter_pointer_recall_restores_query_and_flags stdout ----
+
+thread 'app::archive_dialog::tests::saved_archive_filter_pointer_recall_restores_query_and_flags' (24705340) panicked at src/app/archive_dialog.rs:3121:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+
+
+failures:
+    app::archive_dialog::tests::saved_archive_filter_pointer_recall_restores_query_and_flags
+    app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 2805 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--bin commander`

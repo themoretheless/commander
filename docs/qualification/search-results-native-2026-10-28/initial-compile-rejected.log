@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0433]: cannot find module or crate `fs` in this scope
+    --> src/visual_qa.rs:1064:32
+     |
+1064 |                 let metadata = fs::metadata(&path)
+     |                                ^^ use of unresolved module or unlinked crate `fs`
+     |
+     = help: if you wanted to use a crate named `fs`, use `cargo add fs` to add it to your `Cargo.toml`
+     = note: module `crate::version_store::tests::fs` exists but is inaccessible
+help: consider importing this module
+     |
+   1 + use std::fs;
+     |
+

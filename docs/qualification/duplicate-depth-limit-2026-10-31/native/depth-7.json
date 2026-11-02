@@ -1,0 +1,13 @@
+{
+  "depth": null,
+  "draft": "0",
+  "files": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14228-duplicate_depth/left/a.dat",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14228-duplicate_depth/left/b.dat",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14228-duplicate_depth/left/one/c.dat",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14228-duplicate_depth/left/one/two/d.dat"
+  ],
+  "issues": 0,
+  "phase": 7,
+  "recursive": true
+}

@@ -1,0 +1,77 @@
+{
+  "counts": [
+    1,
+    1
+  ],
+  "hunks": [
+    {
+      "left_start": 4,
+      "right_start": 4
+    }
+  ],
+  "options": {
+    "ignore_case": true,
+    "space_changes": true
+  },
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71122-diff_options/right/diff.txt",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-71122-diff_options/left/diff.txt"
+  ],
+  "phase": 18,
+  "rows": [
+    {
+      "kind": "Equal",
+      "text": "alpha beta"
+    },
+    {
+      "kind": "Equal",
+      "text": "same"
+    },
+    {
+      "kind": "Equal",
+      "text": "kept"
+    },
+    {
+      "kind": "Delete",
+      "text": "new"
+    },
+    {
+      "kind": "Insert",
+      "text": "old"
+    },
+    {
+      "kind": "Equal",
+      "text": "end"
+    }
+  ],
+  "source": [
+    "alpha beta\nsame\nkept\nnew\nend\n",
+    "alpha  beta\nSAME\nkept\nold\nend\n"
+  ],
+  "source_numbers": [
+    [
+      1,
+      1
+    ],
+    [
+      2,
+      2
+    ],
+    [
+      3,
+      3
+    ],
+    [
+      4,
+      null
+    ],
+    [
+      null,
+      4
+    ],
+    [
+      5,
+      5
+    ]
+  ]
+}

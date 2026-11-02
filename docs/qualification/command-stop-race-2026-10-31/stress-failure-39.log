@@ -1,0 +1,19 @@
+
+running 1 test
+
+thread 'app::run_command_dialog::per_item_process_tests::stopping_live_per_item_run_kills_current_group_and_leaves_later_paths_untouched' (30848790) panicked at src/app/run_command_dialog.rs:1303:17:
+stopped shell 18279 did not report: timed out waiting on channel; processes:
+18281     1 18279 S    sleep 30
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (30848800) panicked at src/app/run_command_dialog.rs:1281:33:
+called `Result::unwrap()` on an `Err` value: SendError { .. }
+test app::run_command_dialog::per_item_process_tests::stopping_live_per_item_run_kills_current_group_and_leaves_later_paths_untouched ... FAILED
+
+failures:
+
+failures:
+    app::run_command_dialog::per_item_process_tests::stopping_live_per_item_run_kills_current_group_and_leaves_later_paths_untouched
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3046 filtered out; finished in 5.07s
+

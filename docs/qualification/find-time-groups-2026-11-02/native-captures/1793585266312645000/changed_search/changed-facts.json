@@ -1,0 +1,54 @@
+{
+  "expressions": [
+    "name:status- changed-after:2026-11-02T02:07:57.706526364+00:00 changed-before:2026-11-02T02:07:57.748790272+00:00",
+    "name:status- changed-before:2026-11-02T02:07:57.706526364+00:00",
+    "name:status- changed-after:2026-11-02T02:07:57.727612089+00:00"
+  ],
+  "facts": [
+    {
+      "before_mode": 420,
+      "before_modified_nanos": 684833000,
+      "before_modified_seconds": 1794190077,
+      "before_nanos": 684896433,
+      "before_seconds": 1793585277,
+      "before_size": 14,
+      "mode": 384,
+      "modified_nanos": 684833000,
+      "modified_seconds": 1794190077,
+      "name": "status-first.txt",
+      "nanos": 706526364,
+      "seconds": 1793585277,
+      "size": 14
+    },
+    {
+      "before_mode": 420,
+      "before_modified_nanos": 685080000,
+      "before_modified_seconds": 1794190077,
+      "before_nanos": 685115848,
+      "before_seconds": 1793585277,
+      "before_size": 14,
+      "mode": 384,
+      "modified_nanos": 685080000,
+      "modified_seconds": 1794190077,
+      "name": "status-middle.txt",
+      "nanos": 727612089,
+      "seconds": 1793585277,
+      "size": 14
+    },
+    {
+      "before_mode": 420,
+      "before_modified_nanos": 685273000,
+      "before_modified_seconds": 1794190077,
+      "before_nanos": 685301431,
+      "before_seconds": 1793585277,
+      "before_size": 14,
+      "mode": 384,
+      "modified_nanos": 685273000,
+      "modified_seconds": 1794190077,
+      "name": "status-last.txt",
+      "nanos": 748790272,
+      "seconds": 1793585277,
+      "size": 14
+    }
+  ]
+}

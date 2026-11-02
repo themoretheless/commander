@@ -1,0 +1,27 @@
+{
+  "status": "passed_scoped",
+  "phase": 83,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 10,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "relative_paths": true,
+  "base_gate": "exact fixture.left",
+  "clipboard_payload": "./checksum.txt 352441C2\n",
+  "required_prior_states": [
+    "all earlier SHA/BLAKE3/CRC copy gates",
+    "absolute SFV count7",
+    "relative SFV count8",
+    "absolute SFV count9",
+    "relative SFV count10"
+  ],
+  "frame_inspected": true,
+  "binary_hash_verified": true,
+  "os_clipboard_delivery": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture"
+}

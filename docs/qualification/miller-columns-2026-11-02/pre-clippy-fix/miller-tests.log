@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.91s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 5 tests
+test panel::miller::tests::paths_are_lexical_rooted_bounded_and_do_not_read ... ok
+test panel::miller::tests::no_backend_means_no_sync_listing_and_mode_round_trips ... ok
+test panel::miller::tests::independent_async_columns_reuse_common_ancestors_and_cancel_on_suspend ... ok
+test panel::miller::tests::two_columns_for_same_path_do_not_supersede_one_another ... ok
+test app::miller_browser::tests::miller_layout_stays_finite_through_navigation_and_mode_round_trip ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3199 filtered out; finished in 0.19s
+

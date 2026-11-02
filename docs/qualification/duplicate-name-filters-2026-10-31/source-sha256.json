@@ -1,0 +1,10 @@
+{
+  "src/main.rs": "51d5a76482c46f0109d9e622e2770b5c4cc5a18a1c0b7182f78a343ec2a837f7",
+  "src/duplicate_name_filter.rs": "88ac85c757cc54b82198d59b881c12566d12ea801c029a7666000956adf06364",
+  "src/dedup_scan.rs": "078b772976da951938919b602fa6580a399020e828ef77606518079b5fdd6a35",
+  "src/app/mod.rs": "053caf1c5a75bd5293086983f97b13722f37e2e5ea9f52977bf01302af397ad5",
+  "src/app/duplicates_dialog.rs": "2c33928d9152a3fdc2059b2ebe48916ca4651dd3d30287d7c92921ca3801c752",
+  "src/workspace.rs": "8f2c97003a4e9f4ed42261f391dc27a377b84b0953d224e3571d9f1ba33c0fdc",
+  "src/visual_qa.rs": "aec60f05cacc8b40c1cbc9ca02f8e8c09b19002a64cb019e00824b5642f07d1a",
+  ".github/workflows/ci.yml": "df58e5bedb3db93634021745aff0e05ef81b5baa449fa5cc3c40df20e121dd99"
+}

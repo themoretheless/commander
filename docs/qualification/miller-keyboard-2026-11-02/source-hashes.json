@@ -1,0 +1,6 @@
+{
+  "src/app/keys.rs": "8e0360921506e8046d5147cd8f256c12c60ebc479b38d62668e9854c47810ea4",
+  "src/panel/miller.rs": "153b965d46dfe9d577d981e2140338334cbd58e00492be1216bd58ba022afdc3",
+  "src/workspace.rs": "04c9e3d5ca78dac465c23735dde307a9bc28b230ade34ca34433542b9835fe5a",
+  "src/workspace/tests.rs": "79bdead3b960a1e962226c0e4e71645b084a38889097404bbf8f7b8089ddfc04"
+}

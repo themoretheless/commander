@@ -1,0 +1,6 @@
+{
+  "scenario": "broken_link_search",
+  "out": "/tmp/commander-native-broken_link_search-1793436253297360000",
+  "binary_sha256": "72d91c7202c6249d277cd01f9b86ba7faf853497bcb4527e8fea268890557226",
+  "core_sha256": "72d91c7202c6249d277cd01f9b86ba7faf853497bcb4527e8fea268890557226"
+}

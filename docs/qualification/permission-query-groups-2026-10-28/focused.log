@@ -1,0 +1,14 @@
+    Blocking waiting for file lock on package cache
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.32s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 5 tests
+test query::tests::permission_query_validates_all_bits_and_saved_semantics ... ok
+test search::tests::advanced_permission_query_unknown_modes_never_satisfy_negated_groups ... ok
+test search::tests::permission_query_matches_exact_bit_requirements_and_unknown_metadata ... ok
+test query::tests::advanced_permission_query_masks_groups_precedence_and_limits ... ok
+test search::tests::permission_query_agrees_across_live_indexed_zip_and_tar ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2549 filtered out; finished in 0.05s
+

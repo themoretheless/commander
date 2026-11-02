@@ -1,0 +1,18 @@
+{
+  "status": "passed_scoped",
+  "phase": 9,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "f8_windows1251_checkpoint": true,
+  "shift_f8_menu": true,
+  "final_encoding": "ASCII",
+  "file_bytes_preserved": true,
+  "physical_keys": "pending"
+}

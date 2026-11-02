@@ -1,0 +1,19 @@
+# Duplicate groups with matching extensions
+
+Independently adapts [rmlint --match-extension and ASCII case-insensitive matching](https://github.com/sahib/rmlint/blob/master/docs/rmlint.1.rst), cohort #86. No upstream implementation copied.
+
+Duplicate Finder's Name filters now offers **Match extensions**, initially case-sensitive, with optional **Ignore ASCII extension case**. They are drafts until **Apply name filters**; applying restarts the current scope and rebuilds manual keep/skip choices. Reset restores unrestricted grouping. Name-glob case remains a separate preference. The applied extension mode is always named in the applied-filter summary outside the collapsible controls and included in the existing JSON report context; a differing draft does not relabel results or plans.
+
+Already content-verified groups are partitioned by the final native path extension, with stable first-appearance group/member order. Every partition must still meet the minimum-copy threshold, and cross-root restrictions are reapplied to the partitions. This never creates duplicates solely from an extension. It runs after existing hashing/confirmation and does not promise fewer reads. Cancellation drops the unpublished result. Missing and empty final extensions form one bucket. Ignore ASCII case folds ASCII bytes only; Unicode case, distinct native byte suffixes and other parts of names remain literal.
+
+Existing physical-identity collapse still chooses one representative path per object before grouping: hard-link aliases with different extensions are not expanded into several groups. Include/exclude name filters still run before that collapse, so they can choose which representative is eligible. This preserves existing duplicate/removal ownership and savings semantics; it does not implement rmlint's full hard-link policy matrix or reclaimable-storage accounting. Mutation guards and normal Trash review remain mandatory.
+
+## Validation
+
+New pure regressions cover stable order, exact/ASCII case, Unicode distinction, non-UTF-8 suffixes without lossy aliases, extensionless/trailing-dot names, minimum copies and cancellation after an earlier partition completed. A real worker regression covers listing/tree scopes, differing same-size contents, minimum-copy reapplication, cross-root membership after partitioning and existing hard-link representative policy. Existing rescan and JSON regressions now bind differing applied/draft extension modes and rebuild manual decisions.
+
+Native duplicate_extensions stages a sensitive draft without changing results, applies sensitive mode, stages then applies ASCII-insensitive mode, and resets to unrestricted grouping. It records group membership, keep decisions and applied JSON reports, and preserves eight fixture source files for independent Python/hashlib verification. Existing duplicate_names is the neighboring native regression. Source, binary and checksum-oracle hashes bind acceptance. Native Windows rendering and arbitrary byte filenames on APFS are not qualified by this macOS fixture; the non-UTF-8 partition test performs no filesystem I/O.
+
+Final qualification: all six commands passed; **3156 tests passed, 3 ignored**. Final-source native `duplicate_extensions` and neighboring `duplicate_names` each passed **14/14**, with zero external effects. `verify.py` passed independent SHA-256 fixture/group/report checks and final source/binary/tool hash binding. The ordinary non-QA check retains the existing unused `response` warning in `src/diff_find.rs`; visual-QA Clippy with warnings denied passed.
+
+Earlier native attempts and manifests remain under `native-captures`: one missed a scripted click, and one paced run timed out under concurrent build/test load. Both workflows now pace synthetic events by 60 ms; final acceptance uses the later captured runs without changing the 10-second timeout or state/content assertions.

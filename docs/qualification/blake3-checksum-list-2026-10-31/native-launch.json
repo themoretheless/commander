@@ -1,0 +1,7 @@
+{
+  "scenario": "checksums",
+  "output": "/tmp/commander-native-blake3-list-1793398094132178000",
+  "binary_sha256": "ce5a50e7479b9326b4b3f5ad8a21a40b3468941f67d72eed819afa4bd440bd24",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793398094272213000
+}

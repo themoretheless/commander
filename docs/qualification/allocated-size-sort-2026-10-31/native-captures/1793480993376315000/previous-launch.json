@@ -1,0 +1,6 @@
+{
+  "scenario": "allocated_info",
+  "out": "/tmp/commander-native-allocated_info-1793443376450632000",
+  "binary_sha256": "03588741828633c64da71132e99597c2df63ce4b070db20a444ce86a851b7bae",
+  "core_sha256": "03588741828633c64da71132e99597c2df63ce4b070db20a444ce86a851b7bae"
+}

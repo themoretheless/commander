@@ -1,0 +1,7 @@
+{
+  "src/bookmarks.rs": "67f0ecd04485d1b02569eacccbc7c4fc2f53ecfdbc4f77c0f8f79deba8f80c4c",
+  "src/command.rs": "dacbaad04487f8b7a006265cbccab660ce98716cf81aeb65951f0fcaf6232ac1",
+  "src/workspace.rs": "9c3cbc071b665ab1e5cd5698272d3fc61b1f9f5d99d6c7ad9cc46903acc5f578",
+  "src/workspace/tests.rs": "da1b308c1d93d1588a69ac2c858f995e24c9dc61bee43374372015474036f20b",
+  "src/app/tree.rs": "d90e50a2c2983b6e478a7e46223d769332210ce6fd961d3838ba1f527cf668d0"
+}

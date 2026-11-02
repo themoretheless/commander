@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.99s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 4 tests
+test diff_find::tests::literal_unicode_case_words_regex_errors_and_cached_navigation ... ok
+test diff_find::tests::search_shortcuts_consume_only_exact_keys_and_modifiers ... ok
+test diff_find::tests::limits_and_hidden_equal_rows_keep_original_ids ... ok
+
+thread 'diff_find::tests::focused_query_enter_advances_and_pending_keyboard_reveal_is_one_shot' (30332271) panicked at src/diff_find.rs:260:17:
+assertion `left == right` failed
+  left: None
+ right: Some(2)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test diff_find::tests::focused_query_enter_advances_and_pending_keyboard_reveal_is_one_shot ... FAILED
+
+failures:
+
+failures:
+    diff_find::tests::focused_query_enter_advances_and_pending_keyboard_reveal_is_one_shot
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 3022 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--bin commander`

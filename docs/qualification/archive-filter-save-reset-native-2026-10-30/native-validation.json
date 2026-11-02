@@ -1,0 +1,34 @@
+{
+  "status": "passed_scoped",
+  "scenario": "archive_browser",
+  "capture_phase": 35,
+  "metadata_values": {
+    "size": "+1b",
+    "depth": "1..3",
+    "modified_utc": "1970-01-01",
+    "extensions": "rs"
+  },
+  "exclusion_glob": "*2.rs",
+  "hide_dotfiles": true,
+  "saved_count": 1,
+  "reset_clear_gate": true,
+  "complete_saved_snapshot_equality_gate": true,
+  "checks_passed": 14,
+  "checks_total": 14,
+  "frame_inspected": true,
+  "input_method": "egui pointer/text events in CUA-launched native runtime",
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "remaining_gates": [
+    "physical keyboard and VoiceOver",
+    "invalid entry recovery and alternate scopes/modes",
+    "native menu search/removal and multi-entry presets",
+    "other archive formats"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793397658.1107168,
+  "binary_sha256": "b2c7635ab44d26ffb2514862bb910f809c5e51f3bc56d490683043a2bc0d3c8b",
+  "scenario": "archive_fuzzy",
+  "output_root": "/tmp/commander-native-archive-fuzzy-1793397658073192000"
+}

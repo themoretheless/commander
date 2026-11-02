@@ -1,0 +1,20 @@
+{
+  "draft": "3",
+  "groups": [
+    {
+      "files": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-30241-duplicate_copies/left/a1.bin",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-30241-duplicate_copies/left/a2.bin",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-30241-duplicate_copies/left/a3.bin"
+      ],
+      "size": 10
+    }
+  ],
+  "issues": 0,
+  "keep": [
+    0
+  ],
+  "minimum": 3,
+  "phase": 32,
+  "recursive": false
+}

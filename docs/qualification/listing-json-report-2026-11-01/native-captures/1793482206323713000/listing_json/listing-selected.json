@@ -1,0 +1,52 @@
+{
+  "format": "commander.listing-report",
+  "version": 1,
+  "snapshot": "retained_listing_metadata",
+  "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-59093-listing_json/left",
+  "scope": "visible_selected_rows",
+  "view": {
+    "sort_col": "Allocated",
+    "sort_order": "Asc",
+    "show_hidden": false,
+    "folders_first": true,
+    "folders_by_name": false,
+    "natural_name_sort": true,
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "mode": "List"
+  },
+  "query": ".bin",
+  "facets": {
+    "kind": null,
+    "min_size": null,
+    "max_age_days": null,
+    "min_age_days": null
+  },
+  "listing_rows": 9,
+  "visible_rows": 4,
+  "selected_rows": 3,
+  "hidden_selected_rows": 1,
+  "exported_rows": 2,
+  "rows": [
+    {
+      "row": 1,
+      "name": "sparse.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-59093-listing_json/left/sparse.bin",
+      "kind": "File",
+      "file_size_bytes": 8388608,
+      "allocated_bytes": 0,
+      "displayed_size": "8.0 MB",
+      "modified_utc": "2026-10-31T21:30:12.127199607Z"
+    },
+    {
+      "row": 2,
+      "name": "dense.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-59093-listing_json/left/dense.bin",
+      "kind": "File",
+      "file_size_bytes": 8192,
+      "allocated_bytes": 8192,
+      "displayed_size": "8.0 KB",
+      "modified_utc": "2026-10-31T21:30:12.127426651Z"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "checks": 15,
+  "before_reload": {
+    "status": "passed",
+    "checks": 15,
+    "difference_blocks": 3,
+    "current_block": 3,
+    "compact_rows": 100,
+    "compact_hidden": 86,
+    "expanded_rows": 100,
+    "expanded_hidden": 86,
+    "full_view_restored": true,
+    "visible_selected_block": true,
+    "source_reconstruction": true,
+    "native_effect_calls": 0,
+    "binary_matches_launch": true
+  },
+  "keyboard_reload_identical": true,
+  "button_reload_from_identical": true,
+  "retained_operand_paths": true,
+  "reloaded_blocks": 4,
+  "reloaded_rows": 184,
+  "reloaded_current_block": 1,
+  "reloaded_query_row": 52,
+  "reloaded_compact_rows": 37,
+  "reloaded_hidden": 152,
+  "new_source_coordinates_verified": true,
+  "source_reconstruction": true,
+  "native_effect_calls": 0
+}

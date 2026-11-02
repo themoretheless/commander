@@ -152,7 +152,7 @@ impl ListingState {
         facets: FacetSet,
         now: SystemTime,
     ) -> Arc<[usize]> {
-        let query = query.trim();
+        let query = crate::name_filter::normalized_query(query);
         {
             let cache = self.filter_cache.borrow();
             let time_valid = cache.valid_until.is_none_or(|deadline| now < deadline);
@@ -177,7 +177,7 @@ impl ListingState {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| crate::fuzzy::is_match(query, &entry.name))
+            .filter(|(_, entry)| crate::name_filter::is_match(query, &entry.name))
             .filter(|(_, entry)| no_facets || facet_matches(entry, &facets, now))
             .map(|(index, _)| index)
             .collect::<Vec<_>>()
@@ -231,7 +231,18 @@ mod tests {
 
     fn entry(name: &str, modified: SystemTime) -> FileEntry {
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
@@ -244,6 +255,153 @@ mod tests {
             modified_str: String::new(),
             size_str: String::new(),
         }
+    }
+
+    #[test]
+    fn conjunction_cache_tracks_precedence_and_incomplete_terms() {
+        let mut listing = ListingState::default();
+        listing.replace_for_test(
+            ["main.rs", "test.rs", "test.toml", "a | b.rs"]
+                .into_iter()
+                .map(|name| entry(name, UNIX_EPOCH))
+                .collect(),
+        );
+        for (query, expected) in [
+            (".rs$ && !^test", vec![0, 3]),
+            (".rs$ && !^test | .toml$", vec![0, 2, 3]),
+            (r#".rs$ && "a | b""#, vec![3]),
+            (".rs$ | .toml$ &&", vec![]),
+        ] {
+            let snapshot = listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH);
+            assert_eq!(&*snapshot, expected.as_slice());
+            assert!(Arc::ptr_eq(
+                &snapshot,
+                &listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH)
+            ));
+        }
+    }
+
+    #[test]
+    fn quoted_alternative_cache_does_not_split_literal_pipes() {
+        let mut listing = ListingState::default();
+        listing.replace_for_test(
+            ["a | b", "a", "main.rs", "^a$"]
+                .into_iter()
+                .map(|name| entry(name, UNIX_EPOCH))
+                .collect(),
+        );
+        for (query, expected) in [
+            (r#""a | b" | .rs$"#, vec![0, 2]),
+            (r#".rs$ | "^a$""#, vec![2, 3]),
+            (r#""a | b"#, vec![]),
+        ] {
+            let snapshot = listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH);
+            assert_eq!(&*snapshot, expected.as_slice());
+            assert!(Arc::ptr_eq(
+                &snapshot,
+                &listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH)
+            ));
+        }
+    }
+
+    #[test]
+    fn alternative_filters_cache_the_full_expression_and_reject_partial_branches() {
+        let mut listing = ListingState::default();
+        listing.replace_for_test(
+            ["main.rs", "Cargo.toml", "notes.txt", "a-b"]
+                .into_iter()
+                .map(|name| entry(name, UNIX_EPOCH))
+                .collect(),
+        );
+        for (query, expected) in [
+            (".rs$ | .toml$", vec![0, 1]),
+            ("ab | .txt$", vec![2, 3]),
+            (".rs$ |", vec![]),
+            ("'main.rs | Cargo.toml", vec![]),
+        ] {
+            let snapshot = listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH);
+            assert_eq!(&*snapshot, expected.as_slice());
+            assert!(Arc::ptr_eq(
+                &snapshot,
+                &listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH)
+            ));
+        }
+    }
+
+    #[test]
+    fn negated_name_filter_cache_respects_quote_and_anchor_changes() {
+        let mut listing = ListingState::default();
+        listing.replace_for_test(
+            ["temp.txt", "keep.tmp", "keep.txt", "!temp"]
+                .into_iter()
+                .map(|name| entry(name, UNIX_EPOCH))
+                .collect(),
+        );
+        for (query, expected) in [
+            ("!temp", vec![1, 2]),
+            ("!^temp", vec![1, 2, 3]),
+            ("!.tmp$", vec![0, 2, 3]),
+            ("'!temp", vec![3]),
+            ("!", vec![]),
+        ] {
+            let snapshot = listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH);
+            assert_eq!(&*snapshot, expected.as_slice());
+            assert!(Arc::ptr_eq(
+                &snapshot,
+                &listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH)
+            ));
+        }
+    }
+
+    #[test]
+    fn anchored_cache_distinguishes_prefix_suffix_whole_and_quoted_marker() {
+        let mut listing = ListingState::default();
+        listing.replace_for_test(
+            ["ab", "a-b", "xab", "abx", "ab\n", "ab$"]
+                .into_iter()
+                .map(|name| entry(name, UNIX_EPOCH))
+                .collect(),
+        );
+        for (query, expected) in [
+            ("^ab", vec![0, 3, 4, 5]),
+            ("ab$", vec![0, 2]),
+            ("^ab$", vec![0]),
+            ("'ab$", vec![5]),
+            ("^$", vec![]),
+        ] {
+            let snapshot = listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH);
+            assert_eq!(&*snapshot, expected.as_slice());
+            assert!(Arc::ptr_eq(
+                &snapshot,
+                &listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH)
+            ));
+        }
+    }
+
+    #[test]
+    fn literal_filter_cache_tracks_prefix_and_significant_trailing_spaces() {
+        let mut listing = ListingState::default();
+        listing.replace_for_test(vec![
+            entry("a-b", UNIX_EPOCH),
+            entry("ab", UNIX_EPOCH),
+            entry("ab ", UNIX_EPOCH),
+        ]);
+        assert_eq!(
+            &*listing.filtered_snapshot_at("ab", FacetSet::default(), UNIX_EPOCH),
+            &[0, 1, 2]
+        );
+        assert_eq!(
+            &*listing.filtered_snapshot_at("'ab", FacetSet::default(), UNIX_EPOCH),
+            &[1, 2]
+        );
+        let spaced = listing.filtered_snapshot_at("'ab ", FacetSet::default(), UNIX_EPOCH);
+        assert_eq!(&*spaced, &[2]);
+        let warm = listing.filtered_snapshot_at("'ab ", FacetSet::default(), UNIX_EPOCH);
+        assert!(Arc::ptr_eq(&spaced, &warm));
+        assert_eq!(
+            &*listing.filtered_snapshot_at("'ab", FacetSet::default(), UNIX_EPOCH),
+            &[1, 2]
+        );
     }
 
     #[test]

@@ -1,0 +1,87 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0283]: type annotations needed
+    --> src/query.rs:800:42
+     |
+ 799 |                         return Err(QueryError::new(
+     |                                    --------------- required by a bound introduced by this call
+ 800 |                             "anycontent".into(),
+     |                                          ^^^^
+     |
+     = note: multiple `impl`s satisfying `_: Into<std::string::String>` found in the following crates: `core`, `unicase`:
+             - impl<'a> Into<std::string::String> for unicase::UniCase<std::string::String>;
+             - impl<T, U> Into<U> for T
+               where U: std::convert::From<T>;
+note: required by a bound in `query::QueryError::new`
+    --> src/query.rs:1182:24
+     |
+1182 |     fn new(token: impl Into<String>, message: impl Into<String>) -> Self {
+     |                        ^^^^^^^^^^^^ required by this bound in `QueryError::new`
+help: try using a fully qualified path to specify the expected types
+     |
+ 800 -                             "anycontent".into(),
+ 800 +                             <&str as Into<T>>::into("anycontent"),
+     |
+help: consider removing this method call, as the receiver has type `&'static str` and `&'static str: Into<std::string::String>` trivially holds
+     |
+ 800 -                             "anycontent".into(),
+ 800 +                             "anycontent",
+     |
+
+error[E0283]: type annotations needed
+    --> src/query.rs:813:46
+     |
+ 812 | ...                   return Err(QueryError::new(
+     |                                  --------------- required by a bound introduced by this call
+ 813 | ...                       "anycontent".into(),
+     |                                        ^^^^
+     |
+     = note: multiple `impl`s satisfying `_: Into<std::string::String>` found in the following crates: `core`, `unicase`:
+             - impl<'a> Into<std::string::String> for unicase::UniCase<std::string::String>;
+             - impl<T, U> Into<U> for T
+               where U: std::convert::From<T>;
+note: required by a bound in `query::QueryError::new`
+    --> src/query.rs:1182:24
+     |
+1182 |     fn new(token: impl Into<String>, message: impl Into<String>) -> Self {
+     |                        ^^^^^^^^^^^^ required by this bound in `QueryError::new`
+help: try using a fully qualified path to specify the expected types
+     |
+ 813 -                                 "anycontent".into(),
+ 813 +                                 <&str as Into<T>>::into("anycontent"),
+     |
+help: consider removing this method call, as the receiver has type `&'static str` and `&'static str: Into<std::string::String>` trivially holds
+     |
+ 813 -                                 "anycontent".into(),
+ 813 +                                 "anycontent",
+     |
+
+error[E0283]: type annotations needed
+    --> src/query.rs:1039:38
+     |
+1038 |                     return Err(QueryError::new(
+     |                                --------------- required by a bound introduced by this call
+1039 |                         "anycontent".into(),
+     |                                      ^^^^
+     |
+     = note: multiple `impl`s satisfying `_: Into<std::string::String>` found in the following crates: `core`, `unicase`:
+             - impl<'a> Into<std::string::String> for unicase::UniCase<std::string::String>;
+             - impl<T, U> Into<U> for T
+               where U: std::convert::From<T>;
+note: required by a bound in `query::QueryError::new`
+    --> src/query.rs:1182:24
+     |
+1182 |     fn new(token: impl Into<String>, message: impl Into<String>) -> Self {
+     |                        ^^^^^^^^^^^^ required by this bound in `QueryError::new`
+help: try using a fully qualified path to specify the expected types
+     |
+1039 -                         "anycontent".into(),
+1039 +                         <&str as Into<T>>::into("anycontent"),
+     |
+help: consider removing this method call, as the receiver has type `&'static str` and `&'static str: Into<std::string::String>` trivially holds
+     |
+1039 -                         "anycontent".into(),
+1039 +                         "anycontent",
+     |
+
+For more information about this error, try `rustc --explain E0283`.
+error: could not compile `commander` (bin "commander" test) due to 3 previous errors

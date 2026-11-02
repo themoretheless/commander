@@ -1,0 +1,8 @@
+{
+  "src/template_browser.rs": "d107bec4fcf0533f3340f5f57741fe8fe7958d042114b9dd6cd3a59f55b95577",
+  "src/app/run_command_dialog.rs": "2b389ea2a47068992bf049861a6f22568981dfd73632b6ded03dd419b7e9dee2",
+  "src/app/mod.rs": "bb8a6ddd4404b0bff6f70801f91a740f8b33e6b69851a61a2fc86ddd934e8842",
+  "src/main.rs": "b1b4717ef524cfb282bc113d62b18f6ab11f5c4e54d92be87264235dfd83c645",
+  "src/visual_qa.rs": "08f3cc0040ce1cc74b7a11add2bdb75f1a2f2025de1d6484ca4d2ced278c2288",
+  ".github/workflows/ci.yml": "6c8845662bc68450e94764bcadaff2259c3b59e1970001543f579be83627f6d8"
+}

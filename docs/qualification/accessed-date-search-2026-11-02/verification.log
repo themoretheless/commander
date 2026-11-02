@@ -1,0 +1,1 @@
+PASS: six checks; 3180 tests; native accessed/allocation Find 16/16; independent raw atime seconds/nanos, strict fractional/pre-epoch membership, mtime distinction, archive unknown skips, explanations and source/binary/tool hashes.

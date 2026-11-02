@@ -1,0 +1,6 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.27s
+     Running `target/debug/commander --visual-qa search_results --output target/visual-qa`
+2026-10-28T02:45:45 INFO  commander::logging: logging initialized
+2026-10-28T02:45:45 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: search_results
+2026-10-28T02:45:45 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

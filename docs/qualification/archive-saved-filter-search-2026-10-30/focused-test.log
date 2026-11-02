@@ -1,0 +1,52 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.45s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 44 tests
+test app::archive_dialog::tests::archive_saved_empty_selection_differs_from_no_snapshot_and_save_replaces ... ok
+test app::confirm_dialog::tests::saved_conflict_rule_takes_the_highlight_from_keep_both ... ok
+test app::archive_dialog::tests::archive_saved_selection_survives_filter_navigation_and_keeps_duplicate_identity ... ok
+test app::omnibar_dialog::tests::saved_search_count_agrees_with_its_noun ... ok
+test app::archive_dialog::tests::executable_archive_filter_preserves_navigation_hidden_selection_and_saved_identity ... ok
+test app::archive_dialog::tests::archive_extensions_compose_preserve_hidden_selection_and_restore_saved_settings ... ok
+test app::saved_search_dialog::tests::cancel_wins_over_saved_search_transition_in_the_same_frame ... ok
+test app::archive_dialog::tests::archive_exact_filter_rebuilds_and_restores_saved_mode_with_hidden_selection ... ok
+test app::archive_dialog::tests::saved_archive_filter_restore_rebuilds_rows_and_preserves_location_and_selection_owners ... ok
+test app::archive_dialog::tests::archive_size_filter_retains_navigation_hidden_selection_and_saved_settings ... ok
+test app::archive_dialog::tests::archive_depth_filter_keeps_archive_root_basis_navigation_selection_and_saved_identity ... ok
+test app::archive_dialog::tests::removing_one_saved_archive_filter_uses_all_settings_and_preserves_active_state ... ok
+test app::archive_dialog::tests::archive_modified_filter_preserves_navigation_selection_and_saved_ranges ... ok
+test app::saved_search_dialog::tests::failed_save_after_delete_restores_the_search ... ok
+test app::saved_search_dialog::tests::missing_root_is_reported_by_path ... ok
+test app::saved_search_dialog::tests::failed_save_after_rename_restores_the_name ... ok
+test app::archive_dialog::tests::saved_archive_filters_bound_text_count_and_deduplicate_complete_settings ... ok
+test app::archive_dialog::tests::archive_glob_filter_composes_with_scope_navigation_exclusion_and_saved_modes ... ok
+test query::tests::depth_query_parses_ranges_and_preserves_saved_conditions ... ok
+test query::tests::permission_query_validates_all_bits_and_saved_semantics ... ok
+test panel::facet::tests::kind_chips_agree_with_saved_query_kinds ... ok
+test query::tests::hidden_search_query_preserves_modes_aliases_conflicts_and_saved_conditions ... ok
+test app::archive_dialog::tests::archive_filename_scope_rebuilds_duplicates_navigation_and_saved_filters ... ok
+test query::tests::regular_file_query_preserves_saved_semantics_and_unknown_kind ... ok
+test query::tests::precise_age_query_preserves_strict_subsecond_boundaries_and_saved_semantics ... ok
+test session::tests::nearest_surviving_dir_keeps_a_saved_root_but_skips_root_ancestors ... ok
+test workspace::tabs::tests::malformed_saved_tabs_keep_valid_siblings_and_active_binding ... ok
+test smart_folder::tests::old_saved_search_defaults_to_exact_mode ... ok
+test panel::tests::saved_selection_restores_filtered_picks_and_prunes_missing_entries ... ok
+test panel::tests::visible_clear_keeps_nonmatches_elsewhere_and_saved_memory ... ok
+test session::tests::a_session_saved_before_system_theme_keeps_its_fixed_theme ... ok
+test workspace::tests::unsaved_trust_change_is_reported_as_an_error ... ok
+test workspace::tabs::tests::stem_sort_command_preserves_cursor_selection_and_saved_view ... ok
+test panel::tests::saved_selection_is_folder_bound_preserves_elsewhere_and_rejects_incomplete_reads ... ok
+test workspace::tests::folder_selection_clear_keeps_elsewhere_saved_memory_and_other_pane ... ok
+test app::archive_dialog::tests::saved_archive_filter_pointer_recall_restores_query_and_flags ... ok
+test app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry ... ok
+test query::tests::case_sensitive_query_controls_text_masks_extensions_and_saved_filters ... ok
+test query::tests::smart_case_query_preserves_case_modes_structural_fields_and_saved_queries ... ok
+test app::archive_dialog::tests::saved_filter_search_pointer_input_targets_original_identity_for_recall_and_removal ... ok
+test query::tests::content_word_query_preserves_literals_modes_and_saved_predicates ... ok
+test query::tests::directory_exclusion_query_preserves_files_case_and_saved_masks ... ok
+test query::tests::exclude_file_query_preserves_masks_case_and_saved_semantics ... ok
+test query::tests::content_line_query_preserves_empty_literals_spaces_and_saved_conditions ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 2800 filtered out; finished in 1.00s
+

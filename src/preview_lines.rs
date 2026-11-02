@@ -11,6 +11,10 @@ pub struct PreviewLines {
     input: String,
     error: bool,
     reveal: Option<usize>,
+    #[cfg(any(test, feature = "visual-qa"))]
+    revealed: Option<usize>,
+    #[cfg(any(test, feature = "visual-qa"))]
+    revealed_visible: bool,
 }
 
 impl PreviewLines {
@@ -18,29 +22,56 @@ impl PreviewLines {
         let mut state = ui
             .ctx()
             .data(|data| data.get_temp::<Self>(id).unwrap_or_default());
-        if state
+        state.bind_content(content);
+        state
+    }
+
+    /// Bind caller-owned content without retaining this state in egui memory.
+    pub fn bind_content(&mut self, content: &Arc<str>) {
+        if self
             .content
             .as_ref()
             .is_none_or(|old| !std::sync::Arc::ptr_eq(old, content))
         {
-            state.count = content.bytes().filter(|&byte| byte == b'\n').count() + 1;
-            state.content = Some(content.clone());
-            state.input.clear();
-            state.error = false;
-            state.reveal = None;
-            state.galley = None;
-            state.rows = Default::default();
+            self.count = content.bytes().filter(|&byte| byte == b'\n').count() + 1;
+            self.content = Some(content.clone());
+            self.input.clear();
+            self.error = false;
+            self.reveal = None;
+            self.galley = None;
+            self.rows = Default::default();
+            #[cfg(any(test, feature = "visual-qa"))]
+            {
+                self.revealed = None;
+                self.revealed_visible = false;
+            }
         }
-        state
+    }
+
+    #[cfg(any(test, feature = "visual-qa"))]
+    pub fn navigation_state(&self) -> (usize, Option<usize>, bool, bool) {
+        (
+            self.count,
+            self.revealed.map(|line| line + 1),
+            self.error,
+            self.revealed_visible,
+        )
     }
 
     pub fn gutter_width(&self, ui: &Ui) -> f32 {
+        self.gutter_width_for_font(ui, 12.0)
+    }
+
+    pub fn gutter_width_for_font(&self, ui: &Ui, font_size: f32) -> f32 {
         let digits = self.count.max(1).ilog10() as usize + 1;
-        ui.fonts_mut(|fonts| fonts.glyph_width(&egui::FontId::monospace(12.0), '0')) * digits as f32
+        ui.fonts_mut(|fonts| fonts.glyph_width(&egui::FontId::monospace(font_size), '0'))
+            * digits as f32
             + 16.0
     }
 
     pub fn toolbar(&mut self, ui: &mut Ui, id: Id) {
+        let enter = ui.memory(|memory| memory.has_focus(id.with("input")))
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
                 "{} line{}",
@@ -61,9 +92,13 @@ impl PreviewLines {
                     "Go to line number",
                 )
             });
-            let enter =
-                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if ui.button("Go to line").clicked() || enter {
+            let go = ui.button("Go to line");
+            #[cfg(any(test, feature = "visual-qa"))]
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(id.with("input-control"), response.rect);
+                data.insert_temp(id.with("go-control"), go.rect);
+            });
+            if go.clicked() || enter {
                 match self.input.trim().parse::<usize>() {
                     Ok(line) if (1..=self.count).contains(&line) => {
                         self.reveal = Some(line - 1);
@@ -102,9 +137,24 @@ impl PreviewLines {
     }
 
     pub fn paint_and_reveal(&mut self, ui: &mut Ui, origin: Pos2, width: f32, color: Color32) {
+        self.paint_and_reveal_for_font(ui, origin, width, color, 12.0);
+    }
+
+    pub fn paint_and_reveal_for_font(
+        &mut self,
+        ui: &mut Ui,
+        origin: Pos2,
+        width: f32,
+        color: Color32,
+        font_size: f32,
+    ) {
         if let Some(line) = self.reveal.take()
             && let Some(row) = self.rows.get(line)
         {
+            #[cfg(any(test, feature = "visual-qa"))]
+            {
+                self.revealed = Some(line);
+            }
             ui.scroll_to_rect_animation(
                 Rect::from_min_size(
                     origin + Vec2::new(0.0, row.top()),
@@ -113,6 +163,13 @@ impl PreviewLines {
                 Some(egui::Align::Center),
                 egui::style::ScrollAnimation::none(),
             );
+        }
+        #[cfg(any(test, feature = "visual-qa"))]
+        {
+            self.revealed_visible = self
+                .revealed
+                .and_then(|line| self.rows.get(line))
+                .is_some_and(|row| ui.clip_rect().intersects(row.translate(origin.to_vec2())));
         }
         if width <= 0.0 {
             return;
@@ -129,7 +186,7 @@ impl PreviewLines {
                 origin + Vec2::new(-8.0, row.top()),
                 egui::Align2::RIGHT_TOP,
                 (start + index + 1).to_string(),
-                egui::FontId::monospace(12.0),
+                egui::FontId::monospace(font_size),
                 color,
             );
         }

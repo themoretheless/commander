@@ -1,0 +1,1 @@
+PASS: six checks; 3167 tests; 13 relative-path/draft/scope states match independent SHA-256 and relative keys; nonempty JSON keeper actions and counts/bytes; single-root empty result and resets; two native workflows 14/14; final source/binary/tool hashes

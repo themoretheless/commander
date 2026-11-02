@@ -1,0 +1,1 @@
+PASS: six checks; 3150 tests; native hard-link selection and JSON agree with independent raw identity/link facts, preserving hidden picks and cursor; neighboring six-order inode sort agrees; two native scenarios 14/14 each

@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: unused variable: `choice`
+   --> src/app/find_dialog.rs:992:37
+    |
+992 | ...                   let choice=ui.selectable_value(&mut sort.field,field,field.label());
+    |                           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_choice`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `reverse`
+    --> src/app/find_dialog.rs:1000:29
+     |
+1000 |                         let reverse=ui.checkbox(&mut sort.descending,"Descending");
+     |                             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_reverse`
+
+warning: unused variable: `response`
+   --> src/diff_find.rs:136:17
+    |
+136 |             let response = ui.add(
+    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_response`
+
+warning: `commander` (bin "commander") generated 3 warnings (run `cargo fix --bin "commander" -p commander` to apply 3 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.40s

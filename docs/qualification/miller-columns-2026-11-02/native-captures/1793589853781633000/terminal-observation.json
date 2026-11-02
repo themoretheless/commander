@@ -1,0 +1,5 @@
+{
+  "process_missing": true,
+  "native_log_reports_panic": "Negative desired size: [NaN 511.5]",
+  "manifest_was": "attempted"
+}

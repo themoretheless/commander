@@ -1,0 +1,7 @@
+{
+  "src/main.rs": "b16c8a01708f1a12aaa62aebeea80e1df04ce7f7c8e207eb2ffd3da407f90440",
+  "src/checksum_list.rs": "ce0e12172082711e5de839c353b2443b798f0ad6a93341999bf972e6b5e3356b",
+  "src/checksum_list_view.rs": "69e99f7ae59adf8ec958f550c720e84c779c6f460db2ac4e2653b668123d7da6",
+  "src/app/checksum_list_dialog.rs": "9ff0e96dddd4c5a1dbdd362a93f830ad2158af6b0e4f7846cf3dcc753b46552d",
+  "src/visual_qa.rs": "5d0c4ec4a1cf0c77de3132f7636b29e0de8f3d26f743e5217d62e4f5417d4a1c"
+}

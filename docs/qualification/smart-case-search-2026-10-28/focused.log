@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.24s
+     Running unittests src/main.rs (target/debug/build/commander/817fc3ac52ddf8fd/out/commander-817fc3ac52ddf8fd)
+
+running 4 tests
+test search::tests::smart_case_query_regex_classes_escapes_and_inline_flags_keep_their_meaning ... ok
+test query::tests::smart_case_query_preserves_case_modes_structural_fields_and_saved_queries ... ok
+test query::tests::smart_case_query_regex_analysis_uses_literals_not_syntax_names ... ok
+test search::tests::smart_case_query_agrees_across_native_index_zip_and_tar ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2570 filtered out; finished in 0.07s
+

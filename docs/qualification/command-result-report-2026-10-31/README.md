@@ -1,0 +1,21 @@
+# Command result export — 2026-10-31
+
+Extends the command-output review workflow described by [Double Commander](https://doublecmd.github.io/doc/en/help.html) and [Strata custom actions](https://github.com/lgse/strata/blob/main/docs/custom-actions.md). Text/JSON clipboard reports are a Commander-specific adaptation, not an upstream format or compatibility claim.
+
+Completed Run command output offers Copy stdout, Copy stderr, Copy report and Copy report as JSON. Stream copies preserve the retained strings exactly. The separate `commander.command-report` v1 JSON envelope includes exit/error status, retained stdout/stderr, structured batch outcome and frozen invocation context: saved/draft name, raw template, execution and working-folder policies, requested initial CWD, opening/other folders and original input paths. Editing the draft after completion cannot change the report. The worker installs context with its result without reading live pane state.
+
+Attempted per-item commands are regenerated using the same opaque expansion over the original one-path contexts, restricted to completed invocation attempts. Failed spawn and cancelled attempts can be included; these are not proof that each subprocess started. The initial working folder is the requested spawn directory, not a tracked shell CWD after arbitrary scripts change directory. Whole-selection export uses the actual retained command line and completed-attempt counter.
+
+All four formats are limited to 4 MiB. Bounded serialization refuses oversized or JSON-escaping-expanded reports; no partial prefix is sent to the clipboard. Non-UTF-8 metadata paths are refused rather than silently changed; standalone stream copies remain available. Existing capture limits and truncation notices apply. Copy runs through the existing clipboard owner and returns before implicit Enter handling. It does not run a command, write a template or grant trust.
+
+Verification results and native artifacts are recorded alongside this file. Broader job history, disk persistence, per-invocation structured exit records, timings, detached-process tracking and full cohort parity remain open.
+
+## Verification evidence
+
+Native **per_item_command** passed **16/16** capture checks; the framebuffer was inspected. Real Run executes the saved pwd/name-printing template on two inputs in the other pane. After completion the fixture changes the draft command, name and working-folder policy, then pointer-clicks Copy stdout, Copy report and Copy report as JSON. Independent artifact assertions require the actual copied JSON to retain the original name/template, two exact attempted commands, opening selection and other-pane CWD, while `per-item-state.json` shows the edited draft. Actual stdout copies match the JSON/stdout result byte-for-byte; text report retains the same original metadata. Both pwd lines resolve to the other pane's physical CWD. See `native-assertions.json` and the unmodified copied files in `native/`.
+
+Effect counters require exactly three recording clipboard writes and no other native effect-port calls; host clipboard, templates and trust stores are not written. Shell execution is intentionally exercised separately through the normal Run owner. Binary/core/launch hashes match; source hashes are recorded. The saved template/context fixture is injected. Stderr copy, failure/oversize and cancellation-before-invocation boundaries are model regressions rather than additional native scenarios. Output remains scrollable; the capture shows the new controls and completed batch header.
+
+The earlier successful qualification before a default-build dead-code warning was removed is retained in `before-warning-cleanup/`. The final source additionally tests zero-attempt cancellation without inventing command records and oversized standalone stderr refusal.
+
+Final suite: **2995 passed, 3 ignored, zero failed**. Regressions cover exact stream retention, original context/attempted expansion, stopped-batch remaining inputs, missing context/error export, JSON escaping overflow, text/stream limits, non-UTF-8 metadata refusal and zero-attempt cancellation. Build, all-target visual-qa Clippy with warnings denied, default-feature check, formatting and diff checks are recorded in `checks.json` and logs.

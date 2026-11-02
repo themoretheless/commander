@@ -1,0 +1,11 @@
+{
+  "src/image_metadata.rs": "e9007167bd6724b72f38f36c03f294b4ccdef309b4a65f572508d62cf67e1b5b",
+  "src/app/render.rs": "8ad9200f0942ee3c4b00bd100e6a82558db62f7965190a56e779b1f8505eb634",
+  "src/app/update.rs": "f37beb1b87e48a8e5e01d9e977f0695e35c9b239afebb79e54cf4f15ac347798",
+  "src/visual_qa.rs": "ca84f1c815abb12305f221fa0ebfbae6992d5511f12de7caabd5bb8325c177e1",
+  ".github/workflows/ci.yml": "b2486189f11ed4f9b5f362de3eb64d932bd93f1a3ea867ff05f1f0c3abc2bf1c",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "src/panel/preview.rs": "e392d36f37a97025be9a56ccb96247839fe81d0c600e18b765cfff7d3157d410",
+  "src/app/preload.rs": "e5a9c3cfd0ecf34651173142453344aabf89780b0885260073b28afe0111756f"
+}

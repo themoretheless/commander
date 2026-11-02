@@ -1,0 +1,39 @@
+{
+  "batch": {
+    "cancelled": false,
+    "completed": 2,
+    "failed": 0,
+    "stopped_on_error": false,
+    "succeeded": 2,
+    "total": 2
+  },
+  "context": {
+    "attempted_invocations": 2,
+    "execution": "per_item_continue",
+    "initial_working_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/right",
+    "inputs": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left/notes.md",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left/Design"
+    ],
+    "name": "Архив ZIP",
+    "opening_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left",
+    "other_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/right",
+    "template": "pwd; printf '%s\\n' {names}",
+    "working_directory_policy": "other_pane"
+  },
+  "draft_line": "edited after finish",
+  "draft_name": "Edited name",
+  "draft_working_dir": "opening",
+  "error": null,
+  "execution": "per_item_continue",
+  "exit_code": 0,
+  "expected_cwd": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/right",
+  "opening_left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left",
+  "opening_right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/right",
+  "selection": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left/notes.md",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left/Design"
+  ],
+  "stderr": "",
+  "stdout": "Per item: 2 / 2 completed · 2 succeeded · 0 failed · 0 remaining\n\n--- item 1 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left/notes.md ---\n/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/right\nnotes.md\n\n--- item 2 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/left/Design ---\n/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-5843-per_item_command/right\nDesign\n"
+}

@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "Depth entry and inclusive bounds",
+    "invalid input/error/reset",
+    "saved recall and archive-root basis",
+    "focus/layout/navigation"
+  ]
+}

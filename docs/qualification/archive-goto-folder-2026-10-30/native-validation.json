@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Go to folder Go/Enter/error/layout capture",
+  "binary_sha256": "f16b1f653ecb7fd218760acecf80b56f47c3bbadd3384e59cb3df1d71baf590b",
+  "earlier_archive_native_gates": "remain pending"
+}

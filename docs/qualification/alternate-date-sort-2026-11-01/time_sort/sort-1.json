@@ -1,0 +1,115 @@
+{
+  "config": {
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "folders_by_name": false,
+    "folders_first": true,
+    "mode": "List",
+    "natural_name_sort": true,
+    "show_hidden": false,
+    "sort_col": "Accessed",
+    "sort_order": "Desc"
+  },
+  "cursor": "clock-middle.txt",
+  "entries": [
+    {
+      "accessed": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793400596
+      },
+      "created": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793227796
+      },
+      "modified": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793227796
+      },
+      "name": "clock-new.txt",
+      "selected": false
+    },
+    {
+      "accessed": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793314196
+      },
+      "created": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793314196
+      },
+      "modified": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793314196
+      },
+      "name": "clock-middle.txt",
+      "selected": false
+    },
+    {
+      "accessed": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793227796
+      },
+      "created": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793400596
+      },
+      "modified": {
+        "nanos_since_epoch": 232071000,
+        "secs_since_epoch": 1793400596
+      },
+      "name": "clock-old.txt",
+      "selected": true
+    }
+  ],
+  "phase": 11,
+  "report": {
+    "exported_rows": 1,
+    "facets": {
+      "kind": null,
+      "max_age_days": null,
+      "min_age_days": null,
+      "min_size": null
+    },
+    "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-43784-time_sort/left",
+    "format": "commander.listing-report",
+    "hidden_selected_rows": 1,
+    "listing_rows": 8,
+    "query": "clock-",
+    "rows": [
+      {
+        "accessed_utc": "2026-10-28T22:49:56.232071Z",
+        "allocated_bytes": 4096,
+        "created_utc": "2026-10-30T22:49:56.232071Z",
+        "device_id": 16777234,
+        "displayed_size": "6 B",
+        "file_id": 252106091,
+        "file_size_bytes": 6,
+        "hard_links": 1,
+        "kind": "File",
+        "modified_utc": "2026-10-30T22:49:56.232071Z",
+        "name": "clock-old.txt",
+        "owner_gid": 20,
+        "owner_uid": 501,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-43784-time_sort/left/clock-old.txt",
+        "row": 1
+      }
+    ],
+    "scope": "visible_selected_rows",
+    "selected_rows": 2,
+    "snapshot": "retained_listing_metadata",
+    "version": 1,
+    "view": {
+      "case_sensitive_name_sort": false,
+      "density": "Comfortable",
+      "folders_by_name": false,
+      "folders_first": true,
+      "mode": "List",
+      "natural_name_sort": true,
+      "show_hidden": false,
+      "sort_col": "Accessed",
+      "sort_order": "Desc"
+    },
+    "visible_rows": 3
+  },
+  "selected": 2
+}

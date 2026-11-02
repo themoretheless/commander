@@ -1,0 +1,152 @@
+{
+  "format": "commander.search-report",
+  "version": 1,
+  "snapshot": "retained search observations",
+  "scope": "visible_results",
+  "partial": false,
+  "root": {
+    "encoding": "utf8",
+    "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-2718-time_groups/left"
+  },
+  "context": {
+    "expression": "group-",
+    "mode": "Exact",
+    "generation": 3,
+    "source": "Live + archives",
+    "completed": true,
+    "running": false,
+    "pending_rerun": false,
+    "draft_differs": false,
+    "scanned": 9,
+    "matched": 3,
+    "skipped": 0,
+    "truncated": false,
+    "archive_error": null,
+    "received_rows": 3,
+    "visible_rows": 3,
+    "visible_selected_rows": 0,
+    "pivot": "Changed",
+    "result_sort": {
+      "field": "rank",
+      "descending": false
+    },
+    "selected_only": false,
+    "ordered_at_utc": "2026-11-02T02:43:38.544303Z"
+  },
+  "exported_rows": 3,
+  "rows": [
+    {
+      "row": 1,
+      "display_name": "group-new.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-2718-time_groups/left/group-new.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 255726641
+      },
+      "is_directory": false,
+      "listed_size_bytes": 11,
+      "allocated_bytes": 4096,
+      "hard_links": 1,
+      "modified_utc": "2026-11-09T02:43:36.313092Z",
+      "accessed_utc": "2026-11-02T02:43:36.313740869Z",
+      "created_utc": "2026-11-02T02:43:36.313740869Z",
+      "changed_utc": "2026-11-02T02:43:36.313856703Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"group-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              6
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "display_name": "group-old.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-2718-time_groups/left/group-old.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 255726640
+      },
+      "is_directory": false,
+      "listed_size_bytes": 11,
+      "allocated_bytes": 4096,
+      "hard_links": 1,
+      "modified_utc": "2020-01-01T00:00:00Z",
+      "accessed_utc": "2026-11-02T02:43:36.313204949Z",
+      "created_utc": "2020-01-01T00:00:00Z",
+      "changed_utc": "2026-11-02T02:43:36.313505451Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"group-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              6
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "display_name": "group-member.txt",
+      "location": {
+        "kind": "archive_member",
+        "archive": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-2718-time_groups/left/other.zip"
+        },
+        "member": {
+          "encoding": "utf8",
+          "text": "group-member.txt"
+        },
+        "index": 0
+      },
+      "native_id": null,
+      "is_directory": false,
+      "listed_size_bytes": 13,
+      "allocated_bytes": null,
+      "hard_links": null,
+      "modified_utc": "2026-11-02T02:43:36.316636220Z",
+      "accessed_utc": "2026-11-02T02:43:36.313919704Z",
+      "created_utc": null,
+      "changed_utc": null,
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"group-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              6
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

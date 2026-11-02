@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.50s
+     Running unittests src/main.rs (target/debug/build/commander/817fc3ac52ddf8fd/out/commander-817fc3ac52ddf8fd)
+
+running 2 tests
+test app::find_dialog::tests::find_file_urls_preserve_visible_selection_order_and_real_archive_containers ... ok
+test app::find_dialog::tests::find_file_urls_preserve_raw_name_bytes_controls_and_relative_targets ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2588 filtered out; finished in 0.00s
+

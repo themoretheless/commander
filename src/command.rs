@@ -7,6 +7,8 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Command {
     SwitchPanel,
+    FocusLeftPanel,
+    FocusRightPanel,
     CursorUp,
     CursorDown,
     /// Jump to the first row.
@@ -15,6 +17,8 @@ pub enum Command {
     CursorEnd,
     CursorFirstFile,
     CursorLastFile,
+    CursorNextSelected,
+    CursorPreviousSelected,
     /// Move up by one visible page.
     CursorPageUp,
     /// Move down by one visible page.
@@ -50,8 +54,14 @@ pub enum Command {
     AssignSlot(u8),
     /// Bookmark the active directory (palette command).
     BookmarkCurrentDir,
+    BookmarkSelectedFolders,
+    OpenFavorites,
+    SortFavorites(crate::bookmarks::FavoriteOrder),
+    ImportFavoritesGtk,
+    ExportFavoritesGtk,
     /// Space: toggle selection and advance cursor.
     ToggleSelect,
+    ToggleSelectHere,
     /// Cmd+Enter: move the selection into the directory under the cursor.
     MoveIntoCursorFolder,
     /// Cmd+Shift+Enter: copy the selection into the directory under the cursor.
@@ -70,6 +80,7 @@ pub enum Command {
     BeginSync,
     /// Cmd+E: point the inactive panel at the active panel's directory.
     EqualizePanels,
+    MatchOtherPane,
     /// Cmd+U: swap the left and right panels.
     SwapPanels,
     /// Cmd+G: open the select-by-mask input.
@@ -101,6 +112,7 @@ pub enum Command {
     DiskTreemap,
     /// Cmd+F: open the recursive find sheet.
     BeginFind,
+    FindCursorHardlinks,
     /// Cmd+Shift+F: move keyboard focus into the active pane's filter box.
     FocusFilter,
     /// Open the saved-search (smart folder) picker.
@@ -114,6 +126,8 @@ pub enum Command {
     CopyNameWithoutExtension,
     /// Copy the selection's parent directory path(s).
     CopyParentPath,
+    CopyFolderPath,
+    CopyFolderUrl,
     /// Copy the selection as `file://` URL(s).
     CopyFileUrl,
     /// Copy the selection's path(s), shell-escaped.
@@ -132,8 +146,13 @@ pub enum Command {
     SelectIdentical,
     /// Clear the selection in this folder and every other folder visited.
     ClearSelection,
+    ClearVisibleSelection,
+    ClearFolderSelection,
     SaveSelection,
     RestoreSelection,
+    SaveTabSelection,
+    RestoreTabSelection,
+    ForgetTabSelection,
     /// Show/hide the transfer-queue panel (pause/resume/reorder/cancel the
     /// jobs waiting behind the active transfer).
     ToggleQueuePanel,
@@ -149,6 +168,7 @@ pub enum Command {
     UnprotectTab,
     ReopenClosedTab,
     EditPermissions,
+    EditTimestamps,
     NextTab,
     PreviousTab,
     FirstTab,
@@ -187,8 +207,14 @@ pub enum Command {
     SortByStem,
     /// Sort the active panel by size (again: flip the order).
     SortBySize,
+    SortByAllocated,
+    SortByInode,
+    SortByHardLinks,
     /// Sort the active panel by modification time (again: flip the order).
     SortByModified,
+    SortByAccessed,
+    SortByCreated,
+    SortByChanged,
     /// Sort the active panel by file extension.
     SortByExtension,
     /// Sort the active panel by coarse kind (folder/image/doc/...).
@@ -199,13 +225,20 @@ pub enum Command {
     ReverseSort,
     /// Select the largest files in the active panel's filtered view.
     SelectLargest,
+    SelectLargestAllocated,
+    SelectCursorHardlinks,
     /// Select files sharing the cursor file's extension.
     SelectLikeCursor,
     DeselectLikeCursor,
     SelectSameStem,
     DeselectSameStem,
     SelectVisibleFiles,
+    SelectVisibleSymlinks,
+    DeselectVisibleSymlinks,
+    InvertVisibleSymlinks,
     SelectVisibleFolders,
+    DeselectVisibleFiles,
+    DeselectVisibleFolders,
     InvertVisibleFiles,
     InvertVisibleFolders,
     /// Select zero-byte files in the filtered view.
@@ -216,12 +249,20 @@ pub enum Command {
     CopyListingCsv,
     /// Copy the active listing to the clipboard as a Markdown table.
     CopyListingMarkdown,
+    CopyListingJson,
     /// Verify content hashes for the selection (user-facing checksum).
     VerifyChecksum,
+    VerifyChecksumList,
     /// Read the cursor file as hexadecimal bytes without editing it.
     ViewHex,
     /// Create symlinks in the other panel pointing at the selection.
     CreateSymlink,
+    /// Create relative symlinks in the other panel.
+    CreateRelativeSymlink,
+    /// Reveal the resolved target of the highlighted symlink.
+    FollowSymlink,
+    CopySymlinkTarget,
+    CopyResolvedSymlinkTarget,
     /// Create hard links in the other panel for selected regular files.
     CreateHardlink,
     /// Toggle synchronized dual-pane navigation lock.
@@ -237,6 +278,7 @@ pub enum Command {
     /// Mark the active panel root as Untrusted (research J003).
     SetTrustUntrusted,
     /// Persist the current dual-pane roots/filters as the default workspace profile (J008).
+    WorkspaceProfiles,
     SaveWorkspaceProfile,
     /// Apply the saved default workspace profile to both panels (J008).
     ApplyWorkspaceProfile,
@@ -266,6 +308,8 @@ impl Command {
 pub struct CommandContext {
     pub visible_entries: usize,
     pub tab_count: usize,
+    pub active_panel_left: bool,
+    pub pane_folders_differ: bool,
     pub active_tab_protected: bool,
     pub other_tab_count: usize,
     pub active_tab_index: usize,
@@ -274,17 +318,27 @@ pub struct CommandContext {
     pub closable_tabs_left: usize,
     pub closable_tabs_right: usize,
     pub visible_files: usize,
+    pub visible_allocated_files: usize,
+    pub cursor_has_visible_hardlink: bool,
+    pub cursor_has_regular_identity: bool,
     pub other_entries: usize,
     pub picked_entries: usize,
     pub selected_entries: usize,
+    pub local_selected_entries: usize,
+    pub selected_visible_files: usize,
+    pub can_next_selected: bool,
+    pub can_previous_selected: bool,
     pub can_save_selection: bool,
     pub can_restore_selection: bool,
+    pub can_restore_tab_selection: bool,
+    pub has_tab_selection: bool,
     pub listing_entries: usize,
     pub cursor_entry: bool,
     /// The cursor row is already selected, so Space would deselect it.
     pub cursor_selected: bool,
     pub cursor_is_dir: bool,
     pub cursor_is_file: bool,
+    pub cursor_is_symlink: bool,
     pub cursor_has_extension: bool,
     pub can_go_up: bool,
     pub can_go_back: bool,
@@ -345,6 +399,7 @@ pub enum CommandPredicate {
     HasCursorEntry,
     CursorIsDirectory,
     CursorIsFile,
+    CursorIsSymlink,
     HasTransferSource,
     CanUndo,
     CanRedo,
@@ -353,7 +408,14 @@ pub enum CommandPredicate {
     InfoTarget,
     HasVisibleEntry,
     HasVisibleFile,
+    HasAllocatedFile,
+    CursorHasVisibleHardlink,
+    CursorHasRegularIdentity,
     HasVisibleFolder,
+    HasSelectedVisibleFile,
+    HasSelectedVisibleEntry,
+    HasLocalSelection,
+    HasSelectedVisibleFolder,
     HasOtherEntry,
     HasListingEntry,
     CursorHasExtension,
@@ -379,6 +441,11 @@ pub enum CommandPredicate {
     UnixPermissions,
     CanSaveSelection,
     CanRestoreSelection,
+    CanRestoreTabSelection,
+    HasTabSelection,
+    PaneFoldersDiffer,
+    CanNextSelected,
+    CanPreviousSelected,
 }
 
 impl CommandPredicate {
@@ -407,9 +474,29 @@ impl CommandPredicate {
                 context.active_tab_index + 1 < context.tab_count,
                 "This tab is already last",
             ),
+            Self::CanNextSelected => (
+                context.can_next_selected,
+                "No selected visible entry below the cursor",
+            ),
+            Self::CanPreviousSelected => (
+                context.can_previous_selected,
+                "No selected visible entry above the cursor",
+            ),
+            Self::PaneFoldersDiffer => (
+                context.pane_folders_differ,
+                "Both panes already show the same folder",
+            ),
             Self::CanSaveSelection => (
                 context.can_save_selection,
                 "Wait for a complete folder listing",
+            ),
+            Self::CanRestoreTabSelection => (
+                context.can_restore_tab_selection,
+                "No saved tab selection for this complete folder listing",
+            ),
+            Self::HasTabSelection => (
+                context.has_tab_selection,
+                "This tab has no persistent selection snapshot",
             ),
             Self::CanRestoreSelection => (
                 context.can_restore_selection,
@@ -447,6 +534,7 @@ impl CommandPredicate {
             Self::HasPickedEntry => (context.picked_entries > 0, PICK_REASON),
             Self::HasCursorEntry => (context.cursor_entry, CURSOR_REASON),
             Self::CursorIsDirectory => (context.cursor_is_dir, "Highlight a destination folder"),
+            Self::CursorIsSymlink => (context.cursor_is_symlink, "Highlight a symbolic link"),
             Self::CursorIsFile => (
                 context.cursor_is_file,
                 "Highlight a ZIP, TAR or tar.gz file",
@@ -464,7 +552,34 @@ impl CommandPredicate {
             ),
             Self::InfoTarget => (context.info_open || context.cursor_entry, CURSOR_REASON),
             Self::HasVisibleEntry => (context.visible_entries > 0, VISIBLE_REASON),
+            Self::CursorHasRegularIdentity => (
+                context.cursor_has_regular_identity,
+                "Highlight a regular file with captured filesystem identity",
+            ),
+            Self::CursorHasVisibleHardlink => (
+                context.cursor_has_visible_hardlink,
+                "Highlight a regular file with another visible hard-link alias",
+            ),
+            Self::HasAllocatedFile => (
+                context.visible_allocated_files > 0,
+                "No visible files with observed allocated size",
+            ),
             Self::HasVisibleFile => (context.visible_files > 0, "No visible files in this panel"),
+            Self::HasLocalSelection => (
+                context.local_selected_entries > 0,
+                "No selected entries in this folder",
+            ),
+            Self::HasSelectedVisibleEntry => {
+                (context.selected_entries > 0, "No selected visible entries")
+            }
+            Self::HasSelectedVisibleFile => (
+                context.selected_visible_files > 0,
+                "No selected visible files",
+            ),
+            Self::HasSelectedVisibleFolder => (
+                context.selected_entries > context.selected_visible_files,
+                "No selected visible folders",
+            ),
             Self::HasVisibleFolder => (
                 context.visible_entries > context.visible_files,
                 "No visible folders in this panel",
@@ -552,8 +667,17 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
     const ACTIVATE: &[P] = &[P::CanActivate];
 
     match command {
+        BookmarkSelectedFolders => &[P::ConfirmationClosed, P::HasSelectedVisibleFolder],
+        SortFavorites(_) => &[P::ConfirmationClosed],
+        CursorNextSelected => &[P::ConfirmationClosed, P::CanNextSelected],
+        CursorPreviousSelected => &[P::ConfirmationClosed, P::CanPreviousSelected],
+        EqualizePanels | MatchOtherPane => &[P::ConfirmationClosed, P::PaneFoldersDiffer],
+        FocusLeftPanel | FocusRightPanel => &[P::ConfirmationClosed],
         SaveSelection => &[P::ConfirmationClosed, P::CanSaveSelection],
         RestoreSelection => &[P::ConfirmationClosed, P::CanRestoreSelection],
+        SaveTabSelection => &[P::ConfirmationClosed, P::CanSaveSelection],
+        RestoreTabSelection => &[P::ConfirmationClosed, P::CanRestoreTabSelection],
+        ForgetTabSelection => &[P::ConfirmationClosed, P::HasTabSelection],
         ProtectTab => &[P::ConfirmationClosed, P::ActiveTabUnprotected],
         UnprotectTab => &[P::ConfirmationClosed, P::ActiveTabProtected],
         GoToTab(_) => &[P::ConfirmationClosed],
@@ -565,7 +689,7 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         CloseTabsLeft => &[P::ConfirmationClosed, P::HasClosableTabLeft],
         CloseTabsRight => &[P::ConfirmationClosed, P::HasClosableTabRight],
         CloseDuplicateTabs => &[P::ConfirmationClosed, P::HasDuplicateTabs],
-        EditPermissions => &[
+        EditPermissions | EditTimestamps => &[
             P::MutationsAllowed,
             P::ConfirmationClosed,
             P::TransferQueueIdle,
@@ -594,10 +718,10 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         BeginSync => SYNC,
         BeginRename => RENAME,
         BeginBatchRename | GatherIntoFolder => MUTATE_SELECTION,
-        CreateSymlink | CreateHardlink => COPY,
+        CreateSymlink | CreateRelativeSymlink | CreateHardlink => COPY,
         BeginRunBar => RUN_SELECTION,
         VerifyChecksum => PICKED,
-        BrowseArchive | ViewHex => CURSOR_FILE,
+        BrowseArchive | ViewHex | VerifyChecksumList => CURSOR_FILE,
         Undo => UNDO,
         Redo => REDO,
         DiffFiles => DIFF,
@@ -613,20 +737,33 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         SelectAll | InvertSelection | SelectOnlyHere | BeginSelectMask | SelectVisibleFolders => {
             VISIBLE
         }
+        SelectVisibleSymlinks | InvertVisibleSymlinks => VISIBLE,
+        DeselectVisibleSymlinks => &[P::HasSelectedVisibleEntry],
         SelectSameNamed | SelectDiffering | SelectIdentical => COMPARE,
         SelectJunk | SelectLargest | SelectEmptyFiles | SelectVisibleFiles => VISIBLE_FILES,
+        FindCursorHardlinks => &[P::ConfirmationClosed, P::CursorHasRegularIdentity],
+        SelectCursorHardlinks => &[P::CursorHasVisibleHardlink],
+        SelectLargestAllocated => &[P::HasAllocatedFile],
         CursorFirstFile | CursorLastFile => VISIBLE_FILES,
+        ClearFolderSelection => &[P::HasLocalSelection],
+        ClearVisibleSelection => &[P::HasSelectedVisibleEntry],
+        ToggleSelectHere => CURSOR,
+        DeselectVisibleFiles => &[P::HasSelectedVisibleFile],
+        DeselectVisibleFolders => &[P::HasSelectedVisibleFolder],
         InvertVisibleFiles => VISIBLE_FILES,
         InvertVisibleFolders => &[P::HasVisibleFolder],
         SelectLikeCursor | DeselectLikeCursor => EXTENSION,
         SelectSameStem | DeselectSameStem => CURSOR_FILE,
-        CopyListingText | CopyListingCsv | CopyListingMarkdown => LISTING,
+        CopyListingText | CopyListingCsv | CopyListingMarkdown | CopyListingJson => LISTING,
         ToggleSelect | ExtendSelectUp | ExtendSelectDown | ExtendSelectHome | ExtendSelectEnd
         | ExtendSelectPageUp | ExtendSelectPageDown => CURSOR,
         JumpBack => BACK,
         JumpForward => FORWARD,
+        FollowSymlink | CopySymlinkTarget | CopyResolvedSymlinkTarget => {
+            &[P::ConfirmationClosed, P::HasCursorEntry, P::CursorIsSymlink]
+        }
         GoUp => UP,
-        GoHome | GoRoot => &[P::ConfirmationClosed],
+        WorkspaceProfiles | GoHome | GoRoot => &[P::ConfirmationClosed],
         Activate => ACTIVATE,
         _ => &[],
     }
@@ -648,6 +785,11 @@ pub fn availability(command: Command, context: &CommandContext) -> CommandAvaila
         .find_map(|predicate| predicate.failure(context))
     {
         return CommandAvailability::disabled(reason);
+    }
+    if matches!(command, Command::FocusLeftPanel | Command::FocusRightPanel)
+        && context.active_panel_left == (command == Command::FocusLeftPanel)
+    {
+        return CommandAvailability::disabled("This pane already has focus");
     }
     if let Command::GoToTab(index) = command {
         if index >= context.tab_count || index >= crate::workspace::tabs::MAX_TABS {
@@ -785,6 +927,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Find duplicates", "", "file duplicate duplicates dedupe identical", Command::FindDuplicates),
     entry("Diff files", "Cmd+D", "view diff compare text", Command::DiffFiles),
     entry("Disk usage map", "Cmd+Shift+M", "view disk usage map treemap size", Command::DiskTreemap),
+    entry("Find hard-link aliases of cursor", "", "find search recursive hardlink hard link aliases same inode device identity cursor", Command::FindCursorHardlinks),
     entry("Find files", "Cmd+F", "file find recursive search", Command::BeginFind),
     entry("Filter this pane", "Cmd+Shift+F", "filter pane narrow quick search focus", Command::FocusFilter),
     entry("Open saved search", "", "file saved search smart folder", Command::OpenSavedSearch),
@@ -792,6 +935,8 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Copy path", "Cmd+Shift+C", "clipboard copy path", Command::CopyPath),
     entry("Copy name", "", "clipboard copy name filename", Command::CopyName),
     entry("Copy name without extension", "", "clipboard copy filename stem basename no suffix extension", Command::CopyNameWithoutExtension),
+    entry("Copy current folder path", "", "clipboard copy directory current folder location path empty", Command::CopyFolderPath),
+    entry("Copy current folder as file URL", "", "clipboard copy current folder directory location file url link empty", Command::CopyFolderUrl),
     entry("Copy parent path", "", "clipboard copy parent folder path", Command::CopyParentPath),
     entry("Copy as file URL", "", "clipboard copy url file url", Command::CopyFileUrl),
     entry("Copy shell-escaped path", "", "clipboard copy shell escaped path", Command::CopyShellPath),
@@ -800,7 +945,14 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Go to path", "Cmd+L", "navigation go path location jump", Command::BeginGoToPath),
     entry("Back", "Cmd+[", "navigation back history previous jump return", Command::JumpBack),
     entry("Forward", "Cmd+]", "navigation forward history next jump", Command::JumpForward),
+    entry("Add selected folders to Favorites", "", "navigation bookmarks hotlist batch pin selected visible directories", Command::BookmarkSelectedFolders),
     entry("Bookmark this folder", "", "navigation bookmark favorite add pin folder this", Command::BookmarkCurrentDir),
+    entry("Sort favorites by name", "", "navigation bookmarks hotlist natural order organize label", Command::SortFavorites(crate::bookmarks::FavoriteOrder::Name)),
+    entry("Sort favorites by path", "", "navigation bookmarks hotlist natural order organize location", Command::SortFavorites(crate::bookmarks::FavoriteOrder::Path)),
+    entry("Sort favorites by quick-jump slot", "", "navigation bookmarks hotlist order organize pinned slots", Command::SortFavorites(crate::bookmarks::FavoriteOrder::Slot)),
+    entry("Open favorite folder", "", "navigation hotlist bookmark favorites pinned quick jump search", Command::OpenFavorites),
+    entry("Import favorites from GTK text", "", "bookmarks import favorites gtk nautilus places migrate paste", Command::ImportFavoritesGtk),
+    entry("Copy favorites as GTK text", "", "bookmarks export favorites gtk nautilus places clipboard migrate", Command::ExportFavoritesGtk),
     entry("Recent folders", "Cmd+P", "navigation recent folders history projects", Command::BeginRecent),
     entry("Select all", "Cmd+A", "selection select all mark all", Command::SelectAll),
     entry("Invert selection", "Cmd+Shift+I", "selection invert reverse flip", Command::InvertSelection),
@@ -808,13 +960,21 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Select files only in this panel", "", "selection only here unique missing other panel compare diff", Command::SelectOnlyHere),
     entry("Select files differing from other panel", "", "selection differing changed modified other panel compare diff", Command::SelectDiffering),
     entry("Select files identical to other panel", "", "selection identical same equal other panel compare diff dedupe", Command::SelectIdentical),
+    entry("Save selection for this tab", "", "selection save persist session restart tab snapshot", Command::SaveTabSelection),
+    entry("Restore tab selection", "", "selection restore persist session restart tab snapshot", Command::RestoreTabSelection),
+    entry("Forget tab selection", "", "selection forget clear persist session tab snapshot", Command::ForgetTabSelection),
     entry("Save selection in memory", "", "selection save remember store buffer marks", Command::SaveSelection),
     entry("Restore saved selection", "", "selection restore recall buffer marks", Command::RestoreSelection),
+    entry("Clear visible selection", "", "selection deselect unmark visible matches only keep hidden filtered other folders", Command::ClearVisibleSelection),
+    entry("Toggle current selection in place", "", "selection toggle mark unmark cursor stay no move stationary", Command::ToggleSelectHere),
+    entry("Clear selection in this folder", "", "selection clear deselect current directory all local hidden filtered keep other folders", Command::ClearFolderSelection),
     entry("Clear selection in all folders", "", "selection clear deselect none reset all folders", Command::ClearSelection),
     entry("Operations panel", "Cmd+J", "activity operations queue progress history errors recovery", Command::ToggleQueuePanel),
     entry("Operation history", "", "history receipts journal log operations undo", Command::OpenReceipts),
     entry("Recovery center", "", "recovery restore journal interrupted resume rollback staging", Command::OpenRecoveryCenter),
     entry("Select clutter files", "", "selection junk clutter ds_store thumbs desktop.ini cleanup cruft", Command::SelectJunk),
+    entry("Select hard-link aliases of cursor", "", "selection hardlink hard link aliases same inode device physical identity cursor", Command::SelectCursorHardlinks),
+    entry("Select 10 largest allocated files", "", "selection largest allocated disk blocks physical storage heavy top ten", Command::SelectLargestAllocated),
     entry("Select 10 largest files", "", "selection largest biggest top size files heavy", Command::SelectLargest),
     entry("Select files like cursor (same extension)", "", "selection same extension like cursor type matching", Command::SelectLikeCursor),
     entry("Select files with cursor's name (ignore extension)", "", "selection same stem basename name without extension", Command::SelectSameStem),
@@ -822,15 +982,27 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Deselect files like cursor (same extension)", "", "selection unselect subtract remove same extension type", Command::DeselectLikeCursor),
     entry("Invert visible file selection", "", "selection invert files only toggle flip keep folders", Command::InvertVisibleFiles),
     entry("Invert visible folder selection", "", "selection invert folders directories only toggle flip keep files", Command::InvertVisibleFolders),
+    entry("Deselect visible files", "", "selection deselect unmark remove visible files only keep folders", Command::DeselectVisibleFiles),
+    entry("Deselect visible folders", "", "selection deselect unmark remove visible folders directories only keep files", Command::DeselectVisibleFolders),
+    entry("Add visible symbolic links to selection", "", "selection select symbolic symlinks links visible add", Command::SelectVisibleSymlinks),
+    entry("Remove visible symbolic links from selection", "", "selection deselect symbolic symlinks links visible remove", Command::DeselectVisibleSymlinks),
+    entry("Invert visible symbolic-link selection", "", "selection invert symbolic symlinks links visible toggle", Command::InvertVisibleSymlinks),
     entry("Add visible files to selection", "", "selection select all files only add", Command::SelectVisibleFiles),
     entry("Add visible folders to selection", "", "selection select all folders directories only add", Command::SelectVisibleFolders),
     entry("Select empty files", "", "selection empty zero byte blank files cleanup", Command::SelectEmptyFiles),
     entry("Copy listing as text", "", "clipboard copy listing export text list folder contents", Command::CopyListingText),
     entry("Copy listing as CSV", "", "clipboard copy listing export csv spreadsheet folder", Command::CopyListingCsv),
+    entry("Copy listing as JSON", "", "clipboard copy listing export json metadata allocated disk size report", Command::CopyListingJson),
     entry("Copy listing as Markdown", "", "clipboard copy listing export markdown table folder", Command::CopyListingMarkdown),
-    entry("Verify checksum", "", "file checksum hash verify blake sha256 sha-256 expected content integrity digests", Command::VerifyChecksum),
+    entry("Verify checksum list", "", "verify checksum manifest checkfile md5 sha256 sha384 sha512 blake3 sfv crc32 downloaded integrity", Command::VerifyChecksumList),
+    entry("Verify checksum", "", "file checksum hash verify blake sha256 sha-256 expected content integrity digests crc32 sfv", Command::VerifyChecksum),
+    entry("Change file timestamps", "", "file attributes timestamp dates touch modified accessed mtime atime", Command::EditTimestamps),
     entry("Change permissions", "", "file permissions chmod mode access read write execute owner group others", Command::EditPermissions),
     entry("Create symlink in other panel", "", "file symlink soft link alias create other panel", Command::CreateSymlink),
+    entry("Copy symbolic-link target", "", "clipboard copy symbolic symlink target raw relative", Command::CopySymlinkTarget),
+    entry("Copy resolved symbolic-link target", "", "clipboard copy symbolic symlink target resolved canonical real absolute path", Command::CopyResolvedSymlinkTarget),
+    entry("Follow symbolic link", "", "navigation symlink follow reveal resolved target link folder file", Command::FollowSymlink),
+    entry("Create relative symlink in other panel", "", "file relative symlink soft link portable create other panel", Command::CreateRelativeSymlink),
     entry("Create hard link in other panel", "", "file hardlink hard link create other panel", Command::CreateHardlink),
     entry("Toggle navigation lock", "", "panels navigation lock sync mirror lockstep dual", Command::ToggleNavLock),
     entry("Repeat last command", ".", "repeat last command again dot redo", Command::RepeatLast),
@@ -839,6 +1011,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Trust: mark Trusted", "", "trust trusted root allow run command providers archive", Command::SetTrustTrusted),
     entry("Trust: mark Restricted", "", "trust restricted root gate providers archive inspect", Command::SetTrustRestricted),
     entry("Trust: mark Untrusted", "", "trust untrusted root block run command providers", Command::SetTrustUntrusted),
+    entry("Workspace profiles", "", "workspace named profile panels roots filters save restore work home", Command::WorkspaceProfiles),
     entry("Save workspace profile", "", "workspace profile save roots filters layout remember", Command::SaveWorkspaceProfile),
     entry("Apply workspace profile", "", "workspace profile apply load roots filters restore", Command::ApplyWorkspaceProfile),
     entry("Select by mask", "Cmd+G", "selection mask glob pattern wildcard", Command::BeginSelectMask),
@@ -850,7 +1023,13 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Sort: natural order (toggle)", "", "sort natural numeric ascii alphabetical order names file10", Command::ToggleNaturalSort),
     entry("Sort by name without extension", "", "sort stem basename name no extension suffix alphabetical order", Command::SortByStem),
     entry("Sort by name", "", "sort name alphabetical filename order a-z", Command::SortByName),
+    entry("Sort by inode", "", "sort inode device filesystem identity hard links aliases number", Command::SortByInode),
+    entry("Sort by hard-link count", "", "sort hard link count links nlink aliases observed shared file", Command::SortByHardLinks),
+    entry("Sort by allocated size", "", "sort allocated disk blocks physical sparse storage largest smallest", Command::SortByAllocated),
     entry("Sort by size", "", "sort size bytes largest smallest big", Command::SortBySize),
+    entry("Sort by accessed", "", "sort accessed access date time atime newest oldest", Command::SortByAccessed),
+    entry("Sort by metadata changed", "", "sort metadata changed status change ctime date time newest oldest", Command::SortByChanged),
+    entry("Sort by created", "", "sort created creation birth date time btime newest oldest", Command::SortByCreated),
     entry("Sort by modified", "", "sort modified date time newest oldest recent mtime", Command::SortByModified),
     entry("Sort by extension", "", "sort extension type suffix group ext", Command::SortByExtension),
     entry("Sort by kind", "", "sort kind category group images docs code archives", Command::SortByKind),
@@ -891,10 +1070,15 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Cycle density", "Cmd+Shift+D", "view density rows compact comfortable spacious", Command::CycleDensity),
     entry("Keyboard shortcuts", "F1", "help keyboard shortcuts reference", Command::KeyboardHelp),
     entry("Toggle preview", "F3", "view preview quick look viewer inspect", Command::TogglePreview),
+    entry("Go to next selected entry", "", "navigation cursor next selected marked picked down", Command::CursorNextSelected),
+    entry("Go to previous selected entry", "", "navigation cursor previous selected marked picked up", Command::CursorPreviousSelected),
     entry("Go to first visible file", "", "navigation cursor first file skip folders start", Command::CursorFirstFile),
     entry("Go to last visible file", "", "navigation cursor last file skip folders end", Command::CursorLastFile),
     entry("Go to home folder", "Cmd+Shift+H", "navigation home user directory personal folder", Command::GoHome),
     entry("Go to disk root", "", "navigation root filesystem drive volume top directory", Command::GoRoot),
+    entry("Focus left pane", "", "panels focus left activate source target", Command::FocusLeftPanel),
+    entry("Focus right pane", "", "panels focus right activate source target", Command::FocusRightPanel),
+    entry("Open other pane’s folder here", "", "panels equalize current same directory other opposite pull match folder", Command::MatchOtherPane),
     entry("Equalize panels", "Cmd+E", "panels equalize same folder mirror", Command::EqualizePanels),
     entry("Swap panels", "Cmd+U", "panels swap exchange switch sides", Command::SwapPanels),
     entry("Undo", "Cmd+Z", "history undo revert rollback", Command::Undo),
@@ -954,8 +1138,18 @@ pub fn combined_score(fuzzy: i32, usage: Option<&Usage>, now: u64) -> i32 {
 /// Rank the command catalog against `query`, blending the fuzzy score with
 /// usage. An empty query lists the catalog most-recently-used first (then by
 /// count, then declared order). Non-empty keeps fuzzy matches, ordered by the
-/// combined score (stable on ties via declared order).
+/// combined score (stable on ties via declared order). A complete label match
+/// takes priority over longer labels and usage bonuses.
 pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
+    rank_with_shortcuts(query, usage, now, |_, default| vec![default.to_owned()])
+}
+pub fn rank_with_shortcuts(
+    query: &str,
+    usage: &UsageStats,
+    now: u64,
+    shortcuts: impl Fn(Command, &str) -> Vec<String>,
+) -> Vec<CommandMatch> {
+    let query = query.trim();
     let to_match = |item: &CommandEntry, matched| CommandMatch {
         label: item.label,
         shortcut: item.shortcut,
@@ -978,13 +1172,18 @@ pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
             .collect();
     }
 
-    let mut scored: Vec<(i32, usize, CommandMatch)> = Vec::new();
+    let mut scored: Vec<(bool, i32, usize, CommandMatch)> = Vec::new();
     for (i, item) in CATALOG.iter().enumerate() {
         let mut best: Option<(i32, Vec<(usize, usize)>)> = None;
         if let Some(ms) = crate::fuzzy::score(query, item.label) {
             best = Some((ms.score, ms.matched_ranges));
         }
-        if let Some(score) = metadata_score(query, item)
+        if let Some(score) = shortcuts(item.command, item.shortcut)
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(""))
+            .filter_map(|shortcut| metadata_score_with_shortcut(query, item, shortcut))
+            .max()
             && best.as_ref().is_none_or(|(current, _)| score > *current)
         {
             // A keyword or shortcut hit only lifts the score: any label
@@ -994,15 +1193,23 @@ pub fn rank(query: &str, usage: &UsageStats, now: u64) -> Vec<CommandMatch> {
         }
         if let Some((score, matched)) = best {
             let total = combined_score(score, usage.uses.get(item.label), now);
-            scored.push((total, i, to_match(item, matched)));
+            scored.push((
+                item.label.eq_ignore_ascii_case(query),
+                total,
+                i,
+                to_match(item, matched),
+            ));
         }
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, _, m)| m).collect()
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    scored.into_iter().map(|(_, _, _, m)| m).collect()
 }
 
+#[cfg(test)]
 fn metadata_score(query: &str, item: &CommandEntry) -> Option<i32> {
-    let shortcut = item.shortcut;
+    metadata_score_with_shortcut(query, item, item.shortcut)
+}
+fn metadata_score_with_shortcut(query: &str, item: &CommandEntry, shortcut: &str) -> Option<i32> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return None;
@@ -1740,6 +1947,25 @@ mod tests {
     }
 
     #[test]
+    fn exact_palette_label_wins_over_prefix_and_recent_usage() {
+        let mut usage = UsageStats::default();
+        for tick in 1..=20 {
+            usage.record("Sort by name without extension", tick);
+        }
+        for query in ["Sort by name", " sort BY NAME "] {
+            let rows = rank(query, &usage, 20);
+            assert_eq!(rows[0].command, Command::SortByName);
+            assert!(!rows[0].matched.is_empty());
+            assert!(rows.iter().any(|row| row.command == Command::SortByStem));
+        }
+        assert_eq!(rank("", &usage, 20)[0].command, Command::SortByStem);
+        assert_eq!(
+            rank("Sort by name without extension", &usage, 20)[0].command,
+            Command::SortByStem
+        );
+    }
+
+    #[test]
     fn empty_query_lists_most_recently_used_first() {
         let mut usage = UsageStats::default();
         usage.record("Swap panels", 1);
@@ -1890,6 +2116,7 @@ mod tests {
     fn mutating_commands_are_exactly_the_mutation_gated_ones() {
         let mutating = [
             Command::EditPermissions,
+            Command::EditTimestamps,
             Command::RequestCopy,
             Command::RequestMove,
             Command::CreateDir,
@@ -1902,6 +2129,7 @@ mod tests {
             Command::MoveIntoCursorFolder,
             Command::CopyIntoCursorFolder,
             Command::CreateSymlink,
+            Command::CreateRelativeSymlink,
             Command::CreateHardlink,
             Command::Undo,
             Command::Redo,

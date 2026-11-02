@@ -1,0 +1,16 @@
+{
+  "column": null,
+  "error": null,
+  "exclude": false,
+  "fuzzy": false,
+  "heading": true,
+  "query": "",
+  "regex": true,
+  "rows": [
+    2,
+    3,
+    1,
+    4
+  ],
+  "whole_words": false
+}

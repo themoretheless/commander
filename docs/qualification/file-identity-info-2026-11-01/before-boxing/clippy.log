@@ -1,0 +1,30 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: large size difference between variants
+  --> src/panel/preview.rs:30:1
+   |
+30 | /  pub enum PreviewContent {
+31 | |      Pdf(PreviewIdentity),
+32 | |      Image(PathBuf),
+33 | |      Pending(PreviewIdentity),
+34 | |/     Text {
+35 | ||         identity: PreviewIdentity,
+36 | ||         content: Arc<str>,
+37 | ||     },
+   | ||_____- the second-largest variant contains at least 64 bytes
+38 | |      Info(InfoCard),
+   | |      -------------- the largest variant contains at least 280 bytes
+39 | |  }
+   | |__^ the entire enum is at least 280 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#large_enum_variant
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+38 -     Info(InfoCard),
+38 +     Info(Box<InfoCard>),
+   |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

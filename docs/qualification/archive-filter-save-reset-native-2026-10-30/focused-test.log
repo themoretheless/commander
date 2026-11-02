@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.96s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 5 tests
+test app::archive_dialog::tests::saved_archive_filters_bound_text_count_and_deduplicate_complete_settings ... ok
+test app::archive_dialog::tests::removing_one_saved_archive_filter_uses_all_settings_and_preserves_active_state ... ok
+test app::archive_dialog::tests::saved_archive_filter_restore_rebuilds_rows_and_preserves_location_and_selection_owners ... ok
+test app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry ... ok
+test app::archive_dialog::tests::saved_archive_filter_pointer_recall_restores_query_and_flags ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2845 filtered out; finished in 0.05s
+

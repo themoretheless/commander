@@ -1,0 +1,18 @@
+{
+  "status": "captured",
+  "scene": "disk_tree_filter",
+  "scene_phase": 37,
+  "checks": 14,
+  "all_passed": true,
+  "native_effects": 0,
+  "frame_visually_inspected": true,
+  "binary_hash_matches": true,
+  "final_query": "target",
+  "final_fuzzy": false,
+  "final_match_case": false,
+  "direct_matches": 3,
+  "shown_with_ancestors": 5,
+  "loaded_compressed_nodes": 9,
+  "root_logical_bytes_before_rescan": 246,
+  "root_logical_bytes_after_rescan": 306
+}

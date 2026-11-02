@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.63s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 3 tests
+test hex_preview::tests::recent_searches_deduplicate_full_settings_and_bound_count_and_text ... ok
+test hex_preview::tests::recent_searches_record_only_valid_submitted_searches_and_recall_without_work ... ok
+test hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2795 filtered out; finished in 0.09s
+

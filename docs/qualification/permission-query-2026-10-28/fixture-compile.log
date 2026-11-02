@@ -1,0 +1,20 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0425]: cannot find function `fake_entry` in this scope
+    --> src/search.rs:2642:21
+     |
+2642 |         let entry = fake_entry("/fixture/file.txt", false, 1, None);
+     |                     ^^^^^^^^^^ not found in this scope
+     |
+note: similarly named function `file_entry` defined here
+    --> src/search.rs:1790:5
+     |
+1790 |     fn file_entry(path: PathBuf, size: u64) -> FileEntry {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: a function with a similar name exists
+     |
+2642 -         let entry = fake_entry("/fixture/file.txt", false, 1, None);
+2642 +         let entry = file_entry("/fixture/file.txt", false, 1, None);
+     |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

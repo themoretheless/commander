@@ -4,6 +4,46 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+/// Observe lexical emptiness without opening file payloads or following links.
+/// A directory must enumerate successfully; hidden entries still make it nonempty.
+pub fn observed_empty(path: &Path, metadata: &std::fs::Metadata) -> Option<bool> {
+    if metadata.is_file() {
+        return Some(metadata.len() == 0);
+    }
+    if !metadata.is_dir() {
+        return Some(false);
+    }
+    match std::fs::read_dir(path).ok()?.next() {
+        None => Some(true),
+        Some(Ok(_)) => Some(false),
+        Some(Err(_)) => None,
+    }
+}
+
+/// A missing component or a non-directory component proves no target exists.
+pub fn missing_link_target_error(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Only a worker may probe the target. Permission, I/O and loop failures are
+/// unknown, not evidence that a link can be discarded. Non-links need no probe.
+pub fn observed_broken_symlink(path: &Path, lexical: &std::fs::Metadata) -> Option<bool> {
+    if !lexical.file_type().is_symlink() {
+        return Some(false);
+    }
+    broken_symlink_result(std::fs::metadata(path).map(|_| ()))
+}
+fn broken_symlink_result(result: std::io::Result<()>) -> Option<bool> {
+    match result {
+        Ok(()) => Some(false),
+        Err(error) if missing_link_target_error(error.kind()) => Some(true),
+        Err(_) => None,
+    }
+}
+
 static STORAGE_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(feature = "visual-qa")]
@@ -765,6 +805,21 @@ pub fn content_hash(path: &Path) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn broken_symlink_errors_distinguish_missing_from_unavailable_targets() {
+        use std::io::ErrorKind as K;
+        assert_eq!(broken_symlink_result(Ok(())), Some(false));
+        for kind in [K::NotFound, K::NotADirectory] {
+            assert_eq!(
+                broken_symlink_result(Err(std::io::Error::from(kind))),
+                Some(true)
+            );
+        }
+        for kind in [K::PermissionDenied, K::Other, K::TimedOut] {
+            assert_eq!(broken_symlink_result(Err(std::io::Error::from(kind))), None);
+        }
+    }
 
     #[test]
     fn dir_size_sums_nested_files() {

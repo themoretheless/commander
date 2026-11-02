@@ -1,0 +1,14 @@
+{
+  "src/sync_profiles.rs": "0be4e64e37e415f5e459e8a53820043a9cb41b022d978b6a05867519a19eb976",
+  "src/main.rs": "a29e4220a3acd41ca7084358b7f19f549bda072d37c1d05de23716a1bc372dc1",
+  "src/session.rs": "b77865a96e3b8b6975590e17c226732507e0bff1410fd3e8061439964b04ed29",
+  "src/app/mod.rs": "087dac13e524f3c8558a045683aed2967f5219958bc0f31beeff07429ba60855",
+  "src/app/sync_dialog.rs": "8d9e3e90ddd94df5720935fc0099aff2a2e3f1dffb23c40f03c3b18eebd3fd82",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "target/debug/commander": "c49eb799469fd3b412cf89fc5ac5e23896f93043d4a2f249cde6ac840ccd852c",
+  "src/sync_review.rs": "ff8edb8bcb6348188e5f626faeda22063154150c213fb2167d2be33b5a208be0",
+  "src/panel.rs": "3eadece25c829cfa30ace665de345a258347fad51700650ec3c25f5240698e7e",
+  "src/visual_qa.rs": "5c3f6a1ffd80d459e4ee7323ae7f6caa9acc7c3197244cb94cbddc8b94ac0912",
+  "src/sync_report.rs": "78a53b4d3e4e44b2c2da0a22c1977f1c3cdca2233f6fb7b44e7cd21ac89f3e04"
+}

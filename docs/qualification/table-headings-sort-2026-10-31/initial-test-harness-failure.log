@@ -1,0 +1,38 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: variable does not need to be mutable
+   --> src/table_preview.rs:289:13
+    |
+289 |         let mut frame = |content: &Arc<str>, side: &str, events: Vec<egui::Event>| {
+    |             ----^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning (run `cargo fix --bin "commander" -p commander --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.63s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 6 tests
+test table_preview::tests::tsv_preserves_empty_cells_and_escaped_quotes ... ok
+test table_preview::tests::quoted_multiline_unicode_and_ragged_rows ... ok
+test table_preview::tests::formulas_are_plain_text_and_empty_files_have_no_rows ... ok
+test table_preview::tests::heading_and_natural_sort_preserve_record_identity_and_equal_key_order ... ok
+test table_preview::tests::bounds_rows_columns_and_unicode_bytes ... ok
+test table_preview::tests::pointer_heading_sort_and_reload_keep_panes_and_source_independent ... FAILED
+
+failures:
+
+---- table_preview::tests::pointer_heading_sort_and_reload_keep_panes_and_source_independent stdout ----
+
+thread 'table_preview::tests::pointer_heading_sort_and_reload_keep_panes_and_source_independent' (26839189) panicked at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/textures.rs:337:9:
+Dropped TexturesDelta with 1 unapplied deltas. Deltas need to be handled. If you want to drop this intentionally call `clear` before dropping.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    table_preview::tests::pointer_heading_sort_and_reload_keep_panes_and_source_independent
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 2879 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin commander`

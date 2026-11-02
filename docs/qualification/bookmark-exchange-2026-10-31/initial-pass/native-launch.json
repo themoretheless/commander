@@ -1,0 +1,7 @@
+{
+  "scenario": "favorite_import",
+  "out": "/tmp/commander-native-bookmark-exchange-1793411868550248000",
+  "binary_sha256": "88f97400b1f17b94849fbf91d027e1f3f00a41bd7a4fc98bc75458241d649c6f",
+  "core_sha256": "88f97400b1f17b94849fbf91d027e1f3f00a41bd7a4fc98bc75458241d649c6f",
+  "started_ns": 1793411868670438000
+}

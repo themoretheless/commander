@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Exclude matches checkbox/navigation or layout capture",
+  "binary_sha256": "998705cdfce6ce252c602bac4592ff4eebbd1df9f65b04ce4038adc0e0bdcfcf",
+  "earlier_archive_native_gates": "remain pending"
+}

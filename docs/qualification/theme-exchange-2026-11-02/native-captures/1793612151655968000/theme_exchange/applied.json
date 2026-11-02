@@ -1,0 +1,31 @@
+{
+  "draft": "{\n  \"colors\": {\n    \"accent\": \"#389dcc\",\n    \"accent_purple\": \"#8c64b7\",\n    \"accent_red\": \"#ca453d\",\n    \"accent_warning\": \"#bf7b1f\",\n    \"bg_card\": \"#24211e\",\n    \"bg_deep\": \"#13110f\",\n    \"bg_hover\": \"#2d2925\",\n    \"bg_panel\": \"#182838\",\n    \"bg_selected\": \"#3178ba\",\n    \"bg_toolbar\": \"#181613\",\n    \"border\": \"#34302c\",\n    \"folder\": \"#c8af64\",\n    \"text_muted\": \"#928e89\",\n    \"text_primary\": \"#ede9e2\",\n    \"text_secondary\": \"#b9b5b0\"\n  },\n  \"format\": \"commander.theme\",\n  \"version\": 1\n}",
+  "error": null,
+  "panel": [
+    24,
+    40,
+    56
+  ],
+  "phase": 10,
+  "saved": {
+    "colors": {
+      "accent": "#389dcc",
+      "accent_purple": "#8c64b7",
+      "accent_red": "#ca453d",
+      "accent_warning": "#bf7b1f",
+      "bg_card": "#24211e",
+      "bg_deep": "#13110f",
+      "bg_hover": "#2d2925",
+      "bg_panel": "#182838",
+      "bg_selected": "#3178ba",
+      "bg_toolbar": "#181613",
+      "border": "#34302c",
+      "folder": "#c8af64",
+      "text_muted": "#928e89",
+      "text_primary": "#ede9e2",
+      "text_secondary": "#b9b5b0"
+    },
+    "format": "commander.theme",
+    "version": 1
+  }
+}

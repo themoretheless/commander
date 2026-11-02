@@ -1,0 +1,26 @@
+[
+  {
+    "device": 16777230,
+    "inode": 254768102,
+    "path": "identity-original.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254768102,
+    "path": "nested/identity-alias.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254768106,
+    "path": "identity-copy.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254768107,
+    "path": "identity-link.txt",
+    "symlink": true
+  }
+]

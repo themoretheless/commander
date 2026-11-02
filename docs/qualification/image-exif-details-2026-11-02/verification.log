@@ -1,0 +1,1 @@
+PASS feature: six gates; 3225 tests; details and header-only native scenes each 14/14; independent TIFF fields match attribution, capture offset/subseconds and exposure enums; unchanged recorded time, visible offset/header rows and source/binary/tool hashes. Existing dependency audit remains failing.

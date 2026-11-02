@@ -238,6 +238,22 @@ const PANE_SPLIT_RATIO: &str = "pane_split_ratio";
 
 /// The left pane width that keeps the user's split `ratio` of `remaining`,
 /// leaving both panes at least `pane_min` wide when there is room.
+/// Listing content is clipped to the user's pane viewport; its intrinsic
+/// minimum width must not resize the neighboring pane on subsequent frames.
+fn pane_viewport<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let rect = ui.available_rect_before_wrap();
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("listing-viewport")
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(ui.clip_rect().intersect(rect));
+    let result = contents(&mut child);
+    ui.allocate_rect(rect, egui::Sense::hover());
+    result
+}
+
 fn split_left_width(ratio: f32, remaining: f32, pane_min: f32) -> f32 {
     let half = remaining / 2.0;
     (remaining * ratio.clamp(0.0, 1.0)).clamp(pane_min.min(half), (remaining - pane_min).max(half))
@@ -841,22 +857,33 @@ impl eframe::App for App {
         #[cfg(feature = "visual-qa")]
         crate::visual_qa::begin_probe_frame(&ctx);
         let prior_modal_ownership = ModalOwnershipSnapshot::capture(self.has_modal_surface());
+        if self.hex_viewer.is_some() {
+            super::file_list::release_pane_row_focus(&ctx);
+        }
         self.begin_frame(&ctx);
         self.process_pending_context_menu(&ctx);
         self.capture_operation_failures(&ctx);
         self.poll_recovery(&ctx);
         self.poll_checksum(&ctx);
         self.show_checksum_dialog(&ctx);
+        self.show_checksum_list_dialog(&ctx);
+        self.show_bookmark_import(&ctx);
         if let Some((open, copy)) = self
             .hex_viewer
             .as_mut()
             .map(|viewer| viewer.show(&ctx, &self.workload))
         {
             if let Some(text) = copy {
-                self.write_clipboard(&text, "hex preview page", &ctx);
+                self.write_clipboard(&text, "hex preview content", &ctx);
             }
             if !open {
                 self.hex_viewer = None;
+                ctx.memory_mut(|memory| {
+                    if let Some(id) = memory.focused() {
+                        memory.surrender_focus(id);
+                    }
+                });
+                super::file_list::request_cursor_row_refocus(&ctx);
             }
         }
         self.show_quit_confirmation(&ctx);
@@ -868,6 +895,8 @@ impl eframe::App for App {
         self.show_saved_search_dialog(&ctx);
         self.show_collections_dialog(&ctx);
         self.show_mask_dialog(&ctx);
+        self.show_custom_theme(&ctx);
+        self.show_workspace_profiles(&ctx);
         self.show_run_command_dialog(&ctx);
         self.show_palette_dialog(&ctx);
         self.show_permissions_dialog(&ctx);
@@ -883,7 +912,8 @@ impl eframe::App for App {
         // The closed modal took the focused widget with it; give focus back
         // to the active pane's cursor row so keyboard and assistive-tech
         // users land where they were.
-        if prior_modal_ownership.closed_after(self.has_modal_surface()) {
+        if prior_modal_ownership.closed_after(self.has_modal_surface()) && self.hex_viewer.is_none()
+        {
             super::file_list::request_cursor_row_refocus(&ctx);
         }
         #[cfg(feature = "visual-qa")]
@@ -932,6 +962,9 @@ impl eframe::App for App {
         });
         self.show_drag_overlay(&ctx);
         self.show_type_ahead_overlay(&ctx, input_policy.background_enabled());
+        if input_policy.background_enabled() {
+            self.custom_shortcuts.show_pending(&ctx);
+        }
         self.show_toasts(&ctx, input_policy.background_enabled());
         self.show_fallback_context_menu(&ctx);
         self.show_developer_panel(&ctx, input_policy.background_enabled());
@@ -1490,6 +1523,10 @@ impl App {
     fn dispatch_ui_request(&mut self, request: UiRequest, ctx: &egui::Context) {
         match request {
             UiRequest::Rename(path) => self.open_rename(path, ctx),
+            UiRequest::WorkspaceProfiles => {
+                self.ui.modals.workspace_profiles = Some(crate::workspace_profile::Editor::open());
+                Self::mark_modal_opened(ctx, UiModal::WorkspaceProfiles);
+            }
             UiRequest::SelectMask => self.open_mask(ctx),
             UiRequest::RunCommand => self.open_run_command(ctx),
             UiRequest::GatherIntoFolder => {
@@ -1511,6 +1548,11 @@ impl App {
             UiRequest::DiffFiles => self.open_diff(ctx),
             UiRequest::DiskTreemap => self.open_treemap(ctx),
             UiRequest::Find => self.open_find(ctx),
+            UiRequest::FindIdentity {
+                root,
+                device,
+                inode,
+            } => self.open_identity_find(ctx, root, device, inode),
             UiRequest::FocusFilter => {
                 let side = match self.ws.active {
                     ActivePanel::Left => "left",
@@ -1519,6 +1561,12 @@ impl App {
                 ctx.memory_mut(|memory| memory.request_focus(super::render::pane_filter_id(side)));
             }
             UiRequest::Permissions(targets) => self.open_permissions(targets, ctx),
+            UiRequest::Timestamps(targets) => {
+                self.open_permissions(targets, ctx);
+                if let Some(state) = self.ui.modals.permissions.as_mut() {
+                    state.edit_times = true;
+                }
+            }
             UiRequest::Archive(path) => self.open_archive(path, ctx),
             UiRequest::SavedSearch => self.open_saved_search(),
             UiRequest::ProjectCollections => self.open_collections(ctx),
@@ -1550,7 +1598,16 @@ impl App {
                 );
             }
             UiRequest::VerifyChecksum(paths) => self.start_checksum(paths, ctx),
+            UiRequest::VerifyChecksumList(path) => self.open_checksum_list(path, ctx),
+            UiRequest::OpenFavorites => self.open_omnibar(ctx, "@".into()),
+            UiRequest::ImportFavoritesGtk => self.open_bookmark_import(),
             UiRequest::HexPreview(path) => {
+                super::file_list::release_pane_row_focus(ctx);
+                ctx.memory_mut(|memory| {
+                    if let Some(id) = memory.focused() {
+                        memory.surrender_focus(id);
+                    }
+                });
                 self.hex_viewer = Some(crate::hex_preview::HexViewer::new(path))
             }
             UiRequest::HiddenFilesOutcome(outcome) => {
@@ -1568,6 +1625,7 @@ impl App {
         if paths.is_empty() || self.checksum_task.is_some() {
             return;
         }
+        self.checksum_list_dialog = None;
         self.checksum_generation = self.checksum_generation.wrapping_add(1).max(1);
         let generation = self.checksum_generation;
         let total = paths.len();
@@ -1597,6 +1655,8 @@ impl App {
                 self.checksum_report = None;
                 self.checksum_expected.clear();
                 self.checksum_algorithm = crate::checksum::Algorithm::default();
+                self.checksum_relative_paths = false;
+                self.checksum_relative_base = None;
                 self.checksum_task = Some(super::ChecksumTask {
                     receiver,
                     task,
@@ -1664,6 +1724,26 @@ impl App {
     }
 
     #[cfg(feature = "visual-qa")]
+    pub(crate) fn checksum_relative_base_is(&self, base: &std::path::Path) -> bool {
+        self.checksum_relative_paths
+            && self
+                .checksum_relative_base
+                .as_ref()
+                .and_then(|base| base.as_ref().ok())
+                .is_some_and(|value| value == base)
+    }
+
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn checksum_relative_mode_is(&self, enabled: bool) -> bool {
+        self.checksum_relative_paths == enabled
+            && (!enabled
+                || self
+                    .checksum_relative_base
+                    .as_ref()
+                    .is_some_and(Result::is_ok))
+    }
+
+    #[cfg(feature = "visual-qa")]
     pub(crate) fn checksum_comparison_is(
         &self,
         algorithm: crate::checksum::Algorithm,
@@ -1701,7 +1781,7 @@ impl App {
                 }
                 if let Some(report) = &self.checksum_report {
                     ui.label(report.summary_line());
-                    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 3.0 * ui.text_style_height(&egui::TextStyle::Monospace) + 3.0 * ui.spacing().item_spacing.y + 8.0;
+                    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 7.0 * ui.text_style_height(&egui::TextStyle::Monospace) + 7.0 * ui.spacing().item_spacing.y + 8.0;
                     egui::ScrollArea::both().max_height(320.0).show_rows(ui, row_height, report.rows.len(), |ui, range| {
                         ui.set_min_width(550.0);
                         for row in &report.rows[range] {
@@ -1710,13 +1790,14 @@ impl App {
                                 let path = row.path.to_string_lossy().escape_debug().to_string();
                                 ui.add(egui::Label::new(&path).truncate()).on_hover_text(&path);
                                 if let Some(message) = row.error.as_ref().or(row.skipped.as_ref()) { ui.add(egui::Label::new(message).truncate()).on_hover_text(message); }
-                                else { ui.monospace(format!("SHA-256 {}\nBLAKE3  {}\nContent {}", row.sha256_hex.as_deref().unwrap_or("-"), row.blake3_hex.as_deref().unwrap_or("-"), row.content_hash.map(|value| format!("{value:016x}")).unwrap_or_else(|| "-".into()))); }
+                                else { ui.add(egui::Label::new(egui::RichText::new(format!("SHA-256 {}\nSHA-384 {}\nSHA-512 {}\nBLAKE3  {}\nCRC32   {}\nMD5     {}\nContent {}", row.sha256_hex.as_deref().unwrap_or("-"), row.sha384_hex.as_deref().unwrap_or("-"), row.sha512_hex.as_deref().unwrap_or("-"), row.blake3_hex.as_deref().unwrap_or("-"), row.crc32_hex.as_deref().unwrap_or("-"), row.md5_hex.as_deref().unwrap_or("-"), row.content_hash.map(|value| format!("{value:016x}")).unwrap_or_else(|| "-".into()))).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
                             });
                         }
                     });
-                    ui.horizontal(|ui| {
+                    let old_algorithm = self.checksum_algorithm;
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Compare as");
-                        for algorithm in [crate::checksum::Algorithm::Sha256, crate::checksum::Algorithm::Blake3] {
+                        for algorithm in [crate::checksum::Algorithm::Sha256, crate::checksum::Algorithm::Sha384, crate::checksum::Algorithm::Sha512, crate::checksum::Algorithm::Blake3, crate::checksum::Algorithm::Crc32, crate::checksum::Algorithm::Md5] {
                             let choice = ui.selectable_value(&mut self.checksum_algorithm, algorithm, algorithm.label());
                             #[cfg(feature = "visual-qa")]
                             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("checksum-algorithm", algorithm.label())), choice.rect));
@@ -1728,26 +1809,59 @@ impl App {
                     let comparable = report.single_digest(algorithm).is_some();
                     let expected_label = format!("Expected {}", algorithm.label());
                     ui.label(&expected_label);
-                    let expected = ui.add_enabled(comparable, egui::TextEdit::singleline(&mut self.checksum_expected).desired_width(f32::INFINITY).char_limit(128).hint_text("Paste 64 hexadecimal characters"));
+                    let expected = ui.add_enabled(comparable, egui::TextEdit::singleline(&mut self.checksum_expected).desired_width(f32::INFINITY).char_limit(256).hint_text(format!("Paste {} hexadecimal characters", algorithm.hex_len())));
                     expected.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, expected.enabled(), &expected_label));
                     #[cfg(feature = "visual-qa")]
                     ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-expected"), expected.rect));
                     use crate::checksum::ExpectedMatch;
+                    let invalid_message = format!("Enter exactly {} hexadecimal characters", algorithm.hex_len());
                     let (message, color) = match report.compare_expected_algorithm(&self.checksum_expected, self.checksum_algorithm) {
                         ExpectedMatch::Empty if comparable => ("Paste an expected digest to compare this file", ui.visuals().text_color()),
                         ExpectedMatch::Empty | ExpectedMatch::Unavailable => ("Select one completed file to compare an expected digest", ui.visuals().text_color()),
-                        ExpectedMatch::Invalid => ("Enter exactly 64 hexadecimal characters", ui.visuals().error_fg_color),
+                        ExpectedMatch::Invalid => (invalid_message.as_str(), ui.visuals().error_fg_color),
                         ExpectedMatch::Match => ("Digest matches the selected algorithm", self.colors.accent),
                         ExpectedMatch::Mismatch => ("Digest does not match the selected algorithm", ui.visuals().error_fg_color),
                     };
                     ui.colored_label(color, message);
+                    let relative = ui.checkbox(&mut self.checksum_relative_paths, "Relative paths")
+                        .on_hover_text("Portable lists rooted at the common directory of completed files. Save the list there and verify from that directory; filenames start with ./.");
+                    #[cfg(feature = "visual-qa")]
+                    ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-relative-paths"), relative.rect));
+                    if !self.checksum_relative_paths { self.checksum_relative_base = None; }
+                    else if relative.changed() || old_algorithm != algorithm || self.checksum_relative_base.is_none() {
+                        self.checksum_relative_base = Some(report.list_base(algorithm));
+                    }
+                    if self.checksum_relative_paths && let Some(base) = &self.checksum_relative_base {
+                        match base {
+                            Ok(base) => {
+                                let text = format!("Save list in: {}", base.to_string_lossy().escape_debug());
+                                ui.add(egui::Label::new(&text).truncate()).on_hover_text(text);
+                            }
+                            Err(error) => { ui.colored_label(ui.visuals().error_fg_color, error); }
+                        }
+                    }
                     ui.horizontal_wrapped(|ui| {
                         if ui.add_enabled(!report.rows.is_empty(), egui::Button::new("Copy report")).clicked() { copy = Some(report.detailed_text()); }
-                        if ui.add_enabled(comparable, egui::Button::new(format!("Copy {} digest", algorithm.label()))).clicked() {
+                        let copy_digest = ui.add_enabled(comparable, egui::Button::new(format!("Copy {} digest", algorithm.label())));
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-copy-digest"), copy_digest.rect));
+                        if copy_digest.clicked() {
                             copy = report.single_digest(algorithm).map(str::to_owned);
                         }
-                        if ui.add_enabled(report.successful() > 0, egui::Button::new(format!("Copy SHA-256 list ({})", report.successful()))).on_hover_text("Computed files only; skipped, failed and unprocessed entries are omitted").clicked() {
-                            match report.sha256_list() { Ok(text) => copy = Some(text), Err(error) => export_error = Some(error) }
+                        let list_algorithm = algorithm;
+                        let list_label = if list_algorithm == crate::checksum::Algorithm::Crc32 { "SFV" } else { list_algorithm.label() };
+                        let list_ready = !self.checksum_relative_paths || self.checksum_relative_base.as_ref().is_some_and(Result::is_ok);
+                        let scope = if self.checksum_relative_paths { "relative " } else { "" };
+                        let copy_list = ui.add_enabled(report.successful() > 0 && list_ready, egui::Button::new(format!("Copy {scope}{} list ({})", list_label, report.successful()))).on_hover_text("Computed files only; skipped, failed and unprocessed entries are omitted");
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("checksum-copy-list"), copy_list.rect));
+                        if copy_list.clicked() {
+                            let base = if self.checksum_relative_paths { self.checksum_relative_base.as_ref().and_then(|base| base.as_ref().ok()).map(std::path::PathBuf::as_path) } else { None };
+                            // A missing/invalid relative base never falls back to absolute export.
+                            if list_ready {
+                                let result = match base { Some(base) => report.checksum_list_at(list_algorithm, Some(base)), None => report.checksum_list(list_algorithm) };
+                                match result { Ok(text) => copy = Some(text), Err(error) => export_error = Some(error) }
+                            }
                         }
                     });
                 }
@@ -1904,15 +2018,37 @@ impl App {
         }
         let shortcut_context = self.ws.action_bar_command_context();
         let hints = crate::command::contextual_shortcuts(&shortcut_context);
+        let shortcut_hints: Vec<_> = hints
+            .iter()
+            .map(|h| self.custom_shortcuts.hints(h.command, h.key))
+            .collect();
         let mut run: Option<crate::command::Command> = None;
         let draw = |ui: &mut egui::Ui, run: &mut Option<crate::command::Command>| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for hint in &hints {
+                for (hint, keys) in hints.iter().zip(&shortcut_hints) {
+                    let first = keys.first().map(String::as_str).unwrap_or("");
+                    let compact = if first.chars().count() > 24 {
+                        format!("{}…", first.chars().take(24).collect::<String>())
+                    } else {
+                        first.to_owned()
+                    };
+                    let compact = if keys.len() > 1 {
+                        format!("{compact} (+{})", keys.len() - 1)
+                    } else {
+                        compact
+                    };
+                    #[cfg(feature = "visual-qa")]
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new(("keybar-effective-shortcut", hint.key)),
+                            keys.join(" / "),
+                        )
+                    });
                     let response = ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new(format!("{}  {}", hint.key, hint.label))
+                                egui::RichText::new(format!("{}  {}", compact, hint.label))
                                     .size(11.0)
                                     .color(t.text_secondary),
                             )
@@ -1920,7 +2056,12 @@ impl App {
                             .stroke(Stroke::NONE)
                             .corner_radius(crate::theme::ROUNDING_SM),
                         )
-                        .on_hover_text(hint.label);
+                        .on_hover_text(format!(
+                            "{}{}{}",
+                            hint.label,
+                            if keys.is_empty() { "" } else { " · " },
+                            keys.join(" / ")
+                        ));
                     paint_focus_ring(ui, &response, &t);
                     if response.clicked() {
                         *run = Some(hint.command);
@@ -2455,45 +2596,48 @@ impl App {
             self.show_pane_tool(ui);
             return super::render::PanelRenderOutcome::default();
         }
-        // Tab actions own focus above the body, including middle-close without activation.
-        if self.render_folder_tabs(ui, side) {
-            ui.ctx().request_repaint();
-            return super::render::PanelRenderOutcome::default();
-        }
-        if input_policy.allows_raw_input(
-            ui.is_enabled(),
-            !egui::Popup::is_any_open(ui.ctx())
-                && ui.rect_contains_pointer(ui.available_rect_before_wrap())
-                && ui.input(|i| i.pointer.any_pressed()),
-        ) {
-            self.ws.active = side;
-        }
-        let t = self.colors;
-        let is_active = self.ws.active == side;
-        let (panel, label) = match side {
-            ActivePanel::Left => (&mut self.ws.left, "left"),
-            ActivePanel::Right => (&mut self.ws.right, "right"),
-        };
-        Self::render_panel(
-            panel,
-            ui,
-            is_active,
-            close_preview,
-            &t,
-            &mut self.image_cache,
-            &mut self.pdf_cache,
-            label,
-            self.show_tree,
-            self.show_size_bars,
-            compare,
-            opener,
-            dragging,
-            dragged,
-            metrics,
-            self.accessibility_preferences.reduced_motion,
-            self.ws.nav_lock,
-            self.accessibility_preferences.high_contrast,
-        )
+        pane_viewport(ui, |ui| {
+            // Tab actions own focus above the body, including middle-close without activation.
+            if self.render_folder_tabs(ui, side) {
+                ui.ctx().request_repaint();
+                return super::render::PanelRenderOutcome::default();
+            }
+            if input_policy.allows_raw_input(
+                ui.is_enabled(),
+                !egui::Popup::is_any_open(ui.ctx())
+                    && ui.rect_contains_pointer(ui.available_rect_before_wrap())
+                    && ui.input(|i| i.pointer.any_pressed()),
+            ) {
+                self.ws.active = side;
+            }
+            let t = self.colors;
+            let is_active = self.ws.active == side;
+            let (panel, label) = match side {
+                ActivePanel::Left => (&mut self.ws.left, "left"),
+                ActivePanel::Right => (&mut self.ws.right, "right"),
+            };
+            Self::render_panel(
+                panel,
+                ui,
+                is_active,
+                close_preview,
+                &t,
+                &mut self.image_cache,
+                &mut self.pdf_cache,
+                &mut self.image_metadata,
+                label,
+                self.show_tree,
+                self.show_size_bars,
+                compare,
+                opener,
+                dragging,
+                dragged,
+                metrics,
+                self.accessibility_preferences.reduced_motion,
+                self.ws.nav_lock,
+                self.accessibility_preferences.high_contrast,
+            )
+        })
     }
 
     /// Draw the open pane tool (disk usage, diff, sync, duplicates or archive)
@@ -2928,6 +3072,42 @@ mod tests {
     };
 
     #[test]
+    fn pane_viewport_keeps_user_width_when_child_requests_more_space() {
+        for width in [340.0, 637.0, 900.0] {
+            let ctx = egui::Context::default();
+            for frame in 0..6 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 760.0),
+                    )),
+                    ..Default::default()
+                };
+                let output = ctx.run_ui(input, |ui| {
+                    let response = egui::Panel::left("bounded-test")
+                        .resizable(true)
+                        .default_size(width)
+                        .min_size(237.0)
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| {
+                            super::pane_viewport(ui, |child| {
+                                child.set_min_width(4096.0);
+                                child.label("Oversized intrinsic content");
+                            });
+                        });
+                    assert!(
+                        (response.response.rect.width() - width).abs() <= 1.0,
+                        "frame {frame}: {:?}",
+                        response.response.rect
+                    );
+                    assert!(ui.available_width() >= 1280.0 - width - 1.0);
+                });
+                let _ = crate::testutil::take_egui_output(output);
+            }
+        }
+    }
+
+    #[test]
     fn close_guard_prompts_then_waits_for_cancelled_operations_to_settle() {
         assert_eq!(close_guard_action(true, 2, false), CloseGuardAction::Prompt);
         assert_eq!(close_guard_action(false, 2, true), CloseGuardAction::Wait);
@@ -3004,6 +3184,14 @@ mod tests {
             "nothing open yet"
         );
         tools.diff = Some(crate::app::DiffState {
+            intraline: Default::default(),
+            source: None,
+            options: Default::default(),
+            paths: Default::default(),
+            jump: Default::default(),
+            find: Default::default(),
+            context_view: Default::default(),
+            navigation: Default::default(),
             name_a: "a".into(),
             name_b: "b".into(),
             lines: Vec::new(),
@@ -3023,6 +3211,14 @@ mod tests {
         let mut tools = crate::app::ui_state::PaneTools::default();
         tools.replace_on(ActivePanel::Right);
         tools.diff = Some(crate::app::DiffState {
+            intraline: Default::default(),
+            source: None,
+            options: Default::default(),
+            paths: Default::default(),
+            jump: Default::default(),
+            find: Default::default(),
+            context_view: Default::default(),
+            navigation: Default::default(),
             name_a: "a".into(),
             name_b: "b".into(),
             lines: Vec::new(),

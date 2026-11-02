@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.80s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 2 tests
+test hex_preview::tests::recent_offsets_admit_only_submitted_go_inputs_and_bound_history ... FAILED
+test hex_preview::tests::recent_offset_pointer_recall_does_not_read_and_relative_go_uses_current_page ... ok
+
+failures:
+
+---- hex_preview::tests::recent_offsets_admit_only_submitted_go_inputs_and_bound_history stdout ----
+
+thread 'hex_preview::tests::recent_offsets_admit_only_submitted_go_inputs_and_bound_history' (24558005) panicked at src/hex_preview.rs:1336:13:
+assertion failed: !runtime.run_next()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hex_preview::tests::recent_offsets_admit_only_submitted_go_inputs_and_bound_history
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2798 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `--bin commander`

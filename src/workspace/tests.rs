@@ -272,6 +272,176 @@ fn favorite_edits_reorder_clear_slot_remove_and_persist() {
     assert_eq!(saved, ["c", "a"]);
 }
 
+#[test]
+fn favorite_label_and_slot_edits_save_only_real_changes_and_reload_with_same_identity() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(
+            br#"{"items":[{"name":"a","path":"/a","slot":1},{"name":"b","path":"/b"}]}"#.to_vec(),
+        ),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().into(),
+        right.path().into(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    let root = ws.left.current_path.clone();
+    for edit in [
+        FavoriteEdit::Rename("b".into()),
+        FavoriteEdit::Rename("\n".into()),
+        FavoriteEdit::AssignSlot(0),
+        FavoriteEdit::AssignSlot(10),
+    ] {
+        ws.edit_favorite(Path::new("/b"), edit);
+    }
+    ws.edit_favorite(Path::new("/missing"), FavoriteEdit::Rename("Other".into()));
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 0);
+    ws.edit_favorite(Path::new("/b"), FavoriteEdit::Rename(" Проект UI ".into()));
+    ws.edit_favorite(Path::new("/b"), FavoriteEdit::AssignSlot(1));
+    ws.edit_favorite(Path::new("/b"), FavoriteEdit::AssignSlot(1));
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 2);
+    assert_eq!(ws.left.current_path, root);
+    assert_eq!(ws.bookmarks.items[0].slot, None);
+    assert_eq!(ws.bookmarks.items[1].name, "Проект UI");
+    assert_eq!(ws.bookmarks.by_slot(1).unwrap().path, Path::new("/b"));
+    let loaded = crate::bookmarks::load_with(persistence.as_ref());
+    assert_eq!(loaded.store, ws.bookmarks);
+}
+
+#[test]
+fn reviewed_favorite_import_is_append_only_persistent_idempotent_and_fail_closed() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(br#"{"items":[{"name":"Old","path":"/old","slot":3}]}"#.to_vec()),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().into(),
+        right.path().into(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    let source = "file:///old Replacement
+file:///new New
+file:///unchecked Unchecked
+";
+    let mut preview = crate::bookmark_exchange::parse(source, &ws.bookmarks).unwrap();
+    preview.rows[2].selected = false;
+    let original = ws.bookmarks.items[0].clone();
+    let paths = (ws.left.current_path.clone(), ws.right.current_path.clone());
+    assert!(ws.import_favorites("changed", &preview).is_err());
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 0);
+    assert_eq!(ws.import_favorites(source, &preview).unwrap(), 1);
+    assert_eq!(ws.bookmarks.items[0], original);
+    assert_eq!(ws.bookmarks.items[1].path, Path::new("/new"));
+    assert_eq!(ws.bookmarks.items[1].slot, None);
+    assert!(!ws.bookmarks.contains(Path::new("/unchecked")));
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    assert_eq!(ws.import_favorites(source, &preview).unwrap(), 0);
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        crate::bookmarks::load_with(persistence.as_ref()).store,
+        ws.bookmarks
+    );
+    assert_eq!(
+        (ws.left.current_path.clone(), ws.right.current_path.clone()),
+        paths
+    );
+    let new_source = "file:///blocked Blocked";
+    let preview = crate::bookmark_exchange::parse(new_source, &ws.bookmarks).unwrap();
+    let before = ws.bookmarks.clone();
+    let bytes = persistence.bytes.lock().unwrap().clone();
+    ws.bookmark_gate
+        .block(crate::persistence::LoadStatus::FutureVersion);
+    assert!(ws.import_favorites(new_source, &preview).is_err());
+    assert_eq!(ws.bookmarks, before);
+    assert_eq!(*persistence.bytes.lock().unwrap(), bytes);
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn favorite_exchange_commands_use_text_requests_without_cursor_or_selection() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&left, &right);
+    ws.bookmarks.items.clear();
+    ws.bookmarks.add("Pinned", "/missing/a b");
+    ws.execute(Command::ImportFavoritesGtk);
+    assert_eq!(ws.drain_ui_requests(), vec![UiRequest::ImportFavoritesGtk]);
+    ws.execute(Command::ExportFavoritesGtk);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::CopyText {
+            text: "file:///missing/a%20b Pinned\n".into(),
+            label: "GTK bookmarks".into()
+        }]
+    );
+    ws.bookmarks.items.clear();
+    ws.execute(Command::ExportFavoritesGtk);
+    assert!(matches!(
+        &ws.drain_ui_requests()[..],
+        [UiRequest::Notice { error: true, .. }]
+    ));
+}
+
+#[test]
+fn favorite_import_commit_failure_keeps_the_prior_live_and_persisted_model() {
+    struct RejectSave(InjectedPersistence);
+    impl crate::persistence::Persist for RejectSave {
+        fn read(
+            &self,
+            path: &Path,
+            max_bytes: usize,
+        ) -> Result<crate::persistence::ReadOutcome, crate::persistence::ReadFailure> {
+            crate::persistence::Persist::read(&self.0, path, max_bytes)
+        }
+        fn commit(
+            &self,
+            _path: &Path,
+            _bytes: &[u8],
+            _expected: crate::persistence::ExpectedRevision,
+        ) -> Result<crate::persistence::AtomicWriteOutcome, crate::persistence::PreCommitError>
+        {
+            self.0.commits.fetch_add(1, Ordering::Relaxed);
+            Err(crate::persistence::PreCommitError::Conflict)
+        }
+    }
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let persistence = Arc::new(RejectSave(InjectedPersistence {
+        bytes: Mutex::new(br#"{"items":[{"name":"Old","path":"/old","slot":3}]}"#.to_vec()),
+        commits: AtomicUsize::new(0),
+    }));
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().into(),
+        right.path().into(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    let old = ws.bookmarks.clone();
+    let source = "file:///new New";
+    let preview = crate::bookmark_exchange::parse(source, &ws.bookmarks).unwrap();
+    assert!(ws.import_favorites(source, &preview).is_err());
+    assert_eq!(persistence.0.commits.load(Ordering::Relaxed), 1);
+    assert_eq!(ws.bookmarks, old);
+    assert_eq!(crate::bookmarks::load_with(persistence.as_ref()).store, old);
+    ws.bookmarks.add("A first", "/aaa");
+    let before_sort = ws.bookmarks.clone();
+    assert!(
+        ws.sort_favorites(crate::bookmarks::FavoriteOrder::Name)
+            .is_err()
+    );
+    assert_eq!(ws.bookmarks, before_sort);
+    assert_eq!(crate::bookmarks::load_with(persistence.as_ref()).store, old);
+    assert_eq!(persistence.0.commits.load(Ordering::Relaxed), 2);
+}
+
 fn test_transfer_spec(operation_id: &str, target: &Path) -> TransferSpec {
     TransferSpec {
         operation_id: crate::operation::OperationId(operation_id.to_string()),
@@ -2048,6 +2218,75 @@ fn two_way_sync_runs_both_passes() {
 }
 
 #[test]
+fn guarded_content_sync_copies_same_stat_differences_and_preserves_equal_file_timestamps() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    for (dir, changed) in [(&left, "left"), (&right, "DIFF")] {
+        dir.file("changed.txt", changed);
+        dir.file("same.txt", "same");
+    }
+    let old = crate::query::parse_absolute_time("2020-01-01").unwrap();
+    let newer = crate::query::parse_absolute_time("2022-01-01").unwrap();
+    for (path, time) in [
+        (left.path().join("changed.txt"), old),
+        (right.path().join("changed.txt"), old),
+        (left.path().join("same.txt"), newer),
+        (right.path().join("same.txt"), old),
+    ] {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(time))
+            .unwrap();
+    }
+    let mut ws = workspace(&left, &right);
+    let policy = crate::sync::SyncPolicy::MirrorLeftToRight;
+    let (actions, stamp) = crate::sync_guard::build_plan_with_contents(
+        left.path(),
+        right.path(),
+        false,
+        false,
+        policy,
+        true,
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|a| a.direction != crate::sync::SyncDirection::Skip)
+            .count(),
+        1
+    );
+    let guard = crate::sync_guard::GuardPolicy::default();
+    let settings = crate::sync_guard::settings_fingerprint(policy, &guard, stamp.filter_key());
+    let assessment = ws
+        .apply_sync_guarded(
+            crate::sync_guard::GuardedPlan {
+                actions: &actions,
+                stamp: &stamp,
+                policy,
+                guard: &guard,
+                expected_settings: settings,
+                allow_large_plan: false,
+            },
+            || {},
+        )
+        .unwrap();
+    assert_eq!(assessment.planned_actions, 1);
+    drain_transfers(&mut ws);
+    assert_eq!(
+        std::fs::read_to_string(right.path().join("changed.txt")).unwrap(),
+        "left"
+    );
+    assert_eq!(
+        std::fs::metadata(right.path().join("same.txt"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        old
+    );
+}
+
+#[test]
 fn guarded_sync_rejects_a_stale_baseline_before_enqueue() {
     let (l, r) = (TempDir::new(), TempDir::new());
     l.file("report.txt", "first");
@@ -3038,7 +3277,7 @@ fn get_info_fills_in_a_folder_size_once_it_is_measured() {
     // As built while the size was still being measured.
     let card = crate::panel::make_info(&entry, None, None);
     assert_eq!(card.size, crate::panel::MEASURING);
-    ws.right.preview = Some(PreviewContent::Info(card));
+    ws.right.preview = Some(PreviewContent::Info(Box::new(card)));
 
     // Generous: background size workers share the machine with the whole
     // parallel suite, and a loaded CI runner can take seconds to reach them.
@@ -5122,7 +5361,7 @@ fn browse_archive_on_the_parent_row_explains_what_to_highlight() {
     assert_eq!(
         ws.drain_ui_requests(),
         vec![UiRequest::Notice {
-            message: "Highlight a ZIP, TAR or tar.gz archive first".to_string(),
+            message: "Highlight a ZIP or supported TAR archive first".to_string(),
             error: true,
         }]
     );
@@ -6373,6 +6612,27 @@ fn permission_request_keeps_the_selected_listing_identity() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn timestamp_request_captures_selection_and_empty_other_pane_cannot_retarget_it() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let path = left.file("selected.txt", "bytes");
+    let mut ws = workspace(&left, &right);
+    ws.left.set_cursor(1);
+    ws.execute(Command::EditTimestamps);
+    let requests = ws.drain_ui_requests();
+    ws.active = ActivePanel::Right;
+    assert!(
+        matches!(requests.as_slice(),[UiRequest::Timestamps(targets)] if targets.len()==1 && targets[0].path==path && matches!(targets[0].identity,crate::panel::ListingIdentity::Captured(_)))
+    );
+    ws.execute(Command::EditTimestamps);
+    assert!(
+        !ws.drain_ui_requests()
+            .iter()
+            .any(|r| matches!(r, UiRequest::Timestamps(_)))
+    );
+}
+
 #[test]
 fn hex_preview_uses_the_cursor_and_preserves_the_selection_and_file() {
     let (left, right) = (TempDir::new(), TempDir::new());
@@ -6388,6 +6648,150 @@ fn hex_preview_uses_the_cursor_and_preserves_the_selection_and_file() {
     );
     assert!(ws.left.is_selected(&other));
     assert_eq!(std::fs::read(bytes).unwrap(), b"abc");
+}
+
+#[test]
+fn excluded_batch_target_is_untouched_and_still_blocks_destination_collisions() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("a.txt", "excluded payload");
+    left.file("b.txt", "included payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_all();
+    let mut context = ws.batch_rename_context().unwrap();
+    context.targets.retain(|name| name == "b.txt");
+    let collision = crate::rename::RenameRule {
+        find: "b".into(),
+        replace: "a".into(),
+        ..Default::default()
+    };
+    assert!(ws.apply_batch_rename_in(&context, &collision).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("a.txt")).unwrap(),
+        b"excluded payload"
+    );
+    let rule = crate::rename::RenameRule {
+        prefix: "new-".into(),
+        ..Default::default()
+    };
+    assert_eq!(ws.apply_batch_rename_in(&context, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("new-b.txt")).unwrap(),
+        b"included payload"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("a.txt")).unwrap(),
+        b"excluded payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert_eq!(
+        std::fs::read(left.path().join("b.txt")).unwrap(),
+        b"included payload"
+    );
+    assert!(left.path().join("a.txt").exists());
+}
+
+#[test]
+fn reordered_batch_targets_apply_counter_mapping_and_preserve_undo_redo() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("photo.txt", "photo payload");
+    left.file("notes.md", "notes payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_all();
+    let mut context = ws.batch_rename_context().unwrap();
+    context.targets = vec!["notes.md".into(), "photo.txt".into()];
+    let rule = crate::rename::RenameRule {
+        numbering: Some(crate::rename::Numbering {
+            start: 1,
+            step: 1,
+            pad: 2,
+        }),
+        number_position: crate::rename::NumberPosition::CounterOnly,
+        ..Default::default()
+    };
+    assert_eq!(ws.apply_batch_rename_in(&context, &rule).unwrap(), 2);
+    assert_eq!(
+        std::fs::read(left.path().join("01.md")).unwrap(),
+        b"notes payload"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("02.txt")).unwrap(),
+        b"photo payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert_eq!(
+        std::fs::read(left.path().join("notes.md")).unwrap(),
+        b"notes payload"
+    );
+    assert!(left.path().join("photo.txt").exists());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("01.md").exists());
+    assert!(left.path().join("02.txt").exists());
+}
+
+#[test]
+fn replacement_chain_rename_preserves_bytes_undo_redo_and_blocks_partial_expansion() {
+    use crate::rename::{RenameRule, ReplacementPair};
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("old-old.txt", "original payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("old-old.txt"));
+    let rule = RenameRule {
+        find: "old".into(),
+        replace: "tmp".into(),
+        extra_replacements: vec![ReplacementPair {
+            find: "tmp".into(),
+            replace: "final".into(),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("final-final.txt")).unwrap(),
+        b"original payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("old-old.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("final-final.txt").is_file());
+    let _ = ws.perform_undo(|| {});
+    left.file("final-final.txt", "collision payload");
+    ws.left.refresh();
+    ws.left.select_path(left.path().join("old-old.txt"));
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("final-final.txt")).unwrap(),
+        b"collision payload"
+    );
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("a.txt", "a payload");
+    left.file("keep.txt", "keep payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_all();
+    let rule = RenameRule {
+        prefix: "P-".into(),
+        extra_replacements: vec![
+            ReplacementPair {
+                find: "a".into(),
+                replace: "a".repeat(1024),
+            },
+            ReplacementPair {
+                find: "a".into(),
+                replace: "a".repeat(1024),
+            },
+        ],
+        ..Default::default()
+    };
+    assert!(
+        apply_batch_rename(&mut ws, &rule)
+            .unwrap_err()
+            .contains("64 KiB")
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("keep.txt")).unwrap(),
+        b"keep payload"
+    );
+    assert!(!left.path().join("P-keep.txt").exists());
+    assert!(left.path().join("a.txt").is_file());
 }
 
 #[test]
@@ -6978,4 +7382,1515 @@ fn kind_inversion_commands_preserve_the_other_panel_and_gate_missing_kinds() {
     assert!(
         crate::command::availability(Command::InvertVisibleFolders, &ws.command_context()).enabled
     );
+}
+
+#[test]
+fn folder_location_copy_works_without_rows_and_captures_the_dispatch_owner() {
+    use crate::clipboard::PathStyle;
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        let temp = TempDir::new();
+        let left = temp.dir("left space%#");
+        let right = temp.dir("right folder");
+        let mut ws = Workspace::new(left, right);
+        ws.active = side;
+        ws.active_panel().refresh();
+        assert_eq!(ws.active_panel_ref().filtered_count(), 0);
+        let path = ws.active_panel_ref().current_path.clone();
+        for (command, style, label) in [
+            (
+                Command::CopyFolderPath,
+                PathStyle::FullPath,
+                "current folder path",
+            ),
+            (
+                Command::CopyFolderUrl,
+                PathStyle::FileUrl,
+                "current folder URL",
+            ),
+        ] {
+            assert!(crate::command::availability(command, &ws.command_context()).enabled);
+            let revision = ws.tab_revision();
+            ws.execute(command);
+            ws.execute(Command::SwitchPanel);
+            assert_eq!(
+                ws.drain_ui_requests(),
+                [UiRequest::CopyText {
+                    text: crate::clipboard::format(std::slice::from_ref(&path), style, None),
+                    label: label.into()
+                }]
+            );
+            ws.execute(Command::SwitchPanel);
+            assert_eq!(ws.tab_revision(), revision);
+            assert!(ws.active_panel_ref().selection_is_empty());
+        }
+    }
+}
+
+#[test]
+fn folder_location_copy_ignores_selected_file_and_filter() {
+    let temp = TempDir::new();
+    let selected = temp.file("file.txt", "x");
+    let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+    ws.left.refresh();
+    ws.left.replace_selection([selected.clone()]);
+    ws.left.set_search_query("no matching row");
+    ws.execute(Command::CopyFolderPath);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        [UiRequest::CopyText {
+            text: crate::clipboard::format(
+                &[temp.path().into()],
+                crate::clipboard::PathStyle::FullPath,
+                None
+            ),
+            label: "current folder path".into()
+        }]
+    );
+    assert!(ws.left.is_selected(&selected));
+    assert_eq!(ws.left.search_query(), "no matching row");
+}
+
+#[test]
+fn kind_deselection_commands_have_per_kind_filtered_capabilities() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        let temp = TempDir::new();
+        let file = temp.file("keep.txt", "x");
+        let hidden = temp.file("hidden.txt", "x");
+        let folder = temp.dir("keep-dir");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.active = side;
+        ws.active_panel().refresh();
+        ws.active_panel()
+            .replace_selection([file, hidden.clone(), folder.clone()]);
+        ws.active_panel().set_search_query("keep");
+        ws.active_panel().set_cursor(0);
+        assert!(
+            crate::command::availability(Command::DeselectVisibleFiles, &ws.command_context())
+                .enabled
+        );
+        assert!(
+            crate::command::availability(Command::DeselectVisibleFolders, &ws.command_context())
+                .enabled
+        );
+        ws.execute(Command::DeselectVisibleFiles);
+        assert!(
+            !crate::command::availability(Command::DeselectVisibleFiles, &ws.command_context())
+                .enabled
+        );
+        assert!(
+            crate::command::availability(Command::DeselectVisibleFolders, &ws.command_context())
+                .enabled
+        );
+        assert!(ws.active_panel_ref().is_selected(&folder));
+        ws.execute(Command::DeselectVisibleFolders);
+        assert!(
+            !crate::command::availability(Command::DeselectVisibleFolders, &ws.command_context())
+                .enabled
+        );
+        assert_eq!(
+            ws.active_panel_ref().selected_paths(),
+            &std::collections::HashSet::from([hidden])
+        );
+        assert_eq!(ws.active_panel_ref().cursor(), 0);
+        assert_eq!(ws.active_panel_ref().search_query(), "keep");
+        let other = if side == ActivePanel::Left {
+            &ws.right
+        } else {
+            &ws.left
+        };
+        assert!(other.selection_is_empty());
+        assert_eq!(ws.active, side);
+    }
+}
+
+#[test]
+fn explicit_pane_focus_is_idempotent_retains_state_and_blocks_modal_retargeting() {
+    let temp = TempDir::new();
+    let left_file = temp.file("left.txt", "x");
+    let right = temp.dir("right");
+    let right_file = temp.file("right/right.txt", "x");
+    let mut ws = Workspace::new(temp.path().into(), right);
+    ws.left.refresh();
+    ws.right.refresh();
+    ws.left.replace_selection([left_file.clone()]);
+    ws.right.replace_selection([right_file]);
+    ws.left.set_search_query("left");
+    ws.right.set_search_query("right");
+    let left_tabs = ws.tab_snapshot(ActivePanel::Left);
+    let right_tabs = ws.tab_snapshot(ActivePanel::Right);
+    let revision = ws.tab_revision();
+    ws.last_command = Some(Command::SortByName);
+    for (command, target) in [
+        (Command::FocusRightPanel, ActivePanel::Right),
+        (Command::FocusLeftPanel, ActivePanel::Left),
+    ] {
+        assert!(crate::command::availability(command, &ws.command_context()).enabled);
+        ws.execute(command);
+        assert_eq!(ws.active, target);
+        assert!(!crate::command::availability(command, &ws.command_context()).enabled);
+        ws.execute(command);
+        assert_eq!(ws.active, target);
+        assert_eq!(ws.last_command, Some(Command::SortByName));
+    }
+    assert_eq!(ws.tab_snapshot(ActivePanel::Left), left_tabs);
+    assert_eq!(ws.tab_snapshot(ActivePanel::Right), right_tabs);
+    assert_eq!(ws.tab_revision(), revision);
+    assert!(ws.left.is_selected(&left_file));
+    assert_eq!(ws.right.selected_count(), 1);
+    assert_eq!(ws.left.search_query(), "left");
+    assert_eq!(ws.right.search_query(), "right");
+    for start in [ActivePanel::Left, ActivePanel::Right] {
+        ws.active = start;
+        ws.emit_ui_request(UiRequest::Rename(left_file.clone()));
+        ws.execute(Command::FocusLeftPanel);
+        ws.execute(Command::FocusRightPanel);
+        assert_eq!(ws.active, start);
+        ws.drain_ui_requests();
+    }
+}
+
+#[test]
+fn equalizing_panes_both_directions_keeps_source_and_destination_back_state() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        for command in [Command::EqualizePanels, Command::MatchOtherPane] {
+            let left = TempDir::new();
+            let right = TempDir::new();
+            left.file("keep.txt", "left");
+            right.file("keep.txt", "right");
+            let mut ws = workspace(&left, &right);
+            ws.active = side;
+            ws.left.replace_selection([left.path().join("keep.txt")]);
+            ws.right.replace_selection([right.path().join("keep.txt")]);
+            ws.left.set_search_query("keep");
+            ws.right.set_search_query("keep");
+            let destination = if command == Command::MatchOtherPane {
+                side
+            } else {
+                side.other()
+            };
+            let source = destination.other();
+            let source_before = ws.tab_snapshot(source);
+            let old_destination = ws.tab_snapshot(destination).entries[0].path.clone();
+            let expected = source_before.entries[0].path.clone();
+            assert!(crate::command::availability(command, &ws.command_context()).enabled);
+            ws.execute(command);
+            assert_eq!(ws.active, side);
+            assert_eq!(ws.tab_snapshot(source), source_before);
+            assert_eq!(ws.tab_snapshot(destination).entries[0].path, expected);
+            assert!(!crate::command::availability(command, &ws.command_context()).enabled);
+            ws.execute(command);
+            let destination_panel = if destination == ActivePanel::Left {
+                &mut ws.left
+            } else {
+                &mut ws.right
+            };
+            destination_panel.refresh();
+            destination_panel.go_back();
+            destination_panel.refresh();
+            assert_eq!(destination_panel.current_path, old_destination);
+            assert_eq!(destination_panel.search_query(), "keep");
+            assert!(destination_panel.is_selected(&old_destination.join("keep.txt")));
+            destination_panel.go_forward();
+            assert_eq!(destination_panel.current_path, expected);
+        }
+    }
+}
+
+#[test]
+fn equalizing_either_direction_cannot_retarget_an_open_modal() {
+    let left = TempDir::new();
+    let right = TempDir::new();
+    let file = left.file("keep.txt", "x");
+    let mut ws = workspace(&left, &right);
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        ws.active = side;
+        let before_left = ws.tab_snapshot(ActivePanel::Left);
+        let before_right = ws.tab_snapshot(ActivePanel::Right);
+        ws.emit_ui_request(UiRequest::Rename(file.clone()));
+        for command in [Command::EqualizePanels, Command::MatchOtherPane] {
+            ws.execute(command);
+            assert_eq!(ws.tab_snapshot(ActivePanel::Left), before_left);
+            assert_eq!(ws.tab_snapshot(ActivePanel::Right), before_right);
+            assert_eq!(ws.active, side);
+        }
+        ws.drain_ui_requests();
+    }
+}
+
+#[test]
+fn selected_navigation_commands_gate_each_direction_and_preserve_repeat_and_other_pane() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        let temp = TempDir::new();
+        let a = temp.file("a.txt", "x");
+        temp.file("b.txt", "x");
+        let c = temp.file("c.txt", "x");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.active = side;
+        ws.active_panel().refresh();
+        ws.active_panel().replace_selection([a.clone(), c.clone()]);
+        ws.active_panel().set_cursor(0);
+        ws.last_command = Some(Command::ReverseSort);
+        let other_cursor = ws.inactive_panel().cursor();
+        let other_tabs = ws.tab_snapshot(side.other());
+        assert!(
+            crate::command::availability(Command::CursorNextSelected, &ws.command_context())
+                .enabled
+        );
+        assert!(
+            !crate::command::availability(Command::CursorPreviousSelected, &ws.command_context())
+                .enabled
+        );
+        ws.execute(Command::CursorNextSelected);
+        assert_eq!(ws.active_panel_ref().cursor_entry().unwrap().path, a);
+        ws.execute(Command::CursorNextSelected);
+        assert_eq!(ws.active_panel_ref().cursor_entry().unwrap().path, c);
+        assert!(
+            !crate::command::availability(Command::CursorNextSelected, &ws.command_context())
+                .enabled
+        );
+        assert!(
+            crate::command::availability(Command::CursorPreviousSelected, &ws.command_context())
+                .enabled
+        );
+        ws.execute(Command::CursorPreviousSelected);
+        assert_eq!(ws.active_panel_ref().cursor_entry().unwrap().path, a);
+        assert_eq!(ws.active_panel_ref().selected_count(), 2);
+        assert_eq!(ws.last_command, Some(Command::ReverseSort));
+        assert_eq!(ws.inactive_panel().cursor(), other_cursor);
+        assert_eq!(ws.tab_snapshot(side.other()), other_tabs);
+        assert_eq!(ws.active, side);
+        ws.emit_ui_request(UiRequest::Rename(a));
+        ws.execute(Command::CursorNextSelected);
+        assert_eq!(ws.active_panel_ref().cursor(), 1);
+        ws.drain_ui_requests();
+        ws.active_panel().set_search_query("b.txt");
+        assert!(
+            !crate::command::availability(Command::CursorNextSelected, &ws.command_context())
+                .enabled
+        );
+        assert!(
+            !crate::command::availability(Command::CursorPreviousSelected, &ws.command_context())
+                .enabled
+        );
+    }
+}
+
+#[test]
+fn filtered_clear_and_stationary_toggle_commands_preserve_cursor_and_other_pane() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        let temp = TempDir::new();
+        let visible = temp.file("keep.txt", "x");
+        let hidden = temp.file("hidden.txt", "x");
+        temp.dir("keep-dir");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.active = side;
+        ws.active_panel().refresh();
+        ws.active_panel().replace_selection([hidden.clone()]);
+        ws.active_panel().set_search_query("keep");
+        assert!(
+            !crate::command::availability(Command::ClearVisibleSelection, &ws.command_context())
+                .enabled
+        );
+        ws.active_panel().focus_child("keep.txt".into());
+        let cursor = ws.active_panel_ref().cursor();
+        ws.last_command = Some(Command::ReverseSort);
+        ws.execute(Command::ToggleSelectHere);
+        assert!(ws.active_panel_ref().is_selected(&visible));
+        assert_eq!(ws.active_panel_ref().cursor(), cursor);
+        assert_eq!(ws.last_command, Some(Command::ReverseSort));
+        ws.execute(Command::ToggleSelectHere);
+        assert!(!ws.active_panel_ref().is_selected(&visible));
+        assert_eq!(ws.active_panel_ref().cursor(), cursor);
+        ws.execute(Command::ToggleSelectHere);
+        assert!(
+            crate::command::availability(Command::ClearVisibleSelection, &ws.command_context())
+                .enabled
+        );
+        ws.execute(Command::ClearVisibleSelection);
+        assert_eq!(
+            ws.active_panel_ref().selected_paths(),
+            &std::collections::HashSet::from([hidden])
+        );
+        assert_eq!(ws.active_panel_ref().cursor(), cursor);
+        assert_eq!(ws.active_panel_ref().search_query(), "keep");
+        ws.active_panel().set_cursor(0);
+        assert!(
+            !crate::command::availability(Command::ToggleSelectHere, &ws.command_context()).enabled
+        );
+        let picks = ws.active_panel_ref().selected_paths().clone();
+        ws.execute(Command::ToggleSelectHere);
+        assert_eq!(ws.active_panel_ref().cursor(), 0);
+        assert_eq!(ws.active_panel_ref().selected_paths(), &picks);
+        assert!(ws.inactive_panel().selection_is_empty());
+        assert_eq!(ws.active, side);
+    }
+}
+
+#[test]
+fn folder_selection_clear_keeps_elsewhere_saved_memory_and_other_pane() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        let temp = TempDir::new();
+        let local = temp.file("hidden.txt", "x");
+        let elsewhere = temp.file("other/elsewhere.txt", "x");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.active = side;
+        ws.active_panel().navigate_to(temp.path().join("other"));
+        ws.active_panel().refresh();
+        ws.active_panel().replace_selection([elsewhere]);
+        ws.active_panel().navigate_to(temp.path().into());
+        ws.active_panel().refresh();
+        ws.active_panel().replace_selection([local.clone()]);
+        ws.active_panel().save_selection();
+        ws.active_panel().set_search_query("no match");
+        let cursor = ws.active_panel_ref().cursor();
+        assert!(
+            !crate::command::availability(Command::ClearVisibleSelection, &ws.command_context())
+                .enabled
+        );
+        assert!(
+            crate::command::availability(Command::ClearFolderSelection, &ws.command_context())
+                .enabled
+        );
+        ws.execute(Command::ClearFolderSelection);
+        assert!(ws.active_panel_ref().selection_is_empty());
+        assert_eq!(ws.active_panel_ref().selected_elsewhere_count(), 1);
+        assert!(
+            !crate::command::availability(Command::ClearFolderSelection, &ws.command_context())
+                .enabled
+        );
+        assert_eq!(ws.active_panel_ref().cursor(), cursor);
+        assert_eq!(ws.active_panel_ref().search_query(), "no match");
+        assert!(ws.inactive_panel().selection_is_empty());
+        assert_eq!(ws.active, side);
+        ws.execute(Command::RestoreSelection);
+        assert!(ws.active_panel_ref().is_selected(&local));
+        assert_eq!(ws.active_panel_ref().selected_elsewhere_count(), 1);
+    }
+}
+
+#[test]
+fn removal_range_rename_preserves_payload_undo_redo_and_blocks_sibling_collision() {
+    use crate::rename::{RemoveRange, RenameRule};
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("prefix-report.txt", "retained payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("prefix-report.txt"));
+    let rule = RenameRule {
+        remove_range: Some(RemoveRange {
+            offset: 0,
+            count: 7,
+            from_end: false,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("report.txt")).unwrap(),
+        b"retained payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("prefix-report.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("report.txt").is_file());
+    let _ = ws.perform_undo(|| {});
+    left.file("report.txt", "sibling payload");
+    ws.left.refresh();
+    ws.left.select_path(left.path().join("prefix-report.txt"));
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("prefix-report.txt")).unwrap(),
+        b"retained payload"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("report.txt")).unwrap(),
+        b"sibling payload"
+    );
+}
+
+#[test]
+fn positional_insertion_preserves_payload_undo_redo_and_refuses_sibling_collision() {
+    use crate::rename::{InsertText, RenameRule};
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("prefix-report.txt", "retained payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("prefix-report.txt"));
+    let rule = RenameRule {
+        insert_text: Some(InsertText {
+            text: "2026-".into(),
+            offset: 7,
+            from_end: false,
+            overwrite: false,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("prefix-2026-report.txt")).unwrap(),
+        b"retained payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("prefix-report.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("prefix-2026-report.txt").is_file());
+    let _ = ws.perform_undo(|| {});
+    left.file("prefix-2026-report.txt", "sibling payload");
+    ws.left.refresh();
+    ws.left.select_path(left.path().join("prefix-report.txt"));
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("prefix-report.txt")).unwrap(),
+        b"retained payload"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("prefix-2026-report.txt")).unwrap(),
+        b"sibling payload"
+    );
+}
+
+#[test]
+fn extension_character_edit_preserves_payload_undo_redo_and_refuses_collision() {
+    use crate::rename::{CharacterTarget, InsertText, RenameRule};
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("report.txt", "retained payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("report.txt"));
+    let rule = RenameRule {
+        character_target: CharacterTarget::Extension,
+        insert_text: Some(InsertText {
+            text: "pre_".into(),
+            offset: 0,
+            from_end: false,
+            overwrite: false,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("report.pre_txt")).unwrap(),
+        b"retained payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("report.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("report.pre_txt").is_file());
+    let _ = ws.perform_undo(|| {});
+    left.file("report.pre_txt", "sibling payload");
+    ws.left.refresh();
+    ws.left.select_path(left.path().join("report.txt"));
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("report.txt")).unwrap(),
+        b"retained payload"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("report.pre_txt")).unwrap(),
+        b"sibling payload"
+    );
+}
+
+#[test]
+fn letter_counter_rename_preserves_payload_undo_redo_and_refuses_collision() {
+    use crate::rename::{NumberFormat, NumberPosition, Numbering, RenameRule};
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("photo.txt", "retained payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("photo.txt"));
+    let rule = RenameRule {
+        number_format: NumberFormat::LowerLetters,
+        numbering: Some(Numbering {
+            start: 27,
+            step: 1,
+            pad: 6,
+        }),
+        number_position: NumberPosition::CounterOnly,
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("aa.txt")).unwrap(),
+        b"retained payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("photo.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("aa.txt").is_file());
+    let _ = ws.perform_undo(|| {});
+    left.file("aa.txt", "sibling payload");
+    ws.left.refresh();
+    ws.left.select_path(left.path().join("photo.txt"));
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("photo.txt")).unwrap(),
+        b"retained payload"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("aa.txt")).unwrap(),
+        b"sibling payload"
+    );
+}
+
+#[test]
+fn keep_range_rename_preserves_payload_undo_redo_and_refuses_collision() {
+    use crate::rename::{RangeAction, RemoveRange, RenameRule};
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("IMG_20261030_raw.jpg", "retained payload");
+    let mut ws = workspace(&left, &right);
+    ws.left
+        .select_path(left.path().join("IMG_20261030_raw.jpg"));
+    let rule = RenameRule {
+        range_action: RangeAction::Keep,
+        remove_range: Some(RemoveRange {
+            offset: 4,
+            count: 8,
+            from_end: false,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("20261030.jpg")).unwrap(),
+        b"retained payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("IMG_20261030_raw.jpg").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert!(left.path().join("20261030.jpg").is_file());
+    let _ = ws.perform_undo(|| {});
+    left.file("20261030.jpg", "sibling payload");
+    ws.left.refresh();
+    ws.left
+        .select_path(left.path().join("IMG_20261030_raw.jpg"));
+    assert!(apply_batch_rename(&mut ws, &rule).is_err());
+    assert_eq!(
+        std::fs::read(left.path().join("IMG_20261030_raw.jpg")).unwrap(),
+        b"retained payload"
+    );
+    assert_eq!(
+        std::fs::read(left.path().join("20261030.jpg")).unwrap(),
+        b"sibling payload"
+    );
+}
+
+#[test]
+fn checksum_list_command_captures_cursor_file_and_gates_parent_row() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let manifest = left.file("list.sha256", "manifest");
+    let other = left.file("other", "other");
+    let mut ws = workspace(&left, &right);
+    ws.left.toggle_select(other.clone());
+    ws.left.focus_child("list.sha256".into());
+    assert!(
+        crate::command::availability(Command::VerifyChecksumList, &ws.command_context()).enabled
+    );
+    ws.execute(Command::VerifyChecksumList);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::VerifyChecksumList(manifest)]
+    );
+    assert!(ws.left.is_selected(&other));
+    ws.left.set_cursor(0);
+    assert!(
+        !crate::command::availability(Command::VerifyChecksumList, &ws.command_context()).enabled
+    );
+    ws.execute(Command::VerifyChecksumList);
+    assert!(ws.drain_ui_requests().is_empty());
+}
+
+#[test]
+fn favorite_sort_commands_commit_only_changes_and_keep_live_order_on_blocked_save() {
+    use crate::bookmarks::FavoriteOrder;
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(br#"{"items":[{"name":"Folder 10","path":"/p10","slot":3},{"name":"Folder 2","path":"/p2"}]}"#.to_vec()),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().into(),
+        right.path().into(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    let paths = (ws.left.current_path.clone(), ws.right.current_path.clone());
+    ws.execute(Command::SortFavorites(FavoriteOrder::Name));
+    assert_eq!(ws.bookmarks.items[0].path, Path::new("/p2"));
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        crate::bookmarks::load_with(persistence.as_ref()).store,
+        ws.bookmarks
+    );
+    ws.execute(Command::SortFavorites(FavoriteOrder::Path));
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    let before = ws.bookmarks.clone();
+    let bytes = persistence.bytes.lock().unwrap().clone();
+    ws.bookmark_gate
+        .block(crate::persistence::LoadStatus::FutureVersion);
+    assert!(ws.sort_favorites(FavoriteOrder::Slot).is_err());
+    assert_eq!(ws.bookmarks, before);
+    assert_eq!(*persistence.bytes.lock().unwrap(), bytes);
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        (ws.left.current_path.clone(), ws.right.current_path.clone()),
+        paths
+    );
+    assert_eq!(ws.bookmarks.by_slot(3).unwrap().path, Path::new("/p10"));
+}
+
+#[test]
+fn bulk_favorites_append_only_visible_selected_folders_in_one_guarded_commit() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let a = left.path().join("Folder 2");
+    let b = left.path().join("Folder 10");
+    let first = left.path().join("Folder 1");
+    let hidden = left.path().join(".hidden");
+    for path in [&a, &b, &hidden, &first] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let file = left.file("plain.txt", "keep");
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(br#"{"items":[]}"#.to_vec()),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().into(),
+        right.path().into(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    ws.left.refresh();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.entries().len() < 4 {
+        assert!(std::time::Instant::now() < deadline);
+        ws.left.poll_listing();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    ws.bookmarks.add("Custom label", &b);
+    ws.bookmarks.assign_slot(&b, 7);
+    ws.left.replace_selection([
+        b.clone(),
+        file.clone(),
+        hidden.clone(),
+        a.clone(),
+        first.clone(),
+    ]);
+    let before = ws.bookmarks.items[0].clone();
+    let selection = ws.left.selected_count();
+    ws.execute(Command::BookmarkSelectedFolders);
+    assert_eq!(ws.bookmarks.items.len(), 3);
+    assert_eq!(ws.bookmarks.items[0], before);
+    assert_eq!(ws.bookmarks.items[1].path, first);
+    assert_eq!(ws.bookmarks.items[2].path, a);
+    assert_eq!(ws.bookmarks.items[1].slot, None);
+    assert!(!ws.bookmarks.contains(&file));
+    assert!(!ws.bookmarks.contains(&hidden));
+    assert_eq!(ws.left.selected_count(), selection);
+    assert_eq!(ws.left.current_path, left.path());
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        crate::bookmarks::load_with(persistence.as_ref()).store,
+        ws.bookmarks
+    );
+    assert_eq!(ws.bookmark_selected_folders().unwrap(), 0);
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    ws.bookmarks.remove(&a);
+    let prior = ws.bookmarks.clone();
+    let saved = persistence.bytes.lock().unwrap().clone();
+    ws.bookmark_gate
+        .block(crate::persistence::LoadStatus::FutureVersion);
+    assert!(ws.bookmark_selected_folders().is_err());
+    assert_eq!(ws.bookmarks, prior);
+    assert_eq!(*persistence.bytes.lock().unwrap(), saved);
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn bulk_favorites_invalid_label_rejects_the_entire_candidate_without_save() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    for name in ["A valid", "Z\ninvalid"] {
+        std::fs::create_dir(left.path().join(name)).unwrap();
+    }
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(br#"{"items":[]}"#.to_vec()),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().into(),
+        right.path().into(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    ws.left.refresh();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.left.entries().len() < 2 {
+        assert!(std::time::Instant::now() < deadline);
+        ws.left.poll_listing();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    ws.left.select_all();
+    assert!(ws.bookmark_selected_folders().is_err());
+    assert!(ws.bookmarks.items.is_empty());
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 0);
+    ws.left.clear_selection();
+    assert_eq!(
+        ws.bookmark_selected_folders().unwrap(),
+        0,
+        "never use the cursor as an implicit selection"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn relative_symlink_command_preserves_collision_and_survives_common_root_move() {
+    let root = TempDir::new();
+    let left = root.path().join("left");
+    let right = root.path().join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    std::fs::write(left.join("a.txt"), "source").unwrap();
+    std::fs::write(right.join("a.txt"), "occupied").unwrap();
+    std::fs::create_dir(left.join("folder")).unwrap();
+    std::fs::write(left.join("folder/item"), "nested").unwrap();
+    let mut ws = Workspace::new(left.clone(), right.clone());
+    ws.left.refresh();
+    ws.right.refresh();
+    ws.left.select_path(left.join("a.txt"));
+    ws.left.select_path(left.join("folder"));
+    ws.drain_ui_requests();
+    ws.execute(Command::CreateRelativeSymlink);
+    assert_eq!(
+        std::fs::read_link(right.join("a link 2.txt")).unwrap(),
+        PathBuf::from("../left/a.txt")
+    );
+    assert_eq!(
+        std::fs::read_link(right.join("folder")).unwrap(),
+        PathBuf::from("../left/folder")
+    );
+    assert_eq!(
+        std::fs::read_to_string(right.join("a.txt")).unwrap(),
+        "occupied"
+    );
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Created 2 relative symlinks".into(),
+            error: false
+        }]
+    );
+    // Rename the shared tree while the sources and link locations move together.
+    let moved = root.path().with_extension("relative-link-moved");
+    drop(ws);
+    std::fs::rename(root.path(), &moved).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(moved.join("right/a link 2.txt")).unwrap(),
+        "source"
+    );
+    assert_eq!(
+        std::fs::read_to_string(moved.join("right/folder/item")).unwrap(),
+        "nested"
+    );
+    std::fs::rename(&moved, root.path()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn relative_links_use_physical_parents_and_preserve_dangling_source_entry() {
+    let root = TempDir::new();
+    let physical = root.path().join("physical");
+    let target = physical.join("nested");
+    let source = root.path().join("source");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::create_dir(&source).unwrap();
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    std::os::unix::fs::symlink("missing", source.join("dangling")).unwrap();
+    std::fs::write(source.join("file"), "x").unwrap();
+    let mut ws = Workspace::new(source.clone(), alias.clone());
+    ws.left.refresh();
+    ws.right.refresh();
+    ws.left.select_path(source.join("file"));
+    ws.left.select_path(source.join("dangling"));
+    let report = fileops::create_relative_symlinks(&mut ws);
+    assert_eq!(report.created, 2, "{:?}", report.errors);
+    assert_eq!(
+        std::fs::read_link(alias.join("file")).unwrap(),
+        PathBuf::from("../../source/file")
+    );
+    assert_eq!(std::fs::read_to_string(alias.join("file")).unwrap(), "x");
+    assert_eq!(
+        std::fs::read_link(alias.join("dangling")).unwrap(),
+        PathBuf::from("../../source/dangling")
+    );
+    assert!(
+        std::fs::symlink_metadata(alias.join("dangling"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!alias.join("dangling").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn relative_link_command_respects_existing_mutation_block_and_capability_policy() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("item", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(file.clone());
+    ws.safe_state = Some(crate::operation::SafeState {
+        operation_id: crate::operation::OperationId("relative-block".into()),
+        reason: "review required".into(),
+        paths: vec![file],
+        failures: vec![],
+    });
+    let report = fileops::create_relative_symlinks(&mut ws);
+    assert_eq!(report.created, 0);
+    assert_eq!(report.errors.len(), 1);
+    assert!(!r.path().join("item").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn follow_symlink_reveals_resolved_file_chain_and_keeps_other_pane_and_history() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let target = r.file("file.txt", "payload");
+    let middle = l.path().join("middle");
+    std::os::unix::fs::symlink(&target, &middle).unwrap();
+    std::os::unix::fs::symlink("middle", l.path().join("entry")).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "entry"));
+    ws.left.select_path(middle);
+    let right = ws.right.current_path.clone();
+    assert!(crate::command::availability(Command::FollowSymlink, &ws.command_context()).enabled);
+    ws.execute(Command::FollowSymlink);
+    assert_eq!(
+        ws.left.current_path,
+        std::fs::canonicalize(r.path()).unwrap()
+    );
+    assert_eq!(ws.left.cursor_entry().unwrap().name, "file.txt");
+    assert_eq!(ws.right.current_path, right);
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "payload");
+    ws.execute(Command::JumpBack);
+    assert_eq!(ws.left.current_path, l.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn follow_directory_symlink_reveals_folder_and_hidden_target_clears_filters() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    std::fs::create_dir(r.path().join("folder")).unwrap();
+    let hidden = r.file(".hidden", "secret");
+    std::os::unix::fs::symlink(r.path().join("folder"), l.path().join("dirlink")).unwrap();
+    std::os::unix::fs::symlink(&hidden, l.path().join("hiddenlink")).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "dirlink"));
+    ws.execute(Command::FollowSymlink);
+    assert_eq!(ws.left.cursor_entry().unwrap().name, "folder");
+    assert_eq!(
+        ws.left.current_path,
+        std::fs::canonicalize(r.path()).unwrap()
+    );
+    ws.left.set_search_query("does-not-match");
+    ws.execute(Command::JumpBack);
+    ws.left.set_cursor(row_of(&ws.left, "hiddenlink"));
+    ws.execute(Command::FollowSymlink);
+    assert!(ws.left.show_hidden());
+    assert!(ws.left.search_query().is_empty());
+    assert_eq!(ws.left.cursor_entry().unwrap().name, ".hidden");
+}
+
+#[cfg(unix)]
+#[test]
+fn follow_broken_loop_or_regular_entry_does_not_navigate_or_open_files() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    l.file("regular", "x");
+    std::os::unix::fs::symlink("missing", l.path().join("broken")).unwrap();
+    std::os::unix::fs::symlink("loop", l.path().join("loop")).unwrap();
+    let mut ws = workspace(&l, &r);
+    for name in ["broken", "loop"] {
+        ws.left.set_cursor(row_of(&ws.left, name));
+        ws.drain_ui_requests();
+        ws.execute(Command::FollowSymlink);
+        assert_eq!(ws.left.current_path, l.path());
+        let notices = ws.drain_ui_requests();
+        assert!(
+            matches!(notices.as_slice(),[UiRequest::Notice{error:true,message}] if message.contains("Could not follow symbolic link"))
+        );
+    }
+    ws.left.set_cursor(row_of(&ws.left, "regular"));
+    assert!(!crate::command::availability(Command::FollowSymlink, &ws.command_context()).enabled);
+    assert!(!Command::FollowSymlink.mutates_filesystem());
+}
+
+#[cfg(unix)]
+#[test]
+fn follow_hidden_symlink_restores_cursor_after_async_hidden_listing() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let target = r.file(".target", "x");
+    std::os::unix::fs::symlink(target, l.path().join("entry")).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "entry"));
+    let workload =
+        crate::workload::DeterministicWorkload::new(crate::workload::SchedulerLimits::default());
+    ws.left.set_workload(workload.handle());
+    ws.execute(Command::FollowSymlink);
+    for _ in 0..16 {
+        if !workload.run_next() {
+            break;
+        }
+        ws.left.poll_listing();
+    }
+    assert_eq!(
+        ws.left.current_path,
+        std::fs::canonicalize(r.path()).unwrap()
+    );
+    assert!(ws.left.show_hidden());
+    assert_eq!(ws.left.cursor_entry().unwrap().name, ".target");
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_symlink_target_distinguishes_recorded_and_resolved_chain_without_navigation() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let target = r.file("target space.txt", "payload");
+    std::os::unix::fs::symlink(&target, l.path().join("middle")).unwrap();
+    std::os::unix::fs::symlink("middle", l.path().join("entry")).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "entry"));
+    ws.left.select_path(l.path().join("middle"));
+    ws.drain_ui_requests();
+    ws.execute(Command::CopySymlinkTarget);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::CopyText {
+            text: "middle".into(),
+            label: "symbolic-link target".into()
+        }]
+    );
+    ws.execute(Command::CopyResolvedSymlinkTarget);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::CopyText {
+            text: std::fs::canonicalize(&target)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            label: "resolved symbolic-link target".into()
+        }]
+    );
+    assert_eq!(ws.left.current_path, l.path());
+    assert_eq!(ws.right.current_path, r.path());
+    assert_eq!(ws.left.cursor_entry().unwrap().name, "entry");
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "payload");
+    assert!(!Command::CopySymlinkTarget.mutates_filesystem());
+    assert!(!Command::CopyResolvedSymlinkTarget.mutates_filesystem());
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_broken_symlink_raw_target_escapes_line_controls_and_resolved_failure_never_stages_copy() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    std::os::unix::fs::symlink("missing\nwith\ttab", l.path().join("broken")).unwrap();
+    std::os::unix::fs::symlink("loop", l.path().join("loop")).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "broken"));
+    ws.drain_ui_requests();
+    ws.execute(Command::CopySymlinkTarget);
+    let copied = ws.drain_ui_requests();
+    assert!(
+        matches!(copied.as_slice(),[UiRequest::CopyText{text,..}] if text=="missing\\nwith\\ttab")
+    );
+    for name in ["broken", "loop"] {
+        ws.left.set_cursor(row_of(&ws.left, name));
+        ws.execute(Command::CopyResolvedSymlinkTarget);
+        let requests = ws.drain_ui_requests();
+        assert!(matches!(
+            requests.as_slice(),
+            [UiRequest::Notice { error: true, .. }]
+        ));
+        assert_eq!(ws.left.current_path, l.path());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn target_copy_rechecks_live_type_and_regular_rows_are_unavailable() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let path = l.path().join("entry");
+    std::os::unix::fs::symlink("missing", &path).unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "entry"));
+    assert!(
+        crate::command::availability(Command::CopySymlinkTarget, &ws.command_context()).enabled
+    );
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, "replacement").unwrap();
+    ws.drain_ui_requests();
+    ws.execute(Command::CopySymlinkTarget);
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(requests.as_slice(),[UiRequest::Notice{error:true,message}] if message.contains("no longer a symbolic link"))
+    );
+    ws.left.refresh();
+    ws.left.set_cursor(row_of(&ws.left, "entry"));
+    for cmd in [
+        Command::CopySymlinkTarget,
+        Command::CopyResolvedSymlinkTarget,
+    ] {
+        assert!(!crate::command::availability(cmd, &ws.command_context()).enabled);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn copying_non_utf8_symlink_target_refuses_lossy_clipboard_text() {
+    use std::os::unix::ffi::OsStrExt;
+    let (l, r) = (TempDir::new(), TempDir::new());
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&[0xff]), l.path().join("link"))
+        .unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.set_cursor(row_of(&ws.left, "link"));
+    ws.drain_ui_requests();
+    ws.execute(Command::CopySymlinkTarget);
+    let requests = ws.drain_ui_requests();
+    assert!(
+        matches!(requests.as_slice(),[UiRequest::Notice{error:true,message}] if message.contains("not UTF-8") && message.contains("lossy clipboard"))
+    );
+    assert_eq!(
+        std::fs::read_link(l.path().join("link"))
+            .unwrap()
+            .as_os_str()
+            .as_bytes(),
+        [0xff]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_selection_changes_only_visible_lexical_links_and_preserves_hidden_picks() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let source = l.file("source", "x");
+    std::fs::create_dir(l.path().join("directory")).unwrap();
+    let regular = l.file("show-regular", "x");
+    let hard = l.path().join("show-hard");
+    std::fs::hard_link(&source, &hard).unwrap();
+    for (name, target) in [
+        ("show-file", source.clone()),
+        ("show-dir", l.path().join("directory")),
+        ("show-broken", l.path().join("missing")),
+        ("hide-link", source),
+    ] {
+        std::os::unix::fs::symlink(target, l.path().join(name)).unwrap();
+    }
+    let hidden = l.path().join("hide-link");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(hidden.clone());
+    ws.left.select_path(regular.clone());
+    ws.left.set_search_query("show-");
+    ws.left.set_cursor(row_of(&ws.left, "show-regular"));
+    ws.drain_ui_requests();
+    ws.execute(Command::SelectVisibleSymlinks);
+    assert_eq!(ws.left.selected_count(), 5);
+    for name in ["show-file", "show-dir", "show-broken"] {
+        assert!(ws.left.is_selected(&l.path().join(name)));
+    }
+    assert!(!ws.left.is_selected(&hard));
+    assert_eq!(ws.left.cursor_entry().unwrap().path, regular);
+    assert_eq!(
+        ws.drain_ui_requests(),
+        vec![UiRequest::Notice {
+            message: "Added 3 visible symbolic links to selection".into(),
+            error: false
+        }]
+    );
+    ws.execute(Command::DeselectVisibleSymlinks);
+    assert_eq!(ws.left.selected_count(), 2);
+    assert!(ws.left.is_selected(&hidden));
+    assert!(ws.left.is_selected(&regular));
+    ws.execute(Command::InvertVisibleSymlinks);
+    assert_eq!(ws.left.selected_count(), 5);
+    ws.execute(Command::InvertVisibleSymlinks);
+    assert_eq!(ws.left.selected_count(), 2);
+    assert!(ws.left.is_selected(&hidden));
+    assert!(ws.left.is_selected(&regular));
+    for command in [
+        Command::SelectVisibleSymlinks,
+        Command::DeselectVisibleSymlinks,
+        Command::InvertVisibleSymlinks,
+    ] {
+        assert!(!command.mutates_filesystem());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_selection_uses_listing_identity_without_restat_and_refresh_changes_membership() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let link = l.path().join("link");
+    std::os::unix::fs::symlink("missing", &link).unwrap();
+    let mut ws = workspace(&l, &r);
+    std::fs::remove_file(&link).unwrap();
+    std::fs::write(&link, "now regular").unwrap();
+    ws.execute(Command::SelectVisibleSymlinks);
+    assert!(ws.left.is_selected(&link));
+    ws.execute(Command::DeselectVisibleSymlinks);
+    ws.left.refresh();
+    ws.execute(Command::SelectVisibleSymlinks);
+    assert!(!ws.left.is_selected(&link));
+    assert_eq!(std::fs::read_to_string(link).unwrap(), "now regular");
+}
+
+#[test]
+fn symlink_selection_with_no_links_or_empty_view_is_a_read_only_noop() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let regular = l.file("regular", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(regular.clone());
+    ws.execute(Command::SelectVisibleSymlinks);
+    ws.execute(Command::InvertVisibleSymlinks);
+    ws.execute(Command::DeselectVisibleSymlinks);
+    assert_eq!(ws.left.selected_count(), 1);
+    assert!(ws.left.is_selected(&regular));
+    ws.left.set_search_query("nothing-matches");
+    for command in [
+        Command::SelectVisibleSymlinks,
+        Command::DeselectVisibleSymlinks,
+        Command::InvertVisibleSymlinks,
+    ] {
+        assert!(!crate::command::availability(command, &ws.command_context()).enabled);
+    }
+    assert!(ws.left.is_selected(&regular));
+}
+
+#[test]
+fn allocated_sort_command_preserves_cursor_selection_and_view_serialization() {
+    let dir = crate::testutil::TempDir::new();
+    let a = dir.file("a", "small");
+    let b = dir.file("b", "larger content");
+    let right = TempDir::new();
+    let mut ws = workspace(&dir, &right);
+    ws.left.focus_child("a".into());
+    ws.left.replace_selection([a.clone()]);
+    ws.execute(Command::SortByAllocated);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Allocated
+    );
+    assert_eq!(ws.left.cursor_entry().unwrap().path, a);
+    ws.execute(Command::SortByAllocated);
+    assert_eq!(
+        ws.left.view_config().sort_order(),
+        crate::panel::SortOrder::Desc
+    );
+    assert!(ws.left.is_selected(&a));
+    let config = ws.left.view_config();
+    let encoded = serde_json::to_string(&config).unwrap();
+    assert_eq!(
+        serde_json::from_str::<crate::panel::ViewConfig>(&encoded).unwrap(),
+        config
+    );
+    ws.execute(Command::SortBySize);
+    assert_eq!(
+        ws.left.view_config().sort_column(),
+        crate::panel::SortColumn::Size
+    );
+    assert!(b.exists());
+}
+
+#[test]
+fn listing_json_command_emits_only_complete_payload_and_keeps_projection() {
+    let left = TempDir::new();
+    let right = TempDir::new();
+    let a = left.file("a.bin", "abc");
+    left.file("b.txt", "x");
+    let mut ws = workspace(&left, &right);
+    ws.left.replace_selection([a]);
+    ws.left.set_search_query(".bin");
+    ws.execute(Command::CopyListingJson);
+    let requests = ws.drain_ui_requests();
+    let [UiRequest::CopyText { text, label }] = requests.as_slice() else {
+        panic!("{requests:?}");
+    };
+    assert!(label.contains("JSON"));
+    let report: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(report["exported_rows"], 1);
+    assert_eq!(report["scope"], "visible_selected_rows");
+    assert_eq!(ws.left.search_query(), ".bin");
+    assert_eq!(ws.left.selected_count(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        ws.left.clear_selection();
+        ws.left.set_search_query("");
+        ws.left.current_path = left.path().join(std::ffi::OsString::from_vec(vec![255]));
+        ws.execute(Command::CopyListingJson);
+        let requests = ws.drain_ui_requests();
+        assert!(
+            requests
+                .iter()
+                .all(|r| !matches!(r, UiRequest::CopyText { .. }))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|r| matches!(r,UiRequest::Notice{message,..} if message.contains("UTF-8")))
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn allocated_selection_command_uses_observed_sizes_and_skips_link_targets() {
+    let left = TempDir::new();
+    let right = TempDir::new();
+    let sparse = left.path().join("sparse.bin");
+    std::fs::File::create(&sparse)
+        .unwrap()
+        .set_len(8 * 1024 * 1024)
+        .unwrap();
+    let dense = left.file("dense.bin", &"x".repeat(8192));
+    let link = left.path().join("link.bin");
+    std::os::unix::fs::symlink(&dense, &link).unwrap();
+    let mut ws = workspace(&left, &right);
+    assert!(
+        crate::command::availability(Command::SelectLargestAllocated, &ws.command_context())
+            .enabled
+    );
+    ws.execute(Command::SelectLargestAllocated);
+    assert!(ws.left.is_selected(&dense) && ws.left.is_selected(&sparse));
+    assert!(!ws.left.is_selected(&link));
+    ws.left.set_search_query("link.bin");
+    let context = ws.command_context();
+    assert_eq!(context.visible_files, 1);
+    assert_eq!(context.visible_allocated_files, 0);
+    let availability = crate::command::availability(Command::SelectLargestAllocated, &context);
+    assert!(!availability.enabled);
+    assert!(availability.reason.unwrap().contains("allocated"));
+}
+
+#[test]
+fn alternate_dates_commands_preserve_cursor_and_selection_and_toggle_direction() {
+    use crate::panel::{SortColumn, SortOrder};
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let file = l.file("cursor", "x");
+    let picked = l.file("picked", "x");
+    let mut ws = workspace(&l, &r);
+    ws.left.focus_child("cursor".into());
+    ws.left.replace_selection([picked.clone()]);
+    ws.drain_ui_requests();
+    for (command, column) in [
+        (Command::SortByAccessed, SortColumn::Accessed),
+        (Command::SortByCreated, SortColumn::Created),
+    ] {
+        ws.execute(command);
+        assert_eq!(ws.left.view_config().sort_column(), column);
+        assert_eq!(ws.left.view_config().sort_order(), SortOrder::Asc);
+        ws.execute(command);
+        assert_eq!(ws.left.view_config().sort_order(), SortOrder::Desc);
+        assert_eq!(ws.left.cursor_entry().unwrap().path, file);
+        assert!(ws.left.is_selected(&picked));
+        assert_eq!(ws.left.selected_count(), 1);
+    }
+    ws.execute(Command::SortByModified);
+    assert_eq!(ws.left.view_config().sort_column(), SortColumn::Modified);
+    let notices: Vec<_> = ws
+        .drain_ui_requests()
+        .into_iter()
+        .filter_map(|r| {
+            if let UiRequest::Notice { message, .. } = r {
+                Some(message)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        notices,
+        [
+            "Sorted by accessed, ascending",
+            "Sorted by accessed, descending",
+            "Sorted by created, ascending",
+            "Sorted by created, descending",
+            "Sorted by modified, ascending"
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn hardlink_selection_command_context_tracks_visible_cursor_peers() {
+    let left = TempDir::new();
+    let right = TempDir::new();
+    let original = left.file("hard-original.txt", "same");
+    std::fs::hard_link(original, left.path().join("hard-alias.txt")).unwrap();
+    left.file("copy.txt", "same");
+    let mut ws = workspace(&left, &right);
+    ws.active = ActivePanel::Left;
+    ws.left.focus_child("hard-original.txt".into());
+    assert!(
+        crate::command::availability(Command::SelectCursorHardlinks, &ws.command_context()).enabled
+    );
+    ws.execute(Command::SelectCursorHardlinks);
+    assert_eq!(ws.left.selected_count(), 2);
+    ws.left.set_search_query("hard-original");
+    assert!(
+        !crate::command::availability(Command::SelectCursorHardlinks, &ws.command_context())
+            .enabled
+    );
+    ws.left.set_search_query("");
+    ws.left.focus_child("copy.txt".into());
+    assert!(!ws.command_context().cursor_has_visible_hardlink);
+}
+
+#[cfg(unix)]
+#[test]
+fn find_cursor_hardlinks_binds_identity_and_origin_root_without_a_visible_peer() {
+    let left = TempDir::new();
+    let right = TempDir::new();
+    left.file("original.txt", "same");
+    let mut ws = workspace(&left, &right);
+    ws.active = ActivePanel::Left;
+    ws.left.focus_child("original.txt".into());
+    let (device, inode) = ws.left.cursor_entry().unwrap().regular_file_id().unwrap();
+    assert!(
+        crate::command::availability(Command::FindCursorHardlinks, &ws.command_context()).enabled
+    );
+    assert!(!ws.command_context().cursor_has_visible_hardlink);
+    ws.execute(Command::FindCursorHardlinks);
+    ws.active = ActivePanel::Right;
+    let requests = ws.drain_ui_requests();
+    assert_eq!(
+        requests,
+        vec![UiRequest::FindIdentity {
+            root: left.path().to_path_buf(),
+            device,
+            inode
+        }]
+    );
+    assert_eq!(requests[0].modal(), Some(crate::ui_request::UiModal::Find));
+    ws.active = ActivePanel::Left;
+    ws.left.set_cursor(0);
+    assert!(
+        !crate::command::availability(Command::FindCursorHardlinks, &ws.command_context()).enabled
+    );
+}
+
+#[test]
+fn miller_keyboard_commands_keep_columns_over_remembered_list_folders() {
+    let root = crate::testutil::TempDir::new();
+    let child = root.dir("child");
+    let mut ws = Workspace::new(root.path().into(), root.path().into());
+    ws.left.refresh();
+    ws.left.navigate_to(child.clone());
+    ws.left.navigate_to(root.path().into());
+    ws.left.set_browser_mode(crate::panel::BrowserMode::Miller);
+    ws.left.focus_child("child".into());
+    ws.execute(Command::Activate);
+    assert_eq!(ws.left.current_path, child);
+    assert_eq!(ws.left.browser_mode(), crate::panel::BrowserMode::Miller);
+    ws.execute(Command::GoUp);
+    assert_eq!(ws.left.current_path, root.path());
+    assert_eq!(ws.left.browser_mode(), crate::panel::BrowserMode::Miller);
+    assert_eq!(ws.left.cursor_entry().unwrap().path, child);
+    assert_eq!(ws.right.current_path, root.path());
+    assert!(ws.drain_ui_requests().is_empty());
+}
+
+#[test]
+fn named_profile_capture_and_apply_keep_background_tabs_and_missing_side_filter() {
+    let temp = crate::testutil::TempDir::new();
+    let a = temp.dir("a");
+    let b = temp.dir("b");
+    let c = temp.dir("c");
+    let mut ws = Workspace::new(a.clone(), b.clone());
+    ws.left.set_search_query("old");
+    assert!(ws.new_background_tab(ActivePanel::Left, c.clone()));
+    let profile = ws.capture_named_profile("Work".into()).unwrap();
+    assert_eq!(profile.left_filter, "old");
+    ws.left.navigate_to(c.clone());
+    ws.left.set_search_query("new");
+    assert!(ws.apply_named_profile(&profile));
+    assert_eq!(ws.left.current_path, a);
+    assert_eq!(ws.left.search_query(), "old");
+    assert_eq!(ws.tab_count(ActivePanel::Left), 2);
+    let mut missing = profile;
+    missing.tab_layout = serde_json::Value::Null;
+    missing.left_root = temp.path().join("gone");
+    missing.left_filter = "wrong".into();
+    assert!(ws.apply_named_profile(&missing));
+    assert_eq!(ws.left.search_query(), "old");
+    ws.execute(crate::command::Command::BeginSelectMask);
+    assert!(!ws.apply_named_profile(&ws.capture_named_profile("guarded".into()).unwrap()));
+}
+
+#[test]
+fn named_profile_restores_all_tabs_active_panel_and_view_metadata_without_selections() {
+    let temp = crate::testutil::TempDir::new();
+    let a = temp.dir("a");
+    let b = temp.dir("b");
+    let c = temp.dir("c");
+    let file = temp.file("a/selected.txt", "x");
+    let mut ws = Workspace::new(a.clone(), b.clone());
+    ws.left.refresh();
+    ws.left.select_path(file);
+    ws.left.save_tab_selection().unwrap();
+    assert!(ws.new_background_tab(ActivePanel::Left, c.clone()));
+    assert!(ws.select_tab(ActivePanel::Left, 1));
+    ws.left.set_browser_mode(crate::panel::BrowserMode::Icons);
+    assert!(ws.set_tab_title(ActivePanel::Left, 1, "Project"));
+    ws.left.set_search_query("needle");
+    assert!(ws.new_background_tab(ActivePanel::Right, a.clone()));
+    assert!(ws.select_tab(ActivePanel::Right, 1));
+    ws.active = ActivePanel::Right;
+    let profile = ws.capture_named_profile("Full".into()).unwrap();
+    assert_eq!(profile.tab_layout["active"], 1);
+    assert!(
+        profile.tab_layout["left"]["entries"][0]
+            .get("selection_snapshot")
+            .is_none()
+    );
+    let mut fresh = Workspace::new(b.clone(), c.clone());
+    assert!(fresh.apply_named_profile(&profile));
+    assert_eq!(fresh.active, ActivePanel::Right);
+    assert_eq!(fresh.active_tab_index(ActivePanel::Left), 1);
+    assert_eq!(fresh.active_tab_index(ActivePanel::Right), 1);
+    assert_eq!(fresh.left.current_path, c);
+    assert_eq!(fresh.right.current_path, a);
+    assert_eq!(fresh.left.search_query(), "needle");
+    assert_eq!(fresh.left.browser_mode(), crate::panel::BrowserMode::Icons);
+    assert_eq!(fresh.left.tab_title.as_deref(), Some("Project"));
+    assert_eq!(fresh.left.selected_count(), 0);
+    assert!(fresh.select_tab(ActivePanel::Left, 0));
+    assert!(fresh.left.tab_selection.is_none());
+    assert_eq!(fresh.tab_count(ActivePanel::Left), 2);
+    assert_eq!(fresh.tab_count(ActivePanel::Right), 2);
+}
+
+#[test]
+fn named_profile_refuses_corrupt_layout_and_protected_tabs_before_any_change() {
+    let temp = crate::testutil::TempDir::new();
+    let a = temp.dir("a");
+    let b = temp.dir("b");
+    let mut ws = Workspace::new(a.clone(), b.clone());
+    let good = ws.capture_named_profile("Full".into()).unwrap();
+    let before = ws.tab_snapshot(ActivePanel::Left);
+    for layout in [
+        serde_json::json!({"version":99}),
+        serde_json::json!({"version":1,"left":{"entries":[],"active":0},"right":{},"active":0}),
+    ] {
+        let mut corrupt = good.clone();
+        corrupt.tab_layout = layout;
+        assert!(!ws.apply_named_profile(&corrupt));
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
+    }
+    assert!(ws.set_tab_close_protection(ActivePanel::Left, 0, true));
+    let protected = ws.tab_snapshot(ActivePanel::Left);
+    assert!(!ws.apply_named_profile(&good));
+    assert_eq!(ws.tab_snapshot(ActivePanel::Left), protected);
+    assert_eq!(ws.right.current_path, b);
 }

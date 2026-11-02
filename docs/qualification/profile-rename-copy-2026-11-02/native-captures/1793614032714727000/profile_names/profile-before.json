@@ -1,0 +1,81 @@
+{
+  "format": "commander.persist",
+  "store": "commander.workspace_profiles",
+  "schema": 1,
+  "generation": 1,
+  "payload": {
+    "profiles": [
+      {
+        "name": "Work",
+        "left_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-76368-profile_names/left",
+        "right_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-76368-profile_names/right",
+        "left_filter": "*.rs",
+        "right_filter": "",
+        "durability": "Verified",
+        "name_policy": {
+          "normalization": "Preserve",
+          "collision": "Ask"
+        },
+        "symlink_policy": "Preserve",
+        "trusted_command_templates": [],
+        "tab_layout": {
+          "active": 0,
+          "left": {
+            "active": 0,
+            "entries": [
+              {
+                "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-76368-profile_names/left",
+                "view": {
+                  "case_sensitive_name_sort": false,
+                  "density": "Comfortable",
+                  "folders_by_name": false,
+                  "folders_first": true,
+                  "mode": "List",
+                  "natural_name_sort": true,
+                  "show_hidden": false,
+                  "sort_col": "Name",
+                  "sort_order": "Asc"
+                }
+              },
+              {
+                "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-76368-profile_names/left/Design",
+                "title": "Saved branch",
+                "view": {
+                  "case_sensitive_name_sort": false,
+                  "density": "Comfortable",
+                  "folders_by_name": false,
+                  "folders_first": true,
+                  "mode": "List",
+                  "natural_name_sort": true,
+                  "show_hidden": false,
+                  "sort_col": "Name",
+                  "sort_order": "Asc"
+                }
+              }
+            ]
+          },
+          "right": {
+            "active": 0,
+            "entries": [
+              {
+                "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-76368-profile_names/right",
+                "view": {
+                  "case_sensitive_name_sort": false,
+                  "density": "Comfortable",
+                  "folders_by_name": false,
+                  "folders_first": true,
+                  "mode": "List",
+                  "natural_name_sort": true,
+                  "show_hidden": false,
+                  "sort_col": "Name",
+                  "sort_order": "Asc"
+                }
+              }
+            ]
+          },
+          "version": 1
+        }
+      }
+    ]
+  }
+}

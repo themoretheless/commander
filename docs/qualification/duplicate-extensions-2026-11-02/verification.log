@@ -1,0 +1,1 @@
+PASS: six checks; 3156 tests; sensitive/ASCII-insensitive/reset extension groups and applied JSON agree with preserved fixture bytes and independent SHA-256; draft isolation and valid keep plans; two native scenarios 14/14 each

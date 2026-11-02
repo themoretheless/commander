@@ -1,0 +1,27 @@
+2026-11-02T05:08:59 INFO  commander::logging: logging initialized
+2026-11-02T05:08:59 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: disk_count
+2026-11-02T05:08:59 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-02T05:08:59 INFO  commander::visual_qa: Disk allocation QA phase 0
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 1
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 2
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 3
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 4
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 5
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 6
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 7
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 8
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 9
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 10
+2026-11-02T05:09:00 INFO  commander::visual_qa: Disk allocation QA phase 11
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 12
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 13
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 14
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 15
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 16
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 17
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 18
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 19
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 20
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 21
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 22
+2026-11-02T05:09:01 INFO  commander::visual_qa: Disk allocation QA phase 23

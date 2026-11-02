@@ -1,0 +1,22 @@
+{
+  "duplicate_sizes": {
+    "status": "captured",
+    "scene_phase": 46,
+    "checks": 14,
+    "all_passed": true,
+    "clipboard_writes": 3,
+    "other_effects": 0,
+    "frame_visually_inspected": true,
+    "binary_hash_matches": true
+  },
+  "recursive_regression": {
+    "status": "captured",
+    "scene_phase": 21,
+    "checks": 14,
+    "all_passed": true,
+    "clipboard_writes": 2,
+    "other_effects": 0,
+    "frame_visually_inspected": true,
+    "binary_hash_matches": true
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "include": ""
+  },
+  "files": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-85710-duplicate_names/left/note.txt",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-85710-duplicate_names/left/one.JPG",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-85710-duplicate_names/left/skip.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-85710-duplicate_names/left/two.jpg"
+  ],
+  "issues": 0,
+  "recursive": false,
+  "step": 0
+}

@@ -1,0 +1,31 @@
+{
+  "status": "passed_scoped",
+  "phase": 29,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "query": "fl2",
+  "fuzzy": true,
+  "headings": true,
+  "final_source_row_ids": [
+    2,
+    3
+  ],
+  "required_prior_states": [
+    "all prior header/sort states",
+    "literal zero results",
+    "fuzzy two results",
+    "Clear restores sorted four rows",
+    "retype after Clear"
+  ],
+  "frame_inspected": true,
+  "binary_hash_verified": true,
+  "physical_input": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture"
+}

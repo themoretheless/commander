@@ -1,0 +1,17 @@
+# Cyclic hex viewer search — 2026-10-30
+
+Independent Rust adaptation of [lf wrapscan](https://github.com/gokcehan/lf/blob/master/doc.md#wrapscan-bool-default-true), cohort #32. lf documents wrapping search through its file list; Commander applies the interaction to its existing whole-file binary viewer. This is an adaptation, not a claim that lf implements this exact hex content scanner. No upstream implementation copied.
+
+Optional Wrap search defaults off and applies to Hex bytes, UTF-8, UTF-16 LE/BE in both directions. A next/previous action starts beyond the last match as before. On reaching an edge, enabled wrapping searches the other candidate interval and labels the result Wrapped. A sole match can be found again after one complete cycle. No match keeps the page and reports no match in the file. Disabling wrap retains the existing directional-stop behavior. The setting belongs to this viewer session; it is not persisted.
+
+The scanner splits candidate addresses into two disjoint ranges. Each range includes sufficient byte context for the full pattern; patterns may cross the split/chunk boundary, but never concatenate EOF with BOF. Each candidate is checked at most once per action. Byte reads across the two windows can overlap by pattern length minus one (at most 255); progress reports actual bytes read. Memory remains one 64 KiB streaming buffer plus bounded pattern/KMP state, not a whole-file allocation. Empty files, patterns longer than the file and underflow at previous-match zero are explicit cases.
+
+Both passes run inside one admitted worker with one bound file descriptor. Cancellation is checked between passes as well as inside scanning. Existing before/after handle/path stamp validation applies to matches and no-match results, followed by the guarded page read. Controls cannot change the running snapshot. Existing completion-channel cancellation and page ownership remain in force.
+
+Five new regressions cover exhaustive agreement against naive binary candidate ordering, edge/split/chunk context and physical read bounds, cancellation before the wrapped pass, both edges in all four input modes, and path replacement during scans with/without matches. Existing directional, overlap, cancellation and large-offset tests remain applicable. An initial focused build exposed a missing test-only Ordering import; corrected, with the rejected log retained in `focused-initial.log`.
+
+The native HexSearch scenario retains its original HEX/UTF-8/UTF-16 sequences, then clicks Wrap search, Find previous across BOF to offset 120001 and Find next across EOF to offset 110001. Capture requires the exact final offset, UTF-16 BE mode and wrapped status.
+
+Final verification: full locked visual-qa suite **2721 passed, 0 failed, 3 ignored**; all-target visual-qa Clippy with warnings denied, default-feature locked check, locked visual-qa build, fmt and diff checks passed. Clippy initially rejected two equivalent style expressions; corrected, rejected log retained in `clippy-initial.log`. Fresh CUA-launched extended HexSearch passed **14/14**, all native effects zero. Manifest postdates its launch record and matches the final binary SHA-256. Frame inspected: UTF-16 BE and Wrap search selected, Wrapped status at 0x1ADB1 (110001), highlighted exact pattern bytes. Prior HEX/UTF-8/UTF-16 steps remain prerequisites of the same capture. Artifacts live in `hex_search`; source hashes accompany this report.
+
+Broader feature transfers remain open; no commit or push.

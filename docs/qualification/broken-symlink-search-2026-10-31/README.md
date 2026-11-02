@@ -1,0 +1,19 @@
+# Search links whose targets are missing — 2026-10-31
+
+Independent adaptation of [rmlint broken symbolic-link discovery](https://github.com/sahib/rmlint/blob/master/README.rst), cohort #86. No upstream implementation was copied.
+
+`type:broken-link` (alias `type:broken-symlink`) finds lexical symbolic links whose followed metadata lookup establishes a missing target. Missing components (`NotFound`) and non-directory path components (`NotADirectory`) qualify. Valid links, ordinary files and hard links do not. Permission, I/O and loop errors remain unknown, contribute to the skipped count and never establish a missing target.
+
+The predicate participates in Exact/Fuzzy/Regex query modes, AND conditions, `types:` OR lists, canonical chips/expressions and saved-query JSON. Live traversal probes target metadata on its worker only when this condition is requested; it does not read link payloads or descend through directory links. New content-index scans store the optional observation; indexed searches use only that captured fact, even after a target is repaired. Legacy link records require rebuilding. Old known non-links can already be excluded; contradictory cached kind/status facts are treated as unknown.
+
+ZIP/TAR headers prove symbolic-link kind but not the target's existence in a mounted namespace. Such targets stay unknown for this condition; a known `types:broken-link,symlink` branch can still match them without an unknown penalty. Archive link-target resolution remains open. Cached Get Info uses the same missing-component classification. The Find skipped counter now says **skipped** with a reason tooltip, covering missing observations as well as unavailable content.
+
+## Validation
+
+- Six checks passed: locked QA build; full QA suite **3077 passed, 3 ignored**; all-target QA Clippy with warnings denied; default check; formatting; diff whitespace. Default check retains the existing QA-only response warning in `diff_find.rs`.
+- Five new tests cover error classification; aliases, alternatives and saved-query round trips; optional/corrupt index facts; all-mode live/index matching with missing chains, invalid path components, valid file/directory links, a real self-loop, depth/hidden filters and AND/OR combinations; target repair with retained cached results and legacy facts; ZIP/TAR unknown/known-OR behavior. Existing index payload/non-descent and maximum JSON-budget tests include the new metadata field. Permission/I/O classification uses explicit OS error values, not a claim of a denied-directory integration test.
+- Native **broken_link_search 16/16**: 10 injected egui input phases, actual Find query entry and actual asynchronous live searches. Exact snapshots show three missing-target links plus one skipped loop; OR selection shows all six symbolic links with zero skips; repairing a test target and rerunning removes the repaired link and its chain, leaving only the invalid-path-component link and one skipped loop. Explanations name the applied canonical predicate.
+- Native **symlink_info 14/14**: retained relative target, target-exists status and size still render correctly. Both final manifests report zero recording native effect calls. An additional captured Info attempt is preserved under `symlink-info-launch-retry/`.
+- Screenshot inspected: query/chips, one final result and **1 skipped** are visible; modal ownership and disabled background are checked by the manifest. Native launch is CUA; in-app events are QA injection. Production search does not repair, delete or mutate files; only the isolated QA fixture is repaired to test refresh. No physical input, automatic cleanup, OS clipboard, archive target-resolution or full cohort parity is claimed.
+
+See `checks.json`, `native-assertions.json`, `source-sha256.json`, `native/`, `native-info/`, executable-bound launch records and logs. `verify.py` independently checks exact result paths, canonical explanations, counters, refresh and final checks.

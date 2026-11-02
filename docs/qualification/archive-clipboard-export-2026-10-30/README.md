@@ -1,0 +1,19 @@
+# Archive member clipboard export — 2026-10-30
+
+Independent Rust adaptation of [Double Commander name/full-name/details clipboard commands](https://doublecmd.github.io/doc/en/cmds.html#catclipboard), cohort #3, applied to Commander's archive pane. No upstream implementation copied. Its member browser previously had selection/extraction but no listing clipboard actions.
+
+Copy visible and Copy selected expose Names, Member paths (default) and CSV. Visible exports follow displayed order and exclude synthetic navigation folders. Selected exports include selected real entries outside the current folder/filter, sorted by the same current archive order; changing format or copying does not change selection/navigation. These are listed entries only, including when a bounded listing is partial; no extraction, member-content reads, external opener or host file-path operation is performed.
+
+Plain formats escape backslash/newline/CR/tab so member boundaries remain unambiguous. CSV reuses the existing formula-neutralizing RFC-4180 field encoder and safe UTC time conversion. Columns include archive path, original member index, full internal path, file/folder/symlink/other kind, raw byte size, ZIP packed size (unknown for TAR), modified UTC and listing-truncated flag. Directories have no invented byte size. Duplicate path text retains separate member identity. CSV raw control/quote fields remain quoted, with formula-like prefixes neutralized as in existing exports.
+
+The pure formatter returns at most 4 MiB and rejects empty/stale rows or non-UTF-8 paths before any clipboard write; no lossy or partial result is published. Copy selected applies the limit to the complete selected set. The setting is session state on this archive pane, reset on reopening/retry. It is not an import/round-trip archive serialization format, filesystem clipboard transfer, complete archive inventory or full Double Commander parity.
+
+Four new regressions cover ordering/duplicates/control escapes, CSV metadata/kinds/packed availability/partial state/formula handling, output/invalid/UTF-8 bounds, and visible versus hidden selection with synthetic navigation and sort/filter changes. Existing directory/search/rename export regressions exercise the now-shared CSV/time helpers. Initial test compilation used the wrong tree-builder signature; corrected, rejected log retained in `test-initial.log`.
+
+Native ArchiveExport retains the original TAR seven-member folder/natural-sort contract. It clicks visible paths, selected hidden path, Names + selected, CSV + visible, CSV + selected, requiring each exact prior clipboard text before progressing (five recording writes). CSV expectations are assembled independently from known fixture metadata and explicit member indexes.
+
+Verified core/build state: full locked visual-qa suite **2730 passed, 0 failed, 3 ignored**; all-target visual-qa Clippy with warnings denied, locked default-feature check and locked visual-qa build passed. The first Clippy run required public helpers inside the private module; corrected, rejected log retained in `clippy-initial.log`.
+
+Native validation is **pending**, not passed. The first two launches timed out before any clipboard action because the new QA guard incorrectly assumed original TAR index 1 was listing position 1; the listing is separately sorted and its first displayed file is position 5. The guard now checks `src/main.rs` through the listing, retaining the exact clipboard expectations and original member-index CSV checks. The rejected launch/manifests/logs are retained in `archive_export-initial` and `archive_export-diagnostic`. After the interruption the desktop CUA tool became unavailable; the corrected binary is built but has not been launched through the required native workflow. No fresh-frame, native clipboard, UI layout or 14/14 success is claimed for this feature. See `native-validation.json`.
+
+Broader transfers remain open; no commit or push.

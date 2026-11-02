@@ -1,0 +1,26 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "include": ""
+  },
+  "files": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14566-duplicate_names/left/note.txt",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14566-duplicate_names/left/one.JPG",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14566-duplicate_names/left/skip.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14566-duplicate_names/left/two.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14566-duplicate_names/left/nested/skip.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-14566-duplicate_names/left/nested/three.jpg"
+  ],
+  "issues": 0,
+  "keep": [
+    1
+  ],
+  "phase": 32,
+  "recursive": true
+}

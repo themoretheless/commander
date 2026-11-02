@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: pub(crate) struct inside private module
+ --> src/panel/miller.rs:7:1
+  |
+7 | pub(crate) struct MillerState {
+  | ----------^^^^^^^^^^^^^^^^^^^
+  | |
+  | help: consider using: `pub`
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+  = note: `-D clippy::redundant-pub-crate` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(clippy::redundant_pub_crate)]`
+
+error: unnecessary structure name repetition
+  --> src/panel/miller.rs:49:35
+   |
+49 |                     let mut col = PanelState::new_with_view(path, config);
+   |                                   ^^^^^^^^^^ help: use the applicable keyword: `Self`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#use_self
+   = note: `-D clippy::use-self` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::use_self)]`
+
+error: could not compile `commander` (bin "commander") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

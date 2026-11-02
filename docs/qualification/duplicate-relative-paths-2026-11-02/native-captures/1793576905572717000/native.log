@@ -1,0 +1,4 @@
+2026-11-02T03:48:34 INFO  commander::logging: logging initialized
+2026-11-02T03:48:34 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: duplicate_relative
+2026-11-02T03:48:34 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+Error: AppCreation(Custom { kind: Other, error: "1 visual QA checks failed" })

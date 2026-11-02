@@ -1,0 +1,12 @@
+{
+  "format": "commander.command-templates",
+  "version": 5,
+  "templates": [
+    {
+      "name": "Print each name",
+      "raw": "printf '%s\\n' {names}",
+      "exts": [],
+      "execution": "per_item_continue"
+    }
+  ]
+}

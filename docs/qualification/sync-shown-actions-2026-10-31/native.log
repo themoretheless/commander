@@ -1,0 +1,21 @@
+2026-10-31T08:34:43 INFO  commander::logging: logging initialized
+2026-10-31T08:34:43 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: sync_review
+2026-10-31T08:34:43 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-sync-shown-1793421272013556000
+2026-10-31T08:34:43 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 0, rect [[738.7 248.0] - [918.7 267.0]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 1, rect [[738.7 248.0] - [918.7 267.0]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 2, rect [[738.7 248.0] - [918.7 267.0]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 3, rect [[738.7 248.0] - [918.7 267.0]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 4, rect [[738.7 248.0] - [918.7 267.0]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 5, rect [[721.0 273.5] - [788.1 297.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 6, rect [[721.0 273.5] - [788.1 297.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 7, rect [[721.0 273.5] - [788.1 297.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 8, rect [[680.9 415.5] - [704.1 439.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 9, rect [[680.9 415.5] - [704.1 439.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 10, rect [[680.9 415.5] - [704.1 439.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 11, rect [[794.1 273.5] - [860.2 297.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 12, rect [[794.1 273.5] - [860.2 297.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 13, rect [[794.1 273.5] - [860.2 297.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 14, rect [[924.7 245.5] - [1007.1 269.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 15, rect [[924.7 245.5] - [1007.1 269.5]]
+2026-10-31T08:34:43 INFO  commander::visual_qa: Sync review QA phase 16, rect [[924.7 245.5] - [1007.1 269.5]]

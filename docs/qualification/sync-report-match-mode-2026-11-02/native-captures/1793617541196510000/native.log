@@ -1,0 +1,30 @@
+2026-11-02T15:05:48 INFO  commander::logging: logging initialized
+2026-11-02T15:05:48 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: sync_contents
+2026-11-02T15:05:48 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-02T15:05:49 INFO  commander::visual_qa: Sync contents QA phase 0
+2026-11-02T15:05:49 INFO  commander::visual_qa: Sync contents QA phase 1
+2026-11-02T15:05:49 INFO  commander::visual_qa: Sync contents QA phase 2
+2026-11-02T15:05:49 INFO  commander::visual_qa: Sync contents QA phase 3
+2026-11-02T15:05:49 INFO  commander::visual_qa: Sync contents QA phase 4
+2026-11-02T15:05:49 INFO  commander::visual_qa: Sync contents QA phase 5
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 6
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 7
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 8
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 9
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 10
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 11
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 12
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 13
+2026-11-02T15:05:50 INFO  commander::visual_qa: Sync contents QA phase 14
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 15
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 16
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 17
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 18
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 19
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 20
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 21
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 22
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 23
+2026-11-02T15:05:51 INFO  commander::visual_qa: Sync contents QA phase 24
+2026-11-02T15:05:52 INFO  commander::visual_qa: Sync contents QA phase 25
+2026-11-02T15:05:52 INFO  commander::visual_qa: Sync contents QA phase 26

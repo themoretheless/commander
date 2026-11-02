@@ -1,0 +1,20 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.29s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 12 tests
+test app::find_dialog::tests::result_highlight_starts_at_an_edge_and_stays_in_bounds ... ok
+test app::find_dialog::tests::result_rows_are_allocated_at_the_show_rows_stride ... ok
+test scan::tests::scan_job_publishes_a_complete_result_without_timing ... ok
+test workspace::delete::tests::partial_batch_preserves_input_and_result_order ... ok
+test path_probe::tests::stale_a_b_a_result_cannot_validate_the_new_a ... ok
+test app::find_dialog::tests::search_result_selection_survives_streaming_sorting_ranges_and_hiding ... ok
+test native_menu::model::tests::tracking_result_distinguishes_escape_from_inconsistent_appkit_state ... ok
+test workspace::tabs::tests::background_result_reveal_shows_hidden_targets_without_changing_the_live_view ... ok
+test preview_find::tests::wrap_toggle_keeps_current_result_and_disables_edges_for_buttons_and_f3 ... ok
+test workspace::tabs::tests::background_result_reveal_defers_focus_and_preserves_both_live_panes ... ok
+test workspace::tabs::tests::background_result_group_preserves_order_lazy_focus_and_rejects_partial_opening ... ok
+test workspace::delete::tests::preserved_version_is_kept_when_the_trash_result_is_indeterminate ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 2522 filtered out; finished in 0.05s
+

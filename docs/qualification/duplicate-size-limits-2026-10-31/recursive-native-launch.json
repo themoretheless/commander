@@ -1,0 +1,7 @@
+{
+  "scenario": "duplicate_recursive",
+  "output": "/tmp/commander-native-size-recursive-regression-1793404513725182000",
+  "binary_sha256": "87a185848b777f1c2075b3377c21d3b05cb54e1db53d76a6d42800fd37de13e5",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793404513725529000
+}

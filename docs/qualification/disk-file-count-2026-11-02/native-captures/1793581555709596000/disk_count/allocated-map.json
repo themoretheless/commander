@@ -1,0 +1,450 @@
+{
+  "metric": "file_count",
+  "measurement_unit": "entries",
+  "measurement_scope": "non_directory_entries_including_hard_link_aliases",
+  "schema": 1,
+  "scope": "bounded_disk_usage_snapshot",
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left",
+  "directory_rows_are_nested_totals": true,
+  "summary": {
+    "logical_bytes": null,
+    "file_allocation_bytes": null,
+    "known_bytes": null,
+    "known_value": 25,
+    "file_count": 25,
+    "measurement": {
+      "unknown": 0,
+      "overflowed": false
+    },
+    "measurement_complete": true,
+    "entries": 41,
+    "files": 25,
+    "directories": 17
+  },
+  "status": {
+    "cancelled": false,
+    "tree_truncated": false,
+    "map_truncated": false,
+    "inaccessible_count": 0,
+    "inaccessible_paths_truncated": false,
+    "inaccessible_paths": []
+  },
+  "map_items": [
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/many",
+      "relative_path": "many",
+      "is_directory": true,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 10,
+      "file_count": 10,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/dense",
+      "relative_path": "dense",
+      "is_directory": true,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 3,
+      "file_count": 3,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/alpha",
+      "relative_path": "alpha",
+      "is_directory": true,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 2,
+      "file_count": 2,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/beta",
+      "relative_path": "beta",
+      "is_directory": true,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 2,
+      "file_count": 2,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/sparse",
+      "relative_path": "sparse",
+      "is_directory": true,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 2,
+      "file_count": 2,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/README.txt",
+      "relative_path": "README.txt",
+      "is_directory": false,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/data-link",
+      "relative_path": "data-link",
+      "is_directory": false,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/gamma",
+      "relative_path": "gamma",
+      "is_directory": true,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/notes.md",
+      "relative_path": "notes.md",
+      "is_directory": false,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/photo.png",
+      "relative_path": "photo.png",
+      "is_directory": false,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "relative_path": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "is_directory": false,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/Design",
+      "relative_path": "Design",
+      "is_directory": true,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 0,
+      "file_count": 0,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true
+    }
+  ],
+  "directories": [
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/many",
+      "relative_path": "many",
+      "label": "many",
+      "depth": 0,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 10,
+      "file_count": 10,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 10,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/dense",
+      "relative_path": "dense",
+      "label": "dense",
+      "depth": 0,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 3,
+      "file_count": 3,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 3,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/dense/inner",
+      "relative_path": "dense/inner",
+      "label": "inner",
+      "depth": 1,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 2,
+      "file_count": 2,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 2,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/alpha",
+      "relative_path": "alpha",
+      "label": "alpha",
+      "depth": 0,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 2,
+      "file_count": 2,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 2,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/alpha/other",
+      "relative_path": "alpha/other",
+      "label": "other",
+      "depth": 1,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/alpha/shared/target-one",
+      "relative_path": "alpha/shared/target-one",
+      "label": "shared/target-one",
+      "depth": 1,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/beta",
+      "relative_path": "beta",
+      "label": "beta",
+      "depth": 0,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 2,
+      "file_count": 2,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 2,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/beta/other",
+      "relative_path": "beta/other",
+      "label": "other",
+      "depth": 1,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/beta/shared/target-two",
+      "relative_path": "beta/shared/target-two",
+      "label": "shared/target-two",
+      "depth": 1,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/sparse",
+      "relative_path": "sparse",
+      "label": "sparse",
+      "depth": 0,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 2,
+      "file_count": 2,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 2,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/sparse/inner",
+      "relative_path": "sparse/inner",
+      "label": "inner",
+      "depth": 1,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/gamma/unrelated",
+      "relative_path": "gamma/unrelated",
+      "label": "gamma/unrelated",
+      "depth": 0,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 1,
+      "file_count": 1,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 1,
+      "unreadable": false
+    },
+    {
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6701-disk_count/left/Design",
+      "relative_path": "Design",
+      "label": "Design",
+      "depth": 0,
+      "logical_bytes": null,
+      "file_allocation_bytes": null,
+      "known_bytes": null,
+      "known_value": 0,
+      "file_count": 0,
+      "measurement": {
+        "unknown": 0,
+        "overflowed": false
+      },
+      "measurement_complete": true,
+      "files": 0,
+      "unreadable": false
+    }
+  ]
+}

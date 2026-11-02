@@ -1,0 +1,60 @@
+Checking for sources ... RHash 1.4.6 
+Checking for target OS ... Darwin 
+Checking for cc version ... clang 21.0.0 
+Checking for linker support for dlopen ... yes 
+Checking for sha1 intrinsics ... no 
+Checking for gettext ... no 
+Checking for OpenSSL ... no 
+Writing config.mak
+Writing librhash/config.mak
+Writing dist/librhash.pc
+Writing dist/rhash.1
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  calc_sums.c -o calc_sums.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  hash_print.c -o hash_print.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  common_func.c -o common_func.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  hash_update.c -o hash_update.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  file.c -o file.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  file_mask.c -o file_mask.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  file_set.c -o file_set.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  find_file.c -o find_file.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  hash_check.c -o hash_check.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  output.c -o output.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  -DSYSCONFDIR=\"/usr/local/etc\" parse_cmdline.c -o parse_cmdline.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations   rhash_main.c -o rhash_main.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  win_utils.c -o win_utils.o
+cd librhash && /Library/Developer/CommandLineTools/usr/bin/make lib-static
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  algorithms.c -o algorithms.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  byte_order.c -o byte_order.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  plug_openssl.c -o plug_openssl.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  -DRHASH_XVERSION=0x01040600 rhash.c -o rhash.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  rhash_torrent.c -o rhash_torrent.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  aich.c -o aich.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  blake2b.c -o blake2b.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  blake2s.c -o blake2s.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  blake3.c -o blake3.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  crc32.c -o crc32.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  ed2k.c -o ed2k.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  edonr.c -o edonr.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  hex.c -o hex.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  md4.c -o md4.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  md5.c -o md5.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  sha1.c -o sha1.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  sha_ni.c -o sha_ni.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  sha256.c -o sha256.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  sha512.c -o sha512.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  sha3.c -o sha3.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  ripemd-160.c -o ripemd-160.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  gost12.c -o gost12.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  gost94.c -o gost94.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  has160.c -o has160.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  snefru.c -o snefru.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  tiger.c -o tiger.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  tiger_sbox.c -o tiger_sbox.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  tth.c -o tth.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  torrent.c -o torrent.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  util.c -o util.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  whirlpool.c -o whirlpool.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  whirlpool_sbox.c -o whirlpool_sbox.o
+rm -f librhash.a
+ar -cqs librhash.a algorithms.o byte_order.o plug_openssl.o rhash.o rhash_torrent.o aich.o blake2b.o blake2s.o blake3.o crc32.o ed2k.o edonr.o hex.o md4.o md5.o sha1.o sha_ni.o sha256.o sha512.o sha3.o ripemd-160.o gost12.o gost94.o has160.o snefru.o tiger.o tiger_sbox.o tth.o torrent.o util.o whirlpool.o whirlpool_sbox.o
+cc calc_sums.o hash_print.o common_func.o hash_update.o file.o file_mask.o file_set.o find_file.o hash_check.o output.o parse_cmdline.o rhash_main.o win_utils.o librhash/librhash.a   -o rhash

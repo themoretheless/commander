@@ -1,0 +1,6 @@
+{
+  "src/template_exchange.rs": "2e92c5495cf9b2eda703bb4eda7e562deaf31c2e90e1978f6221a35de50a0fd5",
+  "src/main.rs": "cd442386bd97ddfec2191ebcf973fcc5ce329a9ec6d3ad968ae87da6be8fb6fd",
+  "src/app/mod.rs": "92bb6ebb27c17edc5783f7d09f37f7547930f8a983aba13aa866ac98a9009cdb",
+  "src/app/run_command_dialog.rs": "0cca3fba3aedb17bb645200057e9cd0bb30f0ad7ccf6ba49ca71a6b7f991ca3e"
+}

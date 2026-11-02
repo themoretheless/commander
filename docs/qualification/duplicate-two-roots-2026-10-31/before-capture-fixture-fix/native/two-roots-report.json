@@ -1,0 +1,101 @@
+{
+  "format": "commander_duplicate_report",
+  "version": 1,
+  "snapshot": "retained_duplicate_scan_proposal",
+  "context": {
+    "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left",
+    "additional_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right",
+    "scope": "two_trees",
+    "metadata_source": "fresh_tree_enumeration",
+    "max_subfolder_levels": null,
+    "configured_subfolder_levels": null,
+    "min_bytes": 0,
+    "max_bytes": null,
+    "names": {
+      "include": "",
+      "exclude": "",
+      "case": false
+    },
+    "minimum_copies": 2,
+    "keep_policy": "shortest_path",
+    "group_sort": "scan"
+  },
+  "summary": {
+    "groups": 4,
+    "files": 8,
+    "proposed_trash_files": 4,
+    "proposed_trash_bytes": 42,
+    "scan_issues": 0,
+    "partial": false
+  },
+  "groups": [
+    {
+      "group": 1,
+      "original_group": 1,
+      "size_bytes": 11,
+      "files": [
+        {
+          "member": 1,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left/cross.bin",
+          "action": "keep"
+        },
+        {
+          "member": 2,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right/cross.bin",
+          "action": "trash"
+        }
+      ]
+    },
+    {
+      "group": 2,
+      "original_group": 2,
+      "size_bytes": 11,
+      "files": [
+        {
+          "member": 1,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left/own-1.bin",
+          "action": "keep"
+        },
+        {
+          "member": 2,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left/own-2.bin",
+          "action": "trash"
+        }
+      ]
+    },
+    {
+      "group": 3,
+      "original_group": 3,
+      "size_bytes": 8,
+      "files": [
+        {
+          "member": 1,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right/invoice.pdf",
+          "action": "keep"
+        },
+        {
+          "member": 2,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right/release.zip",
+          "action": "trash"
+        }
+      ]
+    },
+    {
+      "group": 4,
+      "original_group": 4,
+      "size_bytes": 12,
+      "files": [
+        {
+          "member": 1,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left/nested/deep.bin",
+          "action": "keep"
+        },
+        {
+          "member": 2,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right/nested/deep.bin",
+          "action": "trash"
+        }
+      ]
+    }
+  ]
+}

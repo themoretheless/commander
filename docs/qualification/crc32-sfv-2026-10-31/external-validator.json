@@ -1,0 +1,11 @@
+{
+  "source": "https://github.com/rhash/RHash",
+  "commit": "7b2801dfcae0a2afd970d69e822edd49132538b5",
+  "version": "RHash v1.4.6",
+  "sha256": "bc500146a950b55dc60158fddb251e0aa21b89c762c63fd21939d52e438b8dcc",
+  "build": "./configure --disable-openssl --enable-static=librhash; make -j2 rhash",
+  "installation": "none; local /tmp build only",
+  "test_environment": {
+    "COMMANDER_RHASH_VERIFY": "/tmp/commander-rhash-validation-20261031/rhash"
+  }
+}

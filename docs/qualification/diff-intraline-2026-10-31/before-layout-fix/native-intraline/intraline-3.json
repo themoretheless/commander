@@ -1,0 +1,35 @@
+{
+  "counts": [
+    2,
+    1
+  ],
+  "enabled": true,
+  "phase": 3,
+  "ranges": {
+    "1": [
+      {
+        "end": 15,
+        "start": 12
+      },
+      {
+        "end": 31,
+        "start": 30
+      }
+    ],
+    "2": [
+      {
+        "end": 13,
+        "start": 12
+      },
+      {
+        "end": 15,
+        "start": 14
+      },
+      {
+        "end": 30,
+        "start": 29
+      }
+    ]
+  },
+  "simplified_pairs": 0
+}

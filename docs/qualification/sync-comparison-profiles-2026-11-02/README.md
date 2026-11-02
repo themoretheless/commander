@@ -1,0 +1,11 @@
+# Saved synchronization comparison profiles
+
+Independent adaptation of [Krusader synchronizer profiles](https://docs.kde.org/trunk_kf6/en/krusader/krusader/synchronizer.html). No upstream configuration compatibility or full synchronizer parity is claimed.
+
+Open the synchronizer and expand **Saved sync profiles**. Save a named comparison, explicitly replace a selected profile, or load it with **Load and compare**. Up to 16 profiles retain the two folder paths, direction policy, hidden-file flags, content comparison and dry-run mode in the existing atomic session file. Loading does not navigate the file panels or copy files; it starts a fresh comparison.
+
+Old actions, edited row directions, review filters, plan stamp and large-plan acknowledgement are cleared before the new worker starts. Loading is disabled while a scan is active and the model also refuses overlapping scans. Live guard/health-marker, durability and retention settings remain owned by the current synchronizer. Profiles do not save execution authorization. Invalid saved data is retained unchanged and blocks replacement until explicit Clear saved profiles. Names, absolute paths, unique names, schema/version, count and 64 KiB serialized size are validated; a failed save leaves the previous collection unchanged.
+
+Five new regressions cover explicit replacement/collision/count limits, malformed/oversized data preservation and reset, fresh asynchronous comparison with stale-plan invalidation and unchanged file bytes, invalid-load non-mutation, and atomic session save/reopen. Full suite: 3,277 passed, 0 failed, 3 ignored. All six gates in checks.json passed: QA-feature build and full tests, strict all-target Clippy, ordinary check, formatting and whitespace. Native pointer/keyboard interaction and visual layout for this new section have not been qualified in this milestone. Saved profiles are session-local: no standalone import/export, individual delete/rename or cross-manager format support.
+
+No dependencies were added. The dependency graph and audit policy match the preceding milestone; the previously recorded dependency audit failures remain open. The wider 99-repository transfer goal remains open. source-sha256.json records the checked source and executable; logs and validator identities are retained alongside it.

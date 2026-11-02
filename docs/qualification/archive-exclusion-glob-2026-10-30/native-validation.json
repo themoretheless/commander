@@ -1,0 +1,23 @@
+{
+  "status": "passed_scoped",
+  "scenario": "archive_browser",
+  "capture_phase": 7,
+  "applied_exclusion": "*2.rs",
+  "checks_passed": 14,
+  "checks_total": 14,
+  "frame_inspected": true,
+  "input_method": "egui pointer/text events in CUA-launched native runtime",
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "remaining_gates": [
+    "physical keyboard and VoiceOver",
+    "native Full paths, saved recall and Reset",
+    "native invalid query recovery and ancestor exclusion across formats"
+  ]
+}

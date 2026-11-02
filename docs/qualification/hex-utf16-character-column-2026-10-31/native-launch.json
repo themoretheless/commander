@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793395633.492676,
+  "binary_sha256": "de6402dfce4ab4827f98d01fe28aaa4f9678ab8966950ebc8cd8067f55b2ce11",
+  "scenario": "hex_utf16_encoding",
+  "output_root": "/tmp/commander-native-hex-utf16-column-1793395633445823000"
+}

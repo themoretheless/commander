@@ -82,6 +82,8 @@ impl VolumeStamp {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanStamp {
+    #[serde(default)]
+    pub compare_contents: bool,
     pub left_root: PathBuf,
     pub right_root: PathBuf,
     pub left_show_hidden: bool,
@@ -95,11 +97,19 @@ pub struct PlanStamp {
 
 impl PlanStamp {
     pub const fn filter_key(&self) -> &'static str {
-        match (self.left_show_hidden, self.right_show_hidden) {
-            (false, false) => "hidden:0:0",
-            (false, true) => "hidden:0:1",
-            (true, false) => "hidden:1:0",
-            (true, true) => "hidden:1:1",
+        match (
+            self.left_show_hidden,
+            self.right_show_hidden,
+            self.compare_contents,
+        ) {
+            (false, false, false) => "hidden:0:0",
+            (false, false, true) => "hidden:0:0;contents:1",
+            (false, true, false) => "hidden:0:1",
+            (false, true, true) => "hidden:0:1;contents:1",
+            (true, false, false) => "hidden:1:0",
+            (true, false, true) => "hidden:1:0;contents:1",
+            (true, true, false) => "hidden:1:1",
+            (true, true, true) => "hidden:1:1;contents:1",
         }
     }
 }
@@ -133,6 +143,7 @@ pub fn capture(
     right_show_hidden: bool,
 ) -> PlanStamp {
     PlanStamp {
+        compare_contents: false,
         left_root: left_root.to_path_buf(),
         right_root: right_root.to_path_buf(),
         left_show_hidden,
@@ -152,9 +163,35 @@ pub fn build_plan(
     right_show_hidden: bool,
     policy: SyncPolicy,
 ) -> Result<(Vec<SyncAction>, PlanStamp), String> {
+    build_plan_with_contents(
+        left_root,
+        right_root,
+        left_show_hidden,
+        right_show_hidden,
+        policy,
+        false,
+        &|| false,
+    )
+}
+
+pub fn build_plan_with_contents(
+    left_root: &Path,
+    right_root: &Path,
+    left_show_hidden: bool,
+    right_show_hidden: bool,
+    policy: SyncPolicy,
+    compare_contents: bool,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(Vec<SyncAction>, PlanStamp), String> {
+    if cancel() {
+        return Err("Synchronization scan cancelled".into());
+    }
     let left = read_entries(left_root, left_show_hidden)?;
+    if cancel() {
+        return Err("Synchronization scan cancelled".into());
+    }
     let right = read_entries(right_root, right_show_hidden)?;
-    let stamp = capture(
+    let mut stamp = capture(
         left_root,
         right_root,
         &left,
@@ -162,7 +199,15 @@ pub fn build_plan(
         left_show_hidden,
         right_show_hidden,
     );
-    Ok((crate::sync::sync_diff(&left, &right, policy), stamp))
+    stamp.compare_contents = compare_contents;
+    let mut actions = crate::sync::sync_diff(&left, &right, policy);
+    if compare_contents {
+        crate::sync_content::refine(&mut actions, &left, &right, policy, cancel)?;
+    }
+    if cancel() {
+        return Err("Synchronization scan cancelled".into());
+    }
+    Ok((actions, stamp))
 }
 
 pub fn settings_fingerprint(policy: SyncPolicy, guard: &GuardPolicy, filter: &str) -> u64 {
@@ -246,6 +291,13 @@ pub fn assess(actions: &[SyncAction], guard: &GuardPolicy) -> Assessment {
 }
 
 pub fn validate(plan: &GuardedPlan<'_>) -> Result<Assessment, String> {
+    if plan
+        .actions
+        .iter()
+        .any(|a| a.content.error().is_some() && a.direction != SyncDirection::Skip)
+    {
+        return Err("Unverified content comparison cannot authorize a copy".into());
+    }
     if settings_fingerprint(plan.policy, plan.guard, plan.stamp.filter_key())
         != plan.expected_settings
     {
@@ -330,19 +382,23 @@ fn read_entries(root: &Path, show_hidden: bool) -> Result<Vec<FileEntry>, String
         {
             continue;
         }
-        // A dangling symlink is listed as the link itself, and an entry
-        // deleted since read_dir is simply absent; neither blocks the plan.
-        let metadata = match std::fs::metadata(&path) {
+        // Keep the link's own identity even when its target supplies display
+        // size/type. Content comparison never follows that link.
+        let lexical = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
-            Err(error) => match std::fs::symlink_metadata(&path) {
-                Ok(metadata) => metadata,
-                Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => {
-                    return Err(format!("Could not inspect {}: {error}", path.display()));
-                }
-            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("Could not inspect {}: {error}", path.display())),
         };
-        if let Some(entry) = FileEntry::from_meta(path, &metadata) {
+        let followed = lexical
+            .file_type()
+            .is_symlink()
+            .then(|| std::fs::metadata(&path).ok())
+            .flatten();
+        let metadata = followed.as_ref().unwrap_or(&lexical);
+        if let Some(mut entry) = FileEntry::from_meta(path.clone(), metadata) {
+            entry.identity = crate::panel::ListingIdentity::Captured(
+                crate::path_identity::PathIdentity::from_metadata(path, &lexical),
+            );
             entries.push(entry);
         }
     }
@@ -393,6 +449,27 @@ impl Fnv {
     }
 
     fn entry(&mut self, entry: &FileEntry) {
+        if let crate::panel::ListingIdentity::Captured(identity) = &entry.identity {
+            self.bytes(&[1]);
+            for value in [identity.volume, identity.file_id] {
+                match value {
+                    Some(value) => {
+                        self.bytes(&[1]);
+                        self.bytes(&value.to_le_bytes());
+                    }
+                    None => self.bytes(&[0]),
+                }
+            }
+            self.bytes(&[match identity.kind {
+                Some(crate::path_identity::PathKind::File) => 1,
+                Some(crate::path_identity::PathKind::Directory) => 2,
+                Some(crate::path_identity::PathKind::Symlink) => 3,
+                Some(crate::path_identity::PathKind::Other) => 4,
+                None => 0,
+            }]);
+        } else {
+            self.bytes(&[0]);
+        }
         self.path(&entry.path);
         self.bytes(&entry.size.to_le_bytes());
         self.bytes(&[u8::from(entry.is_dir)]);

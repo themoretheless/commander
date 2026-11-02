@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "checks": 16,
+  "opening_directories": [
+    false,
+    true
+  ],
+  "kind": "files",
+  "run_enabled": false,
+  "run_present": false,
+  "output_present": false,
+  "binary_sha256": "e530bda826a078c0675309b8a04597a8d333cf5e50614a22fac0a2a4f2621456"
+}

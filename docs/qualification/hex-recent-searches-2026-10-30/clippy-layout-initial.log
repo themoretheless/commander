@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `style` found for struct `egui::Context` in the current scope
+    --> src/hex_preview.rs:1452:46
+     |
+1452 |                         rect.height() <= ctx.style().spacing.interact_size.y * 1.5,
+     |                                              ^^^^^
+     |
+help: there is a method `style_of` with a similar name, but with different arguments
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:2221:5
+     |
+2221 |     pub fn style_of(&self, theme: Theme) -> Arc<Style> {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

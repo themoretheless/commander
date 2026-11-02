@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "depth_native_checks": 14,
+  "names_native_checks": 14,
+  "input_phases": 31,
+  "exact_depth_file_sets": true,
+  "drafts_leave_results_unchanged": true,
+  "invalid_draft_keeps_applied_limit": true,
+  "reset_restores_unlimited": true,
+  "recursion_off_restores_listing_scope": true,
+  "recording_effect_calls": 0,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3059,
+  "ignored": 3,
+  "checks": 6
+}

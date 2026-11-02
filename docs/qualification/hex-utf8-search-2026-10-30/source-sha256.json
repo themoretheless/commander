@@ -1,0 +1,9 @@
+{
+  "Cargo.toml": "c53da42808d4a4157a43eb9182805b63cde4a26572593920ca21b3acb10fbe32",
+  "Cargo.lock": "57d340acc28071cafa947746bf14f6e3d599506dc2ae7ccad8a17605d31d0a61",
+  "README.md": "970f496851bff11ac043c561c82671f3bc2dc6a58c9e05bcafb4c44a87860570",
+  "src/hex_search.rs": "b3d1423c1548bd51f5a8cd590b4d4caaac3d6da450f689bb21dd757eb7355db9",
+  "src/hex_preview.rs": "9a1f46df1a8ae1acd11ccfcd0ded99c348fbf3d077318b13cdca9aec90332b94",
+  "src/visual_qa.rs": "15202081a4367eb584c10f3356be9907f82d50fec7f65ab187fdfa518c7d76ee",
+  "docs/research/feature-transfers-2026-10-27.md": "143997b4ed607d836d51df8788e085a6ffa73fc087e8e3cfa3640e3ee9b60110"
+}

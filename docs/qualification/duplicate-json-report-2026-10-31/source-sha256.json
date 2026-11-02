@@ -1,0 +1,9 @@
+{
+  "src/main.rs": "98db639fef49657dafc51db1d2995f737c3b9f0d2773ba20c277d9534a9f6242",
+  "src/duplicate_report.rs": "75944f917ff90857caa24db35bd21e3cc86615b4b360d38f0e34b3e058b9ba23",
+  "src/dedup.rs": "ec34e563f2a5cfe3253f3e5dc0d71bd257b48370d0838828fbfa99190814fa16",
+  "src/app/duplicates_dialog.rs": "f5b2fcd418fe17bb6f62be9e11160f95374b93d482b653197da82fa9d60bfdeb",
+  "src/panel.rs": "ec07802f4412ec126f88d8ec691943f2aa68777c7fa27471d402235d2d064b06",
+  "src/visual_qa.rs": "c9d113dca127c2b91190a8294904bed7d2108c55c4bae36990e909852fcf3e9e",
+  ".github/workflows/ci.yml": "7f405662e630a4c9036c3fc901d5326a5d5f2e58aefbf76f78a2766a0ceaf247"
+}

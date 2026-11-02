@@ -1,0 +1,24 @@
+{
+  "format": "commander.persist",
+  "store": "commander.workspace_profiles",
+  "schema": 1,
+  "generation": 2,
+  "payload": {
+    "profiles": [
+      {
+        "name": "Work",
+        "left_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-70462-workspace_profiles/left/Design",
+        "right_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-70462-workspace_profiles/right/Archive",
+        "left_filter": "",
+        "right_filter": "",
+        "durability": "Verified",
+        "name_policy": {
+          "normalization": "Preserve",
+          "collision": "Ask"
+        },
+        "symlink_policy": "Preserve",
+        "trusted_command_templates": []
+      }
+    ]
+  }
+}

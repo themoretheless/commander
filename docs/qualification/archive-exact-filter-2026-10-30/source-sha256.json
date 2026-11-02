@@ -1,0 +1,6 @@
+{
+  "src/archive_filter.rs": "c99ce44cead509aea3b530f4730a585c45848ddc55af74419a0314c3cdd431d8",
+  "src/app/archive_dialog.rs": "1bae45ddb515670ef8dd3553f6bb27b315de2533393df57bf24347afd46152bf",
+  "README.md": "7f0b52c91c7eeae9f7cfa4c90770b7f40c4be27b84abee8c1f34f3451470fe1c",
+  "Cargo.lock": "47e55f80f8616385151c99167ef972a2546bd7e5623e79ef50a3c30d815178dd"
+}

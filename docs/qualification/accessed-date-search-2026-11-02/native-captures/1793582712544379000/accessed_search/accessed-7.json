@@ -1,0 +1,17 @@
+{
+  "expression": "name:access- accessed-before:1970-01-01",
+  "matched": 1,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-37195-accessed_search/left",
+  "rows": [
+    {
+      "accessed_ns": -500000000,
+      "explanations": [
+        "literal \"access-\"",
+        "accessed-before:1970-01-01"
+      ],
+      "name": "access-pre.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

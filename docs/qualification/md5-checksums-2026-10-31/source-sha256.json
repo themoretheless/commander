@@ -1,0 +1,7 @@
+{
+  "src/checksum.rs": "6e88660fa646bb102981e03cf43ec0b42eb7d747e76cbb118d924ebe1e1cce51",
+  "src/app/update.rs": "9742c5a5bcf25d1169d383cc93ece318463aebaf7858b4d1d6afc0b862699d19",
+  "src/visual_qa.rs": "dc5cb94ce7259f6536192663e97a3d14979c5c656f89b3460f8d97300b0dc1e0",
+  "Cargo.toml": "de5f5ccbac07121e4bb4047baeeb7b875cb85b2f389b5aadd0afd995b18c034a",
+  "Cargo.lock": "635b3ca96c9e6acecdac69290a8564cf7229f7066fabd02416533e2920af0f2c"
+}

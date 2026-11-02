@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "status visibility and wrapping",
+    "loaded page position vs EOF",
+    "empty file n/a presentation"
+  ]
+}

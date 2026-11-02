@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793357778.8410811,
+  "binary_sha256": "cc27c38d95e45a491cf9fa8e4efd58f3035dfa05516f983b8af0428c895b4f58",
+  "scenario": "pdf_regex",
+  "output_root": "/tmp/commander-native-pdf-regex-1793357778840763000"
+}

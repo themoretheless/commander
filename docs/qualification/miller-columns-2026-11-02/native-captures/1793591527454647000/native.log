@@ -1,0 +1,3 @@
+2026-11-02T07:52:17 INFO  commander::logging: logging initialized
+2026-11-02T07:52:17 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: zoom_200_accessible
+2026-11-02T07:52:17 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

@@ -1,0 +1,23 @@
+# Sync plan review filters — 2026-10-31
+
+Independently adapts the [Double Commander Synchronize directories Show filters](https://doublecmd.github.io/doc/en/syncdirs.html), cohort #3, to Commander's existing copy-only, guarded shallow plan. It does not add DC recursive/content comparison or deletion policies, and no upstream implementation is copied.
+
+**Find plan rows** performs literal Unicode case-insensitive AND matching of whitespace-separated words within each row's name. The 128-character limit is explicit; oversized input fails closed with a hint, preserving the ability to reset. **All rows**, **Planned**, **Skipped**, **Conflicts**, **One-sided**, **Paired files**, **Matching metadata**, and **Folder pairs** compose with the query. Reset view clears both query and scope. No-result feedback is distinct from the original complete-plan-empty message.
+
+Planned/Skipped use current direction. Conflicts includes differing-without-a-newer-side, type and case ambiguity; it does not classify every newer file as a conflict. Paired files includes stable two-sided file statuses. Matching metadata means the existing size/known-mtime comparison within its existing tolerance, not byte-level identity. Folder pairs remain recursively uncompared. One-sided can include directories, according to the existing plan owner.
+
+The view caches original plan indices against exact actions/query/scope. Row controls use those original indices, preserving paths, order and per-row direction ownership across filtering. Direction edits, replaced/reordered plans and refresh invalidate the projection; a hidden row is never dropped from the plan. The visible/full count and hidden planned count explain the scope: Sync, assessment/circuit breaker and All direction controls continue to include hidden rows. Filtering is review-only, not a mask restricting synchronization. Existing plan stamps, refresh/policy/edit carry-over, trust and revalidation owners remain unchanged.
+
+Native qualification exposed vertical pane expansion once the review controls were added. The entire sync body now scrolls within available height, with its existing virtualized row list inside it. Close remains in the pane host. Initial failed-capture evidence is retained under `before-scroll-fix/`.
+
+Broader recursive/content comparison, persistent filters, byte-identity guarantees, full sync parity and physical OS/accessibility qualification remain open.
+
+## Verification
+
+**3003 passed, 3 ignored, zero failed**. All six checks exit 0: visual-qa build/full tests/all-target Clippy with warnings denied, default-feature check, formatting and diff whitespace. New regressions cover Unicode AND/name search, original-index row editing, planned→skipped disappearance/reappearance, hidden-action counts, all scopes, too-long query refusal/reset and cache invalidation. A real temporary-folder PlanScan verifies unchanged complete actions, assessment and stamp/settings identity under filtering, whole-plan bulk directions including hidden rows, query preservation through actual refresh, and no destination files created.
+
+Native **sync_review** passed **15/15** capture checks; framebuffer inspected. The new CI scenario opens the actual async sync plan over both fixture folders, types NOTES, selects Planned, skips the notes.md row through its original-index direction button, requires an empty Planned result, selects Skipped and requires the one skipped row, then resets the view. Readiness requires all nine original rows, empty query/All scope, hidden planned count zero, a valid stamp/no scan/error, only notes.md's direction changed from ToRight to Skip, and no fixture notes.md copy on the right. The left pane remains input-live; all native effect-port counters are zero.
+
+Independent artifact assertions over `native/review-state.json` and the manifest verify full row identity/order, exactly one direction edit, unchanged other rows/statuses, reset projection and byte-identical binary/core/launch hashes. Source hashes are recorded. Fixture paths are session-owned and removed on exit; filesystem no-copy is required by scene readiness, not claimed as a separate post-exit filesystem audit. No Sync/Preview apply is invoked.
+
+Native coverage qualifies query/Planned/Skip/Skipped/Reset and pane-height containment at 1280×760. Other scope classifications, long-query/error/cache behavior and refresh/assessment/bulk scope rely on model/real-scan regressions. The outer scrollbar is visible; bottom-control scrolling at every window size, physical OS key delivery and complete accessibility remain outside this capture. Filtering doesn't constitute a fresh filesystem/content comparison; the existing apply revalidation remains the owner.

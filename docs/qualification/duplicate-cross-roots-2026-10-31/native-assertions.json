@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "cross_native_checks": 14,
+  "roots_regression_checks": 14,
+  "input_phases": 24,
+  "exact_file_sets": true,
+  "retained_preference_when_disabled": true,
+  "report_context": true,
+  "clipboard_recording_writes_each": 1,
+  "other_effect_calls": 0,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3069,
+  "ignored": 3,
+  "checks": 6
+}

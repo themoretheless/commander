@@ -1,0 +1,8 @@
+{
+  "command": "cargo deny --all-features --locked check advisories bans licenses sources",
+  "exit_code": 5,
+  "comparison_reference": "docs/qualification/image-exif-info-2026-11-02/dependency-comparison.json",
+  "same_diagnostics_as_previous_baseline": true,
+  "cargo_lock_sha256": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "deny_policy_sha256": "094e72ea6213c365bfc698825170b65d6d60b06eec7ec8a99be6efaae11ca219"
+}

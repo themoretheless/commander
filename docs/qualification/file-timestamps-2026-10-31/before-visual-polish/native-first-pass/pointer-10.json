@@ -1,0 +1,62 @@
+{
+  "apply": {
+    "clicked": false,
+    "down": false,
+    "enabled": false,
+    "hovered": false,
+    "id": "Id::new(16914122218219376284)",
+    "kind": "apply",
+    "pointer": [
+      637.5625,
+      284.0
+    ],
+    "rect": [
+      360.0,
+      517.5,
+      483.96875,
+      541.5
+    ]
+  },
+  "phase": 10,
+  "reset": {
+    "clicked": false,
+    "down": false,
+    "enabled": true,
+    "hovered": false,
+    "id": "Id::new(6918137080634031114)",
+    "kind": "reset",
+    "pointer": [
+      637.5625,
+      284.0
+    ],
+    "rect": [
+      482.5625,
+      342.5,
+      615.21875,
+      366.5
+    ]
+  },
+  "state": {
+    "accessed": "",
+    "busy": false,
+    "error": null,
+    "modified": "",
+    "needs_reload": false,
+    "report": null,
+    "rows": [
+      {
+        "accessed": "2022-01-01T00:00:00Z",
+        "error": null,
+        "modified": "2020-01-01T00:00:00Z",
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-4313-timestamps/left/times-a.txt"
+      },
+      {
+        "accessed": "2022-01-01T00:00:00Z",
+        "error": null,
+        "modified": "2021-01-01T00:00:00Z",
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-4313-timestamps/left/times-b.txt"
+      }
+    ],
+    "timestamps": true
+  }
+}

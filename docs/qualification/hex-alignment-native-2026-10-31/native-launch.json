@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793393300.505045,
+  "binary_sha256": "b3a4e1c441975753ec79ea22d4569bd2bd2b611f2edde999cc7c4374acc0d48e",
+  "scenario": "hex_alignment",
+  "output_root": "/tmp/commander-native-hex-alignment-dedicated-1793393300465124000"
+}

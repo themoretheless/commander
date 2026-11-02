@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793381764.013864,
+  "binary_sha256": "dae97c9fcb91943e5b551f4f646d5c7f29712fbb6026409c702e800a9a17b8aa",
+  "scenario": "archive_export",
+  "output_root": "/tmp/commander-native-archive_export-1793381764013474000"
+}

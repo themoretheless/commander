@@ -1,0 +1,5 @@
+{
+  "src/command.rs": "b850de5cd272dbaaca144d77e3ac29a5e50bc514c2d0d31baceadd94b4e57e35",
+  "src/workspace.rs": "9d1c14e6b46b5acc9b1c46e10c7fa130a00f94ffab817f57d248e8628906d7f9",
+  "src/workspace/tests.rs": "9c2583c9aab1e520fc78ff04d30f3596428b60cc436874fc89a70dd6e33ef3e6"
+}

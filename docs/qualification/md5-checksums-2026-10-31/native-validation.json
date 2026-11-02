@@ -1,0 +1,18 @@
+{
+  "status": "captured",
+  "capture_checks": 14,
+  "all_passed": true,
+  "scene_phase": 103,
+  "clipboard_writes": 13,
+  "frame_visually_inspected": true,
+  "binary_sha256_matches": true,
+  "rhash": {
+    "path": "/tmp/commander-rhash-validation-20261031/rhash",
+    "version": "RHash v1.4.6",
+    "sha256": "bc500146a950b55dc60158fddb251e0aa21b89c762c63fd21939d52e438b8dcc"
+  },
+  "test_environment": {
+    "COMMANDER_RHASH_VERIFY": "/tmp/commander-rhash-validation-20261031/rhash",
+    "COMMANDER_B3SUM_VERIFY": "/tmp/commander-b3sum-validation-20261031/bin/b3sum"
+  }
+}

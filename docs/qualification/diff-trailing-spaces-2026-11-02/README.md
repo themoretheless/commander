@@ -1,0 +1,11 @@
+# Ignore trailing ASCII spaces in text comparison
+
+Commander extension of the comparison whitespace-policy workflow inspired by cohort Double Commander: https://doublecmd.github.io/doc/en/help.html (Compare by Contents / Ignore Blanks). That source documents collapsing whitespace runs; this separate trailing-only policy is a Commander extension, not a claim of identical upstream options or copied implementation.
+
+Ignore trailing spaces removes ASCII space/tab suffixes from comparison keys only, before existing tab expansion/case/spacing policies. Leading and interior spaces, nonbreaking spaces, line boundaries, CRLF/LF and missing final newline remain distinct unless their separate existing options apply. Equal rows retain original left operand text. The checkbox triggers the existing retained-source recomparison, updating hunks/search/intraline/coordinates, and remains selected across Swap and Reload. Ignore all spaces disables the narrower checkbox while preserving its stored value. No file contents or dependency changes.
+
+Core regression covers unchanged display text, leading/interior distinctions, CRLF/final newline/NBSP, blank lines, case/CRLF composition and tab-stop composition. Dialog regression proves retained source ownership, swap, no implicit reread and explicit reload. Native checkbox interaction/layout remains unqualified in this bundle.
+
+Final code validation: six gates passed, 3299 tests passed / 3 ignored. The initial test-compilation failure (six explicit Options initializers missing the new field) is retained in initial-test-build; updated old fixtures explicitly keep trailing_spaces false.
+
+Native baseline DiffOptions did not qualify: the first launch did not acknowledge the space-mode click; a subsequent CUA observation relaunched the wrapper into the same output directory after its process ended, so those native artifacts are not an isolated single-run receipt. The replacement process PID 30622 terminated with a capture timeout (75 frames / 56.8 wall seconds despite the unchanged 10-second deadline; observed long event-loop stall). No success, screenshot/layout or new-checkbox interaction is claimed. Code gates remain independently green; native workflow remains open.

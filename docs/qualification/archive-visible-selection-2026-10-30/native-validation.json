@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "No desktop CUA tool available; no native Invert visible / Clear visible click or layout capture",
+  "binary_sha256": "9f5e5b39bf6acd02fbb01ad24811f98d87b70bd77bd935ca7df2c36477a7746c",
+  "prior_archive_export_filter_check_history_native_gates": "remain pending"
+}

@@ -14,6 +14,10 @@ pub fn create_symlinks(workspace: &mut Workspace) -> LinkReport {
     create_links(workspace, LinkKind::Symbolic)
 }
 
+pub fn create_relative_symlinks(workspace: &mut Workspace) -> LinkReport {
+    create_links(workspace, LinkKind::Relative)
+}
+
 pub fn create_hardlinks(workspace: &mut Workspace) -> LinkReport {
     create_links(workspace, LinkKind::Hard)
 }
@@ -21,6 +25,7 @@ pub fn create_hardlinks(workspace: &mut Workspace) -> LinkReport {
 #[derive(Clone, Copy)]
 enum LinkKind {
     Symbolic,
+    Relative,
     Hard,
 }
 
@@ -53,6 +58,8 @@ fn create_links(workspace: &mut Workspace, kind: LinkKind) -> LinkReport {
         });
         let result = match kind {
             LinkKind::Symbolic => create_symlink(&entry.path, &link_path),
+            LinkKind::Relative => relative_target(&entry.path, &link_path)
+                .and_then(|target| create_symlink(&target, &link_path)),
             LinkKind::Hard => {
                 if entry.is_dir {
                     Err(format!(
@@ -90,6 +97,50 @@ fn numbered_link_name(name: &OsStr, number: usize) -> OsString {
         numbered.push(extension);
     }
     numbered
+}
+
+/// Resolve containing directories physically: `..` must not traverse lexical
+/// symlink components. Preserve the source's last component, including dangling
+/// symlinks, instead of silently linking to its final referent.
+fn relative_target(source: &Path, link: &Path) -> Result<PathBuf, String> {
+    let resolve = || -> std::io::Result<PathBuf> {
+        let invalid = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "link paths need containing directories and a source name",
+            )
+        };
+        let from = std::fs::canonicalize(link.parent().ok_or_else(invalid)?)?;
+        let to = std::fs::canonicalize(source.parent().ok_or_else(invalid)?)?
+            .join(source.file_name().ok_or_else(invalid)?);
+        let a: Vec<_> = from.components().collect();
+        let b: Vec<_> = to.components().collect();
+        if a.first() != b.first() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "relative links require a shared filesystem root",
+            ));
+        }
+        let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        let mut target = PathBuf::new();
+        for _ in common..a.len() {
+            target.push("..");
+        }
+        for part in &b[common..] {
+            target.push(part.as_os_str());
+        }
+        if target.as_os_str().is_empty() {
+            target.push(".");
+        }
+        Ok(target)
+    };
+    resolve().map_err(|e| {
+        format!(
+            "Could not create relative symlink {} -> {}: {e}",
+            link.display(),
+            source.display()
+        )
+    })
 }
 
 fn create_symlink(source: &Path, link_path: &PathBuf) -> Result<(), String> {

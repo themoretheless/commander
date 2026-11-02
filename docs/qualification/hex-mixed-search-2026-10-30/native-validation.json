@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Mixed text/hex mode/query/layout capture",
+  "binary_sha256": "f9a85f4110fde4ee68ef234471570524a0fdc96ad91a188ddba1a9c10538f90d",
+  "core_coverage": "mixed parser, full suite and cyclic worker coverage passed",
+  "earlier_native_gates": "remain pending"
+}

@@ -1,0 +1,16 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.61s
+     Running unittests src/main.rs (target/debug/build/commander/817fc3ac52ddf8fd/out/commander-817fc3ac52ddf8fd)
+
+running 8 tests
+test fuzzy::tests::empty_query_matches_with_zero_score ... ok
+test search::tests::empty_query_observes_files_directories_and_unreadable_state_lexically ... ok
+test search::tests::empty_query_archive_topology_requires_complete_bounded_proof ... ok
+test query::tests::empty_query_matches_everything ... ok
+test command::tests::empty_query_lists_most_recently_used_first ... ok
+test query::tests::empty_query_type_parses_saves_and_activates_observation ... ok
+test search::tests::empty_query_does_not_prove_archive_directories_from_partial_inspection ... ok
+test search::tests::empty_query_agrees_across_native_index_zip_tar_and_filtered_children ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 2602 filtered out; finished in 0.06s
+

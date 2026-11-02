@@ -1,0 +1,23 @@
+# Cached symbolic-link target diagnostics in Get Info — 2026-10-31
+
+Follow-up to link details documented by [fd --list-details](https://github.com/sharkdp/fd/blob/master/doc/fd.1#L134), cohort #77, and Commander's symlink workflow. Get Info already showed a target; inspection found its `make_info` builder still called `read_link` on the UI thread, while absent target permissions were treated as proof that the link was broken. This milestone improves that existing implementation and adds explicit status diagnostics.
+
+Native directory enumeration and lexical-entry observation now retain the readlink result plus the existing followed-metadata outcome in a shared `Arc<LinkInfo>`. Building a card uses that observation only, without readlink/stat/canonicalize. The ordinary target metadata fetch is unchanged; one readlink is added per observed symlink during listing, even when no card is opened. Row clones share the observation. Synthetic/unobserved entry constructors explicitly retain no native link observation rather than probing a guessed path.
+
+**Link status** distinguishes Target exists, Target missing (NotFound), and Target unavailable with the original error; unreadable link text is reported separately. Permission denial, loops and unobserved metadata do not become “Broken symlink.” Missing/unavailable target size is **Unavailable**, not zero or the byte length of the link text. Existing target kind/permissions and no-recursive-sizing policy for directory links remain. The path uses a readable ASCII `->` separator, and inspector label/value spacing is restored locally after native inspection found glued labels and a missing arrow glyph.
+
+This is an observation snapshot, not a live health monitor or coherent multi-syscall filesystem transaction. Replacing/removing a link after listing does not silently change the retained card; a new observation captures the new target/status. UI display still uses the existing lossy path-display policy for non-UTF names; strict clipboard target commands remain separate. No target payloads are opened or filesystem data changed by card construction.
+
+## Verification
+
+3044 tests passed, 3 ignored, zero failed. All six checks exit zero: visual-qa build/full tests/all-target Clippy with warnings denied, default check, formatting and diff whitespace. Three new regressions cover cached target text/status across retarget/removal, refreshed missing state and unavailable size, PermissionDenied classification and actual loop errors. Permission denial is injected deterministically rather than inferred from host privileges. Existing listing symlink binding/size/permissions and metadata-card tests remain green. Explicit synthetic/test row constructors were updated for the optional observation field.
+
+A new `symlink_info` native CI scene opens Get Info through Command+K, typed query and Enter. Readiness requires the real `link.txt` cursor and right-side card with `Symlink to TXT file`, `Target exists`, a relative target suffix and 16 B size. Native capture passed **14/14**, with zero native effect-port calls. Final framebuffer was inspected; card fields and exact launch/core hashes are independently asserted, and all changed observation/constructor/render/probe source hashes are retained. Scenario enumeration/CI now include 65 stable scenes.
+
+The earlier green native frame in `before-info-layout/` exposed label spacing and a missing arrow glyph during human inspection; it is retained for comparison. `before-separator-test-update.log` records the old regression's Unicode-separator expectation before it was updated. A separate earlier full run timed out in the existing per-item shell-process cancellation test; its failure and passing focused retry are in `before-process-timeout-retry.log` and `process-focused-retry.log`. The final full suite passes. That intermittent process-test issue was not repaired here; only its fixture's new optional field was added, without changing process behavior.
+
+Native coverage qualifies the ordinary existing-target card and readable default layout. Missing/unavailable/retarget cases are core-tested; every error-length/layout/accessibility combination, arbitrary network-mount latency and broader upstream parity remain outside this slice. No end-to-end performance or release qualification is inferred from moving this one I/O call.
+
+## Process-test follow-up
+
+The recurring Stop test mentioned above was subsequently reproduced with a surviving same-group pipe holder and repaired in the [command cancellation follow-up](../command-stop-race-2026-10-31/README.md). That report retains the failing 64-run baseline, final 256-run repeat and ownership limits; the inspector qualification itself is unchanged.

@@ -50,8 +50,9 @@ pub fn kind_of(entry: &FileEntry) -> Kind {
     match entry.extension.as_str() {
         "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "aiff" | "alac" => Kind::Audio,
         "pdf" | "txt" | "md" | "rtf" | "doc" | "docx" | "pages" | "odt" | "tex" | "key" | "ppt"
-        | "pptx" | "xls" | "xlsx" | "csv" => Kind::Document,
-        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "xz" | "zst" | "dmg" => Kind::Archive,
+        | "pptx" | "odp" | "xls" | "xlsx" | "ods" | "csv" | "epub" | "fb2" => Kind::Document,
+        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "tbz" | "tbz2" | "xz" | "txz"
+        | "zst" | "zstd" | "tzst" | "dmg" => Kind::Archive,
         "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "c" | "cpp" | "cc" | "h" | "hpp"
         | "java" | "rb" | "swift" | "kt" | "sh" | "toml" | "json" | "yaml" | "yml" | "html"
         | "css" | "sql" | "lua" | "php" => Kind::Code,
@@ -265,7 +266,18 @@ mod tests {
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
@@ -287,6 +299,16 @@ mod tests {
         assert_eq!(kind_of(&entry("a.mp4", false, 1)), Kind::Video);
         assert_eq!(kind_of(&entry("a.mp3", false, 1)), Kind::Audio);
         assert_eq!(kind_of(&entry("a.pdf", false, 1)), Kind::Document);
+        for name in [
+            "slides.pptx",
+            "slides.odp",
+            "book.xlsx",
+            "book.ods",
+            "book.epub",
+            "book.fb2",
+        ] {
+            assert_eq!(kind_of(&entry(name, false, 1)), Kind::Document);
+        }
         assert_eq!(kind_of(&entry("a.rs", false, 1)), Kind::Code);
         assert_eq!(kind_of(&entry("a.zip", false, 1)), Kind::Archive);
         assert_eq!(kind_of(&entry("a.xyz", false, 1)), Kind::Other);

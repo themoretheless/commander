@@ -1,0 +1,10 @@
+{
+  "src/panel.rs": "b9c709b1b561d1a384e1d844dc00b2324458f585c70a0cbfcf7d38465c0d2063",
+  "src/visual_qa.rs": "66440b6b162fe94dfebab2dcfbfdeb83fe829968c3cca21d3d4c4391efffa4b6",
+  "src/command.rs": "35b3288a0ae93df6a7aabd8eec8f6df8a3c9433854f8c29ba84259e1769d88a4",
+  "src/workspace.rs": "881dc16160a503a96f3c01a41d69491d8c922cff6f6d19728e36f0e76204931b",
+  "src/workspace/fileops/link.rs": "4ea09e7fdbdbc473bcb2ec5ecad32ea0e505e5a08abd4404c12face456363968",
+  "src/workspace/fileops/mod.rs": "0c6f238779c92f89b76e15d41a5d9aae7f942c9fab5c8528c633ac2e6da942da",
+  "src/workspace/tests.rs": "64add87c7133534dd79a7091d1b7a752ce29adab64939c4471e15ead8e127a9a",
+  ".github/workflows/ci.yml": "346dd579993d63d5ccea877dedcd6b7f80fc46fd840f7830c9be4cd7130df003"
+}

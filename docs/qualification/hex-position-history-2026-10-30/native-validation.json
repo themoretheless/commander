@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native hex Back/Forward click/recovery/layout capture",
+  "binary_sha256": "ff3419a5d67ce9aa2164bbbc310076854484f46e511a6f19be5acf921488f59f",
+  "core_coverage": "history bounds/branching, accepted page commits, cancellation, file-change rejection, reload, search hits passed",
+  "earlier_native_gates": "remain pending"
+}

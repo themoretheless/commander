@@ -1,0 +1,24 @@
+2026-10-31T05:33:23 INFO  commander::logging: logging initialized
+2026-10-31T05:33:23 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: favorites
+2026-10-31T05:33:23 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-favorite-labels-1793410396664127000
+2026-10-31T05:33:23 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 0, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 1, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 2, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 3, target Id::new(("favorite-name-input", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 4, target Id::new(("favorite-name-input", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 5, target Id::new(("favorite-name-input", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 6, target Id::new(("favorite-name-input", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 7, target Id::new(("favorite-name-input", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 8, target Id::new(("favorite-name-save", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 9, target Id::new(("favorite-name-save", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:23 INFO  commander::visual_qa: Favorites QA phase 10, target Id::new(("favorite-name-save", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 11, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 12, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 13, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 14, target Id::new(("favorite-slot", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design", 3))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 15, target Id::new(("favorite-slot", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design", 3))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 16, target Id::new(("favorite-slot", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design", 3))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 17, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 18, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))
+2026-10-31T05:33:24 INFO  commander::visual_qa: Favorites QA phase 19, target Id::new(("favorite-row", "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-23194-favorites/left/Design"))

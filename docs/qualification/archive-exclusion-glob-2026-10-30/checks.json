@@ -1,0 +1,67 @@
+{
+  "test": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--features",
+      "visual-qa"
+    ],
+    "exit_code": 0
+  },
+  "clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--all-targets",
+      "--features",
+      "visual-qa",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0
+  },
+  "check": {
+    "command": [
+      "cargo",
+      "check",
+      "--locked"
+    ],
+    "exit_code": 0
+  },
+  "fmt": {
+    "command": [
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit_code": 0
+  },
+  "diff": {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0
+  },
+  "build": {
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--features",
+      "visual-qa"
+    ],
+    "exit_code": 0,
+    "log": "build-final.log"
+  },
+  "test_counts": {
+    "passed": 2847,
+    "ignored": 3,
+    "failed": 0
+  },
+  "binary_sha256": "4dde04b0ddf8d8abf2fb9f94ddbb263ef3583e2dacc763344d4e96eeeb68654b"
+}

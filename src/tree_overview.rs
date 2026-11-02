@@ -1,5 +1,6 @@
 //! Cancellable disk-usage scan and compressed directory-tree model.
 
+use crate::disk_usage_metric::{Measurement, Metric};
 use crate::panel::FileEntry;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
@@ -24,6 +25,7 @@ pub struct ScanProgress {
     pub files: usize,
     pub directories: usize,
     pub bytes: u64,
+    pub measurement: Measurement,
     pub current: PathBuf,
 }
 
@@ -33,6 +35,7 @@ pub struct OverviewNode {
     pub label: String,
     pub depth: usize,
     pub bytes: u64,
+    pub measurement: Measurement,
     pub files: usize,
     pub unreadable: bool,
 }
@@ -40,6 +43,8 @@ pub struct OverviewNode {
 #[derive(Clone, Debug)]
 pub struct OverviewSnapshot {
     pub root: PathBuf,
+    pub metric: Metric,
+    pub map_measurements: std::collections::HashMap<PathBuf, Measurement>,
     pub top_level: Vec<(FileEntry, u64)>,
     pub top_level_truncated: bool,
     pub nodes: Vec<OverviewNode>,
@@ -51,6 +56,20 @@ pub struct OverviewSnapshot {
     pub elapsed: Duration,
 }
 
+impl OverviewSnapshot {
+    pub fn measurement_for(&self, path: &Path) -> Measurement {
+        self.map_measurements.get(path).copied().unwrap_or_else(|| {
+            if self.metric == Metric::Logical {
+                Measurement::default()
+            } else {
+                Measurement::unknown()
+            }
+        })
+    }
+    pub fn measurement_complete(&self) -> bool {
+        self.progress.measurement.complete() && !self.cancelled && self.inaccessible_count == 0
+    }
+}
 #[derive(Clone, Debug)]
 pub enum OverviewEvent {
     Progress(ScanProgress),
@@ -79,15 +98,34 @@ impl Drop for OverviewRun {
 }
 
 pub fn spawn(root: PathBuf, notify: Notify) -> OverviewRun {
-    spawn_with_cap(root, NODE_CAP, notify)
+    spawn_metric(root, Metric::Logical, notify)
 }
 
+pub fn spawn_metric(root: PathBuf, metric: Metric, notify: Notify) -> OverviewRun {
+    spawn_metric_with_cap(root, metric, NODE_CAP, notify)
+}
+#[cfg(test)]
 fn spawn_with_cap(root: PathBuf, node_cap: usize, notify: Notify) -> OverviewRun {
+    spawn_metric_with_cap(root, Metric::Logical, node_cap, notify)
+}
+fn spawn_metric_with_cap(
+    root: PathBuf,
+    metric: Metric,
+    node_cap: usize,
+    notify: Notify,
+) -> OverviewRun {
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        run_worker(root, node_cap.max(1), worker_cancelled, sender, notify);
+        run_worker(
+            root,
+            metric,
+            node_cap.max(1),
+            worker_cancelled,
+            sender,
+            notify,
+        );
     });
     OverviewRun {
         receiver,
@@ -102,6 +140,7 @@ struct Frame {
     entries: std::vec::IntoIter<DirEntry>,
     top_entry: Option<FileEntry>,
     bytes: u64,
+    measurement: Measurement,
     files: usize,
     direct_files: usize,
     child_nodes: Vec<usize>,
@@ -129,6 +168,7 @@ fn drain_directory(path: &Path, cancelled: &AtomicBool) -> io::Result<(Vec<DirEn
 struct RawNode {
     path: PathBuf,
     bytes: u64,
+    measurement: Measurement,
     files: usize,
     direct_files: usize,
     children: Vec<usize>,
@@ -140,6 +180,7 @@ fn pending_raw_node(path: PathBuf) -> RawNode {
     RawNode {
         path,
         bytes: 0,
+        measurement: Measurement::default(),
         files: 0,
         direct_files: 0,
         children: Vec::new(),
@@ -151,6 +192,7 @@ fn pending_raw_node(path: PathBuf) -> RawNode {
 struct TopLevelItem {
     entry: FileEntry,
     bytes: u64,
+    measurement: Measurement,
 }
 
 impl PartialEq for TopLevelItem {
@@ -181,9 +223,18 @@ struct TopLevelSet {
     truncated: bool,
 }
 
+type RankedItems = (
+    Vec<(FileEntry, u64)>,
+    bool,
+    std::collections::HashMap<PathBuf, Measurement>,
+);
 impl TopLevelSet {
-    fn push(&mut self, entry: FileEntry, bytes: u64) {
-        let candidate = Reverse(TopLevelItem { entry, bytes });
+    fn push_measured(&mut self, entry: FileEntry, bytes: u64, measurement: Measurement) {
+        let candidate = Reverse(TopLevelItem {
+            entry,
+            bytes,
+            measurement,
+        });
         if self.items.len() < TOP_LEVEL_CAP {
             self.items.push(candidate);
             return;
@@ -199,18 +250,24 @@ impl TopLevelSet {
         }
     }
 
-    fn into_sorted(self) -> (Vec<(FileEntry, u64)>, bool) {
+    fn into_sorted(self) -> RankedItems {
+        let measurements = self
+            .items
+            .iter()
+            .map(|item| (item.0.entry.path.clone(), item.0.measurement))
+            .collect();
         let mut items: Vec<_> = self
             .items
             .into_iter()
             .map(|item| (item.0.entry, item.0.bytes))
             .collect();
         items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
-        (items, self.truncated)
+        (items, self.truncated, measurements)
     }
 }
 
 struct ScanState {
+    metric: Metric,
     progress: ScanProgress,
     inaccessible_paths: Vec<PathBuf>,
     inaccessible_count: usize,
@@ -219,8 +276,9 @@ struct ScanState {
 }
 
 impl ScanState {
-    fn new(root: &Path) -> Self {
+    fn new(root: &Path, metric: Metric) -> Self {
         Self {
+            metric,
             progress: ScanProgress {
                 directories: 1,
                 current: root.to_path_buf(),
@@ -234,6 +292,7 @@ impl ScanState {
     }
 
     fn inaccessible(&mut self, path: PathBuf) {
+        self.progress.measurement.unknown = self.progress.measurement.unknown.saturating_add(1);
         self.inaccessible_count = self.inaccessible_count.saturating_add(1);
         if self.inaccessible_paths.len() < INACCESSIBLE_PATH_CAP {
             self.inaccessible_paths.push(path);
@@ -258,13 +317,14 @@ impl ScanState {
 
 fn run_worker(
     root: PathBuf,
+    metric: Metric,
     node_cap: usize,
     cancelled: Arc<AtomicBool>,
     sender: mpsc::Sender<OverviewEvent>,
     notify: Notify,
 ) {
     let started = Instant::now();
-    let mut state = ScanState::new(&root);
+    let mut state = ScanState::new(&root, metric);
     let Ok((root_entries, root_read_error)) = drain_directory(&root, &cancelled) else {
         state.inaccessible(root.clone());
         finish(
@@ -302,10 +362,15 @@ fn run_worker(
         entries: root_entries.into_iter(),
         top_entry: None,
         bytes: 0,
+        measurement: if root_read_error {
+            Measurement::unknown()
+        } else {
+            Measurement::default()
+        },
         files: 0,
         direct_files: 0,
         child_nodes: Vec::new(),
-        children_truncated: false,
+        children_truncated: root_read_error,
     }];
     let mut top_level = TopLevelSet::default();
     let mut was_cancelled = false;
@@ -324,6 +389,9 @@ fn run_worker(
                 state.progress.current = path.clone();
                 let Ok(file_type) = dir_entry.file_type() else {
                     state.inaccessible(path);
+                    if let Some(parent) = stack.last_mut() {
+                        parent.measurement.unknown = parent.measurement.unknown.saturating_add(1);
+                    }
                     continue;
                 };
                 if file_type.is_dir() {
@@ -342,6 +410,7 @@ fn run_worker(
                         let node = RawNode {
                             path,
                             bytes: 0,
+                            measurement: Measurement::default(),
                             files: 0,
                             direct_files: 0,
                             children: Vec::new(),
@@ -358,7 +427,7 @@ fn run_worker(
                             }
                         }
                         if let Some(entry) = top_entry {
-                            top_level.push(entry, 0);
+                            top_level.push_measured(entry, 0, Measurement::default());
                         }
                         if !state.send_progress(&sender, &notify) {
                             return;
@@ -390,17 +459,27 @@ fn run_worker(
                                 entries: entries.into_iter(),
                                 top_entry,
                                 bytes: 0,
+                                measurement: if had_read_error {
+                                    Measurement::unknown()
+                                } else {
+                                    Measurement::default()
+                                },
                                 files: 0,
                                 direct_files: 0,
                                 child_nodes: Vec::new(),
-                                children_truncated: false,
+                                children_truncated: had_read_error,
                             });
                         }
                         Err(_) => {
                             state.inaccessible(path.clone());
+                            if let Some(parent) = stack.last_mut() {
+                                parent.measurement.unknown =
+                                    parent.measurement.unknown.saturating_add(1);
+                            }
                             let node = RawNode {
                                 path,
                                 bytes: 0,
+                                measurement: Measurement::unknown(),
                                 files: 0,
                                 direct_files: 0,
                                 children: Vec::new(),
@@ -417,7 +496,7 @@ fn run_worker(
                                 }
                             }
                             if let Some(entry) = top_entry {
-                                top_level.push(entry, 0);
+                                top_level.push_measured(entry, 0, Measurement::unknown());
                             }
                         }
                     }
@@ -427,25 +506,39 @@ fn run_worker(
                     // `symlink_metadata`, a link reports itself.
                     let Ok(metadata) = dir_entry.metadata() else {
                         state.inaccessible(path);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.measurement.unknown =
+                                parent.measurement.unknown.saturating_add(1);
+                        }
                         continue;
                     };
                     // Every hard link to a file is listed, but its bytes
                     // count once so hard-linked trees are not overstated.
-                    let bytes = if first_link(&mut seen_links, &metadata) {
-                        metadata.len()
-                    } else {
-                        0
-                    };
+                    let observation =
+                        if metric == Metric::FileCount || first_link(&mut seen_links, &metadata) {
+                            metric.observe(&metadata)
+                        } else {
+                            Some(0)
+                        };
+                    let (bytes, measurement) = observation
+                        .map_or((0, Measurement::unknown()), |bytes| {
+                            (bytes, Measurement::default())
+                        });
                     state.progress.files = state.progress.files.saturating_add(1);
-                    state.progress.bytes = state.progress.bytes.saturating_add(bytes);
+                    state
+                        .progress
+                        .measurement
+                        .add(&mut state.progress.bytes, bytes, measurement);
                     if let Some(parent) = stack.last_mut() {
-                        parent.bytes = parent.bytes.saturating_add(bytes);
+                        parent
+                            .measurement
+                            .add(&mut parent.bytes, bytes, measurement);
                         parent.files = parent.files.saturating_add(1);
                         parent.direct_files = parent.direct_files.saturating_add(1);
                         if parent.depth == 0
                             && let Some(entry) = FileEntry::from_meta(path, &metadata)
                         {
-                            top_level.push(entry, bytes);
+                            top_level.push_measured(entry, bytes, measurement);
                         }
                     }
                 }
@@ -459,6 +552,7 @@ fn run_worker(
                 let node = RawNode {
                     path: frame.path,
                     bytes: frame.bytes,
+                    measurement: frame.measurement,
                     files: frame.files,
                     direct_files: frame.direct_files,
                     children: frame.child_nodes,
@@ -466,16 +560,19 @@ fn run_worker(
                     unreadable: false,
                 };
                 let bytes = node.bytes;
+                let measurement = node.measurement;
                 let files = node.files;
                 if let Some(index) = frame.node_index {
                     raw_nodes[index] = node;
                 }
                 if !is_root {
                     if let Some(entry) = frame.top_entry {
-                        top_level.push(entry, bytes);
+                        top_level.push_measured(entry, bytes, measurement);
                     }
                     if let Some(parent) = stack.last_mut() {
-                        parent.bytes = parent.bytes.saturating_add(bytes);
+                        parent
+                            .measurement
+                            .add(&mut parent.bytes, bytes, measurement);
                         parent.files = parent.files.saturating_add(files);
                     }
                 }
@@ -491,6 +588,7 @@ fn run_worker(
         let partial_root = RawNode {
             path: root.clone(),
             bytes: root_frame.bytes,
+            measurement: root_frame.measurement,
             files: root_frame.files,
             direct_files: root_frame.direct_files,
             children: root_frame.child_nodes.clone(),
@@ -522,10 +620,12 @@ fn fold_open_frames(stack: &mut Vec<Frame>, top_level: &mut TopLevelSet) {
     while stack.len() > 1 {
         let frame = stack.pop().expect("stack has a non-root frame");
         if let Some(entry) = frame.top_entry {
-            top_level.push(entry, frame.bytes);
+            top_level.push_measured(entry, frame.bytes, frame.measurement);
         }
         let parent = stack.last_mut().expect("root frame remains");
-        parent.bytes = parent.bytes.saturating_add(frame.bytes);
+        parent
+            .measurement
+            .add(&mut parent.bytes, frame.bytes, frame.measurement);
         parent.files = parent.files.saturating_add(frame.files);
         parent.children_truncated = true;
     }
@@ -537,6 +637,7 @@ fn publish_open_frames(stack: &[Frame], nodes: &mut [RawNode]) {
             nodes[index] = RawNode {
                 path: frame.path.clone(),
                 bytes: frame.bytes,
+                measurement: frame.measurement,
                 files: frame.files,
                 direct_files: frame.direct_files,
                 children: frame.child_nodes.clone(),
@@ -610,8 +711,10 @@ fn finish(
     notify: &Notify,
 ) {
     let nodes = root_node.map_or_else(Vec::new, |root| compress_tree(&raw_nodes, root));
-    let (top_level, top_level_truncated) = top_level.into_sorted();
+    let (top_level, top_level_truncated, map_measurements) = top_level.into_sorted();
     let snapshot = OverviewSnapshot {
+        metric: state.metric,
+        map_measurements,
         root,
         top_level,
         top_level_truncated,
@@ -641,6 +744,7 @@ fn compress_tree(nodes: &[RawNode], root: usize) -> Vec<OverviewNode> {
         while !nodes[index].unreadable
             && nodes[index].direct_files == 0
             && nodes[index].children.len() == 1
+            && nodes[index].measurement == nodes[nodes[index].children[0]].measurement
             && !nodes[index].children_truncated
         {
             index = nodes[index].children[0];
@@ -653,6 +757,7 @@ fn compress_tree(nodes: &[RawNode], root: usize) -> Vec<OverviewNode> {
             label: labels.join("/"),
             depth,
             bytes: node.bytes,
+            measurement: node.measurement,
             files: node.files,
             unreadable: node.unreadable,
         });
@@ -916,11 +1021,172 @@ mod tests {
         assert!(!crosses_device(None, Some(&metadata)));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn file_count_ranks_empty_entries_and_counts_each_hard_link_and_symlink() {
+        let temp = TempDir::new();
+        temp.dir("many");
+        temp.file("large.bin", &"x".repeat(16384));
+        for i in 0..5 {
+            temp.file(&format!("many/empty-{i}"), "");
+        }
+        std::fs::hard_link(
+            temp.path().join("many/empty-0"),
+            temp.path().join("many/alias"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("../large.bin", temp.path().join("many/link")).unwrap();
+        let count = completed(&spawn_metric(
+            temp.path().to_owned(),
+            Metric::FileCount,
+            Arc::new(|| {}),
+        ));
+        let logical = completed(&spawn_metric(
+            temp.path().to_owned(),
+            Metric::Logical,
+            Arc::new(|| {}),
+        ));
+        assert_eq!(count.progress.bytes, 8);
+        assert_eq!(count.progress.files, 8);
+        assert!(count.measurement_complete());
+        assert_eq!(count.top_level[0].0.name, "many");
+        assert_eq!(count.top_level[0].1, 7);
+        assert_eq!(logical.top_level[0].0.name, "large.bin");
+        assert_eq!(
+            count
+                .nodes
+                .iter()
+                .find(|n| n.path == temp.path().join("many"))
+                .unwrap()
+                .bytes,
+            7
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&crate::disk_usage_export::snapshot_json(&count).unwrap())
+                .unwrap();
+        assert_eq!(json["summary"]["file_count"], 8);
+        assert!(json["summary"]["known_bytes"].is_null());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_allocation_counts_sparse_blocks_once_and_excludes_link_storage() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = TempDir::new();
+        temp.dir("sparse/inner");
+        temp.dir("dense");
+        let sparse = temp.path().join("sparse/inner/large.bin");
+        std::fs::File::create(&sparse)
+            .unwrap()
+            .set_len(8 * 1024 * 1024)
+            .unwrap();
+        let dense = temp.path().join("dense/original.bin");
+        std::fs::write(&dense, vec![7u8; 8192]).unwrap();
+        std::fs::hard_link(&dense, temp.path().join("dense/alias.bin")).unwrap();
+        let link = temp.path().join("target-link");
+        std::os::unix::fs::symlink("dense/original.bin", &link).unwrap();
+        temp.file("empty", "");
+        let dense_meta = std::fs::symlink_metadata(&dense).unwrap();
+        let sparse_meta = std::fs::symlink_metadata(&sparse).unwrap();
+        assert_eq!(sparse_meta.blocks(), 0);
+        let logical = completed(&spawn_metric(
+            temp.path().to_owned(),
+            Metric::Logical,
+            Arc::new(|| {}),
+        ));
+        let physical = completed(&spawn_metric(
+            temp.path().to_owned(),
+            Metric::FileAllocation,
+            Arc::new(|| {}),
+        ));
+        assert_eq!(
+            logical.progress.bytes,
+            8 * 1024 * 1024 + 8192 + std::fs::symlink_metadata(&link).unwrap().len()
+        );
+        assert_eq!(
+            physical.progress.bytes,
+            (dense_meta.blocks() + sparse_meta.blocks()) * 512
+        );
+        assert_eq!(physical.metric, Metric::FileAllocation);
+        assert!(physical.measurement_complete());
+        assert!(physical.nodes.iter().all(|n| n.measurement.complete()));
+        assert_eq!(
+            physical
+                .nodes
+                .iter()
+                .find(|n| n.path == temp.path().join("dense"))
+                .unwrap()
+                .bytes,
+            dense_meta.blocks() * 512
+        );
+        assert!(
+            physical
+                .top_level
+                .iter()
+                .find(|(e, _)| e.name == "target-link")
+                .is_some_and(|(_, n)| *n == 0)
+        );
+        let encoded = crate::disk_usage_export::snapshot_json(&physical).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert!(report["summary"]["logical_bytes"].is_null());
+        assert_eq!(
+            report["summary"]["file_allocation_bytes"],
+            physical.progress.bytes
+        );
+        assert_eq!(report["metric"], "file_allocation");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn selected_metric_drives_the_bounded_map_heap_without_losing_root_totals() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = TempDir::new();
+        for i in 0..TOP_LEVEL_CAP + 1 {
+            std::fs::File::create(temp.path().join(format!("sparse-{i:04}")))
+                .unwrap()
+                .set_len(1024 * 1024)
+                .unwrap();
+        }
+        let dense = temp.path().join("dense-small");
+        std::fs::write(&dense, vec![9u8; 8192]).unwrap();
+        let blocks = std::fs::symlink_metadata(&dense).unwrap().blocks() * 512;
+        assert!(blocks > 0);
+        let logical = completed(&spawn_metric(
+            temp.path().to_owned(),
+            Metric::Logical,
+            Arc::new(|| {}),
+        ));
+        let allocated = completed(&spawn_metric(
+            temp.path().to_owned(),
+            Metric::FileAllocation,
+            Arc::new(|| {}),
+        ));
+        assert!(logical.top_level_truncated && allocated.top_level_truncated);
+        assert_eq!(logical.top_level.len(), TOP_LEVEL_CAP);
+        assert_eq!(allocated.top_level.len(), TOP_LEVEL_CAP);
+        assert!(!logical.top_level.iter().any(|(e, _)| e.path == dense));
+        assert!(
+            allocated
+                .top_level
+                .iter()
+                .any(|(e, n)| e.path == dense && *n == blocks)
+        );
+        assert_eq!(allocated.progress.bytes, blocks);
+        assert!(allocated.measurement_complete());
+        assert_eq!(allocated.map_measurements.len(), TOP_LEVEL_CAP);
+        assert!(
+            allocated
+                .top_level
+                .iter()
+                .all(|(e, _)| allocated.measurement_for(&e.path).complete())
+        );
+    }
+
     #[test]
     fn cancelled_snapshot_rolls_open_directories_into_the_root() {
         let temp = TempDir::new();
         temp.file("deep/inner/x.bin", "123");
         let frame = |path: PathBuf, depth: usize, bytes: u64, files: usize| Frame {
+            measurement: Default::default(),
             node_index: None,
             entries: drain_directory(temp.path(), &AtomicBool::new(false))
                 .unwrap()
@@ -940,11 +1206,13 @@ mod tests {
             frame(temp.path().join("deep"), 1, 10, 2),
             frame(temp.path().join("deep/inner"), 2, 100, 3),
         ];
+        stack[2].measurement = Measurement::unknown();
         let mut top_level = TopLevelSet::default();
 
         fold_open_frames(&mut stack, &mut top_level);
 
         assert_eq!(stack.len(), 1);
+        assert_eq!(stack[0].measurement.unknown, 1);
         assert_eq!(stack[0].bytes, 111);
         assert_eq!(stack[0].files, 6);
         assert!(stack[0].children_truncated);

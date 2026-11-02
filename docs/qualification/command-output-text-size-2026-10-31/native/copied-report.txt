@@ -1,0 +1,31 @@
+Commander command report (v1)
+Command: Per item: pwd; printf '%s\n' {names}
+Exit code: Some(0)
+Error: none
+Name: Архив ZIP
+Template: pwd; printf '%s\n' {names}
+Execution: Per item: continue
+Working folder policy: Other pane
+Initial working folder: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/right
+Opening folder: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/left
+Other folder: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/right
+Inputs: 2
+- /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/left/notes.md
+- /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/left/Design
+Batch: 2 / 2 completed; 2 succeeded; 0 failed; 0 remaining; cancelled=false; stopped_on_error=false
+Attempted commands:
+pwd; printf '%s\n' 'notes.md'
+pwd; printf '%s\n' 'Design'
+
+--- stdout ---
+Per item: 2 / 2 completed · 2 succeeded · 0 failed · 0 remaining
+
+--- item 1 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/left/notes.md ---
+/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/right
+notes.md
+
+--- item 2 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/left/Design ---
+/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/right
+Design
+
+--- stderr ---

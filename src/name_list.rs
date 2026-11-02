@@ -1,6 +1,30 @@
 //! Literal basename lists for selection: bounded, exact and without filesystem I/O.
 use std::collections::HashSet;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Action {
+    #[default]
+    Add,
+    Remove,
+    Invert,
+}
+impl Action {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Add => "Add",
+            Self::Remove => "Remove",
+            Self::Invert => "Invert",
+        }
+    }
+    pub const fn changes(self, selected: bool) -> bool {
+        match self {
+            Self::Add => !selected,
+            Self::Remove => selected,
+            Self::Invert => true,
+        }
+    }
+}
+
 pub const MAX_BYTES: usize = 64 * 1024;
 pub const MAX_NAMES: usize = 4096;
 

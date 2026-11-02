@@ -1,0 +1,6 @@
+{
+  "scenario": "duplicate_roots",
+  "out": "/tmp/commander-native-duplicate_roots-1793434119371722000",
+  "binary_sha256": "b30b47594cc2e1517543b090f55b0b141db2024880eb0258bfe4dfcb86987c1b",
+  "core_sha256": "b30b47594cc2e1517543b090f55b0b141db2024880eb0258bfe4dfcb86987c1b"
+}

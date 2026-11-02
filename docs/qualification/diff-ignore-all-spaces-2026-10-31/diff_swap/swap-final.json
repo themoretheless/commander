@@ -1,0 +1,75 @@
+{
+  "find_query": "",
+  "intraline": true,
+  "names": [
+    "diff.txt (left)",
+    "diff.txt (right)"
+  ],
+  "numbers": true,
+  "options": {
+    "all_spaces": false,
+    "ignore_case": true,
+    "space_changes": true
+  },
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-81489-diff_swap/left/diff.txt",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-81489-diff_swap/right/diff.txt"
+  ],
+  "phase": 29,
+  "rows": [
+    {
+      "kind": "Equal",
+      "text": "HEAD  a"
+    },
+    {
+      "kind": "Equal",
+      "text": "same"
+    },
+    {
+      "kind": "Delete",
+      "text": "left UPDATED"
+    },
+    {
+      "kind": "Delete",
+      "text": "end  \\ no newline at end of file"
+    },
+    {
+      "kind": "Insert",
+      "text": "right UPDATED"
+    },
+    {
+      "kind": "Insert",
+      "text": "end"
+    }
+  ],
+  "source": [
+    "HEAD  a\r\nsame\nleft UPDATED\nend",
+    "head a\r\nsame\nright UPDATED\nend\n"
+  ],
+  "source_numbers": [
+    [
+      1,
+      1
+    ],
+    [
+      2,
+      2
+    ],
+    [
+      3,
+      null
+    ],
+    [
+      4,
+      null
+    ],
+    [
+      null,
+      3
+    ],
+    [
+      null,
+      4
+    ]
+  ]
+}

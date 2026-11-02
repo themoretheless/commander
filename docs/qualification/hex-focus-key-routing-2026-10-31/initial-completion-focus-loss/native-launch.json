@@ -1,0 +1,7 @@
+{
+  "started_unix": 1793391765.9327722,
+  "binary_sha256": "beec69ad8baec431df3aa07b96fe8c515a1b8e19107df3d7f178e78e0e0f0d0d",
+  "scenario": "hex_search",
+  "output_root": "/tmp/commander-native-hex-focus-routing-1793391765893864000",
+  "rust_backtrace": "1"
+}

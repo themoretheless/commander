@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test hex_preview::tests::hex_focus_shortcuts_leave_open_popup_focus_unchanged ... ok
+test hex_preview::tests::hex_focus_shortcuts_ignore_modifiers_and_busy_worker ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2853 filtered out; finished in 0.07s
+

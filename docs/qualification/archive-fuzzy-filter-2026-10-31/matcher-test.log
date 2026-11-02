@@ -1,0 +1,21 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `fuzzy_filter_applied` is never used
+   --> src/app/archive_dialog.rs:853:12
+    |
+537 | impl MemberFilter {
+    | ----------------- method in this implementation
+...
+853 |     pub fn fuzzy_filter_applied(&self) -> bool {
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 55.08s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 1 test
+test archive_filter::tests::fuzzy_archive_patterns_use_unicode_subsequences_scope_case_and_bounded_modes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2878 filtered out; finished in 0.00s
+

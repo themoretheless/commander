@@ -1,0 +1,13 @@
+# Select all / invert visible Find results — 2026-10-28
+
+Independent adaptation of Double Commander's [Mark commands: Select All and Invert Selection](https://doublecmd.github.io/doc/en/help.html), exposed specifically within Commander's Find result list. No upstream code copied; this does not claim identical upstream search-dialog controls.
+
+Select all visible selects each currently received, non-hidden result location. Invert selection replaces the selection with its complement among those same visible locations. Both discard stale/hidden selection keys and reset the Shift-range anchor while leaving the keyboard cursor, results, search counts and pane selections independent. Incoming results remain unselected until another explicit action; there is no sticky select-future mode. Buttons are disabled without visible results and return focus to the query after use. Cmd+A text editing behavior is unchanged because no keyboard interception was added.
+
+Selection identity remains SearchLocation: hard-link paths and distinct archive-member indexes do not collapse. Existing copy/group-tab/hide actions use the resulting selected set and current displayed order. Restoring hidden rows does not automatically select them.
+
+The focused regression covers partial complement, double inversion, selecting all, hidden exclusion, shared native identities, duplicate virtual paths at different archive indexes, cursor independence, anchor reset, sorting, new streaming rows, restoration, all-hidden and empty lists. Native SearchResults QA retains prior selection/copy actions, then inverts the two selected visible rows to none and requires that intermediate state. It selects all and requires exactly two selected locations excluding hidden README.txt before opening group tabs and hiding/restoring. Final readiness preserves existing tab/result/focus invariants and the same two recording clipboard writes, with no real system clipboard mutation.
+
+No commit or push.
+
+Validation: **2532 passed, 0 failed, 3 ignored** in the full locked visual-qa suite; focused bulk-selection regression passed. All-target visual-qa Clippy with warnings denied, current QA debug build, formatting and scoped whitespace checks passed. Native invert/select-all/group-actions sequence passed **16/16 capture checks**, retaining every mandatory glyph and existing effect isolation. Frame visually inspected: selection controls fit, results restored unselected, five tabs retained with the first active and query focused. The QA app exited after capture before accessibility attachment completed; fresh manifest/log/frame establish success. No rejected run for this feature. See [native frame](frame.png).

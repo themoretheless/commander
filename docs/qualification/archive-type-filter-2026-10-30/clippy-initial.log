@@ -1,0 +1,28 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: field assignment outside of initializer for an instance created with Default::default()
+    --> src/app/archive_dialog.rs:1715:9
+     |
+1715 | /         filter.kinds = crate::archive_filter::Kinds {
+1716 | |             files: false,
+1717 | |             folders: false,
+1718 | |             links: true,
+1719 | |             other: false,
+1720 | |         };
+     | |__________^
+     |
+note: consider initializing the variable with `app::archive_dialog::MemberFilter { kinds: crate::archive_filter::Kinds {
+                  files: false,
+                  folders: false,
+                  links: true,
+                  other: false,
+              }, ..Default::default() }` and removing relevant reassignments
+    --> src/app/archive_dialog.rs:1714:9
+     |
+1714 |         let mut filter = MemberFilter::default();
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#field_reassign_with_default
+     = note: `-D clippy::field-reassign-with-default` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::field_reassign_with_default)]`
+
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

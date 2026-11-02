@@ -1,0 +1,16 @@
+{
+  "status": "passed_scoped",
+  "phase": 27,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "focus_precondition": "explicitly cleared in harness",
+  "composite_search": "pending",
+  "physical_keys": "pending"
+}

@@ -1,0 +1,188 @@
+2026-11-02T12:28:19 INFO  commander::logging: logging initialized
+2026-11-02T12:28:19 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: shortcut_exchange
+2026-11-02T12:28:20 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-02T12:28:33 ERROR commander::panic: thread 'main' panicked at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:101: DEBUG PANIC: Failed to acquire RwLock write after 10s. Deadlock?
+
+thread 'main' (10715610) panicked at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:101:17:
+DEBUG PANIC: Failed to acquire RwLock write after 10s. Deadlock?
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/panicking.rs:80:14
+   2: <epaint::mutex::RwLock<egui::context::ContextImpl>>::write::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:101:17
+   3: <core::option::Option<lock_api::rwlock::RwLockWriteGuard<parking_lot::raw_rwlock::RawRwLock, egui::context::ContextImpl>>>::unwrap_or_else::<<epaint::mutex::RwLock<egui::context::ContextImpl>>::write::{closure#0}>
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/option.rs:1067:21
+   4: <epaint::mutex::RwLock<egui::context::ContextImpl>>::write
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:100:53
+   5: <egui::context::Context>::write::<bool, <egui::context::Context>::input<bool, <egui::response::Response>::clicked_by::{closure#0}>::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:765:28
+   6: <egui::context::Context>::input::<bool, <egui::response::Response>::clicked_by::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:992:14
+   7: <egui::response::Response>::clicked_by
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/response.rs:198:57
+   8: <egui::response::Response>::clicked
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/response.rs:185:66
+   9: <commander::keybindings::State>::editor::{closure#1}::{closure#0}
+             at ./Users/themoretheless/Documents/Sources/commander/src/keybindings.rs:522:178
+  10: <egui::context::Context>::data_mut::<egui::util::id_type_map::RawKey, <commander::keybindings::State>::editor::{closure#1}::{closure#0}>::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:1034:31
+  11: <egui::context::Context>::write::<egui::util::id_type_map::RawKey, <egui::context::Context>::data_mut<egui::util::id_type_map::RawKey, <commander::keybindings::State>::editor::{closure#1}::{closure#0}>::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:765:9
+  12: <egui::context::Context>::data_mut::<egui::util::id_type_map::RawKey, <commander::keybindings::State>::editor::{closure#1}::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:1034:14
+  13: <commander::keybindings::State>::editor::{closure#1}
+             at ./Users/themoretheless/Documents/Sources/commander/src/keybindings.rs:522:49
+  14: <<commander::keybindings::State>::editor::{closure#1} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  15: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  16: <egui::ui::Ui>::scope_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2211:19
+  17: <egui::ui::Ui>::allocate_ui_with_layout_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:1344:14
+  18: <egui::ui::Ui>::horizontal_with_main_wrap_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2388:14
+  19: <egui::ui::Ui>::horizontal::<(), <commander::keybindings::State>::editor::{closure#1}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2316:14
+  20: <commander::keybindings::State>::editor
+             at ./Users/themoretheless/Documents/Sources/commander/src/keybindings.rs:511:12
+  21: <commander::app::App>::show_keyboard_help::{closure#0}::{closure#0}
+             at ./Users/themoretheless/Documents/Sources/commander/src/app/keyboard_help.rs:37:40
+  22: <egui::containers::scroll_area::ScrollArea>::show::<(), <commander::app::App>::show_keyboard_help::{closure#0}::{closure#0}>::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:964:61
+  23: <<egui::containers::scroll_area::ScrollArea>::show<(), <commander::app::App>::show_keyboard_help::{closure#0}::{closure#0}>::{closure#0} as core::ops::function::FnOnce<(&mut egui::ui::Ui, emath::rect::Rect)>>::call_once::{shim:vtable#0}
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  24: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui, emath::rect::Rect), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui, emath::rect::Rect)>>::call_once
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  25: <egui::containers::scroll_area::ScrollArea>::show_viewport_dyn::<()>::{closure#1}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:1044:17
+  26: <<egui::containers::scroll_area::ScrollArea>::show_viewport_dyn<()>::{closure#1} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  27: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  28: <egui::containers::frame::Frame>::show_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:417:19
+  29: <egui::containers::frame::Frame>::show::<(), <egui::containers::scroll_area::ScrollArea>::show_viewport_dyn<()>::{closure#1}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:405:14
+  30: <egui::containers::scroll_area::ScrollArea>::show_viewport_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:1043:14
+  31: <egui::containers::scroll_area::ScrollArea>::show::<(), <commander::app::App>::show_keyboard_help::{closure#0}::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:964:14
+  32: <commander::app::App>::show_keyboard_help::{closure#0}
+             at ./Users/themoretheless/Documents/Sources/commander/src/app/keyboard_help.rs:17:129
+  33: <<commander::app::App>::show_keyboard_help::{closure#0} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  34: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  35: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  36: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  37: <egui::containers::frame::Frame>::show_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:417:19
+  38: <egui::containers::frame::Frame>::show::<(), alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>>>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:405:14
+  39: <egui::containers::window::Window>::show_dyn::<()>::{closure#6}::{closure#0}::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:746:38
+  40: <<egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}::{closure#0} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  41: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  42: <egui::ui::Ui>::scope_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2211:19
+  43: <egui::ui::Ui>::scope_builder::<(), <egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2199:14
+  44: <egui::containers::collapsing_header::CollapsingState>::show_body_unindented::<(), <egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/collapsing_header.rs:231:35
+  45: <egui::containers::window::Window>::show_dyn::<()>::{closure#6}::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:737:26
+  46: <egui::containers::resize::Resize>::show::<core::option::Option<()>, <egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/resize.rs:325:19
+  47: <egui::containers::window::Window>::show_dyn::<()>::{closure#6}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:721:24
+  48: <<egui::containers::window::Window>::show_dyn<()>::{closure#6} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  49: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = core::option::Option<()>>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  50: <egui::containers::frame::Frame>::show_dyn::<core::option::Option<()>>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:417:19
+  51: <egui::containers::frame::Frame>::show::<core::option::Option<()>, <egui::containers::window::Window>::show_dyn<()>::{closure#6}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:405:14
+  52: <egui::containers::window::Window>::show_dyn::<()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:720:47
+  53: <egui::containers::window::Window>::show::<(), <commander::app::App>::show_keyboard_help::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:548:14
+  54: <commander::app::App>::show_keyboard_help
+             at ./Users/themoretheless/Documents/Sources/commander/src/app/keyboard_help.rs:14:68
+  55: <commander::app::App as eframe::epi::App>::ui
+             at ./Users/themoretheless/Documents/Sources/commander/src/app/update.rs:901:14
+  56: <commander::visual_qa::VisualQaApp as eframe::epi::App>::ui
+             at ./Users/themoretheless/Documents/Sources/commander/src/visual_qa.rs:15434:9
+  57: <eframe::native::epi_integration::EpiIntegration>::update::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/eframe-0.36.2/src/native/epi_integration.rs:300:25
+  58: <egui::context::Context>::run_ui_dyn::{closure#1}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:812:17
+  59: <egui::context::Context>::run_dyn
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:856:13
+  60: <egui::context::Context>::run_ui_dyn
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:801:14
+  61: <egui::context::Context>::run_ui::<<eframe::native::epi_integration::EpiIntegration>::update::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:795:14
+  62: <eframe::native::epi_integration::EpiIntegration>::update
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/eframe-0.36.2/src/native/epi_integration.rs:288:41
+  63: <eframe::native::glow_integration::GlowWinitRunning>::run_ui_and_paint
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/eframe-0.36.2/src/native/glow_integration.rs:737:18
+  64: <eframe::native::glow_integration::GlowWinitApp as eframe::native::winit_integration::WinitApp>::run_ui_and_paint
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/eframe-0.36.2/src/native/glow_integration.rs:463:21
+  65: <eframe::native::run::WinitAppWrapper<eframe::native::glow_integration::GlowWinitApp> as winit::application::ApplicationHandler<eframe::native::winit_integration::UserEvent>>::window_event::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/eframe-0.36.2/src/native/run.rs:375:36
+  66: eframe::native::event_loop_context::with_event_loop_context::<<eframe::native::run::WinitAppWrapper<eframe::native::glow_integration::GlowWinitApp> as winit::application::ApplicationHandler<eframe::native::winit_integration::UserEvent>>::window_event::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/eframe-0.36.2/src/native/event_loop_context.rs:53:5
+  67: <eframe::native::run::WinitAppWrapper<eframe::native::glow_integration::GlowWinitApp> as winit::application::ApplicationHandler<eframe::native::winit_integration::UserEvent>>::window_event
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/eframe-0.36.2/src/native/run.rs:372:9
+  68: winit::event_loop::dispatch_event_for_app::<eframe::native::winit_integration::UserEvent, eframe::native::run::WinitAppWrapper<eframe::native::glow_integration::GlowWinitApp>>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/event_loop.rs:642:56
+  69: <winit::event_loop::EventLoop<eframe::native::winit_integration::UserEvent> as winit::platform::run_on_demand::EventLoopExtRunOnDemand>::run_app_on_demand::<eframe::native::run::WinitAppWrapper<eframe::native::glow_integration::GlowWinitApp>>::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform/run_on_demand.rs:76:13
+  70: winit::platform_impl::macos::event_loop::map_user_event::<eframe::native::winit_integration::UserEvent, <winit::event_loop::EventLoop<eframe::native::winit_integration::UserEvent> as winit::platform::run_on_demand::EventLoopExtRunOnDemand>::run_app_on_demand<eframe::native::run::WinitAppWrapper<eframe::native::glow_integration::GlowWinitApp>>::{closure#0}>::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/event_loop.rs:174:22
+  71: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnMut<(winit::event::Event<winit::platform_impl::macos::app_state::HandlePendingUserEvents>, &'a winit::event_loop::ActiveEventLoop), Output = ()>> as core::ops::function::FnMut<(winit::event::Event<winit::platform_impl::macos::app_state::HandlePendingUserEvents>, &winit::event_loop::ActiveEventLoop)>>::call_mut
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2373:9
+  72: <winit::platform_impl::macos::event_handler::EventHandler>::handle_event
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/event_handler.rs:125:17
+  73: <winit::platform_impl::macos::app_state::ApplicationDelegate>::handle_event
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/app_state.rs:324:36
+  74: <winit::platform_impl::macos::app_state::ApplicationDelegate>::cleared
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/app_state.rs:386:18
+  75: winit::platform_impl::macos::observer::control_flow_end_handler::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/observer.rs:84:80
+  76: winit::platform_impl::macos::observer::control_flow_handler::<winit::platform_impl::macos::observer::control_flow_end_handler::{closure#0}>::{closure#0}
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/observer.rs:46:9
+  77: std::panicking::catch_unwind::do_call::<winit::platform_impl::macos::observer::control_flow_handler<winit::platform_impl::macos::observer::control_flow_end_handler::{closure#0}>::{closure#0}, ()>
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:573:43
+  78: ___rust_try
+  79: std::panicking::catch_unwind::<(), winit::platform_impl::macos::observer::control_flow_handler<winit::platform_impl::macos::observer::control_flow_end_handler::{closure#0}>::{closure#0}>
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:541:19
+  80: std::panic::catch_unwind::<winit::platform_impl::macos::observer::control_flow_handler<winit::platform_impl::macos::observer::control_flow_end_handler::{closure#0}>::{closure#0}, ()>
+             at ./rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panic.rs:359:14
+  81: winit::platform_impl::macos::event_loop::stop_app_on_panic::<winit::platform_impl::macos::observer::control_flow_handler<winit::platform_impl::macos::observer::control_flow_end_handler::{closure#0}>::{closure#0}, ()>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/event_loop.rs:444:11
+  82: winit::platform_impl::macos::observer::control_flow_handler::<winit::platform_impl::macos::observer::control_flow_end_handler::{closure#0}>
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/observer.rs:44:5
+  83: winit::platform_impl::macos::observer::control_flow_end_handler
+             at ./Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/platform_impl/macos/observer.rs:79:9
+  84: <unknown>
+  85: <unknown>
+  86: <unknown>
+  87: <unknown>
+  88: <unknown>
+  89: <unknown>
+  90: <unknown>
+  91: <unknown>
+  92: <unknown>
+  93: <unknown>
+  94: <unknown>
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+2026-11-02T12:28:34 WARN  egui_glow::painter: You forgot to call destroy() on the egui glow painter. Resources will leak!

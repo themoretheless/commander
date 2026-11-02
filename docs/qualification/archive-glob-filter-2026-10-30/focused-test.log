@@ -1,0 +1,17 @@
+ Downloading crates ...
+  Downloaded globset v0.4.21
+   Compiling aho-corasick v1.1.5
+   Compiling bstr v1.13.1
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling regex-automata v0.4.18
+   Compiling globset v0.4.21
+   Compiling regex v1.13.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.62s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test archive_filter::tests::glob_filter_handles_paths_alternatives_classes_escaping_and_case ... ok
+test app::archive_dialog::tests::archive_glob_filter_composes_with_scope_navigation_exclusion_and_saved_modes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2820 filtered out; finished in 0.02s
+

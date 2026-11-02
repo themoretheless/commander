@@ -1,0 +1,25 @@
+{
+  "status": "passed_scoped",
+  "scenario": "hex_search",
+  "capture_phase": 102,
+  "checks_passed": 14,
+  "checks_total": 14,
+  "native_launch": "CUA getApp absolute own bundle path",
+  "input_method": "egui event injection inside native runtime",
+  "frame_inspected": true,
+  "native_effect_calls": {
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "free_space": 0
+  },
+  "remaining_gates": [
+    "physical macOS keyboard delivery and VoiceOver",
+    "all bookmark slots in native runtime",
+    "row-width manual entry, wide horizontal scroll, Copy page and highlights",
+    "position percentage EOF and empty-file presentation",
+    "boundary search cancellation and busy presentation"
+  ]
+}

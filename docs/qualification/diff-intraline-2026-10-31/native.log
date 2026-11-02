@@ -1,0 +1,13 @@
+2026-10-31T11:02:54 INFO  commander::logging: logging initialized
+2026-10-31T11:02:54 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: diff_intraline
+2026-10-31T11:02:54 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-diff_intraline-1793430167268949000
+2026-10-31T11:02:54 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 0, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 1, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 2, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 3, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 4, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 5, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 6, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 7, rect [[886.8 141.5] - [1077.0 165.5]]
+2026-10-31T11:02:55 INFO  commander::visual_qa: Diff intraline QA phase 8, rect [[886.8 141.5] - [1077.0 165.5]]

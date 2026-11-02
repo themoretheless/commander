@@ -1,0 +1,11 @@
+# Hex viewer percentage navigation — 2026-10-30
+
+Independent Rust adaptation of percentage Go to in [Midnight Commander viewer](https://github.com/MidnightCommander/mc/blob/master/src/viewer/dialogs.c), repository #40 in the researched 99. Its public source offers percentage navigation. Inspected through the GitHub connector; no upstream implementation copied.
+
+Commander accepts whole percentages `0%` through `100%` in the existing Offset field, alongside unchanged absolute decimal and 0x hexadecimal offsets. Percentages use the loaded file stamp's size and round down to a byte. A u128 intermediate supports the complete u64 size range without overflow. `100%` opens the existing empty EOF page. Invalid percentages are rejected rather than clamped: fractional, signed, hexadecimal and above-100 values are invalid. Surrounding whitespace is accepted. The hint and viewer help expose the syntax.
+
+Navigation retains bounded 4096-byte worker reads and expected file stamp validation. A changed file cannot silently accept navigation based on stale size. No additional scan, content loading or file editing is introduced.
+
+Two new regressions check all 101 percentages against independent quotient/remainder arithmetic over empty, single-byte, unaligned and maximum-u64 sizes, strict invalid input and unavailable size; they also verify actual unaligned bytes, EOF and changed-file rejection. Native HexPreview retains Next/Previous, absolute hex Go and decimal byte display, then enters 50%, 100% and 0% through the real field and Go button. Each transition waits for exact offsets 4098, 8197 and 0 on the 8197-byte fixture; final readiness requires phase 41 and decimal mode. This is a scoped transfer, not full viewer parity.
+
+Validation: locked visual-qa suite **2666 passed, 0 failed, 3 ignored**; all-target Clippy with warnings denied, locked build, cargo fmt --check and git diff --check passed. Fresh CUA-launched native capture **14/14**, all native effect counters zero, manifest newer than launch record. Frame inspected: help, offset controls and decimal bytes visible at final offset 0. Existing horizontal clipping of wide decimal/ASCII rows is unchanged. No commit or push; remaining transfers stay open.

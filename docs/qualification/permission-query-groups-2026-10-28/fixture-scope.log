@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on package cache
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.00s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 5 tests
+test search::tests::advanced_permission_query_unknown_modes_never_satisfy_negated_groups ... ok
+test search::tests::permission_query_matches_exact_bit_requirements_and_unknown_metadata ... ok
+test query::tests::permission_query_validates_all_bits_and_saved_semantics ... ok
+test query::tests::advanced_permission_query_masks_groups_precedence_and_limits ... ok
+test search::tests::permission_query_agrees_across_live_indexed_zip_and_tar ... FAILED
+
+failures:
+
+---- search::tests::permission_query_agrees_across_live_indexed_zip_and_tar stdout ----
+
+thread 'search::tests::permission_query_agrees_across_live_indexed_zip_and_tar' (88337141) panicked at src/search.rs:2865:21:
+assertion `left == right` failed: false: Exact: type:regular perm:uw+|gw+|ow+
+  left: ["bundle.tar", "bundle.zip", "plain.txt", "tar-plain.txt", "zip-plain.txt"]
+ right: ["plain.txt", "tar-plain.txt", "zip-plain.txt"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    search::tests::permission_query_agrees_across_live_indexed_zip_and_tar
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 2549 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

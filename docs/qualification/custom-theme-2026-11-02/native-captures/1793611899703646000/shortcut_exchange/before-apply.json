@@ -1,0 +1,14 @@
+{
+  "applied": [
+    {
+      "command": "Reverse sort order",
+      "keys": "F5"
+    }
+  ],
+  "draft": [
+    {
+      "command": "Move cursor down",
+      "keys": "N"
+    }
+  ]
+}

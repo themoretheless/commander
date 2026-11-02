@@ -723,7 +723,18 @@ mod tests {
     fn entry(path: &Path, is_dir: bool, size: u64) -> FileEntry {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
             name,

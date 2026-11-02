@@ -1,0 +1,7 @@
+{
+  "scenario": "checksums",
+  "output": "/tmp/commander-native-relative-checksums-1793400661070525000",
+  "binary_sha256": "2a8275055807207f95bc57d8032fb9121821cca144616865ec7eb5403310194d",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793400661168085000
+}

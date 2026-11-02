@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "checks": 15,
+  "full_rows": 9,
+  "only_edited_row": "notes.md",
+  "unchanged_other_rows": true,
+  "no_copy_of_notes_required_by_scene_readiness": true,
+  "native_effect_calls": 0,
+  "binary_matches_launch": true
+}

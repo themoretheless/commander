@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "collapse and mask input",
+    "case/path controls and action buttons",
+    "invalid mask and hidden-selection presentation",
+    "focus/layout"
+  ]
+}

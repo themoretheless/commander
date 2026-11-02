@@ -1,0 +1,6 @@
+
+running 1 test
+test search::tests::bom_search_utf16_surrogate_cut_cannot_manufacture_a_word_boundary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3139 filtered out; finished in 1.21s
+

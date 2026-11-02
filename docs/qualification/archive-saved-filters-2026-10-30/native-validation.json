@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "Save valid filter and reject invalid pattern",
+    "recall and clear through native menu",
+    "focus return and wrapped pane layout"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "scenario": "permissions",
+  "out": "/tmp/commander-native-permissions-1793438746080211000",
+  "binary_sha256": "2eab0f7a537cbc9163714982aec6cd89470e8af3fb9a163f34efa7a73167dad3",
+  "core_sha256": "2eab0f7a537cbc9163714982aec6cd89470e8af3fb9a163f34efa7a73167dad3"
+}

@@ -1,0 +1,33 @@
+2026-11-02T07:33:22 INFO  commander::logging: logging initialized
+2026-11-02T07:33:22 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: miller_browser
+2026-11-02T07:33:22 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-02T07:33:22 INFO  commander::visual_qa: Miller QA phase 0
+2026-11-02T07:33:22 INFO  commander::visual_qa: Miller QA phase 1
+2026-11-02T07:33:22 INFO  commander::visual_qa: Miller QA phase 2
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 3
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 4
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 5
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 6
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 7
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 8
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 9
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 10
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 11
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 12
+2026-11-02T07:33:23 INFO  commander::visual_qa: Miller QA phase 13
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 14
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 15
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 16
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 17
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 18
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 19
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 20
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 21
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 22
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 23
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 24
+2026-11-02T07:33:24 INFO  commander::visual_qa: Miller QA phase 25
+2026-11-02T07:33:25 INFO  commander::visual_qa: Miller QA phase 26
+2026-11-02T07:33:25 INFO  commander::visual_qa: Miller QA phase 27
+2026-11-02T07:33:25 INFO  commander::visual_qa: Miller QA phase 28
+2026-11-02T07:33:25 INFO  commander::visual_qa: Miller QA phase 29

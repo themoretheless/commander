@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "native Same name/Same folder menus",
+    "Select/Deselect and hidden selections",
+    "focus/anchor/layout"
+  ]
+}

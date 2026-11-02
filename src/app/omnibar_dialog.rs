@@ -16,6 +16,10 @@ pub struct OmnibarState {
     /// once the probe validates that same input.
     pub(crate) pending_go: Option<String>,
     pub(crate) assigning_slot: bool,
+    pub(crate) favorites: crate::bookmarks::Bookmarks,
+    pub(crate) favorite_cache: crate::favorite_search::Cache,
+    pub(crate) favorite_target: crate::workspace::FavoriteTarget,
+    favorite_submit: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +27,11 @@ enum OmniRow {
     Folder {
         path: std::path::PathBuf,
         pinned: bool,
+    },
+    Favorite {
+        path: std::path::PathBuf,
+        name: String,
+        slot: Option<u8>,
     },
     Command(usize),
     QuickSlot {
@@ -36,6 +45,7 @@ enum OmniRow {
 
 enum OmniAction {
     Go(std::path::PathBuf),
+    Favorite(std::path::PathBuf),
     Run(String, crate::command::Command),
     ChooseSlot,
     Search(String),
@@ -45,6 +55,7 @@ enum OmniAction {
 fn row_action(row: &OmniRow, matches: &[crate::command::CommandMatch]) -> OmniAction {
     match row {
         OmniRow::Folder { path, .. } => OmniAction::Go(path.clone()),
+        OmniRow::Favorite { path, .. } => OmniAction::Favorite(path.clone()),
         OmniRow::Command(index) => {
             OmniAction::Run(matches[*index].label.to_string(), matches[*index].command)
         }
@@ -58,6 +69,11 @@ fn row_action(row: &OmniRow, matches: &[crate::command::CommandMatch]) -> OmniAc
             crate::command::Command::AssignSlot(*slot),
         ),
     }
+}
+
+fn favorite_submit_ready(enter: bool, pending: &mut Option<String>, input: &str) -> bool {
+    let deferred = pending.take().is_some_and(|submitted| submitted == input);
+    enter || deferred
 }
 
 fn enter_target(selected: usize, focused: Option<usize>, enabled: &[bool]) -> Option<usize> {
@@ -236,6 +252,10 @@ impl App {
             probe: None,
             pending_go: None,
             assigning_slot: false,
+            favorites: self.ws.bookmarks.clone(),
+            favorite_cache: Default::default(),
+            favorite_target: crate::workspace::FavoriteTarget::CurrentPanel,
+            favorite_submit: None,
         });
         Self::mark_modal_opened(ctx, UiModal::Palette);
     }
@@ -327,9 +347,35 @@ impl App {
         let shown_commands = command_rows_shown(&mode);
         let mut matches = command_query
             .filter(|_| shown_commands > 0)
-            .map(|q| crate::command::rank(q, &self.palette_usage, self.palette_tick))
+            .map(|q| {
+                if self.custom_shortcuts.is_empty() {
+                    crate::command::rank(q, &self.palette_usage, self.palette_tick)
+                } else {
+                    crate::command::rank_with_shortcuts(
+                        q,
+                        &self.palette_usage,
+                        self.palette_tick,
+                        |command, default| self.custom_shortcuts.hints(command, default),
+                    )
+                }
+            })
             .unwrap_or_default();
         matches.truncate(shown_commands);
+        #[cfg(feature = "visual-qa")]
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("palette-visible-command-labels"),
+                Vec::<String>::new(),
+            )
+        });
+        let shortcut_hints: Vec<String> = matches
+            .iter()
+            .map(|m| {
+                self.custom_shortcuts
+                    .hints(m.command, m.shortcut)
+                    .join(" / ")
+            })
+            .collect();
         let command_context = self.ws.command_context();
         let availabilities: Vec<crate::command::CommandAvailability> = matches
             .iter()
@@ -356,6 +402,24 @@ impl App {
                         .map(|item| item.path),
                     matches.len(),
                 );
+            }
+            OmnibarMode::Favorites(query) => {
+                let state = self.ui.modals.palette_input.as_mut().unwrap();
+                state.favorite_cache.refresh(&state.favorites, query);
+                rows = state
+                    .favorite_cache
+                    .matches
+                    .indices
+                    .iter()
+                    .map(|&index| {
+                        let bookmark = &state.favorites.items[index];
+                        OmniRow::Favorite {
+                            path: bookmark.path.clone(),
+                            name: bookmark.name.clone(),
+                            slot: bookmark.slot,
+                        }
+                    })
+                    .collect();
             }
             OmnibarMode::Command(_) => rows.extend((0..matches.len()).map(OmniRow::Command)),
             OmnibarMode::Path(_) | OmnibarMode::Search(_) | OmnibarMode::Shell(_) => {}
@@ -388,14 +452,20 @@ impl App {
             }
         }
         let row_enabled = |row: &OmniRow| match row {
-            OmniRow::Folder { .. } => true,
+            OmniRow::Folder { .. } | OmniRow::Favorite { .. } => true,
             OmniRow::Command(i) => availabilities[*i].enabled,
             OmniRow::QuickSlot { .. } | OmniRow::AssignSlotPrompt | OmniRow::AssignSlot(_) => true,
         };
 
         let state = self.ui.modals.palette_input.as_mut().unwrap();
         let (up, down) = consume_selection_arrows(ctx);
-        let enter = ctx.input(|input| input.key_pressed(egui::Key::Enter));
+        let key_enter = ctx.input(|input| input.key_pressed(egui::Key::Enter));
+        let mut enter = if matches!(mode, OmnibarMode::Favorites(_)) {
+            favorite_submit_ready(key_enter, &mut state.favorite_submit, &state.input)
+        } else {
+            state.favorite_submit = None;
+            key_enter
+        };
         let enabled: Vec<bool> = rows.iter().map(row_enabled).collect();
         state.selected = step_selection(&enabled, state.selected, up, down);
         let mut selected = state.selected;
@@ -418,7 +488,7 @@ impl App {
         let mut focused_row = None;
         let mut reveal_selected = selection_reveal_requested(up, down, false);
 
-        egui::Window::new("Omnibar")
+        let dialog_response=egui::Window::new("Omnibar")
             .collapsible(false)
             .resizable(false)
             .title_bar(false)
@@ -458,6 +528,8 @@ impl App {
                     ui.ctx().accesskit_node_builder(resp.id, |node| {
                         node.set_label(label);
                     });
+                    #[cfg(any(test,feature="visual-qa"))]
+                    ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("omnibar-input"),resp.rect));
                     input_id = Some(resp.id);
                     if just_opened {
                         resp.request_focus();
@@ -471,11 +543,34 @@ impl App {
                         }
                     }
                     if resp.changed() {
+                        let now_favorites=matches!(OmnibarMode::parse(&state.input),OmnibarMode::Favorites(_));
+                        if now_favorites || matches!(mode,OmnibarMode::Favorites(_)) {
+                            state.favorite_submit=(now_favorites && enter).then(|| state.input.clone());
+                            enter=false;
+                        }
                         state.selected = 0;
                         selected = 0;
                         reveal_selected = selection_reveal_requested(up, down, true);
                     }
                 });
+                if let OmnibarMode::Favorites(query)=mode {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Open in");
+                        for (target,label) in [(crate::workspace::FavoriteTarget::CurrentPanel,"Here"),
+                            (crate::workspace::FavoriteTarget::OtherPanel,"Other panel"),
+                            (crate::workspace::FavoriteTarget::NewTab,"New tab"),
+                            (crate::workspace::FavoriteTarget::BackgroundTab,"Background")] {
+                            let response=ui.selectable_value(&mut state.favorite_target,target,label);
+                            #[cfg(any(test,feature="visual-qa"))]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("favorite-picker-target",label)),response.rect));
+                            #[cfg(not(any(test,feature="visual-qa")))]
+                            let _=response;
+                        }
+                    });
+                    ui.small(format!("Fuzzy name/path · {} of {} matches · {} Favorites in the opening snapshot",rows.len(),state.favorite_cache.matches.total,state.favorites.items.len()));
+                    if state.favorite_cache.matches.total>rows.len() {ui.small("Showing the first 100 results; type a name or path to narrow the full list.");}
+                    if query.chars().take(129).count()>128 {ui.small("Favorites search is limited to 128 characters.");}
+                }
                 ui.add_space(4.0);
                 ui.separator();
 
@@ -535,7 +630,7 @@ impl App {
                             action = Some(OmniAction::Shell(line.to_string()));
                         }
                     }
-                    OmnibarMode::Jump(_) | OmnibarMode::Command(_) => {
+                    OmnibarMode::Jump(_) | OmnibarMode::Command(_) | OmnibarMode::Favorites(_) => {
                         if rows.is_empty() {
                             Self::omnibar_hint(ui, t, "No matches");
                         }
@@ -573,6 +668,13 @@ impl App {
                                         .show(ui, |ui| {
                                             ui.set_width(ui.available_width());
                                             match row {
+                                                OmniRow::Favorite {path,name,slot} => {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(name);
+                                                        if let Some(slot)=slot {ui.small(format!("Cmd+{slot}"));}
+                                                        ui.add(egui::Label::new(egui::RichText::new(Self::palette_path_label(path)).size(11.0).color(t.text_muted)).truncate());
+                                                    });
+                                                }
                                                 OmniRow::Folder { path, pinned } => {
                                                     ui.horizontal(|ui| {
                                                         ui.label(
@@ -617,6 +719,8 @@ impl App {
                                                 OmniRow::Command(i) => {
                                                     let m = &matches[*i];
                                                     let availability = availabilities[*i];
+                                                    #[cfg(feature="visual-qa")]ui.ctx().data_mut(|d|{let id=egui::Id::new("palette-visible-command-labels");let mut rows=d.get_temp::<Vec<String>>(id).unwrap_or_default();rows.push(m.label.into());d.insert_temp(id,rows);});
+                                                    #[cfg(feature="visual-qa")]ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("palette-effective-shortcut",m.label)),shortcut_hints[*i].clone()));
                                                     ui.horizontal(|ui| {
                                                         ui.add(egui::Label::new(
                                                             Self::palette_row_job(
@@ -642,14 +746,8 @@ impl App {
                                                         ui.with_layout(
                                                             Layout::right_to_left(Align::Center),
                                                             |ui| {
-                                                                if !m.shortcut.is_empty() {
-                                                                    ui.label(
-                                                                        egui::RichText::new(
-                                                                            m.shortcut,
-                                                                        )
-                                                                        .size(10.5)
-                                                                        .color(t.text_muted),
-                                                                    );
+                                                                if !shortcut_hints[*i].is_empty() {
+                                                                    ui.add(egui::Label::new(egui::RichText::new(&shortcut_hints[*i]).size(10.5).color(t.text_muted)).truncate()).on_hover_text(&shortcut_hints[*i]);
                                                                 }
                                                             },
                                                         );
@@ -743,7 +841,10 @@ impl App {
                                             egui::StrokeKind::Inside,
                                         );
                                     }
+                                    #[cfg(any(test,feature="visual-qa"))]
+                                    if let OmniRow::Favorite {path,..}=row {ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("favorite-picker-row",path)),response.rect));}
                                     let row_label = match row {
+                                        OmniRow::Favorite {path,name,..}=>format!("{name}, {}",path.display()),
                                         OmniRow::Folder { path, .. } => {
                                             Self::palette_path_label(path)
                                         }
@@ -786,6 +887,17 @@ impl App {
                 }
             });
 
+        #[cfg(not(feature = "visual-qa"))]
+        let _ = dialog_response;
+        #[cfg(feature = "visual-qa")]
+        if let Some(response) = dialog_response {
+            crate::visual_qa::record_response(
+                ctx,
+                crate::visual_qa::ProbeId::Confirmation,
+                &response.response,
+            );
+        }
+
         if let Some(input_id) = input_id {
             // Expose the arrow-selected row as the input's active
             // descendant, so AT announces what Enter would run.
@@ -800,6 +912,13 @@ impl App {
                 ctx.memory_mut(|memory| memory.request_focus(input_id));
             }
         }
+        let favorite_target = self
+            .ui
+            .modals
+            .palette_input
+            .as_ref()
+            .map(|state| state.favorite_target)
+            .unwrap_or(crate::workspace::FavoriteTarget::CurrentPanel);
         if cancel
             || action
                 .as_ref()
@@ -817,6 +936,26 @@ impl App {
                 }
                 if let Some(input_id) = input_id {
                     ctx.memory_mut(|memory| memory.request_focus(input_id));
+                }
+            }
+            Some(OmniAction::Favorite(path)) => {
+                let destination = match favorite_target {
+                    crate::workspace::FavoriteTarget::CurrentPanel
+                    | crate::workspace::FavoriteTarget::NewTab => Some(opening_panel),
+                    crate::workspace::FavoriteTarget::OtherPanel => Some(opening_panel.other()),
+                    crate::workspace::FavoriteTarget::BackgroundTab => None,
+                };
+                if self
+                    .ws
+                    .open_favorite_at(opening_panel, &path, favorite_target)
+                {
+                    if destination
+                        .is_some_and(|side| super::update::pane_tool_covers(&self.ui.tools, side))
+                    {
+                        self.ui.tools = super::ui_state::PaneTools::default();
+                    }
+                } else {
+                    self.toast(ctx,crate::toasts::ToastKind::Info,"Favorite is no longer available, navigation is blocked, or the tab group is full",false);
                 }
             }
             Some(OmniAction::Go(path)) if !path.is_dir() => {
@@ -1030,7 +1169,10 @@ fn command_rows_shown(mode: &OmnibarMode<'_>) -> usize {
         OmnibarMode::Jump("") => 0,
         OmnibarMode::Jump(_) => 8,
         OmnibarMode::Command(_) => usize::MAX,
-        OmnibarMode::Path(_) | OmnibarMode::Search(_) | OmnibarMode::Shell(_) => 0,
+        OmnibarMode::Path(_)
+        | OmnibarMode::Search(_)
+        | OmnibarMode::Shell(_)
+        | OmnibarMode::Favorites(_) => 0,
     }
 }
 
@@ -1048,11 +1190,32 @@ fn picked_count(panel: &PanelState) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        OmniRow, OmnibarMode, command_rows_shown, consume_selection_arrows, copy_preview,
-        copy_style, dynamic_row_matches, enter_target, home_relative_display,
-        input_accessible_label, jump_rows, path_submit, picked_count, saved_searches_label,
-        selection_reveal_requested, step_selection,
+        OmniAction, OmniRow, OmnibarMode, command_rows_shown, consume_selection_arrows,
+        copy_preview, copy_style, dynamic_row_matches, enter_target, favorite_submit_ready,
+        home_relative_display, input_accessible_label, jump_rows, path_submit, picked_count,
+        row_action, saved_searches_label, selection_reveal_requested, step_selection,
     };
+
+    #[test]
+    fn favorite_actions_keep_original_identity_and_same_frame_enter_waits_for_fresh_rows() {
+        let path = std::path::PathBuf::from("/fixture/original");
+        let action = row_action(
+            &OmniRow::Favorite {
+                path: path.clone(),
+                name: "Different label".into(),
+                slot: None,
+            },
+            &[],
+        );
+        assert!(matches!(action,OmniAction::Favorite(target) if target==path));
+        let mut pending = Some("@prkt".into());
+        assert!(favorite_submit_ready(false, &mut pending, "@prkt"));
+        assert!(pending.is_none());
+        pending = Some("@old".into());
+        assert!(!favorite_submit_ready(false, &mut pending, "@new"));
+        assert!(favorite_submit_ready(true, &mut pending, "@new"));
+        assert_eq!(command_rows_shown(&OmnibarMode::Favorites("copy")), 0);
+    }
 
     #[test]
     fn saved_search_count_agrees_with_its_noun() {

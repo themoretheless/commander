@@ -1,0 +1,68 @@
+{
+  "facts": [
+    {
+      "device": 16777230,
+      "directory": false,
+      "inode": 254767747,
+      "nlink": 3,
+      "path": "link-original.txt",
+      "regular": true,
+      "symlink": false
+    },
+    {
+      "device": 16777230,
+      "directory": false,
+      "inode": 254767747,
+      "nlink": 3,
+      "path": "nested/link-alias.txt",
+      "regular": true,
+      "symlink": false
+    },
+    {
+      "device": 16777230,
+      "directory": false,
+      "inode": 254767747,
+      "nlink": 3,
+      "path": "nested/deep/link-third.txt",
+      "regular": true,
+      "symlink": false
+    },
+    {
+      "device": 16777230,
+      "directory": false,
+      "inode": 254767753,
+      "nlink": 1,
+      "path": "link-copy.txt",
+      "regular": true,
+      "symlink": false
+    },
+    {
+      "device": 16777230,
+      "directory": false,
+      "inode": 254767754,
+      "nlink": 1,
+      "path": "link-symlink.txt",
+      "regular": false,
+      "symlink": true
+    },
+    {
+      "device": 16777230,
+      "directory": true,
+      "inode": 254767755,
+      "nlink": 2,
+      "path": "link-folder",
+      "regular": false,
+      "symlink": false
+    },
+    {
+      "device": 16777230,
+      "directory": false,
+      "inode": 254767756,
+      "nlink": 1,
+      "path": "other.zip",
+      "regular": true,
+      "symlink": false
+    }
+  ],
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left"
+}

@@ -1,0 +1,32 @@
+{
+  "checksum_list": {
+    "status": "captured",
+    "scene_phase": 12,
+    "checks": 14,
+    "all_passed": true,
+    "clipboard_writes": 2,
+    "other_effects": 0,
+    "frame_visually_inspected": true,
+    "binary_hash_matches": true,
+    "initial_result": {
+      "match": 2,
+      "mismatch": 1,
+      "error": 1
+    },
+    "rerun_result": {
+      "match": 3,
+      "mismatch": 0,
+      "error": 1
+    }
+  },
+  "calculation_regression": {
+    "status": "captured",
+    "scene_phase": 103,
+    "checks": 14,
+    "all_passed": true,
+    "clipboard_writes": 13,
+    "other_effects": 0,
+    "frame_visually_inspected": true,
+    "binary_hash_matches": true
+  }
+}

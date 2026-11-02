@@ -160,6 +160,7 @@ pub enum PreviewError {
     Binary,
     InvalidUnicode,
     InvalidUtf8,
+    InvalidDocument,
     Changed,
     Cancelled,
     ProviderUnavailable,
@@ -178,6 +179,7 @@ impl PreviewError {
             Self::Binary => "This file appears to contain binary data.",
             Self::InvalidUnicode => "This file contains malformed UTF-16 or UTF-32 text.",
             Self::InvalidUtf8 => "This file is not valid UTF-8 text.",
+            Self::InvalidDocument => "This document is malformed, encrypted or unsupported.",
             // Retry reuses the listing's size and mtime, so it keeps failing
             // until the folder is refreshed (watched folders do this alone).
             Self::Changed => {
@@ -427,13 +429,29 @@ struct FsTextPreviewProvider {
     chunk_observer: Option<Arc<dyn Fn(usize) + Send + Sync>>,
 }
 
+#[cfg(test)]
 fn read_preview_bytes(
     reader: &mut impl Read,
     reserve_bytes: usize,
     cancelled: &dyn Fn() -> bool,
     chunk_observer: Option<&(dyn Fn(usize) + Send + Sync)>,
 ) -> Result<Vec<u8>, PreviewError> {
-    let max_bytes = MAX_TEXT_PREVIEW_BYTES as usize;
+    read_preview_bytes_with_limit(
+        reader,
+        reserve_bytes,
+        cancelled,
+        chunk_observer,
+        MAX_TEXT_PREVIEW_BYTES as usize,
+    )
+}
+
+fn read_preview_bytes_with_limit(
+    reader: &mut impl Read,
+    reserve_bytes: usize,
+    cancelled: &dyn Fn() -> bool,
+    chunk_observer: Option<&(dyn Fn(usize) + Send + Sync)>,
+    max_bytes: usize,
+) -> Result<Vec<u8>, PreviewError> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve(reserve_bytes.min(max_bytes))
@@ -523,11 +541,12 @@ impl TextPreviewProvider for FsTextPreviewProvider {
             return Err(PreviewError::Changed);
         }
 
-        let bytes = read_preview_bytes(
+        let bytes = read_preview_bytes_with_limit(
             &mut file,
             expected.size as usize,
             cancelled,
             self.chunk_observer.as_deref(),
+            text_input_limit(&identity.path) as usize,
         )?;
 
         if cancelled() {
@@ -549,18 +568,27 @@ impl TextPreviewProvider for FsTextPreviewProvider {
             if &verification_opened != expected {
                 return Err(PreviewError::Changed);
             }
-            let verification = read_preview_bytes(
+            let verification = read_preview_bytes_with_limit(
                 &mut verification_file,
                 expected.size as usize,
                 cancelled,
                 None,
+                text_input_limit(&identity.path) as usize,
             )?;
             let verification_after = self.fingerprint(identity)?;
             if &verification_after != expected || verification != bytes {
                 return Err(PreviewError::Changed);
             }
         }
-        decode_text_bytes(bytes)
+        if crate::rtf_preview::supported(&identity.path) {
+            crate::rtf_preview::extract(&bytes, cancelled).map(Arc::from)
+        } else if crate::fictionbook_preview::supported(&identity.path) {
+            crate::fictionbook_preview::extract(&bytes, cancelled).map(Arc::from)
+        } else if crate::office_preview::supported(&identity.path) {
+            crate::office_preview::extract(&identity.path, bytes, cancelled).map(Arc::from)
+        } else {
+            decode_text_bytes(bytes)
+        }
     }
 }
 
@@ -775,8 +803,20 @@ impl TextPreviewPipeline<IsolatedTextPreviewExecutor> {
 
 /// The phase a fresh or retried request starts in: files over the preview
 /// cap fail at once, everything else waits out the debounce first.
-fn initial_text_phase(size: u64, now: Instant) -> TextPreviewPhase {
-    if size > MAX_TEXT_PREVIEW_BYTES {
+fn text_input_limit(path: &Path) -> u64 {
+    if crate::rtf_preview::supported(path) {
+        crate::rtf_preview::MAX_INPUT_BYTES as u64
+    } else if crate::fictionbook_preview::supported(path) {
+        crate::fictionbook_preview::MAX_INPUT_BYTES as u64
+    } else if crate::office_preview::supported(path) {
+        crate::office_preview::MAX_PACKAGE_BYTES
+    } else {
+        MAX_TEXT_PREVIEW_BYTES
+    }
+}
+
+fn initial_text_phase(size: u64, now: Instant, limit: u64) -> TextPreviewPhase {
+    if size > limit {
         TextPreviewPhase::Failed(PreviewError::TooLarge)
     } else {
         TextPreviewPhase::Debouncing {
@@ -825,7 +865,11 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
         self.advance_generation();
         self.active = Some(ownership.clone());
         self.delivered = false;
-        self.phase = initial_text_phase(ownership.identity.size, now);
+        self.phase = initial_text_phase(
+            ownership.identity.size,
+            now,
+            text_input_limit(&ownership.identity.path),
+        );
     }
 
     fn request(
@@ -1087,7 +1131,7 @@ impl<E: TextPreviewExecutor> TextPreviewPipeline<E> {
                 .active
                 .as_ref()
                 .map_or(0, |active| active.identity.size);
-            self.phase = initial_text_phase(size, self.clock.now());
+            self.phase = initial_text_phase(size, self.clock.now(), text_input_limit(path));
             self.delivered = false;
         }
     }
@@ -3422,6 +3466,82 @@ mod tests {
     }
 
     #[test]
+    fn office_preview_provider_uses_identity_guards_cancellation_and_distinct_input_budget() {
+        let temp = TempDir::new();
+        let provider = FsTextPreviewProvider::default();
+        for docx in [true, false] {
+            let path = temp
+                .path()
+                .join(if docx { "sample.docx" } else { "sample.odt" });
+            std::fs::write(&path, crate::office_preview::fixture(docx)).unwrap();
+            let metadata = std::fs::metadata(&path).unwrap();
+            let identity = PreviewIdentity {
+                path: path.clone(),
+                size: metadata.len(),
+                modified: metadata.modified().ok(),
+            };
+            let stamp = super::TextPreviewProvider::fingerprint(&provider, &identity).unwrap();
+            assert_eq!(
+                super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| false)
+                    .unwrap()
+                    .as_ref(),
+                "Office preview\nmessage: café / ёж 🌍\nA\tB\n"
+            );
+            assert_eq!(
+                super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| true),
+                Err(PreviewError::Cancelled)
+            );
+            std::fs::write(&path, b"changed").unwrap();
+            assert_eq!(
+                super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| false),
+                Err(PreviewError::Changed)
+            );
+            assert_eq!(
+                super::text_input_limit(&path),
+                crate::office_preview::MAX_PACKAGE_BYTES
+            );
+        }
+        assert_eq!(
+            super::text_input_limit(std::path::Path::new("ordinary.txt")),
+            MAX_TEXT_PREVIEW_BYTES
+        );
+    }
+
+    #[test]
+    fn rtf_preview_provider_extracts_text_after_identity_checks() {
+        let temp = TempDir::new();
+        let path = temp.path().join("book.RTF");
+        std::fs::write(&path, crate::rtf_preview::fixture()).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let identity = PreviewIdentity {
+            path: path.clone(),
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        let provider = FsTextPreviewProvider::default();
+        let stamp = super::TextPreviewProvider::fingerprint(&provider, &identity).unwrap();
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| false)
+                .unwrap()
+                .as_ref(),
+            crate::rtf_preview::FIXTURE_TEXT
+        );
+        assert_eq!(
+            super::text_input_limit(&path),
+            crate::rtf_preview::MAX_INPUT_BYTES as u64
+        );
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| true),
+            Err(PreviewError::Cancelled)
+        );
+        std::fs::write(&path, b"changed source").unwrap();
+        assert_eq!(
+            super::TextPreviewProvider::read(&provider, &identity, &stamp, &|| false),
+            Err(PreviewError::Changed)
+        );
+    }
+
+    #[test]
     fn filesystem_provider_decodes_unicode_on_the_existing_bounded_read_path() {
         let temp = TempDir::new();
         let provider = FsTextPreviewProvider::default();
@@ -3915,13 +4035,13 @@ mod tests {
     fn oversized_text_fails_at_once_and_the_rest_debounces() {
         let now = Instant::now();
         assert!(matches!(
-            super::initial_text_phase(MAX_TEXT_PREVIEW_BYTES + 1, now),
+            super::initial_text_phase(MAX_TEXT_PREVIEW_BYTES + 1, now, MAX_TEXT_PREVIEW_BYTES),
             super::TextPreviewPhase::Failed(PreviewError::TooLarge)
         ));
         // The cap itself is still previewable.
         for size in [0, MAX_TEXT_PREVIEW_BYTES] {
             assert!(matches!(
-                super::initial_text_phase(size, now),
+                super::initial_text_phase(size, now, MAX_TEXT_PREVIEW_BYTES),
                 super::TextPreviewPhase::Debouncing { ready_at }
                     if ready_at == now + TEXT_PREVIEW_DEBOUNCE
             ));

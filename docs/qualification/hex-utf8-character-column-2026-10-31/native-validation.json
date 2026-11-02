@@ -1,0 +1,19 @@
+{
+  "status": "passed_scoped",
+  "phase": 6,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "character_encoding": "UTF-8",
+  "expected_first_column": "A\u041f\u203a\u0440\u203a\u0438\u203a\u0432\u203a\u0435\u203a\u0442\u203a\ud83c\udf0d\u203a\u203a",
+  "offset": 0,
+  "width": 16,
+  "native_page_boundary": "pending",
+  "physical_keys": "pending"
+}

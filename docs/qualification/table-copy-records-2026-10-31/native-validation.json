@@ -1,0 +1,27 @@
+{
+  "status": "passed_scoped",
+  "phase": 32,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 1,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "query": "fl2",
+  "fuzzy": true,
+  "headings": true,
+  "final_source_row_ids": [
+    2,
+    3
+  ],
+  "clipboard_payload_verified_by_capture_gate": "Name,Count\nfile2,10\nfile2,1\n",
+  "frame_inspected": true,
+  "binary_hash_verified": true,
+  "os_clipboard_delivery": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture",
+  "final_rebuild_identical_sha256": "4eeaeb79795eae80c1c46b8411acc3b89b9946bb7932ffcc642b9a9147f6b052",
+  "test_only_lint_fix": "byte_char_slices in cfg(test) delimiter fixture"
+}

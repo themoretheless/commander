@@ -1,0 +1,4 @@
+2026-10-31T10:15:52 INFO  commander::logging: logging initialized
+2026-10-31T10:15:52 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: symlink_info
+2026-10-31T10:15:52 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-symlink-info-1793427344430598000
+2026-10-31T10:15:52 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

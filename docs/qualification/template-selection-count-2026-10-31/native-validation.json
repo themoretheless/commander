@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "checks": 16,
+  "selection_count": 2,
+  "limits": {
+    "max": 1,
+    "min": 1
+  },
+  "run_enabled": false,
+  "run_present": false,
+  "output_present": false,
+  "binary_sha256": "2531ace2606d9a21b8c0a3a078fe309795a1762c48764f25747f5ed1ceee4d54"
+}

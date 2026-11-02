@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.85s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test content_index::tests::precise_indexed_modification_times_roundtrip_legacy_and_invalid_metadata ... ok
+test search::tests::precise_indexed_modification_times_match_live_search ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2523 filtered out; finished in 0.08s
+

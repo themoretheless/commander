@@ -1,0 +1,11 @@
+{
+  "src/route_preview.rs": "7706b38b63a7b90e8f17bbbab960608007ccdca237fa3035a6f7afc7bfabda30",
+  "src/app/render.rs": "afb2049e1d4b03c2d125150e51e233a12a7d5f8934bc5dc87cebf2fb8b76c0ad",
+  "src/visual_qa.rs": "f4b3187c21b77ff3a3001b210a77eec2645d29eda1de4c4ea722c3cb47ad4e72",
+  "src/main.rs": "db3f67b7df015d3f23702450ffbaa3a5b681d617038e8fa8fa4fa376f26fa35b",
+  ".github/workflows/ci.yml": "c16db7179bb8f3a7aea88df7c08dd07c5dd33b8c0a9a3132736b5ccb0ba0b7d5",
+  "src/image_cache.rs": "5cfcfb5447a1775aa30b8e999119f2930d596a122e915bd7c94929a6be62cee8",
+  "src/app/preload.rs": "e5a9c3cfd0ecf34651173142453344aabf89780b0885260073b28afe0111756f",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969"
+}

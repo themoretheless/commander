@@ -1,0 +1,31 @@
+2026-10-31T13:25:33 INFO  commander::logging: logging initialized
+2026-10-31T13:25:33 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: timestamps
+2026-10-31T13:25:33 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-timestamps-1793438723487543000
+2026-10-31T13:25:33 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T13:25:33 INFO  commander::visual_qa: Timestamp QA phase 0
+2026-10-31T13:25:33 INFO  commander::visual_qa: Timestamp QA phase 1
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 2
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 3
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 4
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 5
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 6
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 7
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 8
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 9
+2026-10-31T13:25:34 INFO  commander::visual_qa: Timestamp QA phase 10
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 11
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 12
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 13
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 14
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 15
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 16
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 17
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 18
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 19
+2026-10-31T13:25:35 INFO  commander::visual_qa: Timestamp QA phase 20
+2026-10-31T13:25:36 INFO  commander::visual_qa: Timestamp QA phase 21
+2026-10-31T13:25:36 INFO  commander::visual_qa: Timestamp QA phase 22
+2026-10-31T13:25:36 INFO  commander::visual_qa: Timestamp QA phase 23
+2026-10-31T13:25:36 INFO  commander::visual_qa: Timestamp QA phase 24
+2026-10-31T13:25:36 INFO  commander::visual_qa: Timestamp QA phase 25
+2026-10-31T13:25:36 INFO  commander::visual_qa: Timestamp QA phase 26

@@ -1,0 +1,12 @@
+{
+  "src/dedup.rs": "90fb9bac228e7e67181c12a5ed1733626ced168ec83bce9e0408f03b150f3b52",
+  "src/app/mod.rs": "fc50bf4a831b246be188696649085651ea393c53f298df0680806d6791daa601",
+  "src/app/duplicates_dialog.rs": "d9dcb1dd8b825baa3c1a6ae8206a9b2fef7fadb3ab1197db91d2f8e470ac41b8",
+  "src/visual_qa.rs": "cd6a290f676d625e5e6d02ed79f7094c75c6ed7fcff53e2291f661d9f48958c7",
+  ".github/workflows/ci.yml": "310fee42e9f83fcbfbd116a5a38fc972635f6b4143d4e96441c3e8c2ac815de6",
+  "Cargo.toml": "c3f25fb56384559f6071ae5834ab12e8d2da6dc55529bd8db29c7d9cbf372e38",
+  "Cargo.lock": "a628000a4ab8712b626abec8a762ee8fddc37b0206d5ab17092e30a92da3d9bc",
+  "README.md": "11e45d27e040f31416ac1d48f2284c484680b138f7a7a775ad6c5d46ca435dd8",
+  "docs/research/feature-transfers-2026-10-27.md": "7f8ec67b7767bbe3bfe5eb8480d02be5faadbfa4bf08f52a395e56ee6b6ce4dd",
+  "docs/strata-parity.md": "372df294d4d654f0127c304092950cbdd3a435031ef00328ba91ed8a567baf90"
+}

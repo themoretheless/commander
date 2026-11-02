@@ -1,0 +1,6 @@
+{
+  "scenario": "symlink_info",
+  "out": "/tmp/commander-native-symlink-info-1793427344430598000",
+  "binary_sha256": "8c2086019e9767d3633be9d6fc03f1c8f1723cd08727b5875a9a025a88494cbb",
+  "core_sha256": "8c2086019e9767d3633be9d6fc03f1c8f1723cd08727b5875a9a025a88494cbb"
+}

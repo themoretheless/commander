@@ -1,0 +1,19 @@
+{
+  "validators": [
+    {
+      "path": "/tmp/commander-b3sum-validation-20261031/bin/b3sum",
+      "version": "b3sum 1.8.7",
+      "sha256": "1621a3bdeafd6d0a852ee08d78fe0e69849001bbe7df2d2f618c738f5d29b544"
+    },
+    {
+      "path": "/tmp/commander-rhash-validation-20261031/rhash",
+      "version": "RHash v1.4.6",
+      "sha256": "bc500146a950b55dc60158fddb251e0aa21b89c762c63fd21939d52e438b8dcc"
+    }
+  ],
+  "test_environment": {
+    "COMMANDER_B3SUM_VERIFY": "/tmp/commander-b3sum-validation-20261031/bin/b3sum",
+    "COMMANDER_RHASH_VERIFY": "/tmp/commander-rhash-validation-20261031/rhash"
+  },
+  "sha_verifier": "/usr/bin/shasum -a 256/384/512 -c; cwd relocated directory"
+}

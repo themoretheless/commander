@@ -1,0 +1,7 @@
+{
+  "scenario": "disk_usage_export",
+  "out": "/tmp/commander-native-disk-usage-shares-1793408384089287000",
+  "binary_sha256": "dd3911990511e31c12e1b1c2bb5dfd39b3ab2727fe9dc0149765da2ae5d7eec7",
+  "core_sha256": "dd3911990511e31c12e1b1c2bb5dfd39b3ab2727fe9dc0149765da2ae5d7eec7",
+  "started_ns": 1793408384202867000
+}

@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Same extension menu actions or layout capture",
+  "binary_sha256": "58b47aee7248e272e3a19e2efe08b5270e7cb2c5b914d048ab58a6cc1de270d6",
+  "earlier_archive_native_gates": "remain pending"
+}

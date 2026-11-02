@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.94s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 3 tests
+test hex_preview::tests::recent_searches_deduplicate_full_settings_and_bound_count_and_text ... ok
+test hex_preview::tests::recent_searches_record_only_valid_submitted_searches_and_recall_without_work ... ok
+test hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching ... FAILED
+
+failures:
+
+---- hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching stdout ----
+
+thread 'hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching' (23335206) panicked at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:101:17:
+DEBUG PANIC: Failed to acquire RwLock write after 10s. Deadlock?
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 2795 filtered out; finished in 10.09s
+
+error: test failed, to rerun pass `--bin commander`

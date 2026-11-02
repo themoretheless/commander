@@ -1,0 +1,10 @@
+{
+  "src/main.rs": "4d9e06de4591e551e2eceab4becdd3bdc89a15c8fcfc8754b5c7b9ff25c73efe",
+  "src/diff_intraline.rs": "02cd67e09061f721052d3238b4064b9f8ef619ea0596543971dd2c809676812a",
+  "src/app/mod.rs": "085eaaf855e2c957e57299490b4600b0a1bbba45b33d730630df14f2e3ddbfaf",
+  "src/app/diff_dialog.rs": "f8d1d4de8a5d8483449341c3f9f08c48cf1903970113186bc8c1e4d970e17c12",
+  "src/app/ui_state.rs": "31626a542d3d0f69890fd222f9b220408a4e33339605ccdea38335d73714199a",
+  "src/app/update.rs": "bd4c335c054bbc3e272a50df1f0e2d97170ee0b787e221ab68fae1114fa05fdb",
+  "src/visual_qa.rs": "399625e3f89119f6475e02fc133b926769fcb904cb580c82a2b0304d653f6c8a",
+  ".github/workflows/ci.yml": "4baf56f5ca100d1e6882d137604481fc09070b3e9dfec392ba04509a6f10ce73"
+}

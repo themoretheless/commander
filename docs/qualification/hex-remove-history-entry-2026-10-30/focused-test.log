@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.02s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 14 tests
+test app::update::tests::fallback_menu_returns_focus_to_the_row_unless_the_pointer_moved_it ... ok
+test focus_mode::tests::pointer_move_waits_until_mode_is_armed ... ok
+test focus_mode::tests::tiny_pointer_noise_does_not_exit ... ok
+test accessibility::tests::every_drag_workflow_has_keyboard_and_single_pointer_alternatives ... ok
+test workspace::tests::blocked_undo_keeps_the_history_pointer_unchanged ... ok
+test app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry ... ok
+test app::archive_dialog::tests::saved_archive_filter_pointer_recall_restores_query_and_flags ... ok
+test hex_preview::tests::plain_byte_copy_menu_pointer_action_returns_hex_snapshot_without_new_work ... ok
+test hex_preview::tests::decimal_mode_pointer_switch_and_copy_use_loaded_page_without_new_io ... ok
+test hex_preview::tests::legacy_codepage_menu_pointer_action_clears_stale_match_but_retains_page_and_query ... ok
+test hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching ... ok
+test hex_preview::tests::recent_offset_pointer_recall_does_not_read_and_relative_go_uses_current_page ... ok
+test hex_preview::tests::recent_offset_pointer_removes_exact_expression_without_work_or_recall ... ok
+test hex_preview::tests::recent_search_pointer_removes_only_exact_snapshot_without_work_or_recall ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 2798 filtered out; finished in 0.09s
+

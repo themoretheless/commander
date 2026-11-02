@@ -1,0 +1,6 @@
+{
+  "scenario": "per_item_command",
+  "out": "/tmp/commander-native-output-lines-1793419658427219000",
+  "binary_sha256": "1d17c659944ce64a01f7bf4f1c475273d260d2fccc08e1b4527702cb9278c2ca",
+  "core_sha256": "1d17c659944ce64a01f7bf4f1c475273d260d2fccc08e1b4527702cb9278c2ca"
+}

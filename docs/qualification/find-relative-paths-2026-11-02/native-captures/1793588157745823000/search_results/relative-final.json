@@ -1,0 +1,19 @@
+{
+  "applied_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-11971-search_results/left",
+  "error": null,
+  "generation": 1,
+  "names": [
+    "README.txt",
+    "notes.md",
+    "Design"
+  ],
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-11971-search_results/left/README.txt",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-11971-search_results/left/notes.md",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-11971-search_results/left/Design"
+  ],
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-11971-search_results/left",
+  "selected_paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-11971-search_results/left/README.txt"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Reset filters button/focus/layout capture",
+  "binary_sha256": "2c127eadd946f7d4a55986ba574e082f47e9eeac09d539baefbb8bc149d0dd2c",
+  "earlier_archive_native_gates": "remain pending"
+}

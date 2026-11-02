@@ -1,0 +1,6 @@
+{
+  "scenario": "disk_usage_export",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/disk-file-allocation-2026-11-02/native-captures/1793580663114841000",
+  "binary_sha256": "cbec423d9839ee6c81e510aca452c2a72c06bbec9b06302134c4a7718b6ad0b9",
+  "core_sha256": "cbec423d9839ee6c81e510aca452c2a72c06bbec9b06302134c4a7718b6ad0b9"
+}

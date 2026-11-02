@@ -1,0 +1,2 @@
+/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/left/cross.bin
+/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/left/nested/deep.bin

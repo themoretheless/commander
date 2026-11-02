@@ -1,0 +1,1 @@
+PASS feature: six gates; 3221 tests; both native workflows 14/14; independent JPEG/TIFF facts and visible GPS; source/binary/tool hashes. Global dependency audit remains FAILED with the same diagnostics as the baseline without EXIF.

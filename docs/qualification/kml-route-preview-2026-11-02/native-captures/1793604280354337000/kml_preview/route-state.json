@@ -1,0 +1,48 @@
+{
+  "distance_m": 5550.486295560101,
+  "points": [
+    {
+      "distance_m": 0.0,
+      "elevation": 420.0,
+      "lat": 41.7,
+      "lon": 44.79,
+      "start": true
+    },
+    {
+      "distance_m": 1387.660197000015,
+      "elevation": 460.0,
+      "lat": 41.71,
+      "lon": 44.8,
+      "start": false
+    },
+    {
+      "distance_m": 2775.243147780051,
+      "elevation": 510.0,
+      "lat": 41.72,
+      "lon": 44.79,
+      "start": false
+    },
+    {
+      "distance_m": 2775.243147780051,
+      "elevation": 490.0,
+      "lat": 41.72,
+      "lon": 44.81,
+      "start": true
+    },
+    {
+      "distance_m": 4162.826098560086,
+      "elevation": 450.0,
+      "lat": 41.71,
+      "lon": 44.82,
+      "start": false
+    },
+    {
+      "distance_m": 5550.486295560101,
+      "elevation": 430.0,
+      "lat": 41.7,
+      "lon": 44.81,
+      "start": false
+    }
+  ],
+  "segments": 2
+}

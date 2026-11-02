@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.91s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test archive_filter::tests::modified_filter_uses_utc_days_half_open_bounds_and_known_timestamps ... ok
+test app::archive_dialog::tests::archive_modified_filter_preserves_navigation_selection_and_saved_ranges ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2826 filtered out; finished in 0.01s
+

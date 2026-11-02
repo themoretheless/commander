@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.78s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 3 tests
+test search::tests::permission_query_matches_exact_bit_requirements_and_unknown_metadata ... ok
+test query::tests::permission_query_validates_all_bits_and_saved_semantics ... ok
+test search::tests::permission_query_agrees_across_live_indexed_zip_and_tar ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2549 filtered out; finished in 0.03s
+

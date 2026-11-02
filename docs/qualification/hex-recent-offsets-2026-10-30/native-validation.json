@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "scenario": "hex_preview",
+  "reason": "No CUA tool exposed in this continuation; no native launch attempted",
+  "prepared_sequence": "Retain all original scene actions; open Recent offsets, recall 100% at zero without a read, then Go to EOF 8197",
+  "prior_captures_qualify_this_change": false
+}

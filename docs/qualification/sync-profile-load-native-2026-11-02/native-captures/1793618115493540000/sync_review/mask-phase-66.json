@@ -1,0 +1,47 @@
+{
+  "hidden_planned": 8,
+  "indices": [
+    2
+  ],
+  "masks": true,
+  "phase": 66,
+  "query": "*.MD;!read*",
+  "rows": [
+    {
+      "direction": "ToRight",
+      "name": "Design"
+    },
+    {
+      "direction": "ToRight",
+      "name": "README.txt"
+    },
+    {
+      "direction": "ToRight",
+      "name": "notes.md"
+    },
+    {
+      "direction": "ToRight",
+      "name": "photo.png"
+    },
+    {
+      "direction": "ToRight",
+      "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "Archive"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "invoice.pdf"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "release.zip"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "source.rs"
+    }
+  ]
+}

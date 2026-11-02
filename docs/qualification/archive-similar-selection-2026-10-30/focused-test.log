@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.63s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 3 tests
+test app::archive_dialog::tests::archive_similar_name_uses_final_stem_casefold_and_real_regular_ids ... ok
+test app::archive_dialog::tests::archive_similar_folder_is_case_sensitive_and_preserves_hidden_choices ... ok
+test app::archive_dialog::tests::archive_similar_selection_pointer_adds_and_removes_visible_matches_only ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2828 filtered out; finished in 0.03s
+

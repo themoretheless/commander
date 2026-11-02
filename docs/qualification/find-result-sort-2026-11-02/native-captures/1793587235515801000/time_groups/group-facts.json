@@ -1,0 +1,25 @@
+{
+  "archive_modified_nanos": 481738587,
+  "archive_modified_seconds": 1793587241,
+  "facts": [
+    {
+      "changed_nanos": 478538026,
+      "changed_seconds": 1793587241,
+      "created_nanos": 0,
+      "created_seconds": 1577836800,
+      "modified_nanos": 0,
+      "modified_seconds": 1577836800,
+      "name": "group-old.txt"
+    },
+    {
+      "changed_nanos": 478930820,
+      "changed_seconds": 1793587241,
+      "created_nanos": 478762777,
+      "created_seconds": 1793587241,
+      "modified_nanos": 478108000,
+      "modified_seconds": 1794192041,
+      "name": "group-new.txt"
+    }
+  ],
+  "utc_offset_seconds": 14400
+}

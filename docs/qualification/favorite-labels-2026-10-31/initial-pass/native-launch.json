@@ -1,0 +1,7 @@
+{
+  "scenario": "favorites",
+  "out": "/tmp/commander-native-favorite-labels-1793410176333656000",
+  "binary_sha256": "7f50da311fd490051b06a7abf37e23f648c0659c99617782517fac4242fbb776",
+  "core_sha256": "7f50da311fd490051b06a7abf37e23f648c0659c99617782517fac4242fbb776",
+  "started_ns": 1793410176449975000
+}

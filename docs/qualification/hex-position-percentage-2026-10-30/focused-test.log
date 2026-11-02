@@ -1,0 +1,18 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.12s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 10 tests
+test hex_preview::tests::position_percent_is_exact_at_zero_eof_and_u64_limits_without_early_roundup ... ok
+test hex_preview::tests::hex_position_history_branches_skips_duplicates_and_bounds_both_stacks ... ok
+test app::keys::ui_contract::ime_composition_persists_until_commit_or_focus_loss ... ok
+test rename::tests::letter_numbering_composes_with_position_case_and_signed_steps ... ok
+test smart_folder::tests::rename_keeps_position_and_refuses_collisions ... ok
+test rename::tests::number_position_composes_with_decorations_extensions_and_legacy_rules ... ok
+test rename_presets::tests::number_position_round_trips_in_named_presets ... ok
+test app::batch_rename_dialog::tests::number_position_rebuilds_cached_plan_before_submission ... ok
+test workspace::tests::number_position_before_name_preserves_payloads_and_undo_redo ... ok
+test hex_preview::tests::position_status_uses_loaded_page_start_and_snapshot_size ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 2826 filtered out; finished in 0.08s
+

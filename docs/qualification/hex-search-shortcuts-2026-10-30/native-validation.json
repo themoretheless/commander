@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native F3/Shift+F3/Enter/Shift+Enter focus/search capture",
+  "binary_sha256": "c17fb6e3e457d5dd8c039670d27039d65ad9857870690fc33e1ece9bb9f08b09",
+  "headless_keyboard_tests": "passed directions, wrap, focus, busy suppression; not native OS key validation",
+  "earlier_native_gates": "remain pending"
+}

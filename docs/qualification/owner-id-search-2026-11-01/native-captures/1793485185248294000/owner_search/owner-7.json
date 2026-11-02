@@ -1,0 +1,17 @@
+{
+  "explanations": [
+    [
+      "uid:!424242",
+      "gid:606061",
+      "literal \"owned-\""
+    ]
+  ],
+  "expression": "uid:!424242 gid:606061 name:owned-",
+  "matched": 1,
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13332-owner_search/left/owners.tar!/owned-beta.txt"
+  ],
+  "phase": 7,
+  "skipped": 1,
+  "source": "Live + archives"
+}

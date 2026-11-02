@@ -1,0 +1,4 @@
+2026-10-31T01:47:48 INFO  commander::logging: logging initialized
+2026-10-31T01:47:48 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: hex_bom_encoding
+2026-10-31T01:47:48 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-hex-bom-1793396861538726000
+2026-10-31T01:47:48 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

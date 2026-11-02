@@ -1,0 +1,8 @@
+{
+  "src/bookmarks.rs": "129fcfed758dff10b6a1454819284274e354b82a0ec7e9e527eac84ade1a1400",
+  "src/workspace.rs": "20a2cae8ac9a8d3f7428e5cdf78fae3f70fccccdc0f0ce4994f92cf259ba80a3",
+  "src/workspace/tests.rs": "aaf63da170b3596f3b7b683f1927f4f478131247680015f4d383e561e658949b",
+  "src/app/tree.rs": "efa44e0b52df2d270b58d0e502e322ff0931b226c58988f1bfd924c1fd547459",
+  "src/visual_qa.rs": "a0bba120f6da3ac2b19c6c2dabd6c8a0dd573eb06e236773e7d775c8e95c933a",
+  ".github/workflows/ci.yml": "1a34414d770fa631bb3dc3c11978c1d2fb9600ff7cd45b3c81535e4f35c8df9b"
+}

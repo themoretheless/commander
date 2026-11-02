@@ -1,0 +1,29 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<&[u8], &std::io::Error>`
+     --> src/visual_qa.rs:18384:404
+      |
+18384 | ...) && std::fs::read(self.fixture.left.join("cross.bin")).as_deref()==Ok(b"cross dupe\n") && std::fs::read(self.fixture.right.jo...
+      |         -------------------------------------------------------------^^------------------- std::result::Result<&[u8; 11], _>
+      |         |
+      |         std::result::Result<&[u8], &std::io::Error>
+      |
+note: `std::result::Result<&[u8], &std::io::Error>` does not implement `PartialEq<std::result::Result<&[u8; 11], _>>`
+     --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/result.rs:558:0
+      |
+      = note: `std::result::Result<&[u8], &std::io::Error>` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<&[u8], &std::io::Error>`
+     --> src/visual_qa.rs:18384:491
+      |
+18384 | ... && std::fs::read(self.fixture.right.join("cross.bin")).as_deref()==Ok(b"cross dupe\n") && self.counters.clipboard_text.lock()...
+      |        --------------------------------------------------------------^^------------------- std::result::Result<&[u8; 11], _>
+      |        |
+      |        std::result::Result<&[u8], &std::io::Error>
+      |
+note: `std::result::Result<&[u8], &std::io::Error>` does not implement `PartialEq<std::result::Result<&[u8; 11], _>>`
+     --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/result.rs:558:0
+      |
+      = note: `std::result::Result<&[u8], &std::io::Error>` is defined in another crate
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors

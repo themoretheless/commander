@@ -1,0 +1,47 @@
+  Installing b3sum v1.8.7
+warning: default toolchain implicitly overridden with `nightly-2026-09-11-aarch64-apple-darwin` by rustup toolchain file
+  |
+  = help: use `cargo +stable install` if you meant to use the stable toolchain
+  = note: rustup selects the toolchain based on the parent environment and not the environment of the package being installed
+   Compiling libc v0.2.189
+   Compiling crossbeam-utils v0.8.22
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling rustix v1.1.4
+   Compiling crossbeam-epoch v0.9.20
+   Compiling rayon-core v1.13.0
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.11
+   Compiling bitflags v2.13.1
+   Compiling crossbeam-deque v0.8.7
+   Compiling utf8parse v0.2.2
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling colorchoice v1.0.5
+   Compiling anstyle-query v1.1.5
+   Compiling anstyle-parse v1.0.0
+   Compiling anstyle v1.0.14
+   Compiling anyhow v1.0.104
+   Compiling heck v0.5.0
+   Compiling strsim v0.11.1
+   Compiling cc v1.4.3
+   Compiling clap_lex v1.1.0
+   Compiling cfg-if v1.0.4
+   Compiling anstream v1.0.0
+   Compiling arrayvec v0.7.8
+   Compiling constant_time_eq v0.4.2
+   Compiling wild v2.2.1
+   Compiling hex v0.4.3
+   Compiling blake3 v1.8.7
+   Compiling syn v3.0.3
+   Compiling errno v0.3.14
+   Compiling memmap2 v0.9.11
+   Compiling terminal_size v0.4.4
+   Compiling clap_builder v4.6.6
+   Compiling clap_derive v4.6.4
+   Compiling clap v4.6.6
+   Compiling b3sum v1.8.7
+    Finished `release` profile [optimized] target(s) in 10.18s
+  Installing /Users/themoretheless/Documents/Sources/commander/target/qualification-tools/b3sum/bin/b3sum
+   Installed package `b3sum v1.8.7` (executable `b3sum`)
+warning: be sure to add `/Users/themoretheless/Documents/Sources/commander/target/qualification-tools/b3sum/bin` to your PATH to be able to run the installed binaries

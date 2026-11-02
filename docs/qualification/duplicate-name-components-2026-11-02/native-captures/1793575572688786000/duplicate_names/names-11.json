@@ -1,0 +1,25 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "skip*",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": "*.jpg"
+  },
+  "draft": {
+    "case": false,
+    "exclude": "skip*",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": "*.jpg"
+  },
+  "files": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/one.JPG",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/two.jpg"
+  ],
+  "issues": 0,
+  "recursive": false,
+  "step": 11
+}

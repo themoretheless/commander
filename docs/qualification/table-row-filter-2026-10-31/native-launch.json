@@ -1,0 +1,7 @@
+{
+  "scenario": "table_preview",
+  "output": "/tmp/commander-native-table-filter-final-1793398999754923000",
+  "binary_sha256": "158c9537ec9824c8cd4f6634a0a51d554fc7f7d422f9d8536ab3fc685c0a72ba",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793398999856859000
+}

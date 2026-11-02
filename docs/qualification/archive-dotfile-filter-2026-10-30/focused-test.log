@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.43s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test app::archive_dialog::tests::archive_dotfile_filter_hides_components_navigation_and_retains_selected_snapshots ... ok
+test app::archive_dialog::tests::archive_dotfile_checkbox_pointer_changes_view_without_deselecting ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2846 filtered out; finished in 0.01s
+

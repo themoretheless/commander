@@ -1,0 +1,13 @@
+# Archive add/remove selection by independent mask — 2026-10-30
+
+Independent adaptation of [Double Commander MarkPlus / MarkMinus](https://doublecmd.github.io/doc/en/cmds.html), cohort #3. The archive sheet has a collapsed Select by mask section, independent of its live view filter.
+
+Enter a glob mask with Match case and Full paths controls, then Select matching or Deselect matching. Default mask is *, default scope is final filename and default case is insensitive. The existing bounded archive Glob compiler supplies classes, alternatives, escaping and recursive full-path syntax; its documented byte-oriented wildcard semantics remain. This is globset syntax, not Double Commander's semicolon-list/Windows-mask dialect or accent-folding options.
+
+The matcher is recompiled only when mask/options change and consumes existing cached lowercase listing paths. Apply scans only currently visible real member IDs; navigation IDs are skipped, duplicate archive paths retain separate identities, and directory/link/other real records may match without subtree expansion. Selection adds/removes only matched IDs, preserving hidden and nonmatching choices. Empty/invalid/overlong masks and inconsistent lowercase-cache length return errors before mutation. A last-action count reports matched rows, not only newly changed IDs.
+
+The command retains the current view query, scope, filters, folder, sort, narrowing and saved selection memory. Successful application resets the Shift range anchor. Mask UI settings/status belong to the loaded listing, are discarded on close/reload, and remain separate from Reset filters and saved filter snapshots. No archive payload read, worker job or filesystem action is added. The field has a stable ID/accessibility label and disabled buttons show compile errors without applying.
+
+Three regressions cover visible/hidden/duplicate IDs, name/full-path and case behavior, real record types, navigation exclusion, empty/invalid/overlong masks, cache length mismatch and no-partial mutation. A real egui pointer regression presses both action buttons and verifies hidden selection retention and unchanged mask text. Native collapse/input/actions/focus/layout remain pending: CUA is not exposed in this continuation and no native launch was attempted. Previous archive captures do not qualify this new section.
+
+Validation: locked visual-QA suite passed 2831 tests (3 ignored); Clippy with warnings denied, default locked check, visual-QA build, formatting and diff whitespace checks passed. Source/binary hashes are recorded alongside the logs. No commit or push performed.

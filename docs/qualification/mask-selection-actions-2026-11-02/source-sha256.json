@@ -1,0 +1,9 @@
+{
+  "src/name_list.rs": "5364390f95c56608e7d7dbde562d265f21c84233aceccae4598df7642b331601",
+  "src/panel.rs": "3eadece25c829cfa30ace665de345a258347fad51700650ec3c25f5240698e7e",
+  "src/app/mask_dialog.rs": "ef8520a828dfbcf1b9ef434c6977c6b1b1e738d77084139cb52d14e78591b68b",
+  "src/visual_qa.rs": "3b44c66ced42008d52cc50eb3272d903ea83bb61cc1c8a949f9d0235ef361aee",
+  ".github/workflows/ci.yml": "535bdc3441d3b0b30b5ed3a1689c90df5f967d41107072408bb224afd9afd26a",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969"
+}

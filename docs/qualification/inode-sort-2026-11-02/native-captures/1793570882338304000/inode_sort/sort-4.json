@@ -1,0 +1,103 @@
+{
+  "config": {
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "folders_by_name": false,
+    "folders_first": true,
+    "mode": "List",
+    "natural_name_sort": true,
+    "show_hidden": false,
+    "sort_col": "Inode",
+    "sort_order": "Asc"
+  },
+  "cursor": "inode-middle.txt",
+  "entries": [
+    {
+      "identity": [
+        16777230,
+        254071974
+      ],
+      "name": "inode-new.txt",
+      "selected": false,
+      "size": 8
+    },
+    {
+      "identity": [
+        16777230,
+        254071974
+      ],
+      "name": "inode-old.txt",
+      "selected": true,
+      "size": 8
+    },
+    {
+      "identity": [
+        16777230,
+        254071975
+      ],
+      "name": "inode-middle.txt",
+      "selected": false,
+      "size": 5
+    },
+    {
+      "identity": [
+        16777230,
+        254071978
+      ],
+      "name": "inode-link.txt",
+      "selected": false,
+      "size": 8
+    }
+  ],
+  "phase": 29,
+  "report": {
+    "exported_rows": 1,
+    "facets": {
+      "kind": null,
+      "max_age_days": null,
+      "min_age_days": null,
+      "min_size": null
+    },
+    "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13680-inode_sort/left",
+    "format": "commander.listing-report",
+    "hidden_selected_rows": 1,
+    "listing_rows": 9,
+    "query": "inode-",
+    "rows": [
+      {
+        "accessed_utc": "2026-11-01T22:08:09.229888690Z",
+        "allocated_bytes": 4096,
+        "created_utc": "2026-11-01T22:08:09.229888690Z",
+        "device_id": 16777230,
+        "displayed_size": "8 B",
+        "file_id": 254071974,
+        "file_size_bytes": 8,
+        "hard_links": 2,
+        "kind": "File",
+        "modified_utc": "2026-11-01T22:08:09.229962857Z",
+        "name": "inode-old.txt",
+        "owner_gid": 20,
+        "owner_uid": 501,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13680-inode_sort/left/inode-old.txt",
+        "row": 1
+      }
+    ],
+    "scope": "visible_selected_rows",
+    "selected_rows": 2,
+    "snapshot": "retained_listing_metadata",
+    "version": 1,
+    "view": {
+      "case_sensitive_name_sort": false,
+      "density": "Comfortable",
+      "folders_by_name": false,
+      "folders_first": true,
+      "mode": "List",
+      "natural_name_sort": true,
+      "show_hidden": false,
+      "sort_col": "Inode",
+      "sort_order": "Asc"
+    },
+    "visible_rows": 4
+  },
+  "selected": 2
+}

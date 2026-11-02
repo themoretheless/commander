@@ -1,0 +1,22 @@
+{
+  "checks_passed": 14,
+  "terminal_phase": 48,
+  "clipboard_writes": 6,
+  "root_bytes": 306,
+  "retained_nodes": 9,
+  "visible_rows": 7,
+  "alpha_bytes": 30,
+  "alpha_files": 2,
+  "alpha_collapsed": true,
+  "hidden_alpha_descendants": true,
+  "visible_order": [
+    "beta",
+    "beta/other",
+    "beta/shared/target-two",
+    "delta/shared/target-three",
+    "gamma/unrelated",
+    "alpha",
+    "Design"
+  ],
+  "binary_hash_matched": true
+}

@@ -1,0 +1,329 @@
+{
+  "attempts": 64,
+  "parallelism": 8,
+  "failed": 0,
+  "test_binary": "/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202",
+  "test_binary_sha256": "31990a3d8f9e9d1bb9d707a94e1eccac31ede849225c889231dd8ce5c4821329",
+  "results": [
+    {
+      "attempt": 0,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 1,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 2,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 3,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 4,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 5,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 6,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 7,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 8,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 9,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 10,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 11,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 12,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 13,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 14,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 15,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 16,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 17,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 18,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 19,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 20,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 21,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 22,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 23,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 24,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 25,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 26,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 27,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 28,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 29,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 30,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 31,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 32,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 33,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 34,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 35,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 36,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 37,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 38,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 39,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 40,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 41,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 42,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 43,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 44,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 45,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 46,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 47,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 48,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 49,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 50,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 51,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 52,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 53,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 54,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 55,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 56,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 57,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 58,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 59,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 60,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 61,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    },
+    {
+      "attempt": 62,
+      "case": "panel::tests::async_navigation_records_the_visit_when_the_listing_lands",
+      "exit_code": 0
+    },
+    {
+      "attempt": 63,
+      "case": "panel::tests::leaving_a_folder_before_its_listing_lands_keeps_its_remembered_cursor",
+      "exit_code": 0
+    }
+  ]
+}

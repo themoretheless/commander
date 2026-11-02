@@ -1,0 +1,14 @@
+[
+  {
+    "environment": "COMMANDER_RHASH_VERIFY",
+    "path": "/Users/themoretheless/Documents/Sources/commander/target/qualification-tools/RHash-1.4.6/rhash",
+    "version": "RHash v1.4.6",
+    "sha256": "552a1f7945afbb25b6ce29d4dc6ca96233fcd5f8b2929d1fc7c978800900f367"
+  },
+  {
+    "environment": "COMMANDER_B3SUM_VERIFY",
+    "path": "/Users/themoretheless/Documents/Sources/commander/target/qualification-tools/b3sum/bin/b3sum",
+    "version": "b3sum 1.8.7",
+    "sha256": "1621a3bdeafd6d0a852ee08d78fe0e69849001bbe7df2d2f618c738f5d29b544"
+  }
+]

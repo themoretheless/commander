@@ -1,0 +1,110 @@
+{
+  "active": "Right",
+  "left": {
+    "active": 1,
+    "closed": [
+      {
+        "position": 1,
+        "tab": {
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-82446-profile_tabs/left/Design",
+          "title": "Project",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "List",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      }
+    ],
+    "entries": [
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-82446-profile_tabs/left",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Icons",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-82446-profile_tabs/left/Design",
+        "title": "Project",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "List",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      }
+    ]
+  },
+  "phase": 13,
+  "right": {
+    "active": 1,
+    "closed": [
+      {
+        "position": 1,
+        "tab": {
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-82446-profile_tabs/right/Archive",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "List",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      }
+    ],
+    "entries": [
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-82446-profile_tabs/right",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "List",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-82446-profile_tabs/right/Archive",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "List",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      }
+    ]
+  }
+}

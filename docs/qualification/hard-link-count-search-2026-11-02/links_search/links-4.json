@@ -1,0 +1,36 @@
+{
+  "expression": "links:>1 name:link-",
+  "matched": 3,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left",
+  "rows": [
+    {
+      "explanations": [
+        "links:>=2 (observed 3 hard links)",
+        "literal \"link-\""
+      ],
+      "hard_links": 3,
+      "name": "link-original.txt",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left/link-original.txt"
+    },
+    {
+      "explanations": [
+        "links:>=2 (observed 3 hard links)",
+        "literal \"link-\""
+      ],
+      "hard_links": 3,
+      "name": "link-third.txt",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left/nested/deep/link-third.txt"
+    },
+    {
+      "explanations": [
+        "links:>=2 (observed 3 hard links)",
+        "literal \"link-\""
+      ],
+      "hard_links": 3,
+      "name": "link-alias.txt",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left/nested/link-alias.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

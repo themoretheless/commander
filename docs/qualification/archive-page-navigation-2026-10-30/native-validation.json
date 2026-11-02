@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "required_gates": [
+    "native PageUp/PageDown delivery with archive filter focused",
+    "nested member viewport reveals offscreen cursor",
+    "Shift page range with synthetic and hidden rows"
+  ],
+  "native_launch_attempted": false
+}

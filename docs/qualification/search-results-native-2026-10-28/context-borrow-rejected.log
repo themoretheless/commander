@@ -1,0 +1,39 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0308]: mismatched types
+    --> src/visual_qa.rs:2354:58
+     |
+2354 |             if let Err(error) = self.seed_search_results(ctx) {
+     |                                      ------------------- ^^^ expected `&Context`, found `Context`
+     |                                      |
+     |                                      arguments to this method are incorrect
+     |
+note: method defined here
+    --> src/visual_qa.rs:1104:8
+     |
+1104 |     fn seed_search_results(&mut self, ctx: &egui::Context) -> Result<(), String> {
+     |        ^^^^^^^^^^^^^^^^^^^            -------------------
+help: consider borrowing here
+     |
+2354 |             if let Err(error) = self.seed_search_results(&ctx) {
+     |                                                          +
+
+error[E0308]: mismatched types
+    --> src/visual_qa.rs:2355:27
+     |
+2355 |                 self.fail(ctx, "fixture_error", error);
+     |                      ---- ^^^ expected `&Context`, found `Context`
+     |                      |
+     |                      arguments to this method are incorrect
+     |
+note: method defined here
+    --> src/visual_qa.rs:1137:8
+     |
+1137 |     fn fail(&self, ctx: &egui::Context, failure_kind: &'static str, message: String) {
+     |        ^^^^        -------------------
+help: consider borrowing here
+     |
+2355 |                 self.fail(&ctx, "fixture_error", error);
+     |                           +
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors

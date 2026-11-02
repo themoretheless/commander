@@ -1,0 +1,15 @@
+# CSV/TSV row filtering — 2026-10-31
+
+Independent adaptation of [fzf interactive list/subsequence filtering](https://github.com/junegunn/fzf#search-syntax), cohort #75. No upstream implementation copied. Filter rows uses literal substring by default, optional Fuzzy uses Commander's shared Unicode subsequence predicate. Match case and Smart case share the existing case-policy owner; explicit Match case wins. Fuzzy preserves the current column/source ordering; no fzf ranking, grammar or multi-term language is implemented.
+
+A row matches when one of its cells matches the entire trimmed query; matching does not span cell boundaries. Inner whitespace/newlines stay literal. Record-1 headings stay visible and are excluded from data filtering when headings mode is on; otherwise they are data. Source row numbers, duplicate record identities and Source text remain unchanged. Query cap is 256 Unicode scalars, including a fail-closed non-UI guard. Only the loaded 500-record/64-column/256-KiB preview is searched. No new reads, decoding or tasks. Query/case/mode/header/sort changes rebuild the bounded order once; unchanged frames reuse it even for zero matches. Literal insensitive lowercase allocations occur only during rebuild. Clear filter removes only query text and focuses the field, preserving sorting/flags/headings. Pane/content-allocation/delimiter binding and reload reset remain.
+
+Matcher regression covers literal/fuzzy difference, duplicate/sorted IDs, Cyrillic, case policies, spaces, cell boundaries, headings and query limits. Pointer regression exercises real field input, literal zero-result cache reuse, Fuzzy toggle, Clear/focus/retype and pane/reload isolation. Existing table tests remain.
+
+Native table_preview retains all prior heading and ascending/descending/original/ascending checkpoints, then types fl2 and requires zero literal results. It clicks Fuzzy (source IDs 2/3), clears (full sorted IDs 2/3/1/4), retypes fl2 and captures at phase 29 with IDs 2/3. Native case/smart-case, TSV, wide/scroll and physical input/VoiceOver variants remain open.
+
+Fresh CUA-launched native phase-29 capture passed 14/14 checks, zero effects. Final frame inspected: fl2, Fuzzy checked, Name [asc], headings visible, Showing 2 of 4 data rows and original record labels 3/4. All literal/Fuzzy/Clear/retype and prior sort states are required before capture. Launch binary SHA-256 verified. CUA returned running-app-not-found after successful short-lived capture; unique fresh artifacts establish completion.
+
+Final native recapture after control spacing and a collapsible-if Clippy correction again passed 14/14 with zero effects, identical required row/query states and inspected frame. Final binary hash verified. The prior functional capture and initial Clippy failure are retained under initial-pass.
+
+Final validation: locked visual-qa build passed; 2884 tests passed, 3 ignored, 0 failed. All-target Clippy with warnings denied, default-feature cargo check, rustfmt and git diff whitespace checks passed. Source hashes unchanged through final qualification; exact commands and exits retained in checks.json.

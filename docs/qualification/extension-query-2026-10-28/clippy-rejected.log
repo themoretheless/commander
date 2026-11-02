@@ -1,0 +1,33 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+   --> src/query.rs:171:13
+    |
+171 | /             if let Predicate::Extension(value) = predicate {
+172 | |                 if value.is_empty()
+173 | |                     || value.split('.').any(str::is_empty)
+174 | |                     || value
+...   |
+183 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+171 ~             if let Predicate::Extension(value) = predicate
+172 ~                 && (value.is_empty()
+173 |                     || value.split('.').any(str::is_empty)
+174 |                     || value
+175 |                         .chars()
+176 ~                         .any(|c| c.is_whitespace() || matches!(c, '/' | '\\' | '*' | '?')))
+177 |                 {
+...
+181 |                     ));
+182 ~                 }
+    |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

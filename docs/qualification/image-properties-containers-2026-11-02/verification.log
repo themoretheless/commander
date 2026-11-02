@@ -1,0 +1,1 @@
+PASS feature: six gates; 3224 tests; five native workflows each 14/14; independent JPEG/PNG/TIFF/WebP facts, equal EXIF payloads, header-only PNG and measured visibility; source/binary/tool hashes. Dependency audit still fails with the unchanged prior diagnostics.

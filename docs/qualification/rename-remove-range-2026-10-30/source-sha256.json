@@ -1,0 +1,12 @@
+{
+  "Cargo.toml": "c53da42808d4a4157a43eb9182805b63cde4a26572593920ca21b3acb10fbe32",
+  "Cargo.lock": "57d340acc28071cafa947746bf14f6e3d599506dc2ae7ccad8a17605d31d0a61",
+  "README.md": "a8481ba38df65a830d131815b50e9c95726c5f04d34715591f0568189508d3bd",
+  "src/rename.rs": "8e486b92b90ad08c5ec660df94803d2549d78a72a57ede5813a06a2207133a49",
+  "src/rename_presets.rs": "1dccf098631a45657a8992639eeffe46fd1324e34c4f9ad94040fe50fd583de7",
+  "src/app/mod.rs": "469b2a1a503b828f2aa63169fe2c2d47fc20991d5fff6746616505c4bc05d7f2",
+  "src/app/batch_rename_dialog.rs": "8b080524b15c0f7f66058e7f3d2aa4a0e81f3bbb1bf4041ed261058e9ab08553",
+  "src/workspace/tests.rs": "3800eec043fb5cfdbd2c5cca049da976dfce7b36319abb2cacdbf96ee813283e",
+  "src/visual_qa.rs": "df78bf1f9cef8933d6fd7a82e54dbe7a02dc8d0b65ace6d70e1f9228b585040b",
+  "docs/research/feature-transfers-2026-10-27.md": "7eb87bddcb6a6e8d7584716821168216717008f8bf3da10116fcbb72078c4a44"
+}

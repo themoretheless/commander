@@ -1,0 +1,9 @@
+Checking for sources ... RHash 1.4.6 
+Checking for target OS ... Darwin 
+Checking for cc version ... clang 21.0.0 
+Checking for sha1 intrinsics ... no 
+Checking for gettext ... no 
+Writing config.mak
+Writing librhash/config.mak
+Writing dist/librhash.pc
+Writing dist/rhash.1

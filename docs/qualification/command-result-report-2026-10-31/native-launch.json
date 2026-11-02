@@ -1,0 +1,6 @@
+{
+  "scenario": "per_item_command",
+  "out": "/tmp/commander-native-report-1793418925977727000",
+  "binary_sha256": "5cb39fccb85e10c74ae51c03423f1043994e239bde066413ce76699a6640adfe",
+  "core_sha256": "5cb39fccb85e10c74ae51c03423f1043994e239bde066413ce76699a6640adfe"
+}

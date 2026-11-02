@@ -1,0 +1,8 @@
+{
+  "src/command_report.rs": "74059f5b187ce72814197a145a369e566a8678ffb9d87313d6b377e729e5b4bc",
+  "src/command_batch.rs": "9fb7c2c7c3d54237cfdcb87938f696bf983338c4e86ed6b6173aacacfee281d6",
+  "src/app/run_command_dialog.rs": "241b578840b0d6dc79de175e9da19749b819a07d8ad774cc1fad0aa901106e58",
+  "src/app/mod.rs": "7d94b87b28c2b097147df3097fb1483418c642a07e7832dff23ac9e6df30b99d",
+  "src/main.rs": "b98f26a36515d2fb117e82e475367d30bdaa298ed3b8bad82e8010647786ffa7",
+  "src/visual_qa.rs": "ad50b4f1fcdb7a2195bfb37709ba3be77472624d29c3bedd962e0fc2339e0cd9"
+}

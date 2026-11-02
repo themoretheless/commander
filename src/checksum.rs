@@ -1,5 +1,5 @@
 //! Fresh, cancellable checksum calculation and explicit expected-digest comparison.
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::{
     io::{self, Read},
     path::{Path, PathBuf},
@@ -11,6 +11,10 @@ pub struct ChecksumRow {
     pub content_hash: Option<u64>,
     pub blake3_hex: Option<String>,
     pub sha256_hex: Option<String>,
+    pub sha384_hex: Option<String>,
+    pub sha512_hex: Option<String>,
+    pub crc32_hex: Option<String>,
+    pub md5_hex: Option<String>,
     pub error: Option<String>,
     pub skipped: Option<String>,
 }
@@ -31,21 +35,42 @@ pub enum ExpectedMatch {
 pub enum Algorithm {
     #[default]
     Sha256,
+    Sha384,
+    Sha512,
     Blake3,
+    Crc32,
+    Md5,
 }
 impl Algorithm {
     pub fn label(self) -> &'static str {
         match self {
             Self::Sha256 => "SHA-256",
+            Self::Sha384 => "SHA-384",
+            Self::Sha512 => "SHA-512",
             Self::Blake3 => "BLAKE3",
+            Self::Crc32 => "CRC32",
+            Self::Md5 => "MD5",
         }
     }
-    fn digest(self, row: &ChecksumRow) -> Option<&str> {
+    pub const fn hex_len(self) -> usize {
+        match self {
+            Self::Sha256 | Self::Blake3 => 64,
+            Self::Sha384 => 96,
+            Self::Sha512 => 128,
+            Self::Crc32 => 8,
+            Self::Md5 => 32,
+        }
+    }
+    pub fn digest(self, row: &ChecksumRow) -> Option<&str> {
         let value = match self {
             Self::Sha256 => row.sha256_hex.as_deref(),
+            Self::Sha384 => row.sha384_hex.as_deref(),
+            Self::Sha512 => row.sha512_hex.as_deref(),
             Self::Blake3 => row.blake3_hex.as_deref(),
+            Self::Crc32 => row.crc32_hex.as_deref(),
+            Self::Md5 => row.md5_hex.as_deref(),
         };
-        value.filter(|value| valid_digest(value))
+        value.filter(|value| valid_digest(value, self.hex_len()))
     }
 }
 impl ChecksumReport {
@@ -98,12 +123,16 @@ impl ChecksumReport {
                     return format!("{path}: skipped ({reason})");
                 }
                 format!(
-                    "{path}: content={} blake3={} sha256={}",
+                    "{path}: content={} blake3={} sha256={} sha384={} sha512={} crc32={} md5={}",
                     row.content_hash
                         .map(|hash| format!("{hash:016x}"))
                         .unwrap_or_else(|| "-".into()),
                     row.blake3_hex.as_deref().unwrap_or("-"),
-                    row.sha256_hex.as_deref().unwrap_or("-")
+                    row.sha256_hex.as_deref().unwrap_or("-"),
+                    row.sha384_hex.as_deref().unwrap_or("-"),
+                    row.sha512_hex.as_deref().unwrap_or("-"),
+                    row.crc32_hex.as_deref().unwrap_or("-"),
+                    row.md5_hex.as_deref().unwrap_or("-")
                 )
             })
             .collect::<Vec<_>>()
@@ -122,7 +151,7 @@ impl ChecksumReport {
         if expected.is_empty() {
             return ExpectedMatch::Empty;
         }
-        if !valid_digest(expected) {
+        if !valid_digest(expected, algorithm.hex_len()) {
             return ExpectedMatch::Invalid;
         }
         let Some(actual) = self.single_digest(algorithm) else {
@@ -134,46 +163,160 @@ impl ChecksumReport {
             ExpectedMatch::Mismatch
         }
     }
-    /// GNU untagged binary-mode format, with its explicit filename escaping.
+    /// GNU untagged binary-mode SHA format or b3sum two-space format, with filename escaping.
     /// Only successfully completed files are exported; no hashes of skipped rows.
+    #[cfg(test)]
     pub fn sha256_list(&self) -> Result<String, String> {
+        self.checksum_list(Algorithm::Sha256)
+    }
+
+    /// Common directory of the completed records for the explicitly chosen algorithm.
+    /// Pure lexical components; no filesystem canonicalization or extra reads.
+    pub fn list_base(&self, algorithm: Algorithm) -> Result<PathBuf, String> {
+        let mut base: Option<PathBuf> = None;
+        for row in &self.rows {
+            if row.error.is_some() || row.skipped.is_some() || algorithm.digest(row).is_none() {
+                continue;
+            }
+            validate_relative_source(&row.path)?;
+            let parent = row
+                .path
+                .parent()
+                .ok_or("A checksum record has no parent directory")?;
+            if let Some(base) = &mut base {
+                while !parent.starts_with(base.as_path()) {
+                    if !base.pop() {
+                        return Err("Checksum records have no common directory".into());
+                    }
+                }
+            } else {
+                base = Some(parent.to_path_buf());
+            }
+        }
+        base.ok_or_else(|| format!("No completed {} checksums to copy", algorithm.label()))
+    }
+
+    pub fn checksum_list(&self, algorithm: Algorithm) -> Result<String, String> {
+        self.checksum_list_at(algorithm, None)
+    }
+
+    pub fn checksum_list_at(
+        &self,
+        algorithm: Algorithm,
+        base: Option<&Path>,
+    ) -> Result<String, String> {
+        if let Some(base) = base
+            && (!base.is_absolute()
+                || base
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir)))
+        {
+            return Err(
+                "Relative checksum lists need an absolute base without parent traversal".into(),
+            );
+        }
+        if algorithm == Algorithm::Crc32 {
+            return self.sfv_list(base);
+        }
         let mut lines = Vec::new();
         for row in &self.rows {
             if row.error.is_some() || row.skipped.is_some() {
                 continue;
             }
-            let Some(hash) = row
-                .sha256_hex
-                .as_deref()
-                .filter(|value| valid_digest(value))
-            else {
+            let Some(hash) = algorithm.digest(row) else {
                 continue;
             };
-            let path = row
-                .path
-                .to_str()
-                .ok_or("A path is not UTF-8; it cannot be copied losslessly as a checksum list")?;
-            if !row.path.is_absolute() || path.contains('\0') {
-                return Err("Checksum lists require absolute paths without NUL characters".into());
+            let path = list_path(&row.path, base)?;
+            if algorithm == Algorithm::Blake3 && path.contains('�') {
+                return Err("b3sum checkfiles cannot represent paths containing the Unicode replacement character".into());
             }
             let escaped = path.contains(['\\', '\n', '\r']);
             let path = path
                 .replace('\\', "\\\\")
                 .replace('\n', "\\n")
                 .replace('\r', "\\r");
+            // b3sum uses two spaces, not GNU binary mode's space + star.
+            let marker = if algorithm == Algorithm::Blake3 {
+                " "
+            } else {
+                "*"
+            };
             lines.push(format!(
-                "{}{hash} *{path}\n",
+                "{}{hash} {marker}{path}\n",
                 if escaped { "\\" } else { "" }
             ));
         }
         if lines.is_empty() {
-            return Err("No completed SHA-256 checksums to copy".into());
+            return Err(format!(
+                "No completed {} checksums to copy",
+                algorithm.label()
+            ));
         }
         Ok(lines.concat())
     }
+    /// SFV has no filename escape language. Refuse ambiguous names, never rewrite them.
+    fn sfv_list(&self, base: Option<&Path>) -> Result<String, String> {
+        let mut text = String::new();
+        for row in &self.rows {
+            if row.error.is_some() || row.skipped.is_some() {
+                continue;
+            }
+            let Some(hash) = Algorithm::Crc32.digest(row) else {
+                continue;
+            };
+            let path = list_path(&row.path, base)?;
+            if path.contains(['\0', '\r', '\n', '\\']) {
+                return Err("SFV paths cannot contain NUL, line breaks or backslashes".into());
+            }
+            text.push_str(&format!("{path} {}\n", hash.to_ascii_uppercase()));
+        }
+        if text.is_empty() {
+            return Err("No completed CRC32 checksums to copy".into());
+        }
+        Ok(text)
+    }
 }
-fn valid_digest(text: &str) -> bool {
-    text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+fn validate_relative_source(path: &Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || path.file_name().is_none()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || path.to_str().is_none_or(|text| text.contains('\0'))
+    {
+        return Err("Relative checksum records need absolute UTF-8 file paths without NUL or parent traversal".into());
+    }
+    Ok(())
+}
+
+fn list_path(path: &Path, base: Option<&Path>) -> Result<String, String> {
+    let text = path
+        .to_str()
+        .ok_or("A path is not UTF-8; it cannot be copied losslessly as a checksum list")?;
+    if !path.is_absolute() || text.contains('\0') {
+        return Err("Checksum lists require absolute paths without NUL characters".into());
+    }
+    let Some(base) = base else {
+        return Ok(text.to_owned());
+    };
+    validate_relative_source(path)?;
+    let relative = path
+        .strip_prefix(base)
+        .map_err(|_| "A checksum record is outside the displayed base directory")?;
+    if relative.as_os_str().is_empty() || relative.is_absolute() {
+        return Err("A checksum record has no relative filename".into());
+    }
+    // Protect literal '-' from stdin handling and ';name' from SFV comment syntax.
+    Ok(format!(
+        "./{}",
+        relative
+            .to_str()
+            .ok_or("A relative checksum path is not UTF-8")?
+    ))
+}
+
+fn valid_digest(text: &str, length: usize) -> bool {
+    text.len() == length && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -207,7 +350,7 @@ pub fn verify_paths_cancellable(
     }
     report
 }
-fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
+pub fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
     let mut row = ChecksumRow {
         path: path.into(),
         ..Default::default()
@@ -232,10 +375,14 @@ fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
         return row;
     }
     match digests(path, &meta, cancelled) {
-        Ok((blake, sha)) => {
-            row.content_hash = Some(content_hash_of(&blake));
-            row.blake3_hex = Some(blake3::Hash::from(blake).to_hex().to_string());
-            row.sha256_hex = Some(sha);
+        Ok(digests) => {
+            row.content_hash = Some(content_hash_of(&digests.blake3));
+            row.blake3_hex = Some(blake3::Hash::from(digests.blake3).to_hex().to_string());
+            row.sha256_hex = Some(digests.sha256);
+            row.sha384_hex = Some(digests.sha384);
+            row.sha512_hex = Some(digests.sha512);
+            row.crc32_hex = Some(digests.crc32);
+            row.md5_hex = Some(digests.md5);
         }
         Err(error) => row.error = Some(error.to_string()),
     }
@@ -247,11 +394,19 @@ fn changed() -> io::Error {
         "File changed while checksums were calculated; refresh and retry",
     )
 }
+struct FileDigests {
+    blake3: [u8; 32],
+    sha256: String,
+    sha384: String,
+    sha512: String,
+    crc32: String,
+    md5: String,
+}
 fn digests(
     path: &Path,
     expected: &std::fs::Metadata,
     cancelled: &dyn Fn() -> bool,
-) -> io::Result<([u8; 32], String)> {
+) -> io::Result<FileDigests> {
     use crate::path_identity::PathIdentity;
     let cancel = || {
         if cancelled() {
@@ -284,6 +439,10 @@ fn digests(
     let mut buffer = [0u8; 64 * 1024];
     let mut blake = blake3::Hasher::new();
     let mut sha = Sha256::new();
+    let mut sha384 = Sha384::new();
+    let mut sha512 = Sha512::new();
+    let mut crc32 = crc32fast::Hasher::new();
+    let mut md5 = md5::Md5::new();
     loop {
         cancel()?;
         let limit = remaining.saturating_add(1).min(buffer.len() as u64) as usize;
@@ -300,6 +459,10 @@ fn digests(
         remaining -= count as u64;
         blake.update(&buffer[..count]);
         sha.update(&buffer[..count]);
+        sha384.update(&buffer[..count]);
+        sha512.update(&buffer[..count]);
+        crc32.update(&buffer[..count]);
+        md5.update(&buffer[..count]);
     }
     let after = file.metadata()?;
     if remaining != 0
@@ -311,7 +474,28 @@ fn digests(
     cancel()?;
     let sha = sha.finalize();
     let hex = sha.iter().map(|byte| format!("{byte:02x}")).collect();
-    Ok((*blake.finalize().as_bytes(), hex))
+    let hex384 = sha384
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let hex512 = sha512
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(FileDigests {
+        blake3: *blake.finalize().as_bytes(),
+        sha256: hex,
+        sha384: hex384,
+        sha512: hex512,
+        crc32: format!("{:08x}", crc32.finalize()),
+        md5: md5
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    })
 }
 fn content_hash_of(blake3: &[u8; 32]) -> u64 {
     let mut prefix = [0u8; 8];
@@ -325,6 +509,593 @@ mod tests {
     use crate::testutil::TempDir;
 
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
+    const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn md5_vectors_streaming_explicit_comparison_and_system_interoperability() {
+        let temp = TempDir::new();
+        for (name, data, expected) in [
+            ("empty", String::new(), "d41d8cd98f00b204e9800998ecf8427e"),
+            ("abc", "abc".into(), "900150983cd24fb0d6963f7d28e17f72"),
+            (
+                "digits",
+                "123456789".into(),
+                "25f9e794323b453885f5181f1b624d0b",
+            ),
+            (
+                "million-a",
+                "a".repeat(1_000_000),
+                "7707d6ae4e027c70eea2a935c2296f21",
+            ),
+        ] {
+            let path = temp.file(name, &data);
+            let report = verify_paths([path.clone()]);
+            assert_eq!(report.single_digest(Algorithm::Md5), Some(expected));
+            assert_eq!(
+                report.compare_expected_algorithm(&expected.to_uppercase(), Algorithm::Md5),
+                ExpectedMatch::Match
+            );
+            assert_eq!(
+                report.compare_expected_algorithm(&"0".repeat(32), Algorithm::Md5),
+                ExpectedMatch::Mismatch
+            );
+            assert_eq!(
+                report.compare_expected_algorithm(ABC_SHA, Algorithm::Md5),
+                ExpectedMatch::Invalid
+            );
+            assert_eq!(
+                report.compare_expected_algorithm(expected, Algorithm::Sha256),
+                ExpectedMatch::Invalid
+            );
+            assert_eq!(
+                report.compare_expected_algorithm(&"g".repeat(32), Algorithm::Md5),
+                ExpectedMatch::Invalid
+            );
+            assert!(report.detailed_text().contains(&format!("md5={expected}")));
+            assert_eq!(
+                report.checksum_list(Algorithm::Md5).unwrap(),
+                format!("{expected} *{}\n", path.display())
+            );
+            #[cfg(target_os = "macos")]
+            {
+                let output = std::process::Command::new("/sbin/md5")
+                    .arg("-q")
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn md5_lists_escape_names_and_exclude_unavailable_results() {
+        let temp = TempDir::new();
+        let paths = [
+            temp.file("space name", "abc"),
+            temp.file("slash\\name", "abc"),
+            temp.file("line\nname", "abc"),
+            temp.file("carriage\rname", "abc"),
+        ];
+        let mut report = verify_paths(paths.clone());
+        let digest = "900150983cd24fb0d6963f7d28e17f72";
+        let listing = report.checksum_list(Algorithm::Md5).unwrap();
+        assert_eq!(listing.lines().count(), paths.len());
+        for (index, path) in paths.iter().enumerate() {
+            let escaped = path
+                .to_str()
+                .unwrap()
+                .replace('\\', "\\\\")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r");
+            let marker = if index == 0 { "" } else { "\\" };
+            assert!(listing.contains(&format!("{marker}{digest} *{escaped}\n")));
+        }
+        report.rows[0].error = Some("failed".into());
+        report.rows[1].skipped = Some("skipped".into());
+        report.rows[2].md5_hex = Some("bad".into());
+        report.rows[3].md5_hex = None;
+        assert!(report.checksum_list(Algorithm::Md5).is_err());
+        report.rows.truncate(1);
+        assert!(report.single_digest(Algorithm::Md5).is_none());
+        report.rows[0].error = None;
+        report.cancelled = true;
+        assert!(report.single_digest(Algorithm::Md5).is_none());
+        assert_eq!(
+            report.compare_expected_algorithm(digest, Algorithm::Md5),
+            ExpectedMatch::Unavailable
+        );
+    }
+
+    #[test]
+    fn crc32_vectors_comparison_and_sfv_interoperability() {
+        let temp = TempDir::new();
+        for (name, data, expected) in [
+            ("abc", "abc", "352441c2"),
+            ("empty", "", "00000000"),
+            ("digits", "123456789", "cbf43926"),
+        ] {
+            let report = verify_paths([temp.file(name, data)]);
+            assert_eq!(report.single_digest(Algorithm::Crc32), Some(expected));
+            assert_eq!(
+                report.compare_expected_algorithm(&expected.to_uppercase(), Algorithm::Crc32),
+                ExpectedMatch::Match
+            );
+            assert_eq!(
+                report.compare_expected_algorithm("ffffffff", Algorithm::Crc32),
+                ExpectedMatch::Mismatch
+            );
+            assert_eq!(
+                report.compare_expected_algorithm(ABC_SHA, Algorithm::Crc32),
+                ExpectedMatch::Invalid
+            );
+            assert!(
+                report
+                    .detailed_text()
+                    .contains(&format!("crc32={expected}"))
+            );
+        }
+        let paths = [
+            temp.file("plain", "abc"),
+            temp.file("with spaces", ""),
+            temp.file("é", "123456789"),
+            temp.file("large", &"abc".repeat(30000)),
+            temp.file("tab\tname", "abc"),
+            temp.file("trailing ", "abc"),
+        ];
+        let report = verify_paths(paths.clone());
+        let sfv = report.checksum_list(Algorithm::Crc32).unwrap();
+        assert!(sfv.starts_with(&format!("{} 352441C2\n", paths[0].display())));
+        assert_eq!(sfv.lines().count(), paths.len());
+        if let Some(executable) = std::env::var_os("COMMANDER_RHASH_VERIFY") {
+            let manifest = temp.path().join("checksums.sfv");
+            std::fs::write(&manifest, &sfv).unwrap();
+            let result = std::process::Command::new(&executable)
+                .arg("--check")
+                .arg(&manifest)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            std::fs::write(&paths[0], "changed").unwrap();
+            let result = std::process::Command::new(executable)
+                .arg("--check")
+                .arg(&manifest)
+                .output()
+                .unwrap();
+            assert!(!result.status.success());
+        }
+    }
+
+    #[test]
+    fn sfv_refuses_ambiguous_paths_and_omits_incomplete_rows_without_sha_fallback() {
+        let temp = TempDir::new();
+        let mut report = verify_paths([temp.file("good", "abc")]);
+        report.rows.extend([
+            ChecksumRow {
+                path: "/data/failed".into(),
+                crc32_hex: Some("12345678".into()),
+                error: Some("changed".into()),
+                ..Default::default()
+            },
+            ChecksumRow {
+                path: "/data/bad".into(),
+                crc32_hex: Some("1234".into()),
+                ..Default::default()
+            },
+            ChecksumRow {
+                path: "/data/skipped".into(),
+                crc32_hex: Some("12345678".into()),
+                skipped: Some("symlink".into()),
+                ..Default::default()
+            },
+        ]);
+        report.cancelled = true;
+        assert_eq!(
+            report.checksum_list(Algorithm::Crc32).unwrap(),
+            format!("{} 352441C2\n", report.rows[0].path.display())
+        );
+        for path in [
+            "relative",
+            "/data/line\nbreak",
+            "/data/carriage\rname",
+            "/data/nul\0name",
+            "/data/back\\slash",
+        ] {
+            report.rows[0].path = path.into();
+            assert!(report.checksum_list(Algorithm::Crc32).is_err());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            report.rows[0].path =
+                std::ffi::OsString::from_vec(b"/data/invalid\xff".to_vec()).into();
+            assert!(report.checksum_list(Algorithm::Crc32).is_err());
+        }
+        report.rows[0].crc32_hex = None;
+        assert!(
+            report
+                .checksum_list(Algorithm::Crc32)
+                .unwrap_err()
+                .contains("No completed CRC32")
+        );
+    }
+
+    #[test]
+    fn relative_lists_survive_moving_the_directory_and_protect_special_filenames() {
+        let temp = TempDir::new();
+        let source = temp.dir("source");
+        std::fs::create_dir(source.join("nested")).unwrap();
+        let paths = [
+            source.join("plain"),
+            source.join("nested/two"),
+            source.join("-"),
+            source.join(";comment"),
+            source.join("with space"),
+            source.join("ёж"),
+            source.join("trailing "),
+        ];
+        for path in &paths {
+            std::fs::write(path, "abc").unwrap();
+        }
+        let report = verify_paths(paths);
+        let algorithms = [
+            Algorithm::Sha256,
+            Algorithm::Sha384,
+            Algorithm::Sha512,
+            Algorithm::Blake3,
+            Algorithm::Crc32,
+            Algorithm::Md5,
+        ];
+        for algorithm in algorithms {
+            let base = report.list_base(algorithm).unwrap();
+            assert_eq!(base, source);
+            let text = report.checksum_list_at(algorithm, Some(&base)).unwrap();
+            assert!(!text.contains(source.to_str().unwrap()));
+            assert!(
+                text.contains("./nested/two")
+                    && text.contains("./-")
+                    && text.contains("./;comment")
+            );
+            std::fs::write(source.join(format!("{}.sums", algorithm.label())), text).unwrap();
+        }
+        let moved = temp.path().join("moved");
+        std::fs::rename(&source, &moved).unwrap();
+        let verify = |should_match: bool| {
+            for algorithm in algorithms {
+                let command = match algorithm {
+                    #[cfg(target_os = "macos")]
+                    Algorithm::Sha256 | Algorithm::Sha384 | Algorithm::Sha512 => {
+                        let bits = match algorithm {
+                            Algorithm::Sha256 => "256",
+                            Algorithm::Sha384 => "384",
+                            _ => "512",
+                        };
+                        let mut command = std::process::Command::new("/usr/bin/shasum");
+                        command.args(["-a", bits, "-c"]);
+                        Some(command)
+                    }
+                    Algorithm::Blake3 => std::env::var_os("COMMANDER_B3SUM_VERIFY").map(|exe| {
+                        let mut command = std::process::Command::new(exe);
+                        command.arg("--check");
+                        command
+                    }),
+                    Algorithm::Crc32 | Algorithm::Md5 => std::env::var_os("COMMANDER_RHASH_VERIFY")
+                        .map(|exe| {
+                            let mut command = std::process::Command::new(exe);
+                            command.arg("--check");
+                            command
+                        }),
+                    #[cfg(not(target_os = "macos"))]
+                    _ => None,
+                };
+                if let Some(mut command) = command {
+                    let result = command
+                        .current_dir(&moved)
+                        .arg(moved.join(format!("{}.sums", algorithm.label())))
+                        .output()
+                        .unwrap();
+                    assert_eq!(
+                        result.status.success(),
+                        should_match,
+                        "{}: {} {}",
+                        algorithm.label(),
+                        String::from_utf8_lossy(&result.stdout),
+                        String::from_utf8_lossy(&result.stderr)
+                    );
+                }
+            }
+        };
+        verify(true);
+        std::fs::write(moved.join("-"), "changed").unwrap();
+        verify(false);
+    }
+
+    #[test]
+    fn relative_list_base_uses_components_selected_algorithm_and_completed_rows_only() {
+        let row = |path: &str| ChecksumRow {
+            path: path.into(),
+            sha256_hex: Some("a".repeat(64)),
+            ..Default::default()
+        };
+        let mut report = ChecksumReport {
+            rows: vec![
+                row("/data/a/one"),
+                row("/data/ab/two"),
+                ChecksumRow {
+                    path: "/elsewhere/bad".into(),
+                    sha256_hex: Some("a".repeat(64)),
+                    error: Some("changed".into()),
+                    ..Default::default()
+                },
+                ChecksumRow {
+                    path: "/elsewhere/crc".into(),
+                    crc32_hex: Some("12345678".into()),
+                    ..Default::default()
+                },
+            ],
+            cancelled: true,
+        };
+        assert_eq!(
+            report.list_base(Algorithm::Sha256).unwrap(),
+            Path::new("/data")
+        );
+        assert_eq!(
+            report.list_base(Algorithm::Crc32).unwrap(),
+            Path::new("/elsewhere")
+        );
+        let text = report
+            .checksum_list_at(Algorithm::Sha256, Some(Path::new("/data")))
+            .unwrap();
+        assert!(text.contains("*./a/one") && text.contains("*./ab/two"));
+        assert!(!text.contains("elsewhere"));
+        for base in ["relative", "/data/a", "/data/../data", "/unrelated"] {
+            assert!(
+                report
+                    .checksum_list_at(Algorithm::Sha256, Some(Path::new(base)))
+                    .is_err()
+            );
+        }
+        report.rows[0].path = "/data/../escape".into();
+        assert!(report.list_base(Algorithm::Sha256).is_err());
+        assert!(
+            report
+                .checksum_list_at(Algorithm::Sha256, Some(Path::new("/")))
+                .is_err()
+        );
+        assert!(report.checksum_list(Algorithm::Sha256).is_ok()); // Preserve absolute-mode contract.
+        report.rows[0].path = "/".into();
+        assert!(report.list_base(Algorithm::Sha256).is_err());
+        report.rows.clear();
+        assert!(report.list_base(Algorithm::Sha256).is_err());
+    }
+
+    #[test]
+    fn extended_sha_known_vectors_and_selected_length_validation() {
+        let temp = TempDir::new();
+        for (name, data, sha384, sha512) in [
+            ("abc", "abc", ABC_SHA384, ABC_SHA512),
+            (
+                "empty",
+                "",
+                "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b",
+                "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
+            ),
+        ] {
+            let report = verify_paths([temp.file(name, data)]);
+            for (algorithm, expected) in [(Algorithm::Sha384, sha384), (Algorithm::Sha512, sha512)]
+            {
+                assert_eq!(report.single_digest(algorithm), Some(expected));
+                assert_eq!(
+                    report.compare_expected_algorithm(
+                        &format!(" {} ", expected.to_uppercase()),
+                        algorithm
+                    ),
+                    ExpectedMatch::Match
+                );
+                assert_eq!(
+                    report.compare_expected_algorithm(&"0".repeat(algorithm.hex_len()), algorithm),
+                    ExpectedMatch::Mismatch
+                );
+                assert_eq!(
+                    report.compare_expected_algorithm(&"g".repeat(algorithm.hex_len()), algorithm),
+                    ExpectedMatch::Invalid
+                );
+                assert_eq!(
+                    report.compare_expected_algorithm(ABC_SHA, algorithm),
+                    ExpectedMatch::Invalid
+                );
+            }
+            assert_eq!(
+                report.compare_expected_algorithm(sha384, Algorithm::Sha512),
+                ExpectedMatch::Invalid
+            );
+            assert!(
+                report
+                    .detailed_text()
+                    .contains(&format!("sha384={sha384} sha512={sha512}"))
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extended_sha_lists_verify_with_system_shasum_across_chunks_and_escaped_paths() {
+        let temp = TempDir::new();
+        let paths = [
+            temp.file("abc", "abc"),
+            temp.file("large", &"abc".repeat(30000)),
+            temp.file("back\\slash", "abc"),
+            temp.file("line\nbreak", "abc"),
+            temp.file("é", ""),
+        ];
+        let report = verify_paths(paths);
+        for (algorithm, bits) in [(Algorithm::Sha384, "384"), (Algorithm::Sha512, "512")] {
+            let listing = report.checksum_list(algorithm).unwrap();
+            let manifest = temp.path().join(format!("checksums.sha{bits}"));
+            std::fs::write(&manifest, &listing).unwrap();
+            let result = std::process::Command::new("/usr/bin/shasum")
+                .args(["-a", bits, "-c"])
+                .arg(&manifest)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn extended_sha_lists_omit_unavailable_rows_and_keep_algorithm_identity() {
+        let report = ChecksumReport {
+            rows: vec![
+                ChecksumRow {
+                    path: "/data/good".into(),
+                    sha384_hex: Some(ABC_SHA384.into()),
+                    sha512_hex: Some(ABC_SHA512.into()),
+                    ..Default::default()
+                },
+                ChecksumRow {
+                    path: "/data/failed".into(),
+                    error: Some("changed".into()),
+                    sha512_hex: Some(ABC_SHA512.into()),
+                    ..Default::default()
+                },
+                ChecksumRow {
+                    path: "/data/malformed".into(),
+                    sha384_hex: Some(ABC_SHA.into()),
+                    ..Default::default()
+                },
+            ],
+            cancelled: true,
+        };
+        assert!(report.single_digest(Algorithm::Sha512).is_none());
+        assert_eq!(
+            report.checksum_list(Algorithm::Sha384).unwrap(),
+            format!("{ABC_SHA384} */data/good\n")
+        );
+        assert_eq!(
+            report.checksum_list(Algorithm::Sha512).unwrap(),
+            format!("{ABC_SHA512} */data/good\n")
+        );
+        assert!(report.checksum_list(Algorithm::Blake3).is_err());
+    }
+
+    #[test]
+    fn blake3_lists_preserve_paths_and_verify_with_b3sum_when_requested() {
+        let temp = TempDir::new();
+        let paths = [
+            temp.file("abc", "abc"),
+            temp.file("two  spaces", ""),
+            temp.file("back\\slash", "abc"),
+            temp.file("line\nbreak", "abc"),
+            temp.file("carriage\rreturn", "abc"),
+            temp.file("*é", &"abc".repeat(30000)),
+        ];
+        let mut report = verify_paths(paths.clone());
+        report.rows.push(ChecksumRow {
+            path: temp.path().join("failed"),
+            blake3_hex: report.rows[0].blake3_hex.clone(),
+            error: Some("changed".into()),
+            ..Default::default()
+        });
+        report.rows.push(ChecksumRow {
+            path: temp.path().join("malformed"),
+            blake3_hex: Some("g".repeat(64)),
+            ..Default::default()
+        });
+        report.cancelled = true; // Already completed rows remain exportable.
+        let listing = report.checksum_list(Algorithm::Blake3).unwrap();
+        assert_eq!(listing.lines().count(), paths.len());
+        let hash = report.rows[0].blake3_hex.as_deref().unwrap();
+        assert!(listing.starts_with(&format!("{hash}  {}\n", paths[0].display())));
+        assert!(listing.contains("back\\\\slash\n"));
+        assert!(listing.contains("line\\nbreak\n"));
+        assert!(listing.contains("carriage\\rreturn\n"));
+        assert!(!listing.contains("failed") && !listing.contains("malformed"));
+        if let Some(executable) = std::env::var_os("COMMANDER_B3SUM_VERIFY") {
+            let manifest = temp.path().join("checksums.b3");
+            std::fs::write(&manifest, &listing).unwrap();
+            let result = std::process::Command::new(&executable)
+                .arg("--check")
+                .arg(&manifest)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&result.stdout)
+                    .matches(": OK")
+                    .count(),
+                paths.len()
+            );
+            // A copied manifest must detect changed payload, not just parse.
+            std::fs::write(&paths[0], "changed").unwrap();
+            let result = std::process::Command::new(executable)
+                .arg("--check")
+                .arg(&manifest)
+                .output()
+                .unwrap();
+            assert!(!result.status.success());
+            assert!(String::from_utf8_lossy(&result.stdout).contains(": FAILED"));
+        }
+    }
+
+    #[test]
+    fn blake3_lists_reject_ambiguous_paths_without_sha_fallback() {
+        let temp = TempDir::new();
+        let mut report = verify_paths([temp.file("abc", "abc")]);
+        let hash = report.rows[0].blake3_hex.clone();
+        report.rows.push(ChecksumRow {
+            path: "/data/replacement�".into(),
+            blake3_hex: hash,
+            ..Default::default()
+        });
+        assert!(
+            report
+                .checksum_list(Algorithm::Blake3)
+                .unwrap_err()
+                .contains("replacement")
+        );
+        report.rows.truncate(1);
+        report.rows[0].blake3_hex = None;
+        assert!(
+            report
+                .checksum_list(Algorithm::Blake3)
+                .unwrap_err()
+                .contains("No completed BLAKE3")
+        );
+        assert!(report.checksum_list(Algorithm::Sha256).is_ok());
+        report.rows[0].blake3_hex = Some("0".repeat(64));
+        report.rows[0].path = "relative".into();
+        assert!(report.checksum_list(Algorithm::Blake3).is_err());
+        report.rows[0].path = "/data/nul\0suffix".into();
+        assert!(report.checksum_list(Algorithm::Blake3).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            report.rows[0].path =
+                std::ffi::OsString::from_vec(b"/data/invalid\xff".to_vec()).into();
+            assert!(
+                report
+                    .checksum_list(Algorithm::Blake3)
+                    .unwrap_err()
+                    .contains("not UTF-8")
+            );
+        }
+    }
+
     #[test]
     fn explicit_algorithm_comparison_never_guesses_from_equal_digest_lengths() {
         let temp = TempDir::new();
@@ -363,13 +1134,24 @@ mod tests {
         let row = ChecksumRow {
             blake3_hex: Some("a".repeat(64)),
             sha256_hex: Some("b".repeat(64)),
+            sha384_hex: Some("c".repeat(96)),
+            sha512_hex: Some("d".repeat(128)),
+            crc32_hex: Some("a".repeat(8)),
+            md5_hex: Some("e".repeat(32)),
             ..Default::default()
         };
         let mut report = ChecksumReport {
             rows: vec![row.clone()],
             cancelled: false,
         };
-        for algorithm in [Algorithm::Sha256, Algorithm::Blake3] {
+        for algorithm in [
+            Algorithm::Sha256,
+            Algorithm::Sha384,
+            Algorithm::Sha512,
+            Algorithm::Blake3,
+            Algorithm::Crc32,
+            Algorithm::Md5,
+        ] {
             assert!(report.single_digest(algorithm).is_some());
             report.cancelled = true;
             assert!(report.single_digest(algorithm).is_none());
@@ -387,14 +1169,25 @@ mod tests {
             ChecksumRow {
                 blake3_hex: Some("z".repeat(64)),
                 sha256_hex: None,
+                sha384_hex: Some("c".repeat(64)),
+                sha512_hex: None,
+                crc32_hex: None,
+                md5_hex: None,
                 ..row.clone()
             },
         ] {
             report.rows = vec![bad_row];
-            for algorithm in [Algorithm::Sha256, Algorithm::Blake3] {
+            for algorithm in [
+                Algorithm::Sha256,
+                Algorithm::Sha384,
+                Algorithm::Sha512,
+                Algorithm::Blake3,
+                Algorithm::Crc32,
+                Algorithm::Md5,
+            ] {
                 assert!(report.single_digest(algorithm).is_none());
                 assert_eq!(
-                    report.compare_expected_algorithm(&"a".repeat(64), algorithm),
+                    report.compare_expected_algorithm(&"a".repeat(algorithm.hex_len()), algorithm),
                     ExpectedMatch::Unavailable
                 );
             }
@@ -455,7 +1248,13 @@ mod tests {
             ticks.get() >= 3
         });
         assert!(row.error.as_deref().unwrap().contains("cancelled"));
-        assert!(row.sha256_hex.is_none() && row.blake3_hex.is_none());
+        assert!(
+            row.sha256_hex.is_none()
+                && row.blake3_hex.is_none()
+                && row.sha384_hex.is_none()
+                && row.sha512_hex.is_none()
+                && row.crc32_hex.is_none()
+        );
         let ticks = std::cell::Cell::new(0);
         let row = verify_one(&path, &|| {
             ticks.set(ticks.get() + 1);
@@ -466,7 +1265,13 @@ mod tests {
             false
         });
         assert!(row.error.as_deref().unwrap().contains("changed"));
-        assert!(row.sha256_hex.is_none() && row.blake3_hex.is_none());
+        assert!(
+            row.sha256_hex.is_none()
+                && row.blake3_hex.is_none()
+                && row.sha384_hex.is_none()
+                && row.sha512_hex.is_none()
+                && row.crc32_hex.is_none()
+        );
     }
 
     #[test]
@@ -501,7 +1306,13 @@ mod tests {
                 false
             });
             assert!(row.error.as_deref().unwrap().contains("changed"));
-            assert!(row.sha256_hex.is_none() && row.blake3_hex.is_none());
+            assert!(
+                row.sha256_hex.is_none()
+                    && row.blake3_hex.is_none()
+                    && row.sha384_hex.is_none()
+                    && row.sha512_hex.is_none()
+                    && row.crc32_hex.is_none()
+            );
         }
     }
 
@@ -647,6 +1458,10 @@ mod tests {
             content_hash: None,
             blake3_hex: None,
             sha256_hex: None,
+            sha384_hex: None,
+            sha512_hex: None,
+            crc32_hex: None,
+            md5_hex: None,
             error: None,
             skipped: None,
         }
@@ -677,17 +1492,20 @@ mod tests {
         };
         assert_eq!(
             report.detailed_text(),
-            "/data/ok.bin: content=00000000000000ab blake3=cafe sha256=-\n\
+            "/data/ok.bin: content=00000000000000ab blake3=cafe sha256=- sha384=- sha512=- crc32=- md5=-\n\
              /data/bad.bin: ERROR permission denied\n\
              /data/link: skipped (symlinks are not hashed)\n\
-             /data/unknown.bin: content=- blake3=- sha256=-"
+             /data/unknown.bin: content=- blake3=- sha256=- sha384=- sha512=- crc32=- md5=-"
         );
         // A path without a file name (the root) falls back to the full path.
         let root = ChecksumReport {
             rows: vec![row("/")],
             ..Default::default()
         };
-        assert_eq!(root.detailed_text(), "/: content=- blake3=- sha256=-");
+        assert_eq!(
+            root.detailed_text(),
+            "/: content=- blake3=- sha256=- sha384=- sha512=- crc32=- md5=-"
+        );
     }
 
     #[test]

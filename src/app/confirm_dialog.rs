@@ -173,6 +173,15 @@ fn unavailable_space_message(failure: Option<&crate::ports::NativeFailure>) -> S
 /// was created for, however that operation ends (confirm, auto-start,
 /// dismiss), or the next dialog inherits a stale animation start / dry run.
 const PENDING_FLOW_START: &str = "pending_flow_start";
+
+fn pending_flow_elapsed(ctx: &egui::Context) -> f64 {
+    // Read the clock before holding the context's mutable data lock.
+    let now = ctx.input(|input| input.time);
+    let start = ctx.data_mut(|data| {
+        *data.get_temp_mut_or_insert_with(egui::Id::new(PENDING_FLOW_START), || now)
+    });
+    now - start
+}
 const CONFIRM_DRY_RUN: &str = "confirm_dry_run";
 
 fn clear_pending_dialog_state(ctx: &egui::Context) {
@@ -681,11 +690,7 @@ impl App {
                     ui.add_space(4.0);
 
                     // Animated flow: files gradually transfer from left to right
-                    let anim_id = egui::Id::new(PENDING_FLOW_START);
-                    let start_time: f64 = ctx.data_mut(|d| {
-                        *d.get_temp_mut_or_insert_with(anim_id, || ctx.input(|i| i.time))
-                    });
-                    let elapsed = ctx.input(|i| i.time) - start_time;
+                    let elapsed = pending_flow_elapsed(ctx);
                     let transferred = flow_rows(elapsed, flat.len(), reduced_motion);
 
                     // Request repaint while animation is running
@@ -1690,6 +1695,34 @@ fn quiet_hours_label(hours: Option<crate::transfer_tuning::QuietHours>) -> &'sta
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_flow_clock_initializes_advances_and_restarts_without_nested_context_lock() {
+        let ctx = egui::Context::default();
+        for (time, expected) in [(10.0, 0.0), (12.0, 2.0), (13.5, 3.5)] {
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |_| {
+                    assert_eq!(super::pending_flow_elapsed(&ctx), expected);
+                    assert_eq!(super::pending_flow_elapsed(&ctx), expected);
+                },
+            ));
+        }
+        ctx.data_mut(|data| {
+            data.remove::<f64>(egui::Id::new(super::PENDING_FLOW_START));
+        });
+        crate::testutil::discard_egui_output(ctx.run_ui(
+            egui::RawInput {
+                time: Some(20.0),
+                ..Default::default()
+            },
+            |_| {
+                assert_eq!(super::pending_flow_elapsed(&ctx), 0.0);
+            },
+        ));
+    }
     use super::{
         CONFIRM_DRY_RUN, CONFIRM_FOCUSED, CONFLICT_DETAIL_TTL, CONFLICT_DROPPED, ConfirmCache,
         FLOW_MAX_SECS, FitTone, FlatListMode, OverwritePolicy, PENDING_FLOW_START, PendingOp,

@@ -1,0 +1,1 @@
+PASS: six checks; 3177 tests; raw nlink/inode/type facts match six native count/name sort orders including external alias, unknown-last, folder grouping, cursor/hidden selection and JSON context; two native scenarios 14/14; source/binary/tool hashes.

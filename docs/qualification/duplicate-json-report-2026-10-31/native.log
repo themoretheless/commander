@@ -1,0 +1,22 @@
+2026-10-31T11:47:16 INFO  commander::logging: logging initialized
+2026-10-31T11:47:16 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: duplicate_report
+2026-10-31T11:47:16 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-duplicate_report-1793432824625796000
+2026-10-31T11:47:16 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 0, target Id::new(("duplicate-sort", "Potential savings")), rect [[793.5 310.5] - [911.1 334.5]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 1, target Id::new(("duplicate-sort", "Potential savings")), rect [[793.5 310.5] - [911.1 334.5]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 2, target Id::new(("duplicate-sort", "Potential savings")), rect [[793.5 310.5] - [911.1 334.5]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 3, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 287.0] - [1099.2 302.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 4, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 286.0] - [1099.2 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 5, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 286.0] - [1099.2 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 6, target Id::new(("duplicate-policy", "Keep all groups")), rect [[746.8 287.0] - [855.8 302.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 7, target Id::new(("duplicate-policy", "Keep all groups")), rect [[746.8 286.0] - [855.8 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 8, target Id::new(("duplicate-policy", "Keep all groups")), rect [[746.8 286.0] - [855.8 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 9, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 287.0] - [1099.2 302.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 10, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 286.0] - [1099.2 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 11, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 286.0] - [1099.2 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 12, target Id::new(("duplicate-policy", "Apply policy")), rect [[649.0 287.0] - [738.8 302.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 13, target Id::new(("duplicate-policy", "Apply policy")), rect [[649.0 286.0] - [738.8 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 14, target Id::new(("duplicate-policy", "Apply policy")), rect [[649.0 286.0] - [738.8 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 15, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 287.0] - [1099.2 302.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 16, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 286.0] - [1099.2 303.0]]
+2026-10-31T11:47:17 INFO  commander::visual_qa: Duplicate report QA phase 17, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 286.0] - [1099.2 303.0]]

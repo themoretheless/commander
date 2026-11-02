@@ -1,0 +1,33 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.33s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 1 test
+test hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching ... FAILED
+
+failures:
+
+---- hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching stdout ----
+
+thread 'hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching' (23321301) panicked at src/hex_preview.rs:1420:9:
+assertion `left == right` failed: frame 0: menu=Some([[1025.4 288.0] - [1127.3 306.0]]) item=None state=None pointer=None query=""
+frame 1: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=None state=None pointer=None query=""
+frame 2: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=None state=None pointer=None query=""
+frame 3: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=None state=None pointer=Some([1076.3 297.5]) query=""
+frame 4: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=Some([[687.0 314.0] - [780.9 332.0]]) state=Some((false, false)) pointer=Some([1076.3 297.5]) query=""
+frame 5: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=Some([[1032.0 314.0] - [1452.0 332.0]]) state=Some((false, false)) pointer=Some([1076.3 297.5]) query=""
+frame 6: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=Some([[700.0 314.0] - [1120.0 332.0]]) state=Some((true, false)) pointer=Some([1242.0 323.0]) query=""
+frame 7: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=Some([[700.0 314.0] - [1120.0 332.0]]) state=Some((true, false)) pointer=Some([910.0 323.0]) query=""
+frame 8: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=Some([[700.0 314.0] - [1120.0 332.0]]) state=Some((true, false)) pointer=Some([910.0 323.0]) query=""
+frame 9: menu=Some([[1025.4 288.5] - [1127.3 306.5]]) item=Some([[700.0 314.0] - [1120.0 332.0]]) state=Some((true, false)) pointer=Some([910.0 323.0]) query=""
+  left: ""
+ right: "і"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2797 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `--bin commander`

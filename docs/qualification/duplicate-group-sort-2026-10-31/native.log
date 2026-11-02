@@ -1,0 +1,4 @@
+2026-10-31T03:27:16 INFO  commander::logging: logging initialized
+2026-10-31T03:27:16 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: duplicate_sort
+2026-10-31T03:27:16 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-duplicate-sort-1793402827534325000
+2026-10-31T03:27:16 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

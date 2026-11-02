@@ -1,0 +1,7 @@
+{
+  "kind": "Symlink to TXT file",
+  "link_status": "Target exists",
+  "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-10019-symlink_info/left/link.txt -> ../right/portable.txt",
+  "permissions": "rw-r--r--",
+  "size": "16 B"
+}

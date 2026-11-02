@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0271]: type mismatch resolving `<&[PathBuf] as IntoIterator>::Item == &Path`
+   --> src/app/duplicates_dialog.rs:112:72
+    |
+112 |             .position(|file| crate::dedup_scan::root_owner(&file.path, roots) == Some(preferred))
+    |                              -----------------------------             ^^^^^ expected `&Path`, found `&PathBuf`
+    |                              |
+    |                              required by a bound introduced by this call
+    |
+    = note: expected reference `&std::path::Path`
+               found reference `&std::path::PathBuf`
+note: required by a bound in `root_owner`
+   --> src/dedup_scan.rs:275:30
+    |
+273 | pub fn root_owner<'a>(
+    |        ---------- required by a bound in this function
+274 |     path: &std::path::Path,
+275 |     roots: impl IntoIterator<Item = &'a std::path::Path>,
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `root_owner`
+
+For more information about this error, try `rustc --explain E0271`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

@@ -1,0 +1,57 @@
+{
+  "status": "passed_scoped",
+  "scenes": [
+    {
+      "scenario": "duplicate_sort",
+      "checks": 14,
+      "effects": {
+        "context_menu": 0,
+        "deferred_menu": 0,
+        "clipboard": 2,
+        "opener": 0,
+        "trash": 0,
+        "free_space": 0
+      },
+      "binary_hash_verified": true,
+      "frame_inspected": true
+    },
+    {
+      "scenario": "duplicate_policy",
+      "checks": 14,
+      "effects": {
+        "context_menu": 0,
+        "deferred_menu": 0,
+        "clipboard": 3,
+        "opener": 0,
+        "trash": 0,
+        "free_space": 0
+      },
+      "binary_hash_verified": true,
+      "frame_inspected": true
+    }
+  ],
+  "sort_phase": 27,
+  "required_sort_states": [
+    "manual large-group keeper z-long-copy.bin",
+    "small group skipped",
+    "Savings",
+    "Copies + CSV",
+    "Size",
+    "Scan",
+    "Savings + CSV"
+  ],
+  "manual_choices_preserved": true,
+  "final_proposed_files": 1,
+  "final_proposed_bytes": 64,
+  "csv_roles": [
+    "keep",
+    "trash",
+    "skip",
+    "skip",
+    "skip"
+  ],
+  "csv_display_group_numbers_verified": true,
+  "payloads_intact_at_capture": true,
+  "physical_input_and_os_clipboard": "pending",
+  "cua_observation": "running-app-not-found / AXError.cannotComplete after successful short-lived captures"
+}

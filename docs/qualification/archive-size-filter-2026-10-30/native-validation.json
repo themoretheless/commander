@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "size entry and inclusive ranges",
+    "invalid input/error/reset",
+    "saved-filter restore and new labels",
+    "layout and virtualized cursor reveal"
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "workspace": "/Users/themoretheless/Documents/Sources/commander",
+  "status": "implemented draft; latest tests and build unverified because OS file opens block",
+  "source": "src/panel/watcher.rs",
+  "changes": [
+    "off-UI mount profile, canonicalization, polling scan and native install",
+    "worker-owned watcher backends, UI stop-sender lease",
+    "8-slot installation admission held through blocked OS calls",
+    "binding epochs and reconciliation after asynchronous subscription",
+    "tests for blocked/singleflight admission, stale completion, gap, fallback, actual file event"
+  ],
+  "last_completed_check": "cargo check --locked --features visual-qa passed before subsequent test/reconnect updates; deprecated fetch_update was then changed to try_update",
+  "latest_check": "cargo test --locked --features visual-qa panel::watcher:: could not read source; rustc blocked in __open for >3 minutes; interrupted owned rustc PID 79333 and cargo exited 101",
+  "diagnostic_read": "owned session 80901 terminated 143; no duplicate build started",
+  "fresh_probe": "separate source-read process blocked after compiler interruption and was terminated after 3 seconds",
+  "diagnostic": "/tmp/commander-async-watcher-blocked-compiler-sample.txt",
+  "next": [
+    "revalidate source file access before restarting compilation",
+    "inspect current watcher.rs and focused-test diagnostics",
+    "run focused watcher tests, full locked suite, all-target Clippy and build",
+    "rerun original FolderTabs native scenario in fresh output directory, preserving Home/Root guards",
+    "qualify actual results; do not claim broad goal complete"
+  ],
+  "delivery": "no commit/push; preserve unrelated dirty work; current milestone not promoted",
+  "blocked_audit_consecutive_turns": 3,
+  "revalidation": {
+    "watcher.rs": "open blocked, timed probe terminated",
+    "Cargo.toml": "open blocked, timed probe terminated",
+    "README.md": "readable: 85774 bytes",
+    "permissions": "regular owner-readable files; no special file flags",
+    "tccd_log": "no Commander entries in last-five-minute filtered query",
+    "build": "not restarted",
+    "user_question": "pending: any macOS file access prompt or blocking message?"
+  },
+  "latest_read_audit": {
+    "/Users/themoretheless/Documents/Sources/commander/src/panel/watcher.rs": "blocked; probe terminated",
+    "/Users/themoretheless/Documents/Sources/commander/Cargo.toml": "blocked; probe terminated"
+  }
+}

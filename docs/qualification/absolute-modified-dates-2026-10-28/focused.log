@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.62s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test query::tests::absolute_modified_dates_roundtrip_and_obey_strict_instant_boundaries ... ok
+test search::tests::absolute_modified_dates_agree_across_live_indexed_and_archives ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2521 filtered out; finished in 0.03s
+

@@ -1,0 +1,6 @@
+{
+  "README.md": "e677d992f7481461eaf3f5945258be43e611325b519d57dcf56ef8e89cda7451",
+  "src/command.rs": "b0c253f3fc2a11915a0c829943e15d9ff033e30df01aa24ba5922d05ea0a7565",
+  "src/workspace.rs": "cb8807733a143f2d47d9d576b46c9bea0b3afe78059c1b7f1d45f3578c2e337c",
+  "src/workspace/tests.rs": "19880c1c4fd9fe32b9b0ec5b66eb039f13ac2d7e0b5ce86e7fd1984444222b85"
+}

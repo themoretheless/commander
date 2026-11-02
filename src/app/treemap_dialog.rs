@@ -1,10 +1,22 @@
 //! Responsive disk-usage map and cancellable compressed-tree overview.
 
 use super::*;
-use crate::panel::{FileEntry, format_size};
+use crate::panel::FileEntry;
 use crate::selection_summary::{Kind, kind_of};
 
 const ROW_HEIGHT: f32 = 28.0;
+
+// Integer tenths keep exact u64 measurements out of floating-point arithmetic.
+// Only the painted bar is clamped; inconsistent/partial ratios stay visible.
+fn share_tenths(bytes: u64, denominator: u64) -> Option<u128> {
+    (denominator != 0).then(|| (u128::from(bytes) * 1000) / u128::from(denominator))
+}
+fn share_text(share: Option<u128>) -> String {
+    share.map_or_else(
+        || "—".into(),
+        |value| format!("{}.{:01}%", value / 10, value % 10),
+    )
+}
 /// Height of one wrapped row of the kind legend under the map.
 const LEGEND_ROW_HEIGHT: f32 = 20.0;
 /// Legend swatch edge, and the gap after each swatch-and-label item.
@@ -60,10 +72,23 @@ impl App {
         };
         let root = state.initial.dir.clone();
         let repaint = ctx.clone();
-        state.run = Some(crate::tree_overview::spawn(
-            root.clone(),
-            std::sync::Arc::new(move || repaint.request_repaint()),
-        ));
+        if state
+            .overview
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.metric != state.metric)
+        {
+            state.overview = None;
+            state.tree_filter.invalidate();
+        }
+        let notify: crate::tree_overview::Notify =
+            std::sync::Arc::new(move || repaint.request_repaint());
+        state.run = Some(
+            if state.metric == crate::disk_usage_metric::Metric::Logical {
+                crate::tree_overview::spawn(root.clone(), notify)
+            } else {
+                crate::tree_overview::spawn_metric(root.clone(), state.metric, notify)
+            },
+        );
         state.progress = crate::tree_overview::ScanProgress {
             directories: 1,
             current: root,
@@ -92,6 +117,7 @@ impl App {
                     crate::tree_overview::OverviewEvent::Complete(snapshot) => {
                         state.progress = snapshot.progress.clone();
                         state.overview = Some(snapshot);
+                        state.tree_filter.invalidate();
                         state.run = None;
                         state.stopping = false;
                     }
@@ -110,6 +136,7 @@ impl App {
         initial.items.retain(|(_, bytes)| *bytes > 0);
         self.ui.tools.replace_on(self.ws.active.other());
         self.ui.tools.treemap = Some(DiskUsageState {
+            metric: Default::default(),
             progress: crate::tree_overview::ScanProgress {
                 directories: 1,
                 current: initial.dir.clone(),
@@ -119,6 +146,8 @@ impl App {
             mode: DiskUsageMode::Map,
             run: None,
             overview: None,
+            tree_filter: crate::tree_filter::View::default(),
+            tree_share_parent: false,
             stopping: false,
             error: None,
         });
@@ -145,17 +174,27 @@ impl App {
         let mut stop = false;
         let mut rescan = false;
         let mut open_path = None;
+        let mut copy_report = None;
 
         {
             let state = self.ui.tools.treemap.as_mut().expect("checked above");
             ui.vertical(|ui| {
-                show_disk_usage_header(ui, state, t, &mut stop, &mut rescan);
+                show_disk_usage_header(ui, state, t, &mut stop, &mut rescan, &mut copy_report);
+                ui.horizontal_wrapped(|ui| {
+                    for metric in [crate::disk_usage_metric::Metric::Logical,crate::disk_usage_metric::Metric::FileAllocation,crate::disk_usage_metric::Metric::FileCount] {
+                        let response=ui.add_enabled_ui(state.run.is_none(),|ui|ui.selectable_label(state.metric==metric,metric.label())).inner.on_hover_text("Switching re-scans this captured folder. File allocation sums observed regular-file data blocks, counts hard links once, excludes directory/link storage, and is not reclaimable space. File count counts every observed non-directory entry, including zero-length files, symbolic links and hard-link aliases.");
+                        #[cfg(any(test,feature="visual-qa"))]
+                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("disk-usage-metric",metric.key())),response.rect));
+                        if response.clicked() && state.metric!=metric {state.metric=metric;rescan=true;}
+                    }
+                });
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
 
                 match state.mode {
                     DiskUsageMode::Map => {
+                        if state.metric!=crate::disk_usage_metric::Metric::Logical && state.overview.is_none() {ui.label("Waiting for selected measurements");return;}
                         let items = state
                             .overview
                             .as_ref()
@@ -164,10 +203,10 @@ impl App {
                             });
                         let scan_finished = state.run.is_none()
                             && state.overview.as_ref().is_some_and(|s| !s.cancelled);
-                        show_map(ui, items, scan_finished, t, dark, &mut open_path);
+                        show_map(ui, items, scan_finished, t, dark, &mut open_path, state.overview.as_ref());
                     }
                     DiskUsageMode::Tree => {
-                        show_tree(ui, state, t, &mut open_path);
+                        show_tree(ui, state, t, &mut open_path, &mut copy_report);
                     }
                 }
             });
@@ -176,6 +215,12 @@ impl App {
         if super::ui_state::modal_close_requested(window_open, false) {
             self.ui.tools.treemap = None;
             return;
+        }
+        if let Some(report) = copy_report {
+            match report {
+                Ok(text) => self.write_clipboard(&text, "disk-usage report", ctx),
+                Err(error) => self.toast(ctx, crate::toasts::ToastKind::Error, error, false),
+            }
         }
         if stop
             && let Some(state) = self.ui.tools.treemap.as_mut()
@@ -204,6 +249,7 @@ fn show_disk_usage_header(
     t: crate::theme::ThemeColors,
     stop: &mut bool,
     rescan: &mut bool,
+    copy_report: &mut Option<Result<String, String>>,
 ) {
     ui.horizontal(|ui| {
         let title_width = (ui.available_width() - 230.0).max(220.0);
@@ -233,11 +279,23 @@ fn show_disk_usage_header(
                 {
                     *stop = true;
                 }
-            } else if ui.button("Rescan").clicked() {
-                *rescan = true;
+            } else {
+                let response = ui.button("Rescan");
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::new("disk-usage-rescan"), response.rect)
+                });
+                *rescan |= response.clicked();
             }
-            ui.selectable_value(&mut state.mode, DiskUsageMode::Tree, "Tree");
-            ui.selectable_value(&mut state.mode, DiskUsageMode::Map, "Map");
+            for (mode, label) in [(DiskUsageMode::Tree, "Tree"), (DiskUsageMode::Map, "Map")] {
+                let response = ui.selectable_value(&mut state.mode, mode, label);
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::new(("disk-usage-mode", label)), response.rect)
+                });
+                #[cfg(not(any(test, feature = "visual-qa")))]
+                let _ = response;
+            }
         });
     });
 
@@ -251,7 +309,9 @@ fn show_disk_usage_header(
             "{action} {} entries | {} folders | {}",
             state.progress.entries,
             state.progress.directories,
-            format_size(state.progress.bytes)
+            state
+                .metric
+                .text(state.progress.bytes, state.progress.measurement)
         )
     } else if let Some(snapshot) = &state.overview {
         let action = if snapshot.cancelled {
@@ -263,12 +323,47 @@ fn show_disk_usage_header(
             "{action} | {} folders | {} files | {} | {:.1}s",
             snapshot.progress.directories,
             snapshot.progress.files,
-            format_size(snapshot.progress.bytes),
+            snapshot
+                .metric
+                .text(snapshot.progress.bytes, snapshot.progress.measurement),
             snapshot.elapsed.as_secs_f32()
         )
     } else {
         "Waiting to scan".to_string()
     };
+    let measurement = state
+        .overview
+        .as_ref()
+        .filter(|_| state.run.is_none())
+        .map_or(state.progress.measurement, |s| s.progress.measurement);
+    let metric_label = if state.run.is_some() {
+        state.metric.label()
+    } else {
+        state
+            .overview
+            .as_ref()
+            .map_or(state.metric, |s| s.metric)
+            .label()
+    };
+    let known = if state.run.is_some()
+        || state
+            .overview
+            .as_ref()
+            .is_some_and(|s| !s.measurement_complete())
+    {
+        "Known subtotal · "
+    } else {
+        ""
+    };
+    ui.small(format!(
+        "{known}{metric_label} · {} unavailable measurements{}",
+        measurement.unknown,
+        if measurement.overflowed {
+            " · measured total overflowed"
+        } else {
+            ""
+        }
+    ));
     let status_label = ui.label(egui::RichText::new(status).size(10.0).color(t.text_muted));
     // Announce when the scan finishes or stops; while it runs the counts
     // change every frame, so the region stays quiet.
@@ -281,6 +376,17 @@ fn show_disk_usage_header(
             egui::accesskit::Live::Polite
         });
     });
+
+    let copy = ui.add_enabled(state.run.is_none() && state.error.is_none() && state.overview.is_some(), egui::Button::new("Copy scan JSON"))
+        .on_hover_text("Copy the retained full scan model: root totals, map items, compressed directories and partial-scan flags. Independent of the tree filter; not a raw file inventory. Up to 1 MiB, no extra reads.");
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(egui::Id::new("disk-usage-copy-json"), copy.rect));
+    if copy.clicked()
+        && let Some(snapshot) = &state.overview
+    {
+        *copy_report = Some(crate::disk_usage_export::snapshot_json(snapshot));
+    }
 
     if state.run.is_some() && !state.progress.current.as_os_str().is_empty() {
         ui.add(
@@ -355,13 +461,31 @@ fn show_map(
     t: crate::theme::ThemeColors,
     dark: bool,
     open_path: &mut Option<(PathBuf, bool)>,
+    snapshot: Option<&crate::tree_overview::OverviewSnapshot>,
 ) {
+    let metric = snapshot.map_or(crate::disk_usage_metric::Metric::Logical, |s| s.metric);
     let visible: Vec<_> = items.iter().filter(|(_, bytes)| *bytes > 0).collect();
     if visible.is_empty() {
         ui.label(
-            egui::RichText::new(map_empty_message(scan_finished, !items.is_empty()))
-                .size(12.0)
-                .color(t.text_muted),
+            egui::RichText::new(
+                if metric == crate::disk_usage_metric::Metric::FileAllocation {
+                    if snapshot.is_some_and(|s| !s.measurement_complete()) {
+                        "No known allocated file blocks; measurements are incomplete"
+                    } else {
+                        "No allocated regular-file data blocks observed"
+                    }
+                } else if metric == crate::disk_usage_metric::Metric::FileCount {
+                    if snapshot.is_some_and(|s| !s.measurement_complete()) {
+                        "No known entries; measurements are incomplete"
+                    } else {
+                        "No non-directory entries observed"
+                    }
+                } else {
+                    map_empty_message(scan_finished, !items.is_empty())
+                },
+            )
+            .size(12.0)
+            .color(t.text_muted),
         );
         return;
     }
@@ -449,10 +573,14 @@ fn show_map(
         let interaction = ui
             .interact(rect, ui.id().with(("disk-map", index)), Sense::click())
             .on_hover_text(format!(
-                "{} | {} | {}",
+                "{} | {} | {}: {}",
                 entry.path.display(),
                 kind_of(entry).label(),
-                format_size(*bytes)
+                metric.label(),
+                metric.text(
+                    *bytes,
+                    snapshot.map_or(Default::default(), |s| s.measurement_for(&entry.path))
+                )
             ));
         if interaction.clicked() {
             *open_path = Some((entry.path.clone(), entry.is_dir));
@@ -481,9 +609,10 @@ fn show_map(
 
 fn show_tree(
     ui: &mut egui::Ui,
-    state: &DiskUsageState,
+    state: &mut DiskUsageState,
     t: crate::theme::ThemeColors,
     open_path: &mut Option<(PathBuf, bool)>,
+    copy_report: &mut Option<Result<String, String>>,
 ) {
     let Some(snapshot) = &state.overview else {
         ui.label(
@@ -493,6 +622,118 @@ fn show_tree(
         );
         return;
     };
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Filter directories");
+        let query = ui.add(
+            egui::TextEdit::singleline(&mut state.tree_filter.options.query)
+                .id(egui::Id::new("disk-tree-filter-input"))
+                .char_limit(256)
+                .desired_width(180.0)
+                .hint_text("Relative path"),
+        );
+        query.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::TextEdit,
+                query.enabled(),
+                "Filter disk-usage directories by relative path",
+            )
+        });
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(egui::Id::new(("disk-tree-filter", "query")), query.rect)
+        });
+        for (label, value) in [
+            ("Fuzzy", &mut state.tree_filter.options.fuzzy),
+            ("Match case", &mut state.tree_filter.options.match_case),
+        ] {
+            let response = ui.checkbox(value, label);
+            #[cfg(any(test, feature = "visual-qa"))]
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new(("disk-tree-filter", label)), response.rect)
+            });
+            #[cfg(not(any(test, feature = "visual-qa")))]
+            let _ = response;
+        }
+        let clear = ui.add_enabled(
+            !state.tree_filter.options.query.is_empty(),
+            egui::Button::new("Clear"),
+        );
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(egui::Id::new(("disk-tree-filter", "Clear")), clear.rect)
+        });
+        if clear.clicked() {
+            state.tree_filter.options.query.clear();
+            query.request_focus();
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Share of");
+        for (parent, label) in [(false, "Root"), (true, "Parent")] {
+            let response = ui.selectable_value(&mut state.tree_share_parent, parent, label)
+                .on_hover_text("Uses full snapshot totals, including filtered-out rows. Parent means the nearest represented ancestor; compressed chains may omit physical parents. Top-level rows use the root. Zero totals have no percentage; stopped/capped scans remain partial.");
+            #[cfg(any(test, feature = "visual-qa"))]
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("disk-tree-share", label)), response.rect));
+            #[cfg(not(any(test, feature = "visual-qa")))]
+            let _ = response;
+        }
+    });
+    let reset_scroll = state.tree_filter.search_changed();
+    state.tree_filter.refresh(&snapshot.root, &snapshot.nodes);
+    ui.horizontal_wrapped(|ui| {
+        let searching = !state.tree_filter.options.query.trim().is_empty();
+        let collapse = ui.add_enabled(
+            !searching && state.tree_filter.has_children.iter().any(|&value| value),
+            egui::Button::new("Collapse all"),
+        );
+        let expand = ui.add_enabled(
+            !state.tree_filter.options.collapsed.is_empty(),
+            egui::Button::new("Expand all"),
+        );
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(egui::Id::new(("disk-tree-collapse", "all")), collapse.rect);
+            data.insert_temp(egui::Id::new(("disk-tree-expand", "all")), expand.rect);
+        });
+        if collapse.clicked() {
+            state.tree_filter.options.collapsed = snapshot
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| state.tree_filter.has_children[*index])
+                .map(|(_, node)| node.path.clone())
+                .collect();
+        }
+        if expand.clicked() {
+            state.tree_filter.options.collapsed.clear();
+        }
+        if searching && !state.tree_filter.options.collapsed.is_empty() {
+            ui.small("Search reveals collapsed branches");
+        }
+    });
+    state.tree_filter.refresh(&snapshot.root, &snapshot.nodes);
+    if state.tree_filter.hidden_by_collapse > 0 {
+        ui.small(format!(
+            "{} rows hidden in collapsed branches",
+            state.tree_filter.hidden_by_collapse
+        ));
+    }
+    ui.small(format!("{} matching directories · {} shown with ancestor context · {} loaded. Values remain full subtree totals.", state.tree_filter.matches, state.tree_filter.indices.len(), snapshot.nodes.len()));
+    let copy = ui.add_enabled(state.run.is_none() && state.error.is_none() && !state.tree_filter.indices.is_empty(), egui::Button::new(format!("Copy visible CSV ({})", state.tree_filter.indices.len())))
+        .on_hover_text("Copy shown compressed directory rows in view order, with full subtree totals, ancestor-context markers, active filter and partial-scan flags. Nested totals must not be summed. Up to 1 MiB; no extra reads.");
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(egui::Id::new("disk-usage-copy-csv"), copy.rect));
+    if copy.clicked() {
+        *copy_report = Some(crate::disk_usage_export::visible_csv(
+            snapshot,
+            &state.tree_filter,
+        ));
+    }
+    if state.tree_filter.indices.is_empty() && !snapshot.nodes.is_empty() {
+        ui.label("No matching directories.");
+        return;
+    }
     if snapshot.nodes.is_empty() {
         ui.label(
             egui::RichText::new("No directories found")
@@ -502,12 +743,39 @@ fn show_tree(
         return;
     }
 
-    egui::ScrollArea::vertical()
-        .id_salt(("compressed-tree", &snapshot.root))
-        .auto_shrink([false, false])
-        .show_rows(ui, ROW_HEIGHT, snapshot.nodes.len(), |ui, range| {
-            for index in range {
+    let mut scroll = egui::ScrollArea::vertical().id_salt(("compressed-tree", &snapshot.root));
+    if reset_scroll {
+        scroll = scroll.vertical_scroll_offset(0.0);
+    }
+    let mut toggle_branch = None;
+    scroll.auto_shrink([false, false]).show_rows(
+        ui,
+        ROW_HEIGHT,
+        state.tree_filter.indices.len(),
+        |ui, range| {
+            for row in range {
+                let index = state.tree_filter.indices[row];
                 let node = &snapshot.nodes[index];
+                let parent = state
+                    .tree_share_parent
+                    .then(|| state.tree_filter.parents[index])
+                    .flatten();
+                let denominator = parent.map_or(snapshot.progress.bytes, |parent| {
+                    snapshot.nodes[parent].bytes
+                });
+                let denominator_status = parent.map_or(snapshot.progress.measurement, |parent| {
+                    snapshot.nodes[parent].measurement
+                });
+                let share = (node.measurement.complete() && denominator_status.complete())
+                    .then(|| share_tenths(node.bytes, denominator))
+                    .flatten();
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::new(("disk-tree-share-value", &node.path)),
+                        (denominator, share),
+                    )
+                });
                 let indentation = node.depth.min(12) as f32 * 14.0;
                 let text_color = if node.unreadable {
                     t.accent_warning
@@ -516,31 +784,120 @@ fn show_tree(
                 };
                 ui.horizontal(|ui| {
                     ui.add_space(indentation);
-                    let suffix = if node.unreadable { " (unreadable)" } else { "" };
-                    let label_width = (ui.available_width() - 170.0).max(120.0);
+                    let closed = state.tree_filter.options.collapsed.contains(&node.path);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(32.0, ROW_HEIGHT - 2.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_size(egui::vec2(32.0, ROW_HEIGHT - 2.0));
+                            if state.tree_filter.has_children[index] {
+                                let action = if closed { "Expand" } else { "Collapse" };
+                                let response = ui
+                                    .add_enabled(
+                                        state.tree_filter.options.query.trim().is_empty(),
+                                        egui::Button::new(if closed { "+" } else { "−" })
+                                            .min_size(egui::vec2(18.0, 18.0)),
+                                    )
+                                    .on_hover_text(format!(
+                                        "{action} {} (search temporarily reveals branches)",
+                                        node.path.display()
+                                    ));
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        response.enabled(),
+                                        format!("{action} {}", node.path.display()),
+                                    )
+                                });
+                                #[cfg(any(test, feature = "visual-qa"))]
+                                ui.ctx().data_mut(|data| {
+                                    data.insert_temp(
+                                        egui::Id::new(("disk-tree-collapse", &node.path)),
+                                        response.rect,
+                                    )
+                                });
+                                if response.clicked() {
+                                    toggle_branch = Some(node.path.clone());
+                                }
+                            }
+                        },
+                    );
+                    let suffix = if node.unreadable {
+                        " (unreadable)"
+                    } else if !state.tree_filter.direct[index] {
+                        " (context)"
+                    } else {
+                        ""
+                    };
+                    let label_width = (ui.available_width() - 245.0).max(80.0);
                     let response = ui
-                        .add_sized(
-                            [label_width, ROW_HEIGHT - 2.0],
-                            egui::Label::new(
-                                egui::RichText::new(format!("{}{suffix}", node.label))
-                                    .size(12.0)
-                                    .color(text_color),
-                            )
-                            .truncate()
-                            .sense(Sense::click()),
+                        .allocate_ui_with_layout(
+                            egui::vec2(label_width, ROW_HEIGHT - 2.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_size(egui::vec2(label_width, ROW_HEIGHT - 2.0));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("{}{suffix}", node.label))
+                                            .size(12.0)
+                                            .color(text_color),
+                                    )
+                                    .halign(egui::Align::Min)
+                                    .truncate()
+                                    .sense(Sense::click()),
+                                )
+                            },
                         )
+                        .inner
                         .on_hover_text(format!(
-                            "{}\n{} files | {}",
+                            "{}\n{} files | {}: {} | {} unavailable measurements{}",
                             node.path.display(),
                             node.files,
-                            format_size(node.bytes)
+                            snapshot.metric.label(),
+                            snapshot.metric.text(node.bytes, node.measurement),
+                            node.measurement.unknown,
+                            if node.measurement.overflowed {
+                                " · overflowed"
+                            } else {
+                                ""
+                            }
                         ));
+                    #[cfg(any(test, feature = "visual-qa"))]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            egui::Id::new(("disk-tree-node", &node.path)),
+                            response.rect,
+                        )
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            egui::RichText::new(format_size(node.bytes))
+                            egui::RichText::new(snapshot.metric.text(node.bytes, node.measurement))
                                 .size(11.0)
                                 .color(t.text_muted),
                         );
+                        let bar =
+                            egui::ProgressBar::new(share.unwrap_or(0).min(1000) as f32 / 1000.0)
+                                .desired_width(74.0)
+                                .text(share_text(share));
+                        ui.add(bar).on_hover_text(format!(
+                            "{} / {} {} {} · {}{}",
+                            node.bytes,
+                            denominator,
+                            snapshot.metric.key(),
+                            snapshot.metric.unit(),
+                            parent.map_or_else(
+                                || "scan root".to_string(),
+                                |index| snapshot.nodes[index].path.display().to_string()
+                            ),
+                            if snapshot.cancelled
+                                || snapshot.truncated
+                                || snapshot.inaccessible_count > 0
+                            {
+                                " · partial scan"
+                            } else {
+                                ""
+                            }
+                        ));
                         ui.label(
                             egui::RichText::new(format!("{} files", node.files))
                                 .size(10.0)
@@ -552,7 +909,13 @@ fn show_tree(
                     }
                 });
             }
-        });
+        },
+    );
+    if let Some(path) = toggle_branch
+        && !state.tree_filter.options.collapsed.remove(&path)
+    {
+        state.tree_filter.options.collapsed.insert(path);
+    }
 }
 
 #[cfg(test)]
@@ -566,7 +929,18 @@ mod tests {
             .map(|ext| ext.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
             name: name.to_string(),
@@ -579,6 +953,172 @@ mod tests {
             modified_str: String::new(),
             size_str: "1 B".to_string(),
         }
+    }
+
+    #[test]
+    fn filtered_tree_click_uses_original_node_identity_after_hidden_rows() {
+        let root = PathBuf::from("/fixture");
+        let nodes = [
+            ("branch", 0, 132),
+            ("branch/other", 1, 99),
+            ("branch/compressed/target", 1, 33),
+        ]
+        .into_iter()
+        .map(|(name, depth, bytes)| crate::tree_overview::OverviewNode {
+            measurement: Default::default(),
+            path: root.join(name),
+            label: name.into(),
+            depth,
+            bytes,
+            files: 1,
+            unreadable: false,
+        })
+        .collect();
+        let progress = crate::tree_overview::ScanProgress {
+            bytes: 200,
+            ..Default::default()
+        };
+        let snapshot = crate::tree_overview::OverviewSnapshot {
+            metric: Default::default(),
+            map_measurements: Default::default(),
+            root: root.clone(),
+            nodes,
+            progress: progress.clone(),
+            top_level: Vec::new(),
+            top_level_truncated: false,
+            inaccessible_paths: Vec::new(),
+            inaccessible_count: 0,
+            truncated: false,
+            cancelled: false,
+            elapsed: Default::default(),
+        };
+        let mut state = DiskUsageState {
+            metric: Default::default(),
+            initial: crate::workspace::TreemapSnapshot {
+                dir: root.clone(),
+                items: Vec::new(),
+            },
+            mode: DiskUsageMode::Tree,
+            run: None,
+            progress,
+            overview: Some(snapshot),
+            tree_filter: Default::default(),
+            tree_share_parent: false,
+            stopping: false,
+            error: None,
+        };
+        state.tree_filter.options.query = "target".into();
+        let ctx = egui::Context::default();
+        let opened = std::cell::RefCell::new(None);
+        let frame = |state: &mut DiskUsageState, events| {
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 500.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    show_tree(
+                        ui,
+                        state,
+                        crate::theme::ThemeColors::dark(),
+                        &mut opened.borrow_mut(),
+                        &mut None,
+                    );
+                },
+            ));
+        };
+        frame(&mut state, Vec::new());
+        assert_eq!(state.tree_filter.indices, [0, 2]);
+        let target = root.join("branch/compressed/target");
+        let probe = egui::Id::new(("disk-tree-share-value", &target));
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<(u64, Option<u128>)>(probe)),
+            Some((200, Some(165)))
+        );
+        state.tree_share_parent = true;
+        frame(&mut state, Vec::new());
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<(u64, Option<u128>)>(probe)),
+            Some((132, Some(250)))
+        );
+        let pos = ctx
+            .data(|data| data.get_temp::<egui::Rect>(egui::Id::new(("disk-tree-node", &target))))
+            .unwrap()
+            .center();
+        let target_rect = ctx
+            .data(|data| data.get_temp::<egui::Rect>(egui::Id::new(("disk-tree-node", &target))))
+            .unwrap();
+        let parent_rect = ctx
+            .data(|data| {
+                data.get_temp::<egui::Rect>(egui::Id::new(("disk-tree-node", root.join("branch"))))
+            })
+            .unwrap();
+        let indent = target_rect.left() - parent_rect.left();
+        assert!(
+            (13.5..=14.5).contains(&indent),
+            "left-aligned hierarchy must retain indentation: {indent}"
+        );
+        for phase in 0..3 {
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            if phase > 0 {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: phase == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            frame(&mut state, events);
+        }
+        assert_eq!(*opened.borrow(), Some((target, true)));
+        let snapshot = state.overview.as_ref().unwrap();
+        assert_eq!(snapshot.nodes[1].path, root.join("branch/other"));
+        assert_eq!(snapshot.nodes[2].bytes, 33);
+        assert_eq!(snapshot.progress.bytes, 200);
+        *opened.borrow_mut() = None;
+        state.tree_filter.options.query.clear();
+        frame(&mut state, Vec::new());
+        for expected in [vec![0], vec![0, 1, 2]] {
+            let button = ctx
+                .data(|data| {
+                    data.get_temp::<egui::Rect>(egui::Id::new((
+                        "disk-tree-collapse",
+                        root.join("branch"),
+                    )))
+                })
+                .unwrap();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(button.center())];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos: button.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(&mut state, events);
+            }
+            frame(&mut state, Vec::new());
+            assert_eq!(state.tree_filter.indices, expected);
+            assert!(opened.borrow().is_none(), "disclosure must not navigate");
+            assert_eq!(state.overview.as_ref().unwrap().progress.bytes, 200);
+        }
+    }
+
+    #[test]
+    fn percentages_are_exact_bounded_for_painting_and_undefined_for_empty_totals() {
+        assert_eq!(share_tenths(10, 246), Some(40));
+        assert_eq!(share_tenths(10, 30), Some(333));
+        assert_eq!(share_tenths(u64::MAX, u64::MAX), Some(1000));
+        assert_eq!(share_tenths(u64::MAX, 1), Some(u128::from(u64::MAX) * 1000));
+        assert_eq!(share_text(share_tenths(0, 0)), "—");
+        assert_eq!(share_text(share_tenths(0, 1)), "0.0%");
+        assert_eq!(share_text(share_tenths(1, 3)), "33.3%");
     }
 
     #[test]

@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: pub(crate) function inside private module
+   --> src/listing_export.rs:191:1
+    |
+191 | pub(crate) fn iso_8601_utc(time: std::time::SystemTime) -> String {
+    | ----------^^^^^^^^^^^^^^^^
+    | |
+    | help: consider using: `pub`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+    = note: `-D clippy::redundant-pub-crate` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::redundant_pub_crate)]`
+
+error: pub(crate) function inside private module
+   --> src/listing_export.rs:214:1
+    |
+214 | pub(crate) fn csv_escape(s: &str) -> String {
+    | ----------^^^^^^^^^^^^^^
+    | |
+    | help: consider using: `pub`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+
+error: could not compile `commander` (bin "commander") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

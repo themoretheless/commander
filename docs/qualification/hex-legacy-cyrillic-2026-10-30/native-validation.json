@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native KOI8-R/KOI8-U/IBM866 menu/search/layout capture",
+  "binary_sha256": "e080013f8dd95a169ada746054bbb299df73e75c811494a9eb4fa826c89598c7",
+  "core_headless_coverage": "known independent vectors, strict encoding, all-mode cyclic/error workers and KOI8-U pointer selection passed",
+  "earlier_native_gates": "remain pending"
+}

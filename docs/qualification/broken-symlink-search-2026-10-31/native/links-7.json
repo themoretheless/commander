@@ -1,0 +1,43 @@
+{
+  "explanations": [
+    [
+      "types:broken-link,symlink",
+      "archives:off"
+    ],
+    [
+      "types:broken-link,symlink",
+      "archives:off"
+    ],
+    [
+      "types:broken-link,symlink",
+      "archives:off"
+    ],
+    [
+      "types:broken-link,symlink",
+      "archives:off"
+    ],
+    [
+      "types:broken-link,symlink",
+      "archives:off"
+    ],
+    [
+      "types:broken-link,symlink",
+      "archives:off"
+    ]
+  ],
+  "expression": "types:broken-link,symlink archives:off",
+  "matched": 6,
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42294-broken_link_search/left/broken.lnk",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42294-broken_link_search/left/chain.lnk",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42294-broken_link_search/left/directory.lnk",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42294-broken_link_search/left/loop.lnk",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42294-broken_link_search/left/notdir.lnk",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42294-broken_link_search/left/valid.lnk"
+  ],
+  "phase": 7,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42294-broken_link_search/left",
+  "skipped": 0,
+  "source": "Live (archives off)",
+  "truncated": false
+}

@@ -1,0 +1,7 @@
+{
+  "scenario": "disk_usage_export",
+  "output": "/tmp/commander-native-disk-usage-export-1793407857326308000",
+  "binary_sha256": "eae4dc264cc7046e30ebe45d4b41dc57ffe1deac64d6ea8b6fc6d187d0f9af4f",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793407857382337000
+}

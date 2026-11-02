@@ -1,0 +1,5 @@
+{
+  "src/panel/watcher.rs": "4d636d2926174416d963fae1ef0bff2b45de89d6993cca36d0a5c795137030ff",
+  "src/watcher_policy.rs": "98b063852958734994b7999af6dfcbe8d7ed2669f2652d8933927754d960a3cd",
+  "Cargo.lock": "635b3ca96c9e6acecdac69290a8564cf7229f7066fabd02416533e2920af0f2c"
+}

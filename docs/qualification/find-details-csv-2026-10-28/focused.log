@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.30s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test listing_export::tests::search_details_csv_preserves_paths_bytes_and_unknown_folder_cells ... ok
+test app::find_dialog::tests::find_details_csv_copies_visible_or_selected_metadata_in_display_order ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2537 filtered out; finished in 0.00s
+

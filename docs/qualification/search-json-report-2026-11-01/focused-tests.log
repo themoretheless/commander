@@ -1,0 +1,13 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 41s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 4 tests
+test app::find_dialog::tests::search_json_uses_applied_context_and_distinct_locations_in_visible_selected_order ... ok
+test app::find_dialog::tests::search_json_marks_partial_and_can_export_an_empty_completed_query ... ok
+test app::find_dialog::tests::search_json_preserves_non_utf8_path_bytes_without_replacement_and_ties_by_location ... ok
+test app::find_dialog::tests::search_json_is_bounded_and_reports_refusal_before_a_clipboard_value_exists ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3136 filtered out; finished in 0.05s
+

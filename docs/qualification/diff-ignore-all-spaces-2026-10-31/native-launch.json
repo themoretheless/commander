@@ -1,0 +1,6 @@
+{
+  "scenario": "diff_options",
+  "out": "/tmp/commander-native-diff_options-1793441235725500000",
+  "binary_sha256": "d5920266349417f37f92cd1dcec3a9f2549364e525c09430ae3ae8ac32d9d22d",
+  "core_sha256": "d5920266349417f37f92cd1dcec3a9f2549364e525c09430ae3ae8ac32d9d22d"
+}

@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0433]: cannot find type `Path` in this scope
+    --> src/app/archive_dialog.rs:1361:69
+     |
+1361 |             && tree.directories[id - listing.members.len()].path == Path::new("src/deep")));
+     |                                                                     ^^^^ use of undeclared type `Path`
+     |
+     = note: struct `crate::workspace_profile::tests::Path` exists but is inaccessible
+help: consider importing this struct
+     |
+1181 +     use std::path::Path;
+     |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.31s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test hex_preview::tests::utf16_character_columns_preserve_absolute_alignment_surrogates_and_page_edges ... ok
+test hex_preview::tests::utf16_character_menu_copy_keeps_raw_bytes_and_search_mode_independent ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2869 filtered out; finished in 0.21s
+

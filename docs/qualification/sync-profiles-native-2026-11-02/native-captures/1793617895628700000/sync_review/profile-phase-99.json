@@ -1,0 +1,20 @@
+{
+  "phase": 99,
+  "saved": {
+    "format": "commander.sync-profiles",
+    "profiles": [
+      {
+        "compare_contents": false,
+        "dry_run": false,
+        "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98456-sync_review/left",
+        "left_hidden": false,
+        "name": "Renamed",
+        "policy": "TwoWay",
+        "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98456-sync_review/right",
+        "right_hidden": false
+      }
+    ],
+    "version": 1
+  },
+  "selected": "Renamed"
+}

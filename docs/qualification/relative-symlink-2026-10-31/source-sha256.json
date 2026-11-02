@@ -1,0 +1,7 @@
+{
+  "src/command.rs": "fc3d8e6b9b7b54787a3dc9a3891e03f640d51ad8bbfc23197db50752a8d4ed59",
+  "src/workspace.rs": "e31a0d64780bc30f54e06f8fb80a70b657ae8732b90c8d7f17ae4fd2ea9359b4",
+  "src/workspace/fileops/mod.rs": "0c6f238779c92f89b76e15d41a5d9aae7f942c9fab5c8528c633ac2e6da942da",
+  "src/workspace/fileops/link.rs": "4ea09e7fdbdbc473bcb2ec5ecad32ea0e505e5a08abd4404c12face456363968",
+  "src/workspace/tests.rs": "f0336465093b5aadc91144edae181953f66935efb111c966c1aa27b0667d3ddb"
+}

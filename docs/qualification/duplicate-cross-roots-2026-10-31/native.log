@@ -1,0 +1,28 @@
+2026-10-31T12:23:42 INFO  commander::logging: logging initialized
+2026-10-31T12:23:42 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: duplicate_cross
+2026-10-31T12:23:42 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-duplicate_cross-1793435016584051000
+2026-10-31T12:23:42 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 0, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 1, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 2, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 3, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 4, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 5, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 6, target Id::new("duplicate-recursive"), rect [[649.0 160.5] - [773.4 184.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 7, target Id::new("duplicate-recursive"), rect [[649.0 160.5] - [773.4 184.5]]
+2026-10-31T12:23:42 INFO  commander::visual_qa: Duplicate cross QA phase 8, target Id::new("duplicate-recursive"), rect [[649.0 160.5] - [773.4 184.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 9, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 10, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 11, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 12, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 13, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 14, target Id::new("duplicate-cross-only"), rect [[823.2 113.5] - [1010.9 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 15, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 16, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 17, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 18, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 19, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 20, target Id::new("duplicate-other-root"), rect [[649.0 113.5] - [817.2 137.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 21, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 348.5] - [1099.2 363.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 22, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 347.5] - [1099.2 364.5]]
+2026-10-31T12:23:43 INFO  commander::visual_qa: Duplicate cross QA phase 23, target Id::new(("duplicate-policy", "Copy JSON report")), rect [[974.8 347.5] - [1099.2 364.5]]

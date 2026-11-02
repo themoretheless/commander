@@ -1,0 +1,45 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.87s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 1 test
+test app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry ... FAILED
+
+failures:
+
+---- app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry stdout ----
+
+thread 'app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry' (24701161) panicked at src/app/archive_dialog.rs:3063:9:
+assertion `left == right` failed: 0: None pointer=None
+1: None pointer=None
+2: None pointer=None
+3: None pointer=Some([113.5 9.0])
+4: None pointer=Some([113.5 9.0])
+5: None pointer=Some([113.5 9.0])
+6: None pointer=Some([113.5 9.0])
+7: None pointer=Some([113.5 9.0])
+8: None pointer=Some([113.5 9.0])
+9: None pointer=Some([113.5 9.0])
+10: None pointer=Some([291.0 34.0])
+11: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([291.0 34.0])
+12: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([291.0 34.0])
+13: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([291.0 34.0])
+14: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([291.0 34.0])
+15: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([291.0 34.0])
+16: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([291.0 34.0])
+17: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([291.0 34.0])
+18: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([357.3 50.0])
+19: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([357.3 50.0])
+20: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([357.3 50.0])
+21: Some((0.18333333333333332, [[298.0 41.0] - [416.7 59.0]], false, false)) pointer=Some([357.3 50.0])
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::archive_dialog::tests::saved_archive_filter_pointer_removal_does_not_recall_the_entry
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2809 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--bin commander`

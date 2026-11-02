@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "Types executable checkbox and base-type intersection",
+    "saved restore and reset",
+    "navigation and hidden-selection presentation",
+    "focus/menu layout"
+  ]
+}

@@ -1,0 +1,1 @@
+PASS: six gates; 3269 passed / 3 ignored; profile rename/copy/conflict native 16/16 and tab-set restore control 14/14; exact saved-data preservation, generations 1/2/3/3, byte-identical store on collision and unchanged current roots; source/binary/tool hashes. Existing dependency audit failures remain open.

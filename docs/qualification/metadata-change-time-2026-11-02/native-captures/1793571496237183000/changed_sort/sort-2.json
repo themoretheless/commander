@@ -1,0 +1,138 @@
+{
+  "config": {
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "folders_by_name": false,
+    "folders_first": true,
+    "mode": "List",
+    "natural_name_sort": true,
+    "show_hidden": false,
+    "sort_col": "Modified",
+    "sort_order": "Asc"
+  },
+  "cursor": "change-middle.txt",
+  "entries": [
+    {
+      "changed": {
+        "nanos_since_epoch": 501732649,
+        "secs_since_epoch": 1793571504
+      },
+      "folder": true,
+      "modified": {
+        "nanos_since_epoch": 501732649,
+        "secs_since_epoch": 1793571504
+      },
+      "name": "change-folder",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "changed": {
+        "nanos_since_epoch": 501641232,
+        "secs_since_epoch": 1793571504
+      },
+      "folder": false,
+      "modified": {
+        "nanos_since_epoch": 501628000,
+        "secs_since_epoch": 1793312304
+      },
+      "name": "change-new.txt",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "changed": {
+        "nanos_since_epoch": 501378356,
+        "secs_since_epoch": 1793571504
+      },
+      "folder": false,
+      "modified": {
+        "nanos_since_epoch": 501363000,
+        "secs_since_epoch": 1793398704
+      },
+      "name": "change-middle.txt",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "changed": {
+        "nanos_since_epoch": 501844815,
+        "secs_since_epoch": 1793571504
+      },
+      "folder": false,
+      "modified": {
+        "nanos_since_epoch": 500996000,
+        "secs_since_epoch": 1793485104
+      },
+      "name": "change-link.txt",
+      "selected": false,
+      "symlink": true
+    },
+    {
+      "changed": {
+        "nanos_since_epoch": 501010814,
+        "secs_since_epoch": 1793571504
+      },
+      "folder": false,
+      "modified": {
+        "nanos_since_epoch": 500996000,
+        "secs_since_epoch": 1793485104
+      },
+      "name": "change-old.txt",
+      "selected": true,
+      "symlink": false
+    }
+  ],
+  "phase": 17,
+  "report": {
+    "exported_rows": 1,
+    "facets": {
+      "kind": null,
+      "max_age_days": null,
+      "min_age_days": null,
+      "min_size": null
+    },
+    "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-25057-changed_sort/left",
+    "format": "commander.listing-report",
+    "hidden_selected_rows": 1,
+    "listing_rows": 10,
+    "query": "change-",
+    "rows": [
+      {
+        "accessed_utc": "2026-11-01T22:18:24.500777897Z",
+        "allocated_bytes": 4096,
+        "changed_utc": "2026-11-01T22:18:24.501010814Z",
+        "created_utc": "2026-10-31T22:18:24.500996Z",
+        "device_id": 16777230,
+        "displayed_size": "6 B",
+        "file_id": 254165180,
+        "file_size_bytes": 6,
+        "hard_links": 1,
+        "kind": "File",
+        "modified_utc": "2026-10-31T22:18:24.500996Z",
+        "name": "change-old.txt",
+        "owner_gid": 20,
+        "owner_uid": 501,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-25057-changed_sort/left/change-old.txt",
+        "row": 1
+      }
+    ],
+    "scope": "visible_selected_rows",
+    "selected_rows": 2,
+    "snapshot": "retained_listing_metadata",
+    "version": 1,
+    "view": {
+      "case_sensitive_name_sort": false,
+      "density": "Comfortable",
+      "folders_by_name": false,
+      "folders_first": true,
+      "mode": "List",
+      "natural_name_sort": true,
+      "show_hidden": false,
+      "sort_col": "Modified",
+      "sort_order": "Asc"
+    },
+    "visible_rows": 5
+  },
+  "selected": 2
+}

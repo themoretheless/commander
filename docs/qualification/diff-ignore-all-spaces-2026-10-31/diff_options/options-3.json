@@ -1,0 +1,80 @@
+{
+  "counts": [
+    3,
+    3
+  ],
+  "options": {
+    "all_spaces": false,
+    "ignore_case": false,
+    "space_changes": true
+  },
+  "phase": 3,
+  "rows": [
+    {
+      "kind": "Equal",
+      "text": "alpha beta"
+    },
+    {
+      "kind": "Delete",
+      "text": "same"
+    },
+    {
+      "kind": "Delete",
+      "text": "kept"
+    },
+    {
+      "kind": "Delete",
+      "text": "new"
+    },
+    {
+      "kind": "Insert",
+      "text": "SAME"
+    },
+    {
+      "kind": "Insert",
+      "text": "k e p t"
+    },
+    {
+      "kind": "Insert",
+      "text": "old"
+    },
+    {
+      "kind": "Equal",
+      "text": "end"
+    }
+  ],
+  "source_numbers": [
+    [
+      1,
+      1
+    ],
+    [
+      2,
+      null
+    ],
+    [
+      3,
+      null
+    ],
+    [
+      4,
+      null
+    ],
+    [
+      null,
+      2
+    ],
+    [
+      null,
+      3
+    ],
+    [
+      null,
+      4
+    ],
+    [
+      5,
+      5
+    ]
+  ]
+}

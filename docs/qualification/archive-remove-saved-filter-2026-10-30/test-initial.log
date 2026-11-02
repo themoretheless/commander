@@ -1,0 +1,17 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0283]: type annotations needed
+    --> src/app/archive_dialog.rs:2979:71
+     |
+2979 |         assert_eq!(filter.saved_filters, [second.clone()].into_iter().collect());
+     |                                                                       ^^^^^^^ cannot infer type of the type parameter `B` declared on the method `collect`
+     |
+     = note: the type must implement `FromIterator<SavedMemberFilter>`
+note: required by a bound in `std::iter::Iterator::collect`
+    --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/iter/traits/iterator.rs:2073:4
+help: consider specifying the generic argument
+     |
+2979 |         assert_eq!(filter.saved_filters, [second.clone()].into_iter().collect::<Vec<_>>());
+     |                                                                              ++++++++++
+
+For more information about this error, try `rustc --explain E0283`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native selection summary workflow or layout capture",
+  "binary_sha256": "9fd50ff569d1da4812cc161854553186467dc04288d4902f11cd86c1ebd7e119",
+  "earlier_archive_native_gates": "remain pending"
+}

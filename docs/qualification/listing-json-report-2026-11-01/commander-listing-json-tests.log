@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 06s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 3 tests
+test listing_report::tests::json_listing_preserves_projection_sizes_selection_and_snapshot_after_removal ... ok
+test listing_report::tests::json_listing_rejects_lossy_paths_and_does_not_report_link_target_allocation ... FAILED
+test listing_report::tests::json_listing_escapes_controls_and_rejects_oversize_or_invalid_paths ... ok
+
+failures:
+
+---- listing_report::tests::json_listing_rejects_lossy_paths_and_does_not_report_link_target_allocation stdout ----
+
+thread 'listing_report::tests::json_listing_rejects_lossy_paths_and_does_not_report_link_target_allocation' (317375) panicked at src/listing_report.rs:221:10:
+called `Result::unwrap()` on an `Err` value: Os { code: 92, kind: Uncategorized, message: "Illegal byte sequence" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    listing_report::tests::json_listing_rejects_lossy_paths_and_does_not_report_link_target_allocation
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 3114 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--bin commander`

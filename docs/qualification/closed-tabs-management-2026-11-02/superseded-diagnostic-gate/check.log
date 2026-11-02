@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: unused variable: `response`
+   --> src/diff_find.rs:136:17
+    |
+136 |             let response = ui.add(
+    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_response`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `closed_tab_paths` is never used
+   --> src/workspace/tabs.rs:803:12
+    |
+311 | impl Workspace {
+    | -------------- method in this implementation
+...
+803 |     pub fn closed_tab_paths(&self, side: ActivePanel) -> Vec<PathBuf> {
+    |            ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander") generated 2 warnings (run `cargo fix --bin "commander" -p commander` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.75s

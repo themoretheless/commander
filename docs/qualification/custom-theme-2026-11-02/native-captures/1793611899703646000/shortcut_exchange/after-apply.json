@@ -1,0 +1,11 @@
+{
+  "applied": [
+    {
+      "command": "Move cursor down",
+      "keys": "N"
+    }
+  ],
+  "cursor": 1,
+  "cursor_name": "Design",
+  "phase": 16
+}

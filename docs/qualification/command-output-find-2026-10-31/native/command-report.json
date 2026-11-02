@@ -1,0 +1,35 @@
+{
+  "format": "commander.command-report",
+  "version": 1,
+  "context": {
+    "name": "Архив ZIP",
+    "template": "pwd; printf '%s\\n' {names}",
+    "execution": "per_item_continue",
+    "attempted_invocations": 2,
+    "working_directory_policy": "other_pane",
+    "initial_working_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/right",
+    "opening_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/left",
+    "other_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/right",
+    "inputs": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/left/notes.md",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/left/Design"
+    ]
+  },
+  "command": "Per item: pwd; printf '%s\\n' {names}",
+  "attempted_commands": [
+    "pwd; printf '%s\\n' 'notes.md'",
+    "pwd; printf '%s\\n' 'Design'"
+  ],
+  "exit_code": 0,
+  "error": null,
+  "batch": {
+    "total": 2,
+    "completed": 2,
+    "succeeded": 2,
+    "failed": 0,
+    "cancelled": false,
+    "stopped_on_error": false
+  },
+  "stdout": "Per item: 2 / 2 completed · 2 succeeded · 0 failed · 0 remaining\n\n--- item 1 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/left/notes.md ---\n/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/right\nnotes.md\n\n--- item 2 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/left/Design ---\n/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18897-per_item_command/right\nDesign\n",
+  "stderr": ""
+}

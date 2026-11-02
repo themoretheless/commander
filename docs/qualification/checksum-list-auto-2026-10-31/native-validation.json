@@ -1,0 +1,12 @@
+{
+  "checks_passed": 14,
+  "phase": 33,
+  "clipboard_writes": 4,
+  "default_auto_tagged_sha256": true,
+  "refresh_detected_tagged_md5": true,
+  "explicit_wrong_algorithm_refused_before_target_hashing": true,
+  "auto_recovery": true,
+  "final_matches": 3,
+  "final_errors": 1,
+  "binary_hash_matched": true
+}

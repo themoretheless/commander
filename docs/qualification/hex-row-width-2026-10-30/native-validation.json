@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "native arbitrary numeric width entry",
+    "preset and Copy page interaction",
+    "wide-row horizontal scrolling",
+    "search highlighting and layout"
+  ]
+}

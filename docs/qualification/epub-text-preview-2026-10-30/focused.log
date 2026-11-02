@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.54s
+     Running unittests src/main.rs (target/debug/build/commander/38bcb24728f56284/out/commander-38bcb24728f56284)
+
+running 5 tests
+test epub_preview::tests::html_entities_inline_word_boundaries_tables_and_preformatted_text_are_retained ... ok
+test epub_preview::tests::spine_order_encoded_paths_unicode_and_static_body_text_are_preserved ... ok
+test epub_preview::tests::encrypted_chapters_are_rejected_but_unread_obfuscated_fonts_do_not_block_text ... ok
+test epub_preview::tests::escaping_external_missing_and_invalid_spine_resources_fail ... ok
+test epub_preview::tests::malformed_containers_missing_bodies_cancellation_and_text_depth_budgets_fail ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2692 filtered out; finished in 0.03s
+

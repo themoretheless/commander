@@ -1,0 +1,173 @@
+{
+  "format": "commander.search-report",
+  "version": 1,
+  "snapshot": "retained search observations",
+  "scope": "visible_results",
+  "partial": false,
+  "root": {
+    "encoding": "utf8",
+    "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84010-search_json/left"
+  },
+  "context": {
+    "expression": "report-",
+    "mode": "Exact",
+    "generation": 3,
+    "source": "Live + archives",
+    "completed": true,
+    "running": false,
+    "pending_rerun": false,
+    "draft_differs": false,
+    "scanned": 11,
+    "matched": 5,
+    "skipped": 0,
+    "truncated": false,
+    "archive_error": null,
+    "received_rows": 5,
+    "visible_rows": 4,
+    "visible_selected_rows": 2,
+    "pivot": "None",
+    "selected_only": false,
+    "ordered_at_utc": "2026-11-01T21:43:33.668298Z"
+  },
+  "exported_rows": 4,
+  "rows": [
+    {
+      "row": 1,
+      "display_name": "report-\n.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84010-search_json/left/report-\n.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 253899484
+      },
+      "is_directory": false,
+      "listed_size_bytes": 9,
+      "allocated_bytes": 4096,
+      "modified_utc": "2026-11-01T21:43:30.644105133Z",
+      "accessed_utc": "2026-11-01T21:43:30.644024757Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "display_name": "report-a.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84010-search_json/left/report-a.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 253899481
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "allocated_bytes": 4096,
+      "modified_utc": "2026-11-01T21:43:30.643371791Z",
+      "accessed_utc": "2026-11-01T21:43:30.643299790Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "display_name": "report-b.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84010-search_json/left/report-b.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 253899482
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "allocated_bytes": 4096,
+      "modified_utc": "2026-11-01T21:43:30.643521084Z",
+      "accessed_utc": "2026-11-01T21:43:30.643459500Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 4,
+      "display_name": "report-archive.txt",
+      "location": {
+        "kind": "archive_member",
+        "archive": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84010-search_json/left/search.zip"
+        },
+        "member": {
+          "encoding": "utf8",
+          "text": "report-archive.txt"
+        },
+        "index": 0
+      },
+      "native_id": null,
+      "is_directory": false,
+      "listed_size_bytes": 16,
+      "allocated_bytes": null,
+      "modified_utc": "2026-11-01T21:43:30.648053930Z",
+      "accessed_utc": "2026-11-01T21:43:30.645323189Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

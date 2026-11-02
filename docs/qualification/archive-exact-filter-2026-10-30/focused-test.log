@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.50s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 2 tests
+test archive_filter::tests::exact_filter_preserves_spaces_and_metacharacters_and_respects_scope_and_case ... ok
+test app::archive_dialog::tests::archive_exact_filter_rebuilds_and_restores_saved_mode_with_hidden_selection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2818 filtered out; finished in 0.00s
+

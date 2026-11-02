@@ -1,0 +1,6 @@
+{
+  "scenario": "duplicate_copies",
+  "out": "/tmp/commander-native-duplicate_copies-1793431650713681000",
+  "binary_sha256": "33fce5f7b63bae74e0f3849c15393394a4495c3b95252e5092f1aded047bb729",
+  "core_sha256": "33fce5f7b63bae74e0f3849c15393394a4495c3b95252e5092f1aded047bb729"
+}

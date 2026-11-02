@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "name": "Existing Workspace",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-59908-favorite_import/left",
+      "slot": 3
+    },
+    {
+      "name": "Проект GTK",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-59908-favorite_import/left/Design",
+      "slot": null
+    },
+    {
+      "name": "Other imported",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-59908-favorite_import/right",
+      "slot": null
+    }
+  ]
+}

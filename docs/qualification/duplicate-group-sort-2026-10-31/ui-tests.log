@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.51s
+     Running unittests src/main.rs (target/debug/build/commander/46bdd2423b30e094/out/commander-46bdd2423b30e094)
+
+running 5 tests
+test app::duplicates_dialog::tests::scan_progress_counts_hashed_files ... ok
+test app::duplicates_dialog::tests::refused_trash_says_why_or_what_to_do ... ok
+test app::duplicates_dialog::tests::scanned_folder_comes_from_the_groups ... ok
+test app::duplicates_dialog::tests::copies_show_their_age_and_group ... ok
+test app::duplicates_dialog::tests::pointer_policy_controls_emit_newest_clear_and_explicit_reapply ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2895 filtered out; finished in 0.03s
+

@@ -1,0 +1,11 @@
+# Reveal Find results in background tabs — 2026-10-28
+
+Independent adaptation of Double Commander's [Open In New Tab(s) search action](https://doublecmd.github.io/doc/en/findfiles.html), from the researched cohort. No upstream code copied.
+
+Each Find result has a **Tab** button. It inserts a new background tab beside the focused pane's active tab, opens the target's parent directory there and queues cursor landing on the target. Search and the current tab remain open. Directory hits are revealed in their parent, like the existing reveal action. Archive-member hits reveal the containing archive rather than extracting/opening the member. This is one result per click, not batch multiselection.
+
+The background panel stays lazy: no listing/watcher is started by insertion. A path-bound initial focus survives until listing publication; explicit focus overrides it, and a different navigation path invalidates it. Hidden targets enable hidden rows only in the new tab. The initial landing is consumed after application and does not steal later user focus. Existing eight-tab and pending-operation/modal guards are shared with normal background-tab insertion. Refusal is displayed separately from query errors.
+
+Two regressions cover both panes, preserved live paths/picks/active tab, lazy ownership, landing after activation, later focus preservation, hidden-target visibility, pending modal rejection, tab cap and invalid root targets. The existing native search_results scenario now clicks Tab after hide/restore/hide, verifies a second tab was inserted without activation, activates it through the QA harness, waits for actual asynchronous listing/focus on notes.md, then returns to the original tab while Search stays open.
+
+Validation: full locked visual-qa suite **2513 passed, 0 failed, 3 ignored**; both focused regressions passed; all-target visual-qa Clippy with warnings denied passed. Native macOS app-bundle route: **16/16 checks passed**, all recorded native port effect counters zero. Final 1280×760 logical / 2560×1520 framebuffer visually inspected: Tab controls and background tab are visible without closing Search. The raw CLI startup limitation from the earlier qualification remains unchanged. Formatting and scoped whitespace checks passed. No rejected run, commit or push for this feature.

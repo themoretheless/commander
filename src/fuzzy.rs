@@ -29,7 +29,7 @@ const fn is_separator(c: char) -> bool {
 /// Case-fold one char for matching. Full Unicode lowercase (so `ФАЙЛ` matches
 /// `файл` and `É` matches `é`), keeping one char per char so matched indices
 /// still line up with the candidate.
-fn fold(c: char) -> char {
+pub fn fold(c: char) -> char {
     if c.is_ascii() {
         c.to_ascii_lowercase()
     } else {
@@ -37,18 +37,34 @@ fn fold(c: char) -> char {
     }
 }
 
+pub fn fold_case(character: char, case_sensitive: bool) -> char {
+    if case_sensitive {
+        character
+    } else {
+        fold(character)
+    }
+}
+
 /// Whether `query` is a case-insensitive subsequence of `candidate`. Allocates
 /// nothing and computes no score, for the filter hot path that runs over every
 /// entry. An empty (or whitespace-only) query matches everything.
 pub fn is_match(query: &str, candidate: &str) -> bool {
-    let mut q = query.trim().chars().map(fold).peekable();
+    is_match_case(query, candidate, false)
+}
+
+pub fn is_match_case(query: &str, candidate: &str, case_sensitive: bool) -> bool {
+    let mut q = query
+        .trim()
+        .chars()
+        .map(|c| fold_case(c, case_sensitive))
+        .peekable();
     if q.peek().is_none() {
         return true;
     }
     for c in candidate.chars() {
         match q.peek() {
             Some(&qc) => {
-                if fold(c) == qc {
+                if fold_case(c, case_sensitive) == qc {
                     q.next();
                 }
             }
@@ -66,7 +82,15 @@ pub fn is_match(query: &str, candidate: &str) -> bool {
 /// separator) and camelCase humps, while gaps and a later first match are
 /// penalised, so "fb" ranks "foo/bar" above "fabricate".
 pub fn score(query: &str, candidate: &str) -> Option<MatchScore> {
-    let q: Vec<char> = query.trim().chars().map(fold).collect();
+    score_case(query, candidate, false)
+}
+
+pub fn score_case(query: &str, candidate: &str, case_sensitive: bool) -> Option<MatchScore> {
+    let q: Vec<char> = query
+        .trim()
+        .chars()
+        .map(|c| fold_case(c, case_sensitive))
+        .collect();
     if q.is_empty() {
         return Some(MatchScore {
             score: 0,
@@ -79,10 +103,10 @@ pub fn score(query: &str, candidate: &str) -> Option<MatchScore> {
     if candidate.len() > MAX_ALIGNMENT_CELLS / q.len()
         && q.len().saturating_mul(candidate.chars().count()) > MAX_ALIGNMENT_CELLS
     {
-        return greedy_score(&q, candidate);
+        return greedy_score(&q, candidate, case_sensitive);
     }
     let cand: Vec<char> = candidate.chars().collect();
-    let folded: Vec<char> = cand.iter().map(|&c| fold(c)).collect();
+    let folded: Vec<char> = cand.iter().map(|&c| fold_case(c, case_sensitive)).collect();
 
     // Greedy left-to-right subsequence match: a cheap rejection test, and the
     // alignment used when the candidate is too long for the full search.
@@ -121,7 +145,7 @@ pub fn score(query: &str, candidate: &str) -> Option<MatchScore> {
 
 /// The greedy (leftmost) alignment's score, computed in one streaming pass
 /// over `candidate` with the same bonuses and penalties as `score`.
-fn greedy_score(q: &[char], candidate: &str) -> Option<MatchScore> {
+fn greedy_score(q: &[char], candidate: &str, case_sensitive: bool) -> Option<MatchScore> {
     let mut matched = Vec::with_capacity(q.len());
     let mut total = 0;
     let mut before = None;
@@ -129,7 +153,7 @@ fn greedy_score(q: &[char], candidate: &str) -> Option<MatchScore> {
         let Some(&wanted) = q.get(matched.len()) else {
             break;
         };
-        if fold(c) == wanted {
+        if fold_case(c, case_sensitive) == wanted {
             total += char_bonus(before, c);
             match matched.last() {
                 Some(&previous) => total += transition(previous, index),
@@ -256,6 +280,22 @@ mod tests {
     }
 
     #[test]
+    fn case_sensitive_fuzzy_matching_preserves_short_and_streaming_alignment() {
+        assert!(score_case("ÉB", "ÉchoBeta", true).is_some());
+        assert!(score_case("ÉB", "échoBeta", true).is_none());
+        assert!(score_case("ÉB", "échoBeta", false).is_some());
+        assert!(!is_match_case("AB", "aB", true));
+        let candidate = format!("A{}B", "x".repeat(MAX_ALIGNMENT_CELLS));
+        let matched = score_case("AB", &candidate, true).unwrap();
+        assert_eq!(
+            matched.matched_ranges,
+            [(0, 1), (candidate.len() - 1, candidate.len())]
+        );
+        assert!(score_case("Ab", &candidate, true).is_none());
+        assert!(score_case("Ab", &candidate, false).is_some());
+    }
+
+    #[test]
     fn long_candidates_score_the_greedy_alignment_in_one_pass() {
         // Past MAX_ALIGNMENT_CELLS: greedy alignment, scored by streaming.
         let long = format!("{}/Foo", "x".repeat(70_000));
@@ -276,7 +316,7 @@ mod tests {
             ("ф", "Файл"),
         ] {
             let folded: Vec<char> = q.chars().map(fold).collect();
-            assert_eq!(greedy_score(&folded, c), score(q, c), "{q} in {c}");
+            assert_eq!(greedy_score(&folded, c, false), score(q, c), "{q} in {c}");
         }
     }
 

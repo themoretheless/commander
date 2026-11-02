@@ -1,0 +1,31 @@
+{
+  "draft": "invalid theme draft",
+  "error": "expected value at line 1 column 1",
+  "panel": [
+    24,
+    40,
+    56
+  ],
+  "phase": 25,
+  "saved": {
+    "colors": {
+      "accent": "#389dcc",
+      "accent_purple": "#8c64b7",
+      "accent_red": "#ca453d",
+      "accent_warning": "#bf7b1f",
+      "bg_card": "#24211e",
+      "bg_deep": "#13110f",
+      "bg_hover": "#2d2925",
+      "bg_panel": "#182838",
+      "bg_selected": "#3178ba",
+      "bg_toolbar": "#181613",
+      "border": "#34302c",
+      "folder": "#c8af64",
+      "text_muted": "#928e89",
+      "text_primary": "#ede9e2",
+      "text_secondary": "#b9b5b0"
+    },
+    "format": "commander.theme",
+    "version": 1
+  }
+}

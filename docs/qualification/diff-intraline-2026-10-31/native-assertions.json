@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "intraline_native_checks": 14,
+  "navigation_native_checks": 15,
+  "control_pointer_phases": 9,
+  "exact_original_text_reconstructed": true,
+  "exact_character_spans": true,
+  "source_coordinates_verified": true,
+  "recording_effect_port_calls": 0,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3054,
+  "ignored": 3,
+  "checks": 6
+}

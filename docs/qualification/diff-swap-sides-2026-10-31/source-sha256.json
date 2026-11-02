@@ -1,0 +1,7 @@
+{
+  "src/app/diff_dialog.rs": "f5a369fd56faa5421fe59d45c38a58dc3ac70904ee614e677ac83e57289057ec",
+  "src/app/keys.rs": "9b61151bb998f3dc88a61dbabf99fc7af853b6c9f4f3e2bdd05c5a5328946cd6",
+  "src/diff_navigation.rs": "90e74d138d3bcabf8567c473ac7ba936cb682a7aace5585c7573a93dcb7024b9",
+  "src/visual_qa.rs": "b13f1a082b0789a1408d8b74529543faab90e6c3a2adc9839a648c6dc2c7557d",
+  ".github/workflows/ci.yml": "7923d1807d6985c2b61cbdadf8c481c75eb58721894bd6750cc723043e395441"
+}

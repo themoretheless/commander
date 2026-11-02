@@ -1,0 +1,26 @@
+{
+  "bindings": [
+    {
+      "command": "Toggle hidden files",
+      "keys": "Alt+G H"
+    },
+    {
+      "command": "Reverse sort order",
+      "keys": "Alt+G S"
+    }
+  ],
+  "left_hidden": true,
+  "left_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18737-custom_shortcuts/left",
+  "left_sort": "descending",
+  "names": [
+    "Design",
+    "README.txt",
+    "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+    "photo.png",
+    "notes.md",
+    ".shortcut-hidden.txt"
+  ],
+  "phase": 17,
+  "right_hidden": false,
+  "right_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18737-custom_shortcuts/right"
+}

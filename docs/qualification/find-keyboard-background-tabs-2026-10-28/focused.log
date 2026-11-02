@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.96s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 1 test
+test app::find_dialog::tests::highlighted_background_tab_target_uses_visible_order_and_archive_container ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2516 filtered out; finished in 0.01s
+

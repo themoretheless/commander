@@ -1,0 +1,9 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable after interrupted turn; corrected QA guard not relaunched",
+  "last_native_attempt": "archive_export-diagnostic",
+  "last_attempt_result": "timeout before clipboard actions",
+  "corrected_guard": "Resolve displayed member through listing position, compare its path to src/main.rs",
+  "binary_sha256": "07be50d9bedbcd5fd4c73d8ee9a8be82928c4fbff0b97637c93c172eea1b4b60",
+  "expected_recording_clipboard_writes": 5
+}

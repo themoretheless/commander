@@ -1,0 +1,17 @@
+{
+  "expression": "name:access- accessed-after:2026-01-01T00:00:00.75Z",
+  "matched": 1,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-37195-accessed_search/left",
+  "rows": [
+    {
+      "accessed_ns": 1767225600900000000,
+      "explanations": [
+        "literal \"access-\"",
+        "accessed-after:2026-01-01T00:00:00.75Z"
+      ],
+      "name": "access-late.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

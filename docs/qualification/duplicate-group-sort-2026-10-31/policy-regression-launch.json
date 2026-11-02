@@ -1,0 +1,5 @@
+{
+  "scenario": "duplicate_policy",
+  "output": "/tmp/commander-native-duplicate-policy-regression-1793402869340546000",
+  "binary_sha256": "90cf48f4b92951a4c5dae14960c5852998d621e874d7ebc8cd5adf525d753e5e"
+}

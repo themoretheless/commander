@@ -1,0 +1,17 @@
+# CRC32 comparison and SFV export — 2026-10-31
+
+Independent adaptation of [Double Commander's CRC32/SFV checksum workflow](https://doublecmd.github.io/doc/en/help.html), cohort #3. No upstream application code copied. Uses crc32fast 1.5, already present transitively in the lockfile; only a direct Commander dependency edge was added (no dependency version changes).
+
+CRC-32/ISO-HDLC (IEEE) is accumulated over the same snapshot-checked 64-KiB read chunks as BLAKE3 and SHA-256/384/512. Named FileDigests replaces the growing return tuple. CRC32 is published only after all existing metadata/path binding and cancellation guards pass. Report, explicit selector, exact eight-hex comparison and Copy CRC32 digest share the existing algorithm owner; no guessing or SHA fallback. Empty CRC is eight zeros and digests use lowercase with case-insensitive expected comparison.
+
+CRC32 selection exports SFV: absolute UTF-8 filename, space, uppercase eight-digit CRC, LF. Valid completed rows only; previously completed rows remain exportable after cancellation. SFV lacks an escape language, so paths with NUL, CR/LF line breaks, backslashes or invalid UTF-8 fail the entire export. Standard SHA and BLAKE3 output formats remain independent. No SFV import/batch verification UI or relative-manifest scope is claimed.
+
+Regressions cover abc/empty/123456789 vectors, exact selected length and case, source report identity, cross-chunk SFV values and ambiguous/incomplete path refusal. Existing cancellation/change/special-file regressions now include absence of partial CRC; unavailable/cancelled copy tests include CRC. With COMMANDER_RHASH_VERIFY explicitly set, the actual exported SFV must pass official RHash --check for plain/spaced/Unicode/tabbed/trailing-space/multi-chunk files and fail after payload mutation.
+
+Native Checksums retains all prior SHA/BLAKE3 comparisons and copied payloads, then selects CRC32, requires old 64-character expected value to be Invalid, enters 352441c2, requires Match, copies the digest and SFV. Phase-65 capture requires exactly seven recording clipboard calls and exact absolute-path SFV payload. Physical OS input/clipboard delivery, VoiceOver and native refusal/multi-file variants remain open.
+
+RHash built only in /tmp from official commit recorded in external-validator.json, statically linked to its own library. Initial shared-library lookup and forced-config-target build failures were resolved by the documented static build; logs retained. Direct filename probes rejected a backslash path but accepted tabbed and trailing-space names, so the exporter preserves tabs/trailing spaces and the interoperability fixture includes them.
+
+Fresh CUA-launched phase-65 capture passed 14/14 with exactly seven recording clipboard writes and all other effects zero. Frame inspected: CRC32 352441c2 in the report and expected field, explicit CRC32 selector/Match and Copy SFV list (1). Required prior SHA/BLAKE3 payloads, CRC32 invalid-length/Match and digest-copy gates passed before exact final SFV capture. Current/launch binary SHA-256 verified; CUA running-app-not-found followed successful short-lived capture.
+
+Final validation: 2888 tests passed, 3 ignored, 0 failed; locked visual-qa build, all-target Clippy with warnings denied, default-feature cargo check, rustfmt and git diff whitespace checks passed. Explicit RHash interoperability test passed six exported files and required failure after mutation. Exact commands, source/validator/native hashes and the one-edge lockfile diff are retained.

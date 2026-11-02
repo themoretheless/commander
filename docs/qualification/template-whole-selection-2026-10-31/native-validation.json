@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "checks": 16,
+  "require_all": true,
+  "run_enabled": false,
+  "run_present": false,
+  "output_present": false,
+  "binary_sha256": "f8bfbe5bfed4cf8a1d29df9800d6fe13943429afd7317b5b85f02cfa517295fd"
+}

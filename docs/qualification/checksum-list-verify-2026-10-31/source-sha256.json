@@ -1,0 +1,14 @@
+{
+  "src/checksum_list.rs": "1fa50cb37313090628f0ab92890ebc3af802336b2412f9b41e1f0fdfa9bb2b48",
+  "src/checksum.rs": "3a93963daf06c1f9e0060a509f6bf3352d557c40c8831a06a860f22c853acb40",
+  "src/app/checksum_list_dialog.rs": "aa77b8569535e83abe38dae7d9f88b4fd8a036216e7a1c6523867642b38b812b",
+  "src/app/mod.rs": "11281dc69480908cdc6c1b623b2363b52e3959a28bdb1c1ce59045ac1630b3ed",
+  "src/app/update.rs": "1f708092a0970a7893662890b4441f98fc800a42de23ae1dc2062ccfb417de34",
+  "src/command.rs": "f4fc52b1cfb8fba4c5a63a4282b1a7a42bdd71321dab1e0e6f508b7cd4a72eaf",
+  "src/ui_request.rs": "4caf96acfbb70c518a898a0567ebe448cfecef912973eacb01a17d73a6f95b9b",
+  "src/workspace.rs": "b65c6e06ade5667c98e863da221669d21de9f4cc6a3cd18e9cc91a274a38c69d",
+  "src/workspace/tests.rs": "b48c0a18be21034f379ccc0df1f3bac283ee3342278fe6f05d203bddd7b09afa",
+  "src/main.rs": "11b975c3981fda0eb39e7cfa778a945c1a43f980706c1065eab31c007dda7c2e",
+  "src/visual_qa.rs": "0ed13737619acff2ddcd9203716e6877c9cce77f2910757645ecc4c2676827df",
+  ".github/workflows/ci.yml": "5e075e9a7a1f29fa453e650b3b62e00205dd399a3129fcdf8d3d4e1829205518"
+}

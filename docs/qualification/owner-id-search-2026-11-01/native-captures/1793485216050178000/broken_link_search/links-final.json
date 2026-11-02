@@ -1,0 +1,18 @@
+{
+  "explanations": [
+    [
+      "type:broken-link",
+      "archives:off"
+    ]
+  ],
+  "expression": "type:broken-link archives:off",
+  "matched": 1,
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13462-broken_link_search/left/notdir.lnk"
+  ],
+  "phase": 10,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13462-broken_link_search/left",
+  "skipped": 1,
+  "source": "Live (archives off)",
+  "truncated": false
+}

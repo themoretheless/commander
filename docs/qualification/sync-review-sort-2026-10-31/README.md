@@ -1,0 +1,23 @@
+# Sync review ordering — 2026-10-31
+
+Independently adapts the sortable comparison-list workflow in [Double Commander synchronization](https://doublecmd.github.io/doc/en/syncdirs.html), cohort #3. Commander-specific Status and Direction grouping complements name sorting; it does not claim DC size/date-column or full synchronization parity. No upstream code is copied.
+
+**Sort rows** selects **Plan order** (default), natural case-insensitive **Name**, **Status**, or **Direction**; **Descending** reverses the primary comparison. Equal primary groups use ascending natural names, exact names and original indices as deterministic ties. Status orders type conflict, case conflict, differing without a newer side, left-only, right-only, left-newer, right-newer, uncompared folder pairs and metadata matches. Direction orders to-left, to-right and skipped. Tooltips describe grouping. Plan order with Descending reverses the review's original indices, not the plan itself.
+
+The cache includes complete plan content, query/category, sort and direction. It folds name keys once on rebuild, sorts the projection and keeps original indices for edits. Direction/status changes and refreshed plans reindex correctly; hidden planned counts are unaffected by order. Reset view clears query/category and restores ascending Plan order. Copy scope remains independent. New windows start with default sorting; there is no persistent setting or extra filesystem I/O.
+
+Shown-row CSV/JSON exports follow the sorted projection and preserve original 1-based row numbers. Full-plan reports and Apply retain original plan order. JSON and CSV include view sort/descending metadata even when Full plan is chosen, explicitly describing the view rather than claiming Full plan is sorted. CSV appends these columns; the Commander-specific JSON v1 report gains the corresponding metadata fields. Report validation now allows arbitrary unique original indices while still refusing duplicate/out-of-range projections. No report import/replay contract is introduced.
+
+Bulk shown edits rebuild/capture the current original targets before changing them, so sorted or disappearing rows cannot retarget edits. Plan identities, source paths, policy, stamps, assessment and Apply guards remain owned by the original plan. Sorting never starts synchronization or grants trust.
+
+Initial green tests/native capture before a QA-only Clippy conditional cleanup are retained under `before-clippy-cleanup/`. Final artifacts are regenerated from the cleaned source.
+
+## Verification
+
+**3011 passed, 3 ignored, zero failed**. All six checks exit 0: visual-qa build/full tests/all-target Clippy with warnings denied, default check, formatting and diff whitespace. New regressions cover natural numeric/case ties, descending/Plan order cache invalidation, unchanged complete actions, status/direction grouping, sorted shown edits and disappearing Planned rows with hidden identity preservation. Export regressions require nonmonotonic unique original IDs in Shown CSV/JSON, original full-plan order and sort metadata in both formats; duplicate/out-of-range refusal remains covered.
+
+Native **sync_review** passed **15/15** capture checks; framebuffer inspected. The existing real async plan/search/row-edit/export/shown-action workflow still executes. The scene then clicks Reset view, Name and Descending, and copies shown JSON over all nine rows. Final readiness requires Name/descending, empty query/All category, all 9 projected rows, no hidden planned actions, no running scan/error, the original baseline with only notes.md skipped, and the actual clipboard equal to current shown export. Four recording clipboard writes and zero other effect-port calls are required; no Sync/Preview is invoked.
+
+Independent parsing requires the copied `native/plan-shown.json` names to be in descending case-insensitive order (fixture names contain no numeric ties), original row numbers to exactly follow the recorded index permutation, every record to equal its corresponding full-plan original, and totals to remain 9 rows/8 actions. Earlier filtered/full reports and restore/unavailable-reverse checkpoints are retained and reverified. Binary/core/launch hashes match and source hashes are recorded. Native filesystem no-copy is required by readiness; temporary fixture paths disappear on exit.
+
+Native qualification covers Name/Descending, original-plan preservation and sorted shown JSON. Status/Direction grouping, numeric/case ties, reverse Plan order, sorted bulk boundaries and CSV order/metadata use model/export regressions. Reset after non-default sorting, all small-window layouts, physical OS input and full accessibility remain outside this capture.

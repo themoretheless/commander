@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "macOS Control digit and Control Shift digit delivery",
+    "all ten slot mappings",
+    "menu, focus and busy suppression",
+    "hover hint visibility"
+  ]
+}

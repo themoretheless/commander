@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "checks": 16,
+  "batch": {
+    "cancelled": false,
+    "completed": 2,
+    "failed": 0,
+    "stopped_on_error": false,
+    "succeeded": 2,
+    "total": 2
+  },
+  "one_output_line_per_opening_item": true,
+  "binary_sha256": "b40494fdab66ccff2821522eb1b795d076b0eecf8de25e40f97ef6b2fb067297"
+}

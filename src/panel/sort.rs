@@ -86,13 +86,54 @@ pub(super) fn sort_entries_with_sizes(
             }
         }
 
+        if config.sort_column() == SortColumn::HardLinks {
+            match (a.hard_link_count(), b.hard_link_count()) {
+                (Some(_), None) => return Ordering::Less,
+                (None, Some(_)) => return Ordering::Greater,
+                _ => {}
+            }
+        }
+        if config.sort_column() == SortColumn::Inode {
+            match (a.inode_sort_key(), b.inode_sort_key()) {
+                (Some(_), None) => return Ordering::Less,
+                (None, Some(_)) => return Ordering::Greater,
+                _ => {}
+            }
+        }
+        if config.sort_column() == SortColumn::Allocated {
+            match (a.allocated_bytes(), b.allocated_bytes()) {
+                (Some(_), None) => return Ordering::Less,
+                (None, Some(_)) => return Ordering::Greater,
+                _ => {}
+            }
+        }
+        if matches!(
+            config.sort_column(),
+            SortColumn::Accessed | SortColumn::Created | SortColumn::Changed
+        ) {
+            match (
+                a.listing_time(config.sort_column()).0,
+                b.listing_time(config.sort_column()).0,
+            ) {
+                (Some(_), None) => return Ordering::Less,
+                (None, Some(_)) => return Ordering::Greater,
+                _ => {}
+            }
+        }
         let primary = match config.sort_column() {
+            SortColumn::HardLinks => a.hard_link_count().cmp(&b.hard_link_count()),
+            SortColumn::Inode => a.inode_sort_key().cmp(&b.inode_sort_key()),
+            SortColumn::Allocated => a.allocated_bytes().cmp(&b.allocated_bytes()),
             SortColumn::Name => name_cmp(a, b, config),
             SortColumn::Stem => stem_cmp(a, b, config),
             SortColumn::Size => sizes
                 .map_or(a.size, |sizes| sizes.display_size(a))
                 .cmp(&sizes.map_or(b.size, |sizes| sizes.display_size(b))),
             SortColumn::Modified => a.modified.cmp(&b.modified),
+            SortColumn::Accessed | SortColumn::Created | SortColumn::Changed => a
+                .listing_time(config.sort_column())
+                .0
+                .cmp(&b.listing_time(config.sort_column()).0),
             SortColumn::Extension => a.extension.cmp(&b.extension),
             SortColumn::Kind => {
                 crate::selection_summary::kind_of(a).cmp(&crate::selection_summary::kind_of(b))
@@ -114,9 +155,246 @@ pub(super) fn sort_entries_with_sizes(
 mod tests {
     use super::*;
 
+    #[test]
+    fn hard_link_count_sort_distinguishes_zero_unknown_full_width_and_name_ties() {
+        let mut rows = vec![
+            named("file10", false, 1),
+            named("file2", false, 1),
+            named("zero", false, 1),
+            named("maximum", false, 1),
+            named("unknown", false, 1),
+            named("folder", true, 0),
+        ];
+        for (i, n) in [2, 2, 0, u64::MAX].into_iter().enumerate() {
+            rows[i].hard_links = Some(n);
+        }
+        rows[5].hard_links = Some(u64::MAX);
+        for (order, expected) in [
+            (
+                SortOrder::Asc,
+                vec!["zero", "file2", "file10", "maximum", "folder", "unknown"],
+            ),
+            (
+                SortOrder::Desc,
+                vec!["maximum", "file2", "file10", "zero", "folder", "unknown"],
+            ),
+        ] {
+            let config = ViewConfig::default()
+                .with_folders_first(false)
+                .with_sort(SortColumn::HardLinks, order);
+            let restored: ViewConfig =
+                serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+            assert_eq!(restored.sort_column(), SortColumn::HardLinks);
+            let mut values = rows.clone();
+            sort_entries(&mut values, restored);
+            assert_eq!(
+                values.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        sort_entries(
+            &mut rows,
+            ViewConfig::default().with_sort(SortColumn::HardLinks, SortOrder::Desc),
+        );
+        assert_eq!(rows[0].name, "folder");
+        assert_eq!(rows.last().unwrap().name, "unknown");
+    }
+
+    #[test]
+    fn inode_sort_preserves_full_width_keys_unknown_last_and_name_ties() {
+        let mut rows = vec![
+            named("file10", false, 1),
+            named("file2", false, 1),
+            named("zero", false, 1),
+            named("other-device", false, 1),
+            named("maximum", false, 1),
+            named("unknown", false, 1),
+            named("folder", true, 0),
+        ];
+        for (index, (inode, device)) in [(7, 4), (7, 4), (0, 4), (7, 5), (u64::MAX, u64::MAX)]
+            .into_iter()
+            .enumerate()
+        {
+            rows[index].identity =
+                super::super::ListingIdentity::Captured(crate::path_identity::PathIdentity {
+                    path: rows[index].path.clone(),
+                    exists: true,
+                    kind: Some(crate::path_identity::PathKind::File),
+                    volume: Some(device),
+                    file_id: Some(inode),
+                    size: 1,
+                    modified_nanos: None,
+                    tree_fingerprint: None,
+                    observed_version: 0,
+                });
+        }
+        for (order, expected) in [
+            (
+                SortOrder::Asc,
+                vec![
+                    "zero",
+                    "file2",
+                    "file10",
+                    "other-device",
+                    "maximum",
+                    "folder",
+                    "unknown",
+                ],
+            ),
+            (
+                SortOrder::Desc,
+                vec![
+                    "maximum",
+                    "other-device",
+                    "file2",
+                    "file10",
+                    "zero",
+                    "folder",
+                    "unknown",
+                ],
+            ),
+        ] {
+            let config = ViewConfig::default()
+                .with_folders_first(false)
+                .with_sort(SortColumn::Inode, order);
+            let restored: ViewConfig =
+                serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+            assert_eq!(restored.sort_column(), SortColumn::Inode);
+            let mut entries = rows.clone();
+            sort_entries(&mut entries, restored);
+            assert_eq!(
+                entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        sort_entries(
+            &mut rows,
+            ViewConfig::default().with_sort(SortColumn::Inode, SortOrder::Desc),
+        );
+        assert_eq!(rows[0].name, "folder");
+        assert_eq!(rows.last().unwrap().name, "unknown");
+    }
+
+    #[test]
+    fn allocated_sort_orders_known_zero_and_keeps_unknowns_last_in_both_directions() {
+        let mut rows = vec![
+            named("file10", false, 1),
+            named("file2", false, 1),
+            named("sparse", false, 999999),
+            named("unknown", false, 1),
+            named("folder", true, 0),
+        ];
+        rows[0].allocated_size = Some(4096);
+        rows[1].allocated_size = Some(4096);
+        rows[2].allocated_size = Some(0);
+        rows[4].allocated_size = Some(12345);
+        for (order, expected) in [
+            (
+                SortOrder::Asc,
+                vec!["sparse", "file2", "file10", "folder", "unknown"],
+            ),
+            (
+                SortOrder::Desc,
+                vec!["file2", "file10", "sparse", "folder", "unknown"],
+            ),
+        ] {
+            let config = ViewConfig::default()
+                .with_folders_first(false)
+                .with_sort(SortColumn::Allocated, order);
+            let mut entries = rows.clone();
+            sort_entries(&mut entries, config);
+            assert_eq!(
+                entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        sort_entries(
+            &mut rows,
+            ViewConfig::default().with_sort(SortColumn::Allocated, SortOrder::Desc),
+        );
+        assert_eq!(rows[0].name, "folder");
+        assert_eq!(rows.last().unwrap().name, "unknown");
+    }
+
+    #[test]
+    fn alternate_dates_order_exact_times_unknowns_and_stable_ties() {
+        let epoch = std::time::SystemTime::UNIX_EPOCH;
+        let mut rows = vec![
+            named("file10", false, 1),
+            named("file2", false, 1),
+            named("old", false, 1),
+            named("unknown", false, 1),
+            named("folder", true, 0),
+        ];
+        for row in &mut rows[..2] {
+            row.accessed = Some(epoch + std::time::Duration::from_nanos(1));
+            row.created = row.accessed;
+            row.changed = row.accessed;
+        }
+        rows[2].accessed = Some(epoch - std::time::Duration::from_nanos(1));
+        rows[2].created = rows[2].accessed;
+        rows[2].changed = rows[2].accessed;
+        for column in [
+            SortColumn::Accessed,
+            SortColumn::Created,
+            SortColumn::Changed,
+        ] {
+            for (direction, expected) in [
+                (
+                    SortOrder::Asc,
+                    vec!["old", "file2", "file10", "folder", "unknown"],
+                ),
+                (
+                    SortOrder::Desc,
+                    vec!["file2", "file10", "old", "folder", "unknown"],
+                ),
+            ] {
+                let config = ViewConfig::default()
+                    .with_folders_first(false)
+                    .with_sort(column, direction);
+                assert_eq!(sorted(rows.clone(), config), expected);
+                let restored: ViewConfig =
+                    serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+                assert_eq!(restored, config);
+            }
+            let result = sorted(
+                rows.clone(),
+                ViewConfig::default().with_sort(column, SortOrder::Desc),
+            );
+            assert_eq!(result[0], "folder");
+            assert_eq!(result.last().unwrap(), "unknown");
+        }
+        rows[0].created = Some(epoch - std::time::Duration::from_secs(1));
+        assert_ne!(
+            sorted(
+                rows.clone(),
+                ViewConfig::default()
+                    .with_folders_first(false)
+                    .with_sort(SortColumn::Accessed, SortOrder::Asc)
+            ),
+            sorted(
+                rows,
+                ViewConfig::default()
+                    .with_folders_first(false)
+                    .with_sort(SortColumn::Created, SortOrder::Asc)
+            )
+        );
+    }
+
     fn named(name: &str, is_dir: bool, size: u64) -> FileEntry {
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: super::super::diacritic_sort_key(&name.to_lowercase()),
@@ -146,8 +424,11 @@ mod tests {
         for column in [
             SortColumn::Name,
             SortColumn::Stem,
+            SortColumn::Allocated,
             SortColumn::Size,
             SortColumn::Modified,
+            SortColumn::Accessed,
+            SortColumn::Created,
             SortColumn::Extension,
             SortColumn::Kind,
         ] {

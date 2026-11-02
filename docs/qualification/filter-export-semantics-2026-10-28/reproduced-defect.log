@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.66s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 1 test
+test panel::tests::pane_filter_export_agrees_with_unicode_and_fuzzy_candidates ... FAILED
+
+failures:
+
+---- panel::tests::pane_filter_export_agrees_with_unicode_and_fuzzy_candidates stdout ----
+
+thread 'panel::tests::pane_filter_export_agrees_with_unicode_and_fuzzy_candidates' (82806665) panicked at src/panel.rs:3063:17:
+assertion `left == right` failed: query "^i.txt$", name "İ.txt"
+  left: false
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    panel::tests::pane_filter_export_agrees_with_unicode_and_fuzzy_candidates
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2458 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin commander`

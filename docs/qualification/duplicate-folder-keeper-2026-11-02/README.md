@@ -1,0 +1,13 @@
+# Choose duplicate keepers by captured folder
+
+Commander extension inspired by [fclones path-aware keep/removal selection](https://github.com/pkolaczk/fclones/blob/main/fclones/README.md#removing-duplicates). When Include other panel folder is applied, Prefer primary folder and Prefer other folder choose the first scanned member owned by that captured root in each matching duplicate group. This is one-keeper preference, not fclones --keep-path protection: additional members in the preferred folder can still be proposed for Trash. The UI states this explicitly. No files are moved or removed by choosing a preference.
+
+Most-specific captured-root ownership is shared with scan isolation and row labels, so nested roots do not both claim the same file. Groups without a preferred-root member retain their current choice, including Keep all. Original member indices remain unchanged regardless of group display sorting. The existing selected automatic keeper policy is retained; this is a contextual override like choosing individual radio buttons, not a new persistent scan policy. Apply policy can replace these choices. CSV/JSON already export actual per-member keep/trash/skip decisions. Trash remains a separate explicit action through existing workspace validation.
+
+A regression verifies nested root ownership, first-member tie choice, both preference directions, unchanged unmatched/unknown-root groups and Keep all, idempotence, invalid-root refusal, unchanged group data and exact resulting Trash membership. Native interaction/layout for the new controls is not qualified in this milestone. It does not implement arbitrary protected path patterns, multiple keepers per group or fclones format compatibility. No dependencies changed; earlier dependency audit failures and the broader 99-repository transfer goal remain open. Gate logs, validators and source/binary hashes are retained here.
+
+Two initial build failures are retained: the shared root_owner API requires an iterator of Path references, and an overly broad conversion edit also affected an existing label helper. The conversion is now restricted to the new preference helper; the original label call is restored. Final results refer to the corrected source.
+
+Final validation: all six gates passed, full suite 3282 passed / 3 ignored; exact feature source and executable hashes were rechecked. New native button interaction/layout remains unqualified.
+
+Later native button qualification: [actual primary/other-root workflow](../duplicate-folder-keeper-native-2026-11-02/README.md). The native gap above describes this earlier snapshot.

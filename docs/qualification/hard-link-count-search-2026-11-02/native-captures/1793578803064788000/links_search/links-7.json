@@ -1,0 +1,19 @@
+{
+  "expression": "links:1 name:link-",
+  "matched": 1,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left",
+  "rows": [
+    {
+      "explanations": [
+        "links:>=1 (observed 1 hard links)",
+        "links:<=1 (observed 1 hard links)",
+        "literal \"link-\""
+      ],
+      "hard_links": 1,
+      "name": "link-copy.txt",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left/link-copy.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

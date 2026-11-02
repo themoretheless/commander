@@ -48,6 +48,44 @@ fn matches(text: &str, query: &str, case_sensitive: bool) -> (Vec<Range<usize>>,
     matches_options(text, query, case_sensitive, false)
 }
 
+/// Shared preview policy: explicit Match case wins; Smart case inspects Unicode
+/// uppercase characters in the entered query (including regex syntax).
+pub fn search_case_sensitive(query: &str, case_sensitive: bool, smart_case: bool) -> bool {
+    case_sensitive || (smart_case && query.chars().any(char::is_uppercase))
+}
+
+pub fn compile_search_pattern(
+    query: &str,
+    case_sensitive: bool,
+    regex: bool,
+    whole_words: bool,
+) -> Result<regex::Regex, regex::Error> {
+    let source = if regex {
+        std::borrow::Cow::Borrowed(query)
+    } else {
+        std::borrow::Cow::Owned(regex::escape(query))
+    };
+    let pattern = word_pattern(&source, whole_words);
+    let build = |pattern: &str| {
+        regex::RegexBuilder::new(pattern)
+            .case_insensitive(!case_sensitive)
+            .size_limit(1024 * 1024)
+            .dfa_size_limit(1024 * 1024)
+            .nest_limit(32)
+            .build()
+    };
+    build(&pattern).or_else(|error| {
+        // A trailing comment in (?x) mode can consume the generated closing
+        // group. Only retry an originally valid expression; a newline ends
+        // that comment and is itself ignored by free-spacing mode.
+        if regex && whole_words && build(query).is_ok() {
+            build(&word_pattern(&format!("{query}\n"), true))
+        } else {
+            Err(error)
+        }
+    })
+}
+
 fn regex_matches_options(
     text: &str,
     query: &str,
@@ -67,26 +105,7 @@ fn regex_matches_options(
     if query.is_empty() {
         return Ok((Vec::new(), false));
     }
-    let pattern = word_pattern(query, whole_words);
-    let build = |pattern: &str| {
-        regex::RegexBuilder::new(pattern)
-            .case_insensitive(!case_sensitive)
-            .size_limit(1024 * 1024)
-            .dfa_size_limit(1024 * 1024)
-            .nest_limit(32)
-            .build()
-    };
-    let regex = build(&pattern)
-        .or_else(|error| {
-            // A trailing comment in (?x) mode can consume the generated closing
-            // group. Only retry an originally valid expression; a newline ends
-            // that comment and is itself ignored by free-spacing mode.
-            if whole_words && build(query).is_ok() {
-                build(&word_pattern(&format!("{query}\n"), true))
-            } else {
-                Err(error)
-            }
-        })
+    let regex = compile_search_pattern(query, case_sensitive, true, whole_words)
         .map_err(|error| error.to_string())?;
     let mut ranges = Vec::new();
     let mut previous_byte = 0;
@@ -142,10 +161,7 @@ fn matches_options(
     if query.is_empty() {
         return (Vec::new(), false);
     }
-    let Ok(pattern) = regex::RegexBuilder::new(&word_pattern(&regex::escape(query), whole_words))
-        .case_insensitive(!case_sensitive)
-        .build()
-    else {
+    let Ok(pattern) = compile_search_pattern(query, case_sensitive, false, whole_words) else {
         return (Vec::new(), false);
     };
     let mut result = Vec::new();
@@ -186,6 +202,28 @@ impl PreviewFind {
             ..Default::default()
         }
     }
+    pub fn with_query_case(query: &str, case_sensitive: bool) -> Self {
+        Self {
+            query: query.chars().take(MAX_QUERY_CHARS).collect(),
+            case_sensitive,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_query_options(
+        query: &str,
+        case_sensitive: bool,
+        regex: bool,
+        whole_words: bool,
+        smart_case: bool,
+    ) -> Self {
+        Self {
+            regex,
+            whole_words,
+            smart_case,
+            ..Self::with_query_case(query, case_sensitive)
+        }
+    }
 
     fn cancel_pending(&mut self) {
         if let Some(job) = self.pending.take() {
@@ -200,7 +238,7 @@ impl PreviewFind {
     }
 
     fn effective_case_sensitive(&self) -> bool {
-        self.case_sensitive || (self.smart_case && self.query.chars().any(char::is_uppercase))
+        search_case_sensitive(&self.query, self.case_sensitive, self.smart_case)
     }
     #[cfg(feature = "visual-qa")]
     pub fn smart_case_enabled(&self) -> bool {
@@ -371,9 +409,22 @@ impl PreviewFind {
     }
 
     pub fn toolbar(ui: &mut Ui, id: Id, path: &Path, galley: &Arc<Galley>) -> Self {
-        let mut state = ui
+        let state = ui
             .ctx()
             .data(|data| data.get_temp::<Self>(id).unwrap_or_default());
+        Self::toolbar_owned(ui, id, path, galley, state, "Find in preview")
+    }
+
+    /// The caller owns the returned state; dropping it cancels pending search.
+    /// Unlike `toolbar`/`save`, this does not retain a job in context memory.
+    pub fn toolbar_owned(
+        ui: &mut Ui,
+        id: Id,
+        path: &Path,
+        galley: &Arc<Galley>,
+        mut state: Self,
+        label: &str,
+    ) -> Self {
         state.update(path, galley);
         state.poll_regex();
         state.last_used = ui.ctx().cumulative_frame_nr();
@@ -403,7 +454,7 @@ impl PreviewFind {
             let response = ui.add(
                 egui::TextEdit::singleline(&mut state.query)
                     .id(field_id)
-                    .hint_text("Find in preview")
+                    .hint_text(label)
                     .char_limit(MAX_QUERY_CHARS)
                     .desired_width((ui.available_width() - 56.0).max(40.0)),
             );
@@ -411,11 +462,7 @@ impl PreviewFind {
             ui.ctx()
                 .data_mut(|data| data.insert_temp(id.with("query-control"), response.rect));
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::TextEdit,
-                    response.enabled(),
-                    "Find in preview",
-                )
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, response.enabled(), label)
             });
             if response.changed() {
                 state.reindex();
@@ -782,6 +829,37 @@ mod tests {
     }
 
     #[test]
+    fn dropping_owned_toolbar_state_cancels_queued_regex_without_context_retention() {
+        let ctx = egui::Context::default();
+        let runtime = crate::workload::DeterministicWorkload::new(Default::default());
+        let mut state = regex_state(&ctx, "item-12");
+        let id = Id::new("owned-find");
+        let galley = state.galley.as_ref().unwrap().clone();
+        // Queue on the deterministic runtime before rendering: a slow frame
+        // must not let toolbar_owned submit this job to the global runtime.
+        state.start_regex(
+            &ctx,
+            &runtime.handle(),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        crate::testutil::discard_egui_output(ctx.run_ui(Default::default(), |ui| {
+            state = PreviewFind::toolbar_owned(
+                ui,
+                id,
+                Path::new("/regex.txt"),
+                &galley,
+                std::mem::take(&mut state),
+                "Find in output",
+            );
+        }));
+        assert!(state.pending.is_some());
+        assert!(ctx.data(|data| data.get_temp::<PreviewFind>(id)).is_none());
+        drop(state);
+        assert_eq!(runtime.stats().cancelled, 1);
+        assert!(!runtime.run_next());
+    }
+
+    #[test]
     fn regex_jobs_debounce_discard_old_results_and_preserve_normal_completion_counts() {
         let ctx = egui::Context::default();
         let runtime = crate::workload::DeterministicWorkload::new(Default::default());
@@ -1080,6 +1158,31 @@ mod tests {
             state.query = "ёж".into();
             state.reindex();
             assert_eq!(state.matches.len(), 1);
+        }));
+    }
+
+    #[test]
+    fn pdf_query_transfer_keeps_smart_case_instead_of_freezing_effective_case() {
+        let ctx = egui::Context::default();
+        crate::testutil::discard_egui_output(ctx.run_ui(Default::default(), |ui| {
+            let galley = ui.painter().layout_no_wrap(
+                "foo Foo FOO ёж Ёж ЁЖ".into(),
+                egui::FontId::monospace(12.0),
+                Color32::WHITE,
+            );
+            let mut state = PreviewFind::with_query_options("foo", false, false, true, true);
+            state.update(Path::new("/book.pdf"), &galley);
+            assert_eq!(state.matches.len(), 3);
+            assert!(state.smart_case && !state.case_sensitive && state.whole_words);
+            state.query = "Foo".into();
+            state.reindex();
+            assert_eq!(state.matches.len(), 1);
+            state.query = "Ёж".into();
+            state.reindex();
+            assert_eq!(state.matches.len(), 1);
+            state.query = "ёж".into();
+            state.reindex();
+            assert_eq!(state.matches.len(), 3);
         }));
     }
 

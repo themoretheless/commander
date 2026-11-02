@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "search_native_checks": 16,
+  "link_info_regression_checks": 14,
+  "input_phases": 10,
+  "exact_path_sets": true,
+  "live_refresh_after_target_repair": true,
+  "loop_unknown_in_partial_count": true,
+  "known_or_branch_includes_loop": true,
+  "canonical_explanations": true,
+  "all_effect_calls": 0,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3077,
+  "ignored": 3,
+  "checks": 6
+}

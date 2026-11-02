@@ -1,0 +1,22 @@
+2026-10-31T12:34:12 INFO  commander::logging: logging initialized
+2026-10-31T12:34:12 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: diff_options
+2026-10-31T12:34:12 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-diff_options-1793435647050124000
+2026-10-31T12:34:12 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T12:34:12 INFO  commander::visual_qa: Diff options QA phase 0, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:12 INFO  commander::visual_qa: Diff options QA phase 1, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:12 INFO  commander::visual_qa: Diff options QA phase 2, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:12 INFO  commander::visual_qa: Diff options QA phase 3, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:12 INFO  commander::visual_qa: Diff options QA phase 4, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 5, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 6, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 7, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 8, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 9, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 10, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 11, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 12, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 13, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 14, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 15, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 16, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]
+2026-10-31T12:34:13 INFO  commander::visual_qa: Diff options QA phase 17, target Id::new("diff-ignore-case"), rect [[796.9 141.5] - [880.8 165.5]]

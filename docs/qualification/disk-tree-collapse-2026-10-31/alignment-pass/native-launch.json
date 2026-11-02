@@ -1,0 +1,7 @@
+{
+  "scenario": "disk_usage_export",
+  "out": "/tmp/commander-native-disk-tree-collapse-1793408738574830000",
+  "binary_sha256": "b02746dd2b127fb39875cc5a76ba9e1f0d7ad7d25417dc2eabdc356927317a8c",
+  "core_sha256": "b02746dd2b127fb39875cc5a76ba9e1f0d7ad7d25417dc2eabdc356927317a8c",
+  "started_ns": 1793408738691006000
+}

@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Save selection / Restore selection click or layout capture",
+  "binary_sha256": "a8e0afe03429ce1f99f5ba0a6818209f8355418701d7dcdd16532b17e08f1862",
+  "earlier_archive_native_gates": "remain pending"
+}

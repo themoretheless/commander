@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 10s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 5 tests
+test panel::preview::alternate_date_tests::alternate_dates_snapshot_formats_unknowns_and_survives_source_removal ... ok
+test panel::preview::alternate_date_tests::alternate_dates_link_card_uses_lexical_observation_instead_of_target ... ok
+test listing_report::tests::alternate_dates_json_keeps_subseconds_pre_epoch_and_unknowns_without_restat ... ok
+test panel::sort::tests::alternate_dates_order_exact_times_unknowns_and_stable_ties ... ok
+test workspace::tests::alternate_dates_commands_preserve_cursor_and_selection_and_toggle_direction ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3131 filtered out; finished in 0.01s
+

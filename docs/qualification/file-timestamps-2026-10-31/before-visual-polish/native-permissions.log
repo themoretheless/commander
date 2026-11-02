@@ -1,0 +1,4 @@
+2026-10-31T13:25:56 INFO  commander::logging: logging initialized
+2026-10-31T13:25:56 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: permissions
+2026-10-31T13:25:56 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-permissions-1793438746080211000
+2026-10-31T13:25:56 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

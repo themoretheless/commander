@@ -1,0 +1,39 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0063]: missing field `trailing_spaces` in initializer of `textdiff::Options`
+   --> src/app/diff_dialog.rs:727:25
+    |
+727 |         state.options = crate::textdiff::Options {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^ missing `trailing_spaces`
+
+error[E0063]: missing field `trailing_spaces` in initializer of `textdiff::Options`
+   --> src/app/diff_dialog.rs:876:25
+    |
+876 |         state.options = crate::textdiff::Options {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^ missing `trailing_spaces`
+
+error[E0063]: missing field `trailing_spaces` in initializer of `textdiff::Options`
+   --> src/textdiff.rs:456:27
+    |
+456 |             let options = Options {
+    |                           ^^^^^^^ missing `trailing_spaces`
+
+error[E0063]: missing field `trailing_spaces` in initializer of `textdiff::Options`
+   --> src/textdiff.rs:556:23
+    |
+556 |         let options = Options {
+    |                       ^^^^^^^ missing `trailing_spaces`
+
+error[E0063]: missing field `trailing_spaces` in initializer of `textdiff::Options`
+   --> src/textdiff.rs:598:23
+    |
+598 |         let options = Options {
+    |                       ^^^^^^^ missing `trailing_spaces`
+
+error[E0063]: missing field `trailing_spaces` in initializer of `textdiff::Options`
+   --> src/textdiff.rs:642:23
+    |
+642 |         let options = Options {
+    |                       ^^^^^^^ missing `trailing_spaces`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `commander` (bin "commander" test) due to 6 previous errors

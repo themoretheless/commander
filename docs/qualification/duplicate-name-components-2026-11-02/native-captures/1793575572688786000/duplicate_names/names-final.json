@@ -1,0 +1,32 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "files": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/note.txt",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/one.JPG",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/skip.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/two.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/nested/skip.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-192-duplicate_names/left/nested/three.jpg"
+  ],
+  "issues": 0,
+  "keep": [
+    1
+  ],
+  "phase": 32,
+  "recursive": true
+}

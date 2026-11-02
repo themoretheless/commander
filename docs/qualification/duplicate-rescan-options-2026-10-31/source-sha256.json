@@ -1,0 +1,6 @@
+{
+  "src/app/duplicates_dialog.rs": "3a3e3e07f43cd81677a59553c84813958d6ce2cfe4da991a12db414eb3bb962f",
+  "src/dedup.rs": "90fb9bac228e7e67181c12a5ed1733626ced168ec83bce9e0408f03b150f3b52",
+  "src/dedup_scan.rs": "70e2503f8e9f809f5e13fd8dbf5938e2b79a0991ceb43d6a4521f62b0d336a24",
+  "src/app/mod.rs": "fc50bf4a831b246be188696649085651ea393c53f298df0680806d6791daa601"
+}

@@ -1,0 +1,8 @@
+{
+  "src/sync_review.rs": "61bae95232f98c332d40b7dede1440bce4833a998cff36d23352119247ec758d",
+  "src/app/sync_dialog.rs": "b6cb50f38ac56f04e45965a2bec9a74a9086b626ec401073a666277e71d6b47b",
+  "src/app/mod.rs": "de192ba85ea6a1500404d1f72f86faa5b3e7cdf36fc2458a410e8a3e48ce5e38",
+  "src/main.rs": "ac2d9116add631eaa15af55a000d3c2271f59d9a5f6ceb57862313ff9e2db57c",
+  "src/visual_qa.rs": "c70265a381f65e051e3cafee4cb8422fe150dd77485b3f1f10ebce4e88adda23",
+  ".github/workflows/ci.yml": "154c7473c36d07fa9fa5c7eba3d386e7a8583e3b9499206d193275b4111e9fce"
+}

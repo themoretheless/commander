@@ -1,0 +1,7 @@
+{
+  "src/textdiff.rs": "48a24ac19a0683e38b5259d7d168391440217cc62afec8bdf62232f7fc5537ee",
+  "src/app/diff_dialog.rs": "32fed34e6dc5aa9016d08780f788ff5af7e00699a578895d79818aa4edf467bb",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "target/debug/commander": "b3d146ec3a11be7054ac7a27556c35d6c8119f9679279a6c52f0bfd2240351f9"
+}

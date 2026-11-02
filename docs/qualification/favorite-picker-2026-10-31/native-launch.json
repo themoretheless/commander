@@ -1,0 +1,7 @@
+{
+  "scenario": "favorite_picker",
+  "out": "/tmp/commander-native-favorite-picker-1793413113546635000",
+  "binary_sha256": "112b288cbcbdddaee20d80a59ed75e7dcdcc58cd76f1bc3ae49dbd68b6c30845",
+  "core_sha256": "112b288cbcbdddaee20d80a59ed75e7dcdcc58cd76f1bc3ae49dbd68b6c30845",
+  "started_ns": 1793413113648630000
+}

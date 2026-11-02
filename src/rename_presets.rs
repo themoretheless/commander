@@ -32,10 +32,30 @@ fn validate(rule: &RenameRule) -> Result<(), String> {
         &rule.remove_prefix,
         &rule.remove_suffix,
     ]
-    .iter()
+    .into_iter()
+    .chain(
+        rule.extra_replacements
+            .iter()
+            .flat_map(|pair| [&pair.find, &pair.replace]),
+    )
     .any(|field| field.len() > MAX_FIELD)
     {
         return Err("Preset fields are limited to 4096 UTF-8 bytes each".into());
+    }
+    if rule
+        .insert_text
+        .as_ref()
+        .is_some_and(|insert| insert.offset > 255 || insert.text.len() > MAX_FIELD)
+    {
+        return Err(
+            "Preset insertion needs an offset of 0–255 and at most 4096 UTF-8 bytes".into(),
+        );
+    }
+    if rule
+        .remove_range
+        .is_some_and(|range| range.offset > 255 || !(1..=255).contains(&range.count))
+    {
+        return Err("Preset removal needs an offset of 0–255 and a count of 1–255".into());
     }
     if rule
         .stem_limit
@@ -115,6 +135,169 @@ impl<'de> Deserialize<'de> for Presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keep_and_remove_range_actions_round_trip_in_presets() {
+        let mut presets = Presets::default();
+        for action in [
+            crate::rename::RangeAction::Remove,
+            crate::rename::RangeAction::Keep,
+        ] {
+            let rule = RenameRule {
+                range_action: action,
+                remove_range: Some(crate::rename::RemoveRange {
+                    offset: 4,
+                    count: 8,
+                    from_end: true,
+                }),
+                ..Default::default()
+            };
+            presets.add(action.label(), rule).unwrap();
+        }
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored, presets);
+    }
+
+    #[test]
+    fn letter_counter_formats_round_trip_with_signed_numbering() {
+        let mut presets = Presets::default();
+        for format in [
+            crate::rename::NumberFormat::Decimal,
+            crate::rename::NumberFormat::LowerLetters,
+            crate::rename::NumberFormat::UpperLetters,
+        ] {
+            let rule = RenameRule {
+                number_format: format,
+                numbering: Some(crate::rename::Numbering {
+                    start: -27,
+                    step: -1,
+                    pad: 6,
+                }),
+                ..Default::default()
+            };
+            let label = match format {
+                crate::rename::NumberFormat::Decimal => "decimal",
+                crate::rename::NumberFormat::LowerLetters => "lowercase",
+                crate::rename::NumberFormat::UpperLetters => "uppercase",
+            };
+            presets.add(label, rule).unwrap();
+        }
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored, presets);
+    }
+
+    #[test]
+    fn character_targets_round_trip_in_presets() {
+        let mut presets = Presets::default();
+        for target in [
+            crate::rename::CharacterTarget::Stem,
+            crate::rename::CharacterTarget::Extension,
+            crate::rename::CharacterTarget::WholeName,
+        ] {
+            let rule = RenameRule {
+                character_target: target,
+                ..Default::default()
+            };
+            presets.add(target.label(), rule).unwrap();
+        }
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored, presets);
+    }
+
+    #[test]
+    fn insertion_presets_round_trip_and_reject_unsupported_text_or_offset() {
+        use crate::rename::InsertText;
+        let mut presets = Presets::default();
+        let rule = RenameRule {
+            insert_text: Some(InsertText {
+                text: "文".into(),
+                offset: 255,
+                from_end: true,
+                overwrite: true,
+            }),
+            ..Default::default()
+        };
+        presets.add("insert", rule.clone()).unwrap();
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored.get("insert").unwrap().rule, rule);
+        for (offset, text) in [(256, "ok".to_owned()), (0, "文".repeat(1366))] {
+            let invalid = RenameRule {
+                insert_text: Some(InsertText {
+                    offset,
+                    text,
+                    from_end: false,
+                    overwrite: false,
+                }),
+                ..Default::default()
+            };
+            assert!(presets.update("insert", invalid).is_err());
+            assert_eq!(presets.get("insert").unwrap().rule, rule);
+        }
+    }
+
+    #[test]
+    fn removal_range_presets_round_trip_and_reject_editor_overflow() {
+        use crate::rename::RemoveRange;
+        let mut presets = Presets::default();
+        let rule = RenameRule {
+            remove_range: Some(RemoveRange {
+                offset: 255,
+                count: 255,
+                from_end: true,
+            }),
+            ..Default::default()
+        };
+        presets.add("range", rule.clone()).unwrap();
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored.get("range").unwrap().rule, rule);
+        for (offset, count) in [(256, 1), (0, 0), (0, 256)] {
+            let invalid = RenameRule {
+                remove_range: Some(RemoveRange {
+                    offset,
+                    count,
+                    from_end: false,
+                }),
+                ..Default::default()
+            };
+            assert!(presets.update("range", invalid).is_err());
+            assert_eq!(presets.get("range").unwrap().rule, rule);
+        }
+    }
+
+    #[test]
+    fn replacement_chain_presets_validate_bounds_and_round_trip() {
+        let rule = RenameRule {
+            extra_replacements: vec![crate::rename::ReplacementPair {
+                find: "old".into(),
+                replace: "new".into(),
+            }],
+            ..Default::default()
+        };
+        let mut presets = Presets::default();
+        presets.add("Chain", rule.clone()).unwrap();
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored.items()[0].rule, rule);
+        let mut invalid = rule;
+        invalid.extra_replacements[0].replace = "x".repeat(4097);
+        assert!(presets.add("Too long", invalid).is_err());
+        assert!(
+            presets
+                .add(
+                    "Blank",
+                    RenameRule {
+                        extra_replacements: vec![crate::rename::ReplacementPair::default()],
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+    }
+
     #[test]
     fn number_position_round_trips_in_named_presets() {
         let mut presets = Presets::default();

@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "menu field entry and focus retention",
+    "filtered recall/removal and Clear search",
+    "no matches and Clear all semantics",
+    "menu wrapping/scroll/layout"
+  ]
+}

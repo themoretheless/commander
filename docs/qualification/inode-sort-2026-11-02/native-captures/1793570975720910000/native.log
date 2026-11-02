@@ -1,0 +1,3 @@
+2026-11-02T02:09:43 INFO  commander::logging: logging initialized
+2026-11-02T02:09:43 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: inode_sort
+2026-11-02T02:09:43 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

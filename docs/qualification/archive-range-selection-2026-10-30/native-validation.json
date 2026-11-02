@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Shift-click/Shift-arrow gesture or layout validation",
+  "binary_sha256": "0279ef6dfb903b795780cfbb2621de7546a59e8e43e1e72dc2b675b67ebc868e",
+  "prior_archive_export_filter_check_history_visible_selection_native_gates": "remain pending"
+}

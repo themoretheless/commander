@@ -1,0 +1,53 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0609]: no field `modifiers` on type `&mut RawInput`
+    --> src/visual_qa.rs:6279:19
+     |
+6279 |             input.modifiers = if (12..15).contains(&phase) {
+     |                   ^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `viewport_id`, `viewports`, `safe_area_insets`, `screen_rect`, `max_texture_side` ... and 7 others
+
+error[E0599]: no method named `selected_paths` found for reference `&panel::PanelState` in the current scope
+    --> src/visual_qa.rs:6306:31
+     |
+6306 |                     && !panel.selected_paths().contains(&file)
+     |                               ^^^^^^^^^^^^^^
+     |
+help: there is a method `selected_entries` with a similar name
+     |
+6306 -                     && !panel.selected_paths().contains(&file)
+6306 +                     && !panel.selected_entries().contains(&file)
+     |
+
+error[E0599]: no method named `selected_paths` found for reference `&panel::PanelState` in the current scope
+    --> src/visual_qa.rs:6321:179
+     |
+6321 | ...":panel.cursor_entry().map(|e|&e.path),"selected":panel.selected_paths(),"columns":panel.miller.columns.iter().map(|c|serde_jso...
+     |                                                            ^^^^^^^^^^^^^^
+     |
+help: there is a method `selected_entries` with a similar name
+     |
+6321 -                 let value = serde_json::json!({"phase":phase,"path":panel.current_path,"mode":panel.browser_mode(),"cursor":panel.cursor_entry().map(|e|&e.path),"selected":panel.selected_paths(),"columns":panel.miller.columns.iter().map(|c|serde_json::json!({"path":c.current_path,"status":format!("{:?}",c.dir_status()),"mode":c.browser_mode(),"entries":c.entries().iter().map(|e|&e.path).collect::<Vec<_>>() })).collect::<Vec<_>>()});
+6321 +                 let value = serde_json::json!({"phase":phase,"path":panel.current_path,"mode":panel.browser_mode(),"cursor":panel.cursor_entry().map(|e|&e.path),"selected":panel.selected_entries(),"columns":panel.miller.columns.iter().map(|c|serde_json::json!({"path":c.current_path,"status":format!("{:?}",c.dir_status()),"mode":c.browser_mode(),"entries":c.entries().iter().map(|e|&e.path).collect::<Vec<_>>() })).collect::<Vec<_>>()});
+     |
+
+error[E0599]: no method named `selected_paths` found for struct `panel::PanelState` in the current scope
+     --> src/visual_qa.rs:16615:43
+      |
+16615 |                     && self.inner.ws.left.selected_paths().len()==1
+      |                                           ^^^^^^^^^^^^^^
+      |
+     ::: src/panel.rs:811:1
+      |
+  811 | pub struct PanelState {
+      | --------------------- method `selected_paths` not found for this struct
+      |
+help: there is a method `selected_entries` with a similar name
+      |
+16615 -                     && self.inner.ws.left.selected_paths().len()==1
+16615 +                     && self.inner.ws.left.selected_entries().len()==1
+      |
+
+Some errors have detailed explanations: E0599, E0609.
+For more information about an error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander") due to 4 previous errors

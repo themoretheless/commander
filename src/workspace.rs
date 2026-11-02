@@ -386,7 +386,7 @@ pub fn move_pairs(entries: &[FileEntry], target: &Path) -> Vec<(PathBuf, PathBuf
 /// rows sharing it are hard links to one inode. Only unix listings capture
 /// these today (`path_identity::native_identity` returns none elsewhere), so
 /// hard-link dedup is unix-only until Windows file indexes are captured.
-fn hard_link_key(entry: &FileEntry) -> Option<(u64, u64)> {
+pub fn hard_link_key(entry: &FileEntry) -> Option<(u64, u64)> {
     match &entry.identity {
         crate::panel::ListingIdentity::Captured(identity) => {
             Some((identity.volume?, identity.file_id?))
@@ -455,9 +455,20 @@ fn smart_select_message(added: usize, noun: (&str, &str), none: &str) -> String 
 
 /// Toast for a sort with no header column (extension, kind): which column
 /// and direction is now active, since nothing on screen shows it.
-/// A change offered by the Favorites rail's context menu.
+/// Navigation targets for a Favorites row; bookmark metadata is read-only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FavoriteTarget {
+    CurrentPanel,
+    OtherPanel,
+    NewTab,
+    BackgroundTab,
+}
+
+/// A change offered by the Favorites rail's context menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FavoriteEdit {
+    Rename(String),
+    AssignSlot(u8),
     Remove,
     ClearSlot,
     MoveUp,
@@ -853,14 +864,29 @@ impl Workspace {
         let visible_entries = active.filtered_count();
         let cursor = active.cursor_entry();
         let mut visible_files = 0usize;
+        let mut visible_allocated_files = 0usize;
+        let cursor_file_id = cursor.and_then(crate::panel::FileEntry::regular_file_id);
+        let mut cursor_has_visible_hardlink = false;
         let mut selected_entries = 0usize;
         let mut selected_file_count = 0usize;
         let mut first_selected_file_index = None;
+        let mut visible_row = 0;
+        let mut can_next_selected = false;
+        let mut can_previous_selected = false;
         active.visit_filtered(|index, entry| {
+            cursor_has_visible_hardlink |= cursor_file_id.is_some()
+                && cursor.is_some_and(|row| row.path != entry.path)
+                && entry.regular_file_id() == cursor_file_id;
+            visible_row += 1;
+            if entry.allocated_bytes().is_some() {
+                visible_allocated_files = visible_allocated_files.saturating_add(1);
+            }
             if !entry.is_dir {
                 visible_files = visible_files.saturating_add(1);
             }
             if active.is_selected(&entry.path) {
+                can_next_selected |= visible_row > active.cursor();
+                can_previous_selected |= visible_row < active.cursor();
                 selected_entries = selected_entries.saturating_add(1);
                 if !entry.is_dir {
                     selected_file_count = selected_file_count.saturating_add(1);
@@ -905,6 +931,12 @@ impl Workspace {
         crate::command::CommandContext {
             visible_entries,
             visible_files,
+            visible_allocated_files,
+            cursor_has_visible_hardlink,
+            cursor_has_regular_identity: cursor_file_id.is_some(),
+            selected_visible_files: selected_file_count,
+            can_next_selected,
+            can_previous_selected,
             other_entries: inactive.entries().len(),
             listing_entries,
             cursor_has_extension: cursor
@@ -964,9 +996,14 @@ impl Workspace {
                 elsewhere => selected_entries.saturating_add(elsewhere),
             },
             selected_entries,
+            local_selected_entries: active.selected_count(),
             can_save_selection: active.can_save_selection(),
             can_restore_selection: active.can_restore_selection(),
+            can_restore_tab_selection: active.can_restore_tab_selection(),
+            has_tab_selection: !active.tab_selection.is_none(),
             tab_count: self.tab_count(self.active),
+            active_panel_left: self.active == ActivePanel::Left,
+            pane_folders_differ: active.current_path != inactive.current_path,
             active_tab_protected: self.active_panel_ref().tab_close_protected,
             other_tab_count: self.tab_count(self.active.other()),
             active_tab_index: self.active_tab_index(self.active),
@@ -978,6 +1015,7 @@ impl Workspace {
             cursor_selected: cursor.is_some_and(|entry| active.is_selected(&entry.path)),
             cursor_is_dir: cursor.is_some_and(|entry| entry.is_dir),
             cursor_is_file: cursor.is_some_and(|entry| !entry.is_dir),
+            cursor_is_symlink: cursor.is_some_and(|entry| entry.is_symlink()),
             can_go_up: active.current_path.parent().is_some(),
             can_go_back: active.can_go_back(),
             can_go_forward: active.can_go_forward(),
@@ -1093,6 +1131,8 @@ impl Workspace {
                     | Command::CursorEnd
                     | Command::CursorFirstFile
                     | Command::CursorLastFile
+                    | Command::CursorNextSelected
+                    | Command::CursorPreviousSelected
                     | Command::FirstTab
                     | Command::LastTab
                     | Command::GoToTab(_)
@@ -1106,7 +1146,10 @@ impl Workspace {
                     | Command::ExtendSelectPageUp
                     | Command::ExtendSelectPageDown
                     | Command::ToggleSelect
+                    | Command::ToggleSelectHere
                     | Command::SwitchPanel
+                    | Command::FocusLeftPanel
+                    | Command::FocusRightPanel
             ) {
                 self.last_command = Some(cmd);
             }
@@ -1159,16 +1202,23 @@ impl Workspace {
                     }
                 }
             }
-            Command::EditPermissions => match self.active_panel_ref().permission_targets() {
-                Ok(targets) if !targets.is_empty() => {
-                    self.emit_ui_request(UiRequest::Permissions(targets))
+            Command::EditPermissions | Command::EditTimestamps => {
+                match self.active_panel_ref().permission_targets() {
+                    Ok(targets) if !targets.is_empty() => {
+                        self.emit_ui_request(if cmd == Command::EditTimestamps {
+                            UiRequest::Timestamps(targets)
+                        } else {
+                            UiRequest::Permissions(targets)
+                        })
+                    }
+                    _ => self.emit_ui_request(UiRequest::Notice {
+                        message:
+                            "The selected items changed. Refresh the panel and select them again"
+                                .into(),
+                        error: true,
+                    }),
                 }
-                _ => self.emit_ui_request(UiRequest::Notice {
-                    message: "The selected items changed. Refresh the panel and select them again"
-                        .into(),
-                    error: true,
-                }),
-            },
+            }
             Command::ReopenClosedTab => {
                 self.reopen_closed_tab(self.active);
             }
@@ -1192,6 +1242,15 @@ impl Workspace {
             Command::PreviousTab => {
                 self.step_tab(self.active, false);
             }
+            Command::FocusLeftPanel | Command::FocusRightPanel => {
+                if self.pending_op.is_none() && !self.has_any_pending_ui_modal() {
+                    self.active = if cmd == Command::FocusLeftPanel {
+                        ActivePanel::Left
+                    } else {
+                        ActivePanel::Right
+                    };
+                }
+            }
             Command::SwitchPanel => {
                 self.active = self.active.other();
             }
@@ -1208,6 +1267,12 @@ impl Workspace {
                 if panel.cursor() < max {
                     panel.set_cursor(panel.cursor() + 1);
                     panel.set_scroll_to_cursor(true);
+                }
+            }
+            Command::CursorNextSelected | Command::CursorPreviousSelected => {
+                if self.pending_op.is_none() && !self.has_any_pending_ui_modal() {
+                    self.active_panel()
+                        .jump_to_selected(cmd == Command::CursorNextSelected);
                 }
             }
             Command::CursorFirstFile | Command::CursorLastFile => {
@@ -1279,7 +1344,7 @@ impl Workspace {
             Command::Activate => {
                 // Cursor 0 is the ".." row, real files start at cursor 1.
                 if self.active_panel_ref().cursor() == 0 {
-                    self.active_panel().go_up();
+                    self.active_panel().go_up_preserving_miller();
                     self.mirror_nav_locked_up();
                 } else if let Some(entry) = {
                     let panel = self.active_panel_ref();
@@ -1287,7 +1352,13 @@ impl Workspace {
                 } {
                     if entry.is_dir {
                         let name = entry.name.clone();
-                        self.active_panel().navigate_to(entry.path);
+                        if self.active_panel_ref().browser_mode()
+                            == crate::panel::BrowserMode::Miller
+                        {
+                            self.active_panel().miller_navigate(entry.path, None);
+                        } else {
+                            self.active_panel().navigate_to(entry.path);
+                        }
                         self.mirror_nav_locked_enter(&name);
                     } else if crate::archive::is_supported(&entry.path) {
                         // Interactive browse stays available; trust gates only
@@ -1300,8 +1371,11 @@ impl Workspace {
                     }
                 }
             }
+            Command::FollowSymlink => self.follow_symlink(),
+            Command::CopySymlinkTarget => self.copy_symlink_target(false),
+            Command::CopyResolvedSymlinkTarget => self.copy_symlink_target(true),
             Command::GoUp => {
-                self.active_panel().go_up();
+                self.active_panel().go_up_preserving_miller();
                 self.mirror_nav_locked_up();
             }
             Command::JumpBack => {
@@ -1354,6 +1428,17 @@ impl Workspace {
                     error: false,
                 });
             }
+            Command::BookmarkSelectedFolders => {
+                let result = self.bookmark_selected_folders();
+                let (message, error) = match result {
+                    Ok(added) => (
+                        format!("Added {added} folder(s) to Favorites; existing entries kept"),
+                        false,
+                    ),
+                    Err(message) => (message, true),
+                };
+                self.emit_ui_request(UiRequest::Notice { message, error });
+            }
             Command::BookmarkCurrentDir => {
                 // Toggle: bookmark the active directory, or un-bookmark it if it
                 // is already a favorite. The Favorites rail may be hidden, so
@@ -1374,6 +1459,12 @@ impl Workspace {
                     message: message.to_string(),
                     error,
                 });
+            }
+            Command::ToggleSelectHere => {
+                let panel = self.active_panel();
+                if let Some(path) = panel.cursor_entry().map(|entry| entry.path.clone()) {
+                    panel.toggle_select(path);
+                }
             }
             Command::ToggleSelect => {
                 let panel = self.active_panel();
@@ -1468,9 +1559,28 @@ impl Workspace {
                     None => self.notice("The requested home or root folder is unavailable".into()),
                 }
             }
-            Command::EqualizePanels => {
-                let target = self.active_panel_ref().current_path.clone();
-                self.inactive_panel_mut().navigate_to(target);
+            Command::EqualizePanels | Command::MatchOtherPane => {
+                if self.pending_op.is_some()
+                    || self.deletes.is_active()
+                    || self.has_any_pending_ui_modal()
+                {
+                    return;
+                }
+                let pull = cmd == Command::MatchOtherPane;
+                let target = if pull {
+                    self.inactive_panel().current_path.clone()
+                } else {
+                    self.active_panel_ref().current_path.clone()
+                };
+                let destination = if pull {
+                    self.active_panel()
+                } else {
+                    self.inactive_panel_mut()
+                };
+                if destination.current_path != target {
+                    destination.preview = None;
+                    destination.navigate_to(target);
+                }
             }
             Command::SwapPanels => {
                 std::mem::swap(&mut self.left, &mut self.right);
@@ -1484,6 +1594,19 @@ impl Workspace {
             Command::DiffFiles => self.emit_ui_request(UiRequest::DiffFiles),
             Command::DiskTreemap => self.emit_ui_request(UiRequest::DiskTreemap),
             Command::BeginFind => self.emit_ui_request(UiRequest::Find),
+            Command::FindCursorHardlinks => {
+                let panel = self.active_panel_ref();
+                if let Some((device, inode)) = panel
+                    .cursor_entry()
+                    .and_then(crate::panel::FileEntry::regular_file_id)
+                {
+                    self.emit_ui_request(UiRequest::FindIdentity {
+                        root: panel.current_path.clone(),
+                        device,
+                        inode,
+                    });
+                }
+            }
             Command::FocusFilter => self.emit_ui_request(UiRequest::FocusFilter),
             Command::OpenSavedSearch => self.emit_ui_request(UiRequest::SavedSearch),
             Command::OpenProjectCollections => self.emit_ui_request(UiRequest::ProjectCollections),
@@ -1497,6 +1620,25 @@ impl Workspace {
             }
             Command::CopyName => {
                 self.emit_ui_request(UiRequest::CopyPaths(crate::clipboard::PathStyle::NameOnly))
+            }
+            Command::CopyFolderPath | Command::CopyFolderUrl => {
+                let style = if cmd == Command::CopyFolderUrl {
+                    crate::clipboard::PathStyle::FileUrl
+                } else {
+                    crate::clipboard::PathStyle::FullPath
+                };
+                let text = crate::clipboard::format(
+                    std::slice::from_ref(&self.active_panel_ref().current_path),
+                    style,
+                    None,
+                );
+                let label = if cmd == Command::CopyFolderUrl {
+                    "current folder URL"
+                } else {
+                    "current folder path"
+                }
+                .to_string();
+                self.emit_ui_request(UiRequest::CopyText { text, label });
             }
             Command::CopyParentPath => self.emit_ui_request(UiRequest::CopyPaths(
                 crate::clipboard::PathStyle::ParentPath,
@@ -1529,6 +1671,23 @@ impl Workspace {
             Command::SelectOnlyHere => self.select_by_relation(|r| &r.only_here),
             Command::SelectDiffering => self.select_by_relation(|r| &r.differing),
             Command::SelectIdentical => self.select_by_relation(|r| &r.identical),
+            Command::SaveTabSelection => match self.active_panel().save_tab_selection() {
+                Ok(()) => self.notice(
+                    "Selection snapshot saved with this tab; Restore tab selection reapplies it"
+                        .into(),
+                ),
+                Err(message) => self.emit_ui_request(UiRequest::Notice {
+                    message,
+                    error: true,
+                }),
+            },
+            Command::RestoreTabSelection => {
+                self.active_panel().restore_tab_selection();
+            }
+            Command::ForgetTabSelection => {
+                self.active_panel().tab_selection = Default::default();
+                self.notice("Forgot this tab's persistent selection snapshot".into());
+            }
             Command::SaveSelection => {
                 if self.pending_op.is_none() && !self.has_any_pending_ui_modal() {
                     self.active_panel().save_selection();
@@ -1539,6 +1698,11 @@ impl Workspace {
                     self.active_panel().restore_saved_selection();
                 }
             }
+            Command::ClearVisibleSelection => {
+                let removed = self.active_panel().clear_visible_selection();
+                self.notice(format!("Removed {removed} visible item(s) from selection"));
+            }
+            Command::ClearFolderSelection => self.active_panel().clear_selection(),
             Command::ClearSelection => self.active_panel().clear_selection_everywhere(),
             Command::ToggleQueuePanel => self.emit_ui_request(UiRequest::ToggleQueuePanel),
             Command::ToggleCompare => self.emit_ui_request(UiRequest::ToggleCompare),
@@ -1585,6 +1749,12 @@ impl Workspace {
             Command::SortByName
             | Command::SortByStem
             | Command::SortBySize
+            | Command::SortByInode
+            | Command::SortByHardLinks
+            | Command::SortByAllocated
+            | Command::SortByAccessed
+            | Command::SortByChanged
+            | Command::SortByCreated
             | Command::SortByModified
             | Command::SortByExtension
             | Command::SortByKind => {
@@ -1593,7 +1763,19 @@ impl Workspace {
                         (crate::panel::SortColumn::Stem, "name without extension")
                     }
                     Command::SortByName => (crate::panel::SortColumn::Name, "name"),
+                    Command::SortByHardLinks => {
+                        (crate::panel::SortColumn::HardLinks, "hard-link count")
+                    }
+                    Command::SortByInode => (crate::panel::SortColumn::Inode, "inode"),
+                    Command::SortByAllocated => {
+                        (crate::panel::SortColumn::Allocated, "allocated size")
+                    }
                     Command::SortBySize => (crate::panel::SortColumn::Size, "size"),
+                    Command::SortByAccessed => (crate::panel::SortColumn::Accessed, "accessed"),
+                    Command::SortByChanged => {
+                        (crate::panel::SortColumn::Changed, "metadata changed")
+                    }
+                    Command::SortByCreated => (crate::panel::SortColumn::Created, "created"),
                     Command::SortByModified => (crate::panel::SortColumn::Modified, "modified"),
                     Command::SortByExtension => (crate::panel::SortColumn::Extension, "extension"),
                     _ => (crate::panel::SortColumn::Kind, "kind"),
@@ -1612,6 +1794,22 @@ impl Workspace {
                 ));
             }
             Command::ReverseSort => self.active_panel().reverse_sort(),
+            Command::SelectCursorHardlinks => {
+                let added = self.active_panel().select_cursor_hardlink_group();
+                self.notice(smart_select_message(
+                    added,
+                    ("hard-link group file", "hard-link group files"),
+                    "No more visible hard-link aliases to select",
+                ));
+            }
+            Command::SelectLargestAllocated => {
+                let added = self.active_panel().select_largest_allocated(10);
+                self.notice(smart_select_message(
+                    added,
+                    ("file by allocated size", "files by allocated size"),
+                    "No more files to select by allocated size",
+                ));
+            }
             Command::SelectLargest => {
                 let added = self.active_panel().select_largest(10);
                 self.notice(smart_select_message(
@@ -1662,12 +1860,41 @@ impl Workspace {
                     if folders { "folder(s)" } else { "file(s)" }
                 ));
             }
+            Command::DeselectVisibleFiles | Command::DeselectVisibleFolders => {
+                let folders = cmd == Command::DeselectVisibleFolders;
+                let removed = self.active_panel().deselect_visible_kind(folders);
+                self.notice(format!(
+                    "Removed {removed} visible {} from selection",
+                    if folders { "folder(s)" } else { "file(s)" }
+                ));
+            }
             Command::SelectVisibleFiles | Command::SelectVisibleFolders => {
                 let folders = cmd == Command::SelectVisibleFolders;
                 let added = self.active_panel().select_visible_kind(folders);
                 self.notice(format!(
                     "Added {added} visible {} to selection",
                     if folders { "folder(s)" } else { "file(s)" }
+                ));
+            }
+            Command::SelectVisibleSymlinks => {
+                let count = self.active_panel().select_visible_symlinks();
+                self.notice(format!(
+                    "Added {} to selection",
+                    count_noun(count, "visible symbolic link", "visible symbolic links")
+                ));
+            }
+            Command::DeselectVisibleSymlinks => {
+                let count = self.active_panel().deselect_visible_symlinks();
+                self.notice(format!(
+                    "Removed {} from selection",
+                    count_noun(count, "visible symbolic link", "visible symbolic links")
+                ));
+            }
+            Command::InvertVisibleSymlinks => {
+                let count = self.active_panel().invert_visible_symlinks();
+                self.notice(format!(
+                    "Inverted selection for {}",
+                    count_noun(count, "visible symbolic link", "visible symbolic links")
                 ));
             }
             Command::SelectEmptyFiles => {
@@ -1684,10 +1911,46 @@ impl Workspace {
             Command::CopyListingCsv => {
                 self.request_listing_copy(crate::listing_export::ListingFormat::Csv)
             }
+            Command::CopyListingJson => {
+                match crate::listing_report::json(self.active_panel_ref()) {
+                    Ok(text) => self.emit_ui_request(UiRequest::CopyText {
+                        text,
+                        label: "listing as JSON".into(),
+                    }),
+                    Err(error) => self.notice(error),
+                }
+            }
             Command::CopyListingMarkdown => {
                 self.request_listing_copy(crate::listing_export::ListingFormat::Markdown)
             }
             Command::VerifyChecksum => self.verify_checksum(),
+            Command::SortFavorites(order) => {
+                let _ = self.sort_favorites(order);
+            }
+            Command::OpenFavorites => self.emit_ui_request(UiRequest::OpenFavorites),
+            Command::ImportFavoritesGtk => self.emit_ui_request(UiRequest::ImportFavoritesGtk),
+            Command::ExportFavoritesGtk => {
+                match crate::bookmark_exchange::export(&self.bookmarks) {
+                    Ok(text) => self.emit_ui_request(UiRequest::CopyText {
+                        text,
+                        label: "GTK bookmarks".into(),
+                    }),
+                    Err(message) => self.emit_ui_request(UiRequest::Notice {
+                        message,
+                        error: true,
+                    }),
+                }
+            }
+            Command::VerifyChecksumList => {
+                if let Some(path) = self
+                    .active_panel_ref()
+                    .cursor_entry()
+                    .filter(|entry| !entry.is_dir)
+                    .map(|entry| entry.path.clone())
+                {
+                    self.emit_ui_request(UiRequest::VerifyChecksumList(path));
+                }
+            }
             Command::ViewHex => {
                 if let Some(entry) = self
                     .active_panel_ref()
@@ -1700,6 +1963,10 @@ impl Workspace {
                 }
             }
             Command::CreateSymlink => self.create_symlinks(),
+            Command::CreateRelativeSymlink => {
+                let report = fileops::create_relative_symlinks(self);
+                self.link_notice(("relative symlink", "relative symlinks"), &report);
+            }
             Command::CreateHardlink => self.create_hardlinks(),
             Command::ToggleNavLock => {
                 self.nav_lock = !self.nav_lock;
@@ -1720,7 +1987,7 @@ impl Workspace {
                         self.emit_ui_request(UiRequest::Archive(entry.path));
                     }
                     _ => self.emit_ui_request(UiRequest::Notice {
-                        message: "Highlight a ZIP, TAR or tar.gz archive first".to_string(),
+                        message: "Highlight a ZIP or supported TAR archive first".to_string(),
                         error: true,
                     }),
                 }
@@ -1732,6 +1999,7 @@ impl Workspace {
             Command::SetTrustUntrusted => {
                 self.set_active_trust(crate::trust::TrustLabel::Untrusted)
             }
+            Command::WorkspaceProfiles => self.emit_ui_request(UiRequest::WorkspaceProfiles),
             Command::SaveWorkspaceProfile => self.save_workspace_profile(),
             Command::ApplyWorkspaceProfile => self.apply_workspace_profile(),
         }
@@ -1752,23 +2020,74 @@ impl Workspace {
         });
     }
 
-    fn save_workspace_profile(&mut self) {
-        let left = self.left.current_path.clone();
-        let right = self.right.current_path.clone();
-        let left_filter = self.left.search_query().to_string();
-        let right_filter = self.right.search_query().to_string();
-        let (message, error) =
-            crate::workspace_profile::capture_and_save(crate::workspace_profile::CaptureParams {
-                name: "default".to_string(),
-                left_root: &left,
-                right_root: &right,
-                left_filter,
-                right_filter,
-                durability: self.durability_profile,
-                name_policy: self.name_policy,
-                symlink_policy: self.symlink_policy,
-                trusted_command_templates: Vec::new(),
+    pub fn capture_named_profile(
+        &self,
+        name: String,
+    ) -> Result<crate::workspace_profile::WorkspaceProfile, String> {
+        let side = |side| -> Result<serde_json::Value, String> {
+            let mut tabs = self.tab_snapshot(side);
+            tabs.closed.clear();
+            for tab in &mut tabs.entries {
+                tab.selection_snapshot = Default::default();
+            }
+            let mut value = serde_json::to_value(tabs).map_err(|e| e.to_string())?;
+            value.as_object_mut().expect("tab object").remove("closed");
+            Ok(value)
+        };
+        let layout = serde_json::json!({"version":1,"left":side(ActivePanel::Left)?,"right":side(ActivePanel::Right)?,"active":if self.active==ActivePanel::Left{0}else{1}});
+        crate::workspace_profile::capture(crate::workspace_profile::CaptureParams {
+            name,
+            left_root: &self.left.current_path,
+            right_root: &self.right.current_path,
+            left_filter: self.left.search_query().into(),
+            right_filter: self.right.search_query().into(),
+            durability: self.durability_profile,
+            name_policy: self.name_policy,
+            symlink_policy: self.symlink_policy,
+            trusted_command_templates: Vec::new(),
+        })
+        .with_layout(layout)
+    }
+    pub fn apply_named_profile(
+        &mut self,
+        profile: &crate::workspace_profile::WorkspaceProfile,
+    ) -> bool {
+        if self.pending_op.is_some() || self.deletes.is_active() || self.has_any_pending_ui_modal()
+        {
+            return false;
+        }
+        let result = profile.layout().and_then(|layout| {
+            if let Some(layout) = layout {
+                self.apply_profile_tab_layout(&layout)?;
+                self.left.set_search_query(profile.left_filter.clone());
+                self.right.set_search_query(profile.right_filter.clone());
+                self.durability_profile = profile.durability;
+                self.name_policy = profile.name_policy;
+                self.symlink_policy = profile.symlink_policy;
+                self.notice(format!("Applied workspace profile {}", profile.name));
+            } else {
+                self.apply_profile(profile);
+            }
+            Ok(())
+        });
+        if let Err(message) = result {
+            self.emit_ui_request(UiRequest::Notice {
+                message,
+                error: true,
             });
+            return false;
+        }
+        true
+    }
+
+    fn save_workspace_profile(&mut self) {
+        let (message, error) = match self.capture_named_profile("default".into()) {
+            Ok(profile) => crate::workspace_profile::save_profile(profile),
+            Err(error) => (
+                format!("Could not capture workspace profile: {error}"),
+                true,
+            ),
+        };
         self.emit_ui_request(UiRequest::Notice { message, error });
     }
 
@@ -1781,7 +2100,7 @@ impl Workspace {
             });
             return;
         };
-        self.apply_profile(&profile);
+        self.apply_named_profile(&profile);
     }
 
     fn apply_profile(&mut self, profile: &crate::workspace_profile::WorkspaceProfile) {
@@ -3021,6 +3340,96 @@ impl Workspace {
         Ok(true)
     }
 
+    /// Commit a reviewed append-only import before installing its in-memory model.
+    pub fn import_favorites(
+        &mut self,
+        source: &str,
+        preview: &crate::bookmark_exchange::Preview,
+    ) -> Result<usize, String> {
+        let (next, added) = crate::bookmark_exchange::merge(source, preview, &self.bookmarks)?;
+        if added == 0 {
+            return Ok(0);
+        }
+        let result =
+            crate::bookmarks::save_with(self.persistence.as_ref(), &next, &mut self.bookmark_gate);
+        match result {
+            Ok(outcome) => {
+                crate::persistence::report_save("Bookmarks", Ok(outcome));
+                self.bookmarks = next;
+                Ok(added)
+            }
+            Err(error) => {
+                let message = format!("Could not save imported favorites: {error:?}");
+                crate::persistence::report_save("Bookmarks", Err(error));
+                Err(message)
+            }
+        }
+    }
+
+    /// Append selected visible directories from this pane in display order.
+    /// Never observes hidden/foreign selections or follows links on the UI thread.
+    pub fn bookmark_selected_folders(&mut self) -> Result<usize, String> {
+        let entries = self.active_panel_ref().selected_entries();
+        let mut next = self.bookmarks.clone();
+        let mut added = 0;
+        for entry in entries.into_iter().filter(|entry| entry.is_dir) {
+            if next.contains(&entry.path) {
+                continue;
+            }
+            if !entry.path.is_absolute()
+                || entry.path.to_str().is_none()
+                || !crate::bookmarks::valid_name(&entry.name)
+            {
+                return Err(
+                    "A selected folder has a name or path that cannot be saved in Favorites".into(),
+                );
+            }
+            if next.add(entry.name, entry.path) {
+                added += 1;
+            }
+        }
+        if added == 0 {
+            return Ok(0);
+        }
+        match crate::bookmarks::save_with(self.persistence.as_ref(), &next, &mut self.bookmark_gate)
+        {
+            Ok(outcome) => {
+                crate::persistence::report_save("Bookmarks", Ok(outcome));
+                self.bookmarks = next;
+                Ok(added)
+            }
+            Err(error) => {
+                let message = format!("Could not save selected favorites: {error:?}");
+                crate::persistence::report_save("Bookmarks", Err(error));
+                Err(message)
+            }
+        }
+    }
+
+    /// Persist a reordered candidate before replacing the live Favorites model.
+    pub fn sort_favorites(
+        &mut self,
+        order: crate::bookmarks::FavoriteOrder,
+    ) -> Result<bool, String> {
+        let mut next = self.bookmarks.clone();
+        if !next.sort(order) {
+            return Ok(false);
+        }
+        match crate::bookmarks::save_with(self.persistence.as_ref(), &next, &mut self.bookmark_gate)
+        {
+            Ok(outcome) => {
+                crate::persistence::report_save("Bookmarks", Ok(outcome));
+                self.bookmarks = next;
+                Ok(true)
+            }
+            Err(error) => {
+                let message = format!("Could not save sorted favorites: {error:?}");
+                crate::persistence::report_save("Bookmarks", Err(error));
+                Err(message)
+            }
+        }
+    }
+
     /// Apply a Favorites rail context-menu `edit` to the favorite at `path`
     /// and persist it. Unknown paths and no-op moves change and save nothing.
     pub fn edit_favorite(&mut self, path: &Path, edit: FavoriteEdit) {
@@ -3029,6 +3438,11 @@ impl Workspace {
             return;
         };
         let changed = match edit {
+            FavoriteEdit::Rename(name) => self.bookmarks.rename(path, name),
+            FavoriteEdit::AssignSlot(slot) => {
+                self.bookmarks.items[index].slot != Some(slot)
+                    && self.bookmarks.assign_slot(path, slot)
+            }
             FavoriteEdit::Remove => self.bookmarks.remove(path),
             FavoriteEdit::ClearSlot => {
                 self.bookmarks.items[index].slot.is_some() && self.bookmarks.clear_slot(path)
@@ -3181,6 +3595,7 @@ impl Workspace {
     /// `__init__.py`/`.gitkeep` markers is not clutter), and a hard link
     /// shares its twin's bytes: trashing either frees nothing, so each inode
     /// is offered once. No IO: hashing happens in [`crate::dedup_scan`].
+    #[cfg(test)]
     pub fn duplicate_candidates(&self) -> Vec<FileEntry> {
         let mut inodes = std::collections::HashSet::new();
         self.active_panel_ref()
@@ -3317,6 +3732,104 @@ impl Workspace {
         TreemapSnapshot {
             dir: active.current_path.clone(),
             items,
+        }
+    }
+
+    fn copy_symlink_target(&mut self, resolved: bool) {
+        let Some(source) = self
+            .active_panel_ref()
+            .cursor_entry()
+            .map(|entry| entry.path.clone())
+        else {
+            return;
+        };
+        let read = || -> std::io::Result<String> {
+            if !std::fs::symlink_metadata(&source)?.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "highlighted item is no longer a symbolic link",
+                ));
+            }
+            let target = if resolved {
+                std::fs::canonicalize(&source)?
+            } else {
+                std::fs::read_link(&source)?
+            };
+            if target.to_str().is_none() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "link target is not UTF-8 text; refusing a lossy clipboard path",
+                ));
+            }
+            Ok(crate::clipboard::format(
+                &[target],
+                crate::clipboard::PathStyle::FullPath,
+                None,
+            ))
+        };
+        match read() {
+            Ok(text) => self.emit_ui_request(UiRequest::CopyText {
+                text,
+                label: if resolved {
+                    "resolved symbolic-link target"
+                } else {
+                    "symbolic-link target"
+                }
+                .into(),
+            }),
+            Err(error) => self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Could not copy symbolic-link target {}: {error}",
+                    source.display()
+                ),
+                error: true,
+            }),
+        }
+    }
+
+    fn follow_symlink(&mut self) {
+        let Some(source) = self
+            .active_panel_ref()
+            .cursor_entry()
+            .map(|entry| entry.path.clone())
+        else {
+            return;
+        };
+        let resolve = || -> std::io::Result<PathBuf> {
+            if !std::fs::symlink_metadata(&source)?.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "highlighted item is no longer a symbolic link",
+                ));
+            }
+            std::fs::canonicalize(&source)
+        };
+        match resolve() {
+            Err(error) => self.emit_ui_request(UiRequest::Notice {
+                message: format!(
+                    "Could not follow symbolic link {}: {error}",
+                    source.display()
+                ),
+                error: true,
+            }),
+            Ok(target) => {
+                let parent = target
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| target.clone());
+                let name = target
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                let panel = self.active_panel();
+                panel.navigate_to(parent);
+                panel.clear_filters();
+                if let Some(name) = name {
+                    if name.starts_with('.') && !panel.show_hidden() {
+                        let _ = panel.toggle_hidden();
+                    }
+                    panel.focus_child(name);
+                }
+            }
         }
     }
 
@@ -3577,7 +4090,7 @@ impl Workspace {
             // The Get-Info card is a deliberate snapshot; don't auto-follow
             // it, but fill in a folder size that was still being measured.
             if let Some(updated) = refreshed_info(source, card) {
-                *card = updated;
+                **card = updated;
             }
             return;
         }
@@ -3642,7 +4155,7 @@ impl Workspace {
         let card = panel::make_info(&entry, dir_size, children);
         // Only one side shows a preview/info pane at a time.
         self.active_panel().preview = None;
-        self.inactive_panel_mut().preview = Some(PreviewContent::Info(card));
+        self.inactive_panel_mut().preview = Some(PreviewContent::Info(Box::new(card)));
     }
 
     // ── Drag and drop ───────────────────────────────────────────────────

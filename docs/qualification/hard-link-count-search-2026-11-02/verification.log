@@ -1,0 +1,1 @@
+PASS: six checks; 3169 tests; four link-count queries and real JSON agree with raw nlink/device/inode and independent find -links; archive unknowns, singleton/empty/off states; two native workflows 16/16; final source/binary/tool hashes

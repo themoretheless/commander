@@ -1,0 +1,17 @@
+{
+  "path": "/usr/bin/find",
+  "sha256": "6c0ed3efc994f93eb962f517d27fa9afb981f036ffb7a759f8ea3b0899792c76",
+  "command": [
+    "/usr/bin/find",
+    "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-identity-find-dcz3t397",
+    "-type",
+    "f",
+    "-samefile",
+    "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-identity-find-dcz3t397/original.txt",
+    "-print0"
+  ],
+  "results_relative_to_fixture": [
+    "nested/alias.txt",
+    "original.txt"
+  ]
+}

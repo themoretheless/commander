@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "checks": 16,
+  "button_phases": 6,
+  "attempted_invocations": 1,
+  "unstarted_invocations": 1,
+  "original_files_preserved": 2,
+  "report_matches_result": true,
+  "recording_effect_port_calls": 0,
+  "binary_matches_launch": true
+}

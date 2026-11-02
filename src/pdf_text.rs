@@ -75,7 +75,10 @@ mod native {
             Ok(Arc::from(text))
         }
     }
-    pub fn extract(bytes: &[u8], number: usize) -> Result<(Arc<str>, usize), String> {
+    fn with_document<T>(
+        bytes: &[u8],
+        work: impl FnOnce(*mut Object, usize) -> Result<T, String>,
+    ) -> Result<T, String> {
         // SAFETY: NSData owns a copy of the input; native retention cannot outlive
         // a borrowed Rust buffer. Document is released before data and the pool.
         // Page/string references are borrowed only during this scope. Page bounds
@@ -103,20 +106,78 @@ mod native {
                 );
             }
             let total: usize = msg_send![document.0, pageCount];
-            if total == 0 || total > 100_000 || number == 0 || number > total {
+            if total == 0 || total > 100_000 {
                 return Err("PDF text page number/count is outside the supported range".into());
             }
-            let page: *mut Object = msg_send![document.0, pageAtIndex: number - 1];
+            work(document.0, total)
+        }
+    }
+    fn page_text(document: *mut Object, number: usize) -> Result<Arc<str>, String> {
+        // The document is owned by with_document on this worker. A per-page pool
+        // releases autoreleased text after its exact UTF-8 copy is complete.
+        unsafe {
+            let pool = Pool(msg_send![class!(NSAutoreleasePool), new]);
+            if pool.0.is_null() {
+                return Err("Could not create a PDF page text pool".into());
+            }
+            let page: *mut Object = msg_send![document, pageAtIndex: number - 1];
             if page.is_null() {
                 return Err("Could not read this PDF text page".into());
             }
             let string: *mut Object = msg_send![page, string];
-            Ok((copy_string(string)?, total))
+            copy_string(string)
         }
+    }
+    pub fn extract(bytes: &[u8], number: usize) -> Result<(Arc<str>, usize), String> {
+        with_document(bytes, |document, total| {
+            if number == 0 || number > total {
+                return Err("PDF text page number/count is outside the supported range".into());
+            }
+            Ok((page_text(document, number)?, total))
+        })
+    }
+    pub fn search(
+        bytes: &[u8],
+        query: &crate::pdf_search::Query,
+        cancelled: &dyn Fn() -> bool,
+        progress: &std::sync::atomic::AtomicUsize,
+    ) -> Result<crate::pdf_search::Report, String> {
+        with_document(bytes, |document, total| {
+            crate::pdf_search::scan(total, query, cancelled, progress, |number| {
+                page_text(document, number)
+            })
+        })
     }
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn native_document_search_reaches_later_pages_and_honors_cancel_and_invalid_input() {
+            let progress = std::sync::atomic::AtomicUsize::new(0);
+            let query = crate::pdf_search::Query {
+                text: "Second page".into(),
+                case_sensitive: true,
+                ..Default::default()
+            };
+            let report =
+                search(&crate::pdf_preview::fixture(), &query, &|| false, &progress).unwrap();
+            assert_eq!(report.total, 2);
+            assert_eq!(
+                report.hits,
+                [crate::pdf_search::Hit {
+                    page: 2,
+                    count: 1,
+                    limited: false
+                }]
+            );
+            assert_eq!(progress.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert!(
+                search(&crate::pdf_preview::fixture(), &query, &|| true, &progress)
+                    .unwrap_err()
+                    .contains("cancelled")
+            );
+            assert!(search(b"invalid PDF", &query, &|| false, &progress).is_err());
+        }
         #[test]
         fn native_pdf_extracts_requested_page_and_reports_blank_or_invalid_pages() {
             let bytes = crate::pdf_preview::fixture();
@@ -156,4 +217,14 @@ mod native {
     }
 }
 #[cfg(target_os = "macos")]
-pub use native::extract;
+pub use native::{extract, search};
+
+#[cfg(not(target_os = "macos"))]
+pub fn search(
+    _bytes: &[u8],
+    _query: &crate::pdf_search::Query,
+    _cancelled: &dyn Fn() -> bool,
+    _progress: &std::sync::atomic::AtomicUsize,
+) -> Result<crate::pdf_search::Report, String> {
+    Err("Native PDF text search requires macOS".into())
+}

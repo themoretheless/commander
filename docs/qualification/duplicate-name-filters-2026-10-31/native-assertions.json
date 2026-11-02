@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "names_native_checks": 14,
+  "sizes_native_checks": 14,
+  "input_phases": 32,
+  "draft_does_not_apply": true,
+  "excluded_paths_absent": true,
+  "case_policy_and_recursive_retained": true,
+  "invalid_draft_keeps_applied_results": true,
+  "reset_restores_six_copies": true,
+  "names_recording_effect_calls": 0,
+  "sizes_recording_clipboard_writes": 3,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3057,
+  "ignored": 3,
+  "checks": 6
+}

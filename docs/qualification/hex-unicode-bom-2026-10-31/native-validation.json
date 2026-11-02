@@ -1,0 +1,17 @@
+{
+  "status": "passed_scoped",
+  "phase": 12,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "initial_auto_be": true,
+  "manual_ascii_checkpoint": true,
+  "restored_auto_be": true,
+  "physical_keys": "pending"
+}

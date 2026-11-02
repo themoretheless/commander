@@ -1,0 +1,79 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "CaseSensitive",
+    "grouping": "Stem",
+    "grouping_ignore_ascii_case": true,
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "CaseSensitive",
+    "grouping": "Stem",
+    "grouping_ignore_ascii_case": true,
+    "include": ""
+  },
+  "groups": [
+    [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98680-duplicate_components/left/A/album/report.txt",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98680-duplicate_components/left/B/album/report.txt"
+    ]
+  ],
+  "keep": [
+    0
+  ],
+  "report": {
+    "context": {
+      "configured_subfolder_levels": null,
+      "group_sort": "scan",
+      "keep_policy": "shortest_path",
+      "max_bytes": null,
+      "max_subfolder_levels": null,
+      "metadata_source": "fresh_tree_enumeration",
+      "min_bytes": 0,
+      "minimum_copies": 2,
+      "names": {
+        "case": false,
+        "exclude": "",
+        "extension": "CaseSensitive",
+        "grouping": "Stem",
+        "grouping_ignore_ascii_case": true,
+        "include": ""
+      },
+      "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98680-duplicate_components/left",
+      "scope": "recursive"
+    },
+    "format": "commander_duplicate_report",
+    "groups": [
+      {
+        "files": [
+          {
+            "action": "keep",
+            "member": 1,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98680-duplicate_components/left/A/album/report.txt"
+          },
+          {
+            "action": "trash",
+            "member": 2,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98680-duplicate_components/left/B/album/report.txt"
+          }
+        ],
+        "group": 1,
+        "original_group": 1,
+        "size_bytes": 11
+      }
+    ],
+    "snapshot": "retained_duplicate_scan_proposal",
+    "summary": {
+      "files": 2,
+      "groups": 1,
+      "partial": false,
+      "proposed_trash_bytes": 11,
+      "proposed_trash_files": 1,
+      "scan_issues": 0
+    },
+    "version": 1
+  }
+}

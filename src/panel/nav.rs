@@ -41,6 +41,7 @@ impl PanelState {
     /// preferring it over any remembered focus. While the listing is still
     /// loading in the background, the landing is deferred until it publishes.
     pub fn focus_child(&mut self, name: String) {
+        self.initial_focus_child = None;
         if self.can_async_list() && self.listing_job.is_awaiting() {
             self.listing_job.set_focus(PendingFocus::NamedChild(name));
         } else if let Some(idx) = self.named_child_position(&name) {

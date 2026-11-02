@@ -1,0 +1,71 @@
+{
+  "format": "commander_duplicate_report",
+  "version": 1,
+  "snapshot": "retained_duplicate_scan_proposal",
+  "context": {
+    "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3331-duplicate_report/left",
+    "scope": "listing",
+    "metadata_source": "retained_pane_listing",
+    "max_subfolder_levels": null,
+    "configured_subfolder_levels": null,
+    "min_bytes": 0,
+    "max_bytes": null,
+    "names": {
+      "include": "",
+      "exclude": "",
+      "case": false
+    },
+    "minimum_copies": 2,
+    "keep_policy": "shortest_path",
+    "group_sort": "savings"
+  },
+  "summary": {
+    "groups": 2,
+    "files": 5,
+    "proposed_trash_files": 0,
+    "proposed_trash_bytes": 0,
+    "scan_issues": 0,
+    "partial": false
+  },
+  "groups": [
+    {
+      "group": 1,
+      "original_group": 2,
+      "size_bytes": 64,
+      "files": [
+        {
+          "member": 1,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3331-duplicate_report/left/z-long-copy.bin",
+          "action": "skip"
+        },
+        {
+          "member": 2,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3331-duplicate_report/left/z.bin",
+          "action": "skip"
+        }
+      ]
+    },
+    {
+      "group": 2,
+      "original_group": 1,
+      "size_bytes": 10,
+      "files": [
+        {
+          "member": 1,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3331-duplicate_report/left/a1.bin",
+          "action": "skip"
+        },
+        {
+          "member": 2,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3331-duplicate_report/left/a2.bin",
+          "action": "skip"
+        },
+        {
+          "member": 3,
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3331-duplicate_report/left/a3.bin",
+          "action": "skip"
+        }
+      ]
+    }
+  ]
+}

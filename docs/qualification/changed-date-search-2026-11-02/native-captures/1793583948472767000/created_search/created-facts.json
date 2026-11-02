@@ -1,0 +1,27 @@
+{
+  "expressions": [
+    "name:born- created-after:2026-11-02T01:45:58.413267917+00:00 created-before:2026-11-02T01:45:58.455372552+00:00",
+    "name:born- created-before:2026-11-02T01:45:58.413267917+00:00",
+    "name:born- created-after:2026-11-02T01:45:58.434141860+00:00"
+  ],
+  "facts": [
+    {
+      "modified_seconds": 1794188758,
+      "name": "born-first.txt",
+      "nanos": 413267917,
+      "seconds": 1793583958
+    },
+    {
+      "modified_seconds": 1794188758,
+      "name": "born-middle.txt",
+      "nanos": 434141860,
+      "seconds": 1793583958
+    },
+    {
+      "modified_seconds": 1794188758,
+      "name": "born-last.txt",
+      "nanos": 455372552,
+      "seconds": 1793583958
+    }
+  ]
+}

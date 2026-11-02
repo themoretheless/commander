@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "copies_native_checks": 14,
+  "names_native_checks": 14,
+  "sizes_native_checks": 14,
+  "input_phases": 32,
+  "exact_threshold_groups": true,
+  "draft_does_not_apply": true,
+  "invalid_one_preserves_results": true,
+  "reset_restores_two": true,
+  "recursion_retains_threshold": true,
+  "keeper_count_remains_one": true,
+  "copies_and_names_effect_calls": 0,
+  "sizes_recording_clipboard_writes": 3,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3062,
+  "ignored": 3,
+  "checks": 6
+}

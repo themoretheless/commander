@@ -17,7 +17,7 @@ fn age_deadline(modified: SystemTime, days: u64) -> Option<SystemTime> {
 }
 
 /// A category facet for the quick-filter chips.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum KindFacet {
     Folders,
     Images,
@@ -28,7 +28,7 @@ pub enum KindFacet {
 
 /// Active quick-filter facets, `ANDed` with the substring filter. Default is
 /// "no facets" (everything passes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct FacetSet {
     pub kind: Option<KindFacet>,
     /// Minimum file size in bytes (folders are not filtered by size).
@@ -185,7 +185,18 @@ mod tests {
                 .unwrap_or_default()
         };
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),

@@ -1,0 +1,7 @@
+{
+  "scenario": "duplicate_policy",
+  "output": "/tmp/commander-native-duplicate-csv-1793401936622534000",
+  "binary_sha256": "425049cdd99ecd4bb5b6b38cdc052d53093fa97a9cf6286fadbcee7d5c2612e9",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793401936815164000
+}

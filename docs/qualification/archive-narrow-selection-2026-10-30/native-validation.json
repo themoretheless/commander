@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Narrow/Remove workflow or layout capture",
+  "binary_sha256": "fb14f533b5a98886e997b8b675f33a3bb9550d87fc312e9d2ac5cabb81d51c74",
+  "earlier_archive_native_gates": "remain pending"
+}

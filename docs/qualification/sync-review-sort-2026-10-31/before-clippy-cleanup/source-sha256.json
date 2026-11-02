@@ -1,0 +1,9 @@
+{
+  "src/sync_report.rs": "781f2efc939cf2dbae944226918ea4bd16b81623eaa8f0b499655ef543d670c4",
+  "src/sync.rs": "88b2c3cc1b60503213dc4ed664d6cdb2bcfcf2dd29aee1034b97f7c860508e91",
+  "src/sync_review.rs": "a43744a03075db4931525e2198df96b3da10e0c24965091f60d39832df450376",
+  "src/app/sync_dialog.rs": "be0497e594e5ad44e4d44b44e85333b8f59adb0fccd3096fa10751bbe31a5454",
+  "src/app/mod.rs": "c9b442df129c90ef11051c73d64e83799860ace12559faa8b0398324d245c2cc",
+  "src/main.rs": "cd3e68651445e34cfd3e34b71ad035aaed13940d1fcdcc3da372741f8856a245",
+  "src/visual_qa.rs": "72e9efaacbf103030223e7cbb71e5296746d4e433ea3bc28c4f095aedfe6c24e"
+}

@@ -85,6 +85,15 @@ impl App {
         // Workspace synchronization now creates only image markers or pending
         // text identities; it never reads text on the UI thread.
         self.ws.sync_preview();
+        let metadata_identity = |panel: &PanelState| match &panel.preview {
+            Some(PreviewContent::Info(card)) => card.image_metadata.clone(),
+            _ => None,
+        };
+        self.image_metadata.retain(
+            ctx,
+            metadata_identity(&self.ws.left).as_ref(),
+            metadata_identity(&self.ws.right).as_ref(),
+        );
         let pdf_identity: fn(&PanelState) -> Option<&crate::panel::PreviewIdentity> =
             |panel| match &panel.preview {
                 Some(PreviewContent::Pdf(identity)) => Some(identity),

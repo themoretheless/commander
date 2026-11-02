@@ -1,0 +1,13 @@
+# Mask selection Remove and Invert
+
+Inspired by [Double Commander MarkPlus/MarkMinus and marking controls](https://doublecmd.github.io/doc/en/cmds.html), implemented independently in Commander. The Select by mask dialog now exposes Add / Remove / Invert for glob/extension masks, extending the previous exact-name-only action controls.
+
+Remove and Invert affect positive matches in the current filtered view, restricted to Files/Folders/Both. `!` exclusions protect matching entries from either action. Empty or exclusion-only masks make no changes in these new modes. Existing case, accent-folding, extensionless `*.*` and mask-term rules are reused. The preview counts the exact entries whose selected state will change. Other-folder selections, cursor and filtered-out entries remain owned by the existing panel state.
+
+Add retains the previous Commander semantics: positive matches are added and matches of `!` exclusions are deselected. Its legacy method returns the number added, while the dialog preview counts all changes. This distinction is intentional compatibility; Remove/Invert leave excluded entries untouched, as explained in the dialog. Double Commander command-file/attribute-mask compatibility is not claimed.
+
+Two new panel tests cover preview/action agreement, exclusions, repeat inversion, filtered and kind scopes, other-folder memory, case, accent folding and extensionless behavior. Native mask_actions uses actual egui pointer events for Remove / Invert / Invert / Add, with initial notes.md + photo.png and mask `notes.*;README.*;!photo.*`. Expected sets: photo; notes+README+photo; photo; notes+README. The last Add also proves preservation of legacy exclusion subtraction. Fixture text/modal opening are seeded between stages; no physical OS-input claim. The prior name_list_actions workflow is the control.
+
+Validation: all six gates passed (build, full tests: 3,257 passed / 3 ignored, strict Clippy, ordinary check, formatting and diff whitespace). Final mask_actions and name_list_actions native workflows each passed 14/14; exact recorded sets and preview counts were independently verified. Native effect counters are all zero and both final screenshots were visually inspected. The initial attempt is retained with a process sample; it missed the apply click while the dialog moved. Final event injection waits for stable button rectangles; no deadline was increased. Both scenarios are included in CI.
+
+See checks.json, tests.log, verification.log and native-launch.json for final evidence. No dependencies changed; existing dependency audit failures remain open. The 99-repository transfer goal remains open.

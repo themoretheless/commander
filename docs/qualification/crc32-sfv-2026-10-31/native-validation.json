@@ -1,0 +1,26 @@
+{
+  "status": "passed_scoped",
+  "phase": 65,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 7,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "algorithm": "CRC32",
+  "expected_digest": "352441c2",
+  "required_prior_states": [
+    "prior SHA/BLAKE3 copy gates",
+    "CRC32 rejects old 64-hex expected value",
+    "CRC32 Match",
+    "CRC32 digest copy exact and count6"
+  ],
+  "final_sfv_payload_gate": "absolute fixture.left/checksum.txt + space + 352441C2 + LF",
+  "frame_inspected": true,
+  "binary_hash_verified": true,
+  "os_clipboard_delivery": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture"
+}

@@ -1,0 +1,13 @@
+2026-11-02T05:37:47 INFO  commander::logging: logging initialized
+2026-11-02T05:37:47 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: accessed_search
+2026-11-02T05:37:47 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-02T05:37:47 INFO  commander::visual_qa: Allocation search QA phase 0
+2026-11-02T05:37:47 INFO  commander::visual_qa: Allocation search QA phase 1
+2026-11-02T05:37:47 INFO  commander::visual_qa: Allocation search QA phase 2
+2026-11-02T05:37:47 INFO  commander::visual_qa: Allocation search QA phase 3
+2026-11-02T05:37:48 INFO  commander::visual_qa: Allocation search QA phase 4
+2026-11-02T05:37:48 INFO  commander::visual_qa: Allocation search QA phase 5
+2026-11-02T05:37:48 INFO  commander::visual_qa: Allocation search QA phase 6
+2026-11-02T05:37:48 INFO  commander::visual_qa: Allocation search QA phase 7
+2026-11-02T05:37:48 INFO  commander::visual_qa: Allocation search QA phase 8
+2026-11-02T05:37:48 INFO  commander::visual_qa: Allocation search QA phase 9

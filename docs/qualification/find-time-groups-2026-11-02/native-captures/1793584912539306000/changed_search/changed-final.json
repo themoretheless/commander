@@ -1,0 +1,17 @@
+{
+  "expression": "name:status- changed-after:2026-11-02T02:02:09.718956799+00:00",
+  "matched": 1,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-69708-changed_search/left",
+  "rows": [
+    {
+      "changed_ns": 1793584929740146321,
+      "explanations": [
+        "literal \"status-\"",
+        "changed-after:2026-11-02T02:02:09.718956799+00:00"
+      ],
+      "name": "status-last.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

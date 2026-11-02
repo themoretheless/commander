@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "scope": "Archive clipboard export and bounded scrolling sheet; ordinary archive browser baseline",
+  "scenes": {
+    "archive_export": {
+      "status": "captured",
+      "checks_passed": 14,
+      "checks_total": 14,
+      "native_effect_calls": {
+        "context_menu": 0,
+        "deferred_menu": 0,
+        "clipboard": 5,
+        "opener": 0,
+        "trash": 0,
+        "free_space": 0
+      },
+      "binary_sha256": "e13d4dc9b9224faaf83e04c18722c5051fa51cd64d2f7691dc5d3e40606840ae",
+      "frame_inspected": true
+    },
+    "archive_browser": {
+      "status": "captured",
+      "checks_passed": 14,
+      "checks_total": 14,
+      "native_effect_calls": {
+        "context_menu": 0,
+        "deferred_menu": 0,
+        "clipboard": 0,
+        "opener": 0,
+        "trash": 0,
+        "free_space": 0
+      },
+      "binary_sha256": "e13d4dc9b9224faaf83e04c18722c5051fa51cd64d2f7691dc5d3e40606840ae",
+      "frame_inspected": true
+    }
+  },
+  "remaining_gates": "Other archive menus, gestures, integrity checking, extraction and OS pasteboard remain separately unqualified"
+}

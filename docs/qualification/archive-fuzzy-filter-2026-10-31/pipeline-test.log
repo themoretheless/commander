@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.52s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 1 test
+test app::archive_dialog::tests::archive_fuzzy_mode_rebuilds_duplicates_scopes_intersections_and_saved_navigation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2880 filtered out; finished in 0.01s
+

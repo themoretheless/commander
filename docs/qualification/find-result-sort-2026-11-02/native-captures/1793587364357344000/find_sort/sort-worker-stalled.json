@@ -1,0 +1,1 @@
+phase=4, pending=false, running=true, complete=false, results=0, error=None, expression="name:sort-", sort=Sort { field: Rank, descending: false }, pivot=None

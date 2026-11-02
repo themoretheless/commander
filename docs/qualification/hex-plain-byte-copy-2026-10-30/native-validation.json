@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Copy bytes HEX/decimal/UTF-8 clipboard/layout capture",
+  "binary_sha256": "e36309babdd754df6ac363ef823903ca96e62aa82af3f966b545f26109f88972",
+  "headless_pointer_test": "passed exact HEX return; not native clipboard validation",
+  "earlier_native_gates": "remain pending"
+}

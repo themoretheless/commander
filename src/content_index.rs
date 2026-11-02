@@ -28,7 +28,7 @@ const MAX_INDEX_FILE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DOCUMENT_JSON_BYTES: usize = MAX_INDEX_FILE_BYTES - 4 * 1024 * 1024;
 /// Upper bound on one pretty-printed document's JSON apart from its path and
 /// content strings: field names, indentation, and u64-sized numbers.
-const DOCUMENT_JSON_OVERHEAD: usize = 384;
+const DOCUMENT_JSON_OVERHEAD: usize = 1408;
 
 pub const fn schema_version() -> u32 {
     SCHEMA_VERSION
@@ -40,28 +40,151 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 pub struct IndexedDocument {
     pub path: PathBuf,
     pub is_dir: bool,
+    /// Unknown in old snapshots; never infer link type from a path or extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_symlink: Option<bool>,
+    /// Observed lexical regular-file execute bits; unknown in older snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_executable: Option<bool>,
+    /// Lexical regular-file kind; older snapshots cannot establish it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_regular: Option<bool>,
+    /// Observed permission bits; unknown in old or non-Unix native snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unix_mode: Option<u32>,
+    /// Lexical numeric ownership; absent in old/non-Unix snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_uid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_gid: Option<u64>,
+    /// Observed regular-file allocated bytes; old/non-Unix snapshots remain unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocated_bytes: Option<u64>,
+    /// Observed regular-file link count; absent in older or unsupported snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hard_links: Option<u64>,
+    /// Lexical Unix kind; absent in old or non-Unix snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_type_bits: Option<u32>,
+    /// Observed lexical file/directory emptiness; absent in older snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_empty: Option<bool>,
+    /// Observed missing target; loops/access errors are unknown, never false positives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_broken_symlink: Option<bool>,
     pub size: u64,
     pub modified_secs: Option<u64>,
+    /// Exact observation for new snapshots; older caches retain second precision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_time: Option<CachedTime>,
     pub accessed_secs: Option<u64>,
+    /// Exact access observation; older caches retain their second-precision value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessed_time: Option<CachedTime>,
+    /// Creation time is independent of mtime/ctime; absent in old/unsupported records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_time: Option<CachedTime>,
+    /// Unix status/metadata-change observation; absent in old/unsupported records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_time: Option<CachedTime>,
     pub volume: Option<u64>,
     pub file_id: Option<u64>,
     pub content: Option<String>,
+    /// Whether the cached text reached EOF; legacy records cannot prove absence.
+    #[serde(default)]
+    pub content_complete: bool,
+}
+
+/// A lossless, checked representation on either side of the Unix epoch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CachedTime {
+    before_epoch: bool,
+    seconds: u64,
+    nanos: u32,
+}
+
+impl CachedTime {
+    fn capture(time: SystemTime) -> Self {
+        let (before_epoch, duration) = match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => (false, duration),
+            Err(error) => (true, error.duration()),
+        };
+        Self {
+            before_epoch,
+            seconds: duration.as_secs(),
+            nanos: duration.subsec_nanos(),
+        }
+    }
+
+    fn restore(&self) -> Option<SystemTime> {
+        if self.nanos >= 1_000_000_000 {
+            return None;
+        }
+        let duration = Duration::new(self.seconds, self.nanos);
+        if self.before_epoch {
+            std::time::UNIX_EPOCH.checked_sub(duration)
+        } else {
+            std::time::UNIX_EPOCH.checked_add(duration)
+        }
+    }
 }
 
 impl IndexedDocument {
     pub fn entry(&self) -> Option<FileEntry> {
-        let modified = self.modified_secs.and_then(epoch_secs);
-        crate::search::synthetic_entry(
+        let modified = match &self.modified_time {
+            Some(exact) => exact.restore(),
+            None => self.modified_secs.and_then(epoch_secs),
+        };
+        let mut entry = crate::search::synthetic_entry(
             self.path.clone(),
             self.is_dir,
             self.size,
             modified,
             crate::search::modified_label(modified),
-        )
+        )?;
+        entry.changed = self.changed_time.as_ref().and_then(CachedTime::restore);
+        entry.changed_str = crate::search::modified_label(entry.changed);
+        entry.created = self.created_time.as_ref().and_then(CachedTime::restore);
+        entry.created_str = crate::search::modified_label(entry.created);
+        entry.accessed = self.accessed();
+        entry.accessed_str = crate::search::modified_label(entry.accessed);
+        entry.allocated_size =
+            if self.is_regular == Some(true) && self.is_symlink == Some(false) && !self.is_dir {
+                self.allocated_bytes
+            } else {
+                None
+            };
+        entry.hard_links =
+            if self.is_regular == Some(true) && self.is_symlink == Some(false) && !self.is_dir {
+                self.hard_links
+            } else {
+                None
+            };
+        Some(entry)
+    }
+
+    pub fn broken_symlink(&self) -> Option<bool> {
+        match self.is_symlink {
+            Some(false) if self.is_broken_symlink != Some(true) => Some(false),
+            Some(true) => self.is_broken_symlink,
+            _ => None, // Do not trust contradictory or legacy facts as missing targets.
+        }
+    }
+
+    pub fn file_type_bits(&self) -> Option<u32> {
+        self.file_type_bits.filter(|bits| {
+            matches!(
+                bits,
+                0 | 0o010000 | 0o020000 | 0o040000 | 0o060000 | 0o100000 | 0o120000 | 0o140000
+            )
+        })
     }
 
     pub fn accessed(&self) -> Option<SystemTime> {
-        self.accessed_secs.and_then(epoch_secs)
+        match &self.accessed_time {
+            Some(exact) => exact.restore(),
+            None => self.accessed_secs.and_then(epoch_secs),
+        }
     }
 }
 
@@ -750,6 +873,7 @@ fn scan_index_within(
             progress.files_seen = progress.files_seen.saturating_add(1);
         }
         let mut content = None;
+        let mut content_complete = false;
         // Only regular files are read: opening a FIFO blocks the build thread
         // forever, and devices or sockets have no indexable text.
         if file_type.is_file() {
@@ -757,22 +881,28 @@ fn scan_index_within(
                 skipped_large = skipped_large.saturating_add(1);
             } else if progress
                 .content_bytes
-                .saturating_add(usize::try_from(metadata.len()).unwrap_or(usize::MAX))
+                // The longest BOM costs four bytes; UTF-32 can encode one
+                // UTF-8 byte in four input bytes. Reject only a proven lower
+                // bound here, then charge the actual decoded length below.
+                .saturating_add(
+                    usize::try_from(metadata.len().saturating_sub(4).div_ceil(4))
+                        .unwrap_or(usize::MAX),
+                )
                 > budget.content_bytes
             {
                 skipped_quota = skipped_quota.saturating_add(1);
             } else {
                 match read_indexable_text(&path, metadata.len()) {
-                    // Lossy decoding turns each invalid byte into a 3-byte
-                    // U+FFFD, so the text can outgrow the on-disk size that
-                    // passed the check above.
-                    Ok(Some(text))
+                    // Transcoding and lossy replacement can expand text.
+                    // The decoded-byte quota remains authoritative.
+                    Ok(Some((text, _)))
                         if progress.content_bytes.saturating_add(text.len())
                             > budget.content_bytes =>
                     {
                         skipped_quota = skipped_quota.saturating_add(1);
                     }
-                    Ok(Some(text)) => {
+                    Ok(Some((text, complete))) => {
+                        content_complete = complete;
                         progress.content_bytes = progress.content_bytes.saturating_add(text.len());
                         progress.content_indexed = progress.content_indexed.saturating_add(1);
                         content = Some(text);
@@ -808,11 +938,27 @@ fn scan_index_within(
         documents.push(IndexedDocument {
             path: path.clone(),
             is_dir,
+            is_symlink: Some(file_type.is_symlink()),
+            is_executable: crate::query::executable_file(&metadata),
+            is_regular: Some(file_type.is_file()),
+            unix_mode: crate::query::unix_mode(&metadata.permissions()),
+            owner_uid: crate::query::native_uid(&metadata),
+            owner_gid: crate::query::native_gid(&metadata),
+            allocated_bytes: crate::panel::allocated_size(&metadata),
+            hard_links: crate::panel::hard_link_count(&metadata),
+            file_type_bits: crate::query::native_file_type_bits(&metadata),
+            is_empty: crate::fs_util::observed_empty(&path, &metadata),
+            is_broken_symlink: crate::fs_util::observed_broken_symlink(&path, &metadata),
             size: metadata.len(),
             modified_secs: system_time_secs(metadata.modified().ok()),
+            modified_time: metadata.modified().ok().map(CachedTime::capture),
             accessed_secs: system_time_secs(metadata.accessed().ok()),
+            accessed_time: metadata.accessed().ok().map(CachedTime::capture),
+            created_time: metadata.created().ok().map(CachedTime::capture),
+            changed_time: crate::panel::metadata_change_time(&metadata).map(CachedTime::capture),
             volume,
             file_id,
+            content_complete: content.is_some() && content_complete,
             content,
         });
         progress.indexed = documents.len();
@@ -984,8 +1130,11 @@ fn wait_for_idle(
 /// Leading bytes checked for NULs to tell binary files from text.
 const BINARY_SNIFF_BYTES: u64 = 8_192;
 
-fn read_indexable_text(path: &Path, size: u64) -> std::io::Result<Option<String>> {
-    read_indexable_from(fs::File::open(path)?, size)
+fn read_indexable_text(path: &Path, size: u64) -> std::io::Result<Option<(String, bool)>> {
+    let mut file = fs::File::open(path)?;
+    let content = read_indexable_from(&mut file, size)?;
+    let complete = content.is_some() && file.read(&mut [0u8; 1])? == 0;
+    Ok(content.map(|text| (text, complete)))
 }
 
 /// Sniff the head before reading the rest, so a binary file costs one
@@ -996,7 +1145,7 @@ fn read_indexable_from(reader: impl Read, size: u64) -> std::io::Result<Option<S
     Read::by_ref(&mut reader)
         .take(BINARY_SNIFF_BYTES)
         .read_to_end(&mut bytes)?;
-    if bytes.contains(&0) {
+    if crate::search_text::binary_head(&bytes) {
         return Ok(None);
     }
     bytes.reserve(
@@ -1005,7 +1154,7 @@ fn read_indexable_from(reader: impl Read, size: u64) -> std::io::Result<Option<S
             .saturating_sub(bytes.len()),
     );
     reader.read_to_end(&mut bytes)?;
-    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    Ok(Some(crate::search_text::decode(&bytes).into_owned()))
 }
 
 /// Upper bound on a string's length once JSON-escaped and quoted.
@@ -1533,6 +1682,66 @@ mod tests {
     }
 
     #[test]
+    fn bom_search_index_quota_uses_decoded_bytes() {
+        for width in [1, 2, 4] {
+            for little in [false, true] {
+                let temp = TempDir::new();
+                std::fs::write(
+                    temp.path().join("encoded.txt"),
+                    crate::search_text::fixture(&"a".repeat(20), width, little),
+                )
+                .unwrap();
+                let index = scan_index_within(
+                    temp.path().to_path_buf(),
+                    Vec::new(),
+                    Arc::new(AtomicBool::new(true)),
+                    Arc::new(AtomicBool::new(false)),
+                    None,
+                    ScanBudget {
+                        documents: MAX_DOCUMENTS,
+                        json_bytes: MAX_DOCUMENT_JSON_BYTES,
+                        content_bytes: 20,
+                    },
+                    |_| true,
+                )
+                .unwrap();
+                assert_eq!(index.content_indexed, 1, "{width}: {little}");
+                assert_eq!(index.content_bytes, 20);
+                assert_eq!(index.skipped_quota, 0);
+                assert!(index.documents[0].content_complete);
+            }
+        }
+    }
+
+    #[test]
+    fn bom_search_index_expansion_respects_decoded_quota() {
+        let temp = TempDir::new();
+        std::fs::write(
+            temp.path().join("encoded.txt"),
+            crate::search_text::fixture(&"界".repeat(8), 2, true),
+        )
+        .unwrap();
+        let index = scan_index_within(
+            temp.path().to_path_buf(),
+            Vec::new(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            ScanBudget {
+                documents: MAX_DOCUMENTS,
+                json_bytes: MAX_DOCUMENT_JSON_BYTES,
+                content_bytes: 20,
+            },
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(index.content_indexed, 0);
+        assert_eq!(index.content_bytes, 0);
+        assert_eq!(index.skipped_quota, 1);
+        assert!(index.documents[0].content.is_none());
+    }
+
+    #[test]
     fn content_quota_counts_decoded_text_not_file_size() {
         let temp = TempDir::new();
         // 10 invalid bytes decode to 10 three-byte U+FFFD characters.
@@ -1587,16 +1796,96 @@ mod tests {
     }
 
     #[test]
+    fn precise_indexed_modification_times_roundtrip_legacy_and_invalid_metadata() {
+        let temp = TempDir::new();
+        temp.file("file.txt", "needle");
+        let mut index = build_test_index(temp.path());
+        let position = index
+            .documents
+            .iter()
+            .position(|document| !document.is_dir)
+            .unwrap();
+        let mut document = index.documents[position].clone();
+        for time in [
+            std::time::UNIX_EPOCH,
+            std::time::UNIX_EPOCH + Duration::new(42, 123456789),
+            std::time::UNIX_EPOCH - Duration::new(42, 123456789),
+        ] {
+            document.modified_time = Some(CachedTime::capture(time));
+            let decoded: IndexedDocument =
+                serde_json::from_str(&serde_json::to_string(&document).unwrap()).unwrap();
+            assert_eq!(decoded.entry().unwrap().modified, Some(time));
+            index.documents[position] = document.clone();
+            let saved = temp.path().join("saved-index.json");
+            save_index_to(&saved, &index).unwrap();
+            let loaded = load_index_from(&saved, temp.path()).unwrap().unwrap();
+            assert_eq!(
+                loaded.documents[position].entry().unwrap().modified,
+                Some(time)
+            );
+        }
+        let mut legacy = serde_json::to_value(&document).unwrap();
+        legacy.as_object_mut().unwrap().remove("modified_time");
+        legacy["modified_secs"] = serde_json::json!(42);
+        let decoded: IndexedDocument = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            decoded.entry().unwrap().modified,
+            Some(std::time::UNIX_EPOCH + Duration::from_secs(42))
+        );
+        document.modified_secs = Some(42);
+        for exact in [
+            CachedTime {
+                before_epoch: false,
+                seconds: 0,
+                nanos: 1_000_000_000,
+            },
+            CachedTime {
+                before_epoch: false,
+                seconds: u64::MAX,
+                nanos: 0,
+            },
+            CachedTime {
+                before_epoch: true,
+                seconds: u64::MAX,
+                nanos: 0,
+            },
+        ] {
+            document.modified_time = Some(exact);
+            assert_eq!(
+                document.entry().unwrap().modified,
+                None,
+                "invalid exact values must not silently fall back to a different timestamp"
+            );
+        }
+    }
+
+    #[test]
     fn corrupt_index_times_do_not_panic() {
         let document = IndexedDocument {
             path: PathBuf::from("/data/file.txt"),
             is_dir: false,
+            is_symlink: None,
+            is_executable: None,
+            is_regular: None,
+            unix_mode: None,
+            owner_uid: None,
+            owner_gid: None,
+            allocated_bytes: None,
+            hard_links: None,
+            file_type_bits: None,
+            is_empty: None,
+            is_broken_symlink: None,
             size: 1,
+            modified_time: None,
             modified_secs: Some(u64::MAX),
             accessed_secs: Some(u64::MAX),
+            accessed_time: None,
+            created_time: None,
+            changed_time: None,
             volume: None,
             file_id: None,
             content: None,
+            content_complete: false,
         };
         let entry = document.entry().unwrap();
         assert_eq!(entry.modified, None);
@@ -1613,6 +1902,9 @@ mod tests {
         let normal = IndexedDocument {
             modified_secs: Some(0),
             accessed_secs: Some(60),
+            accessed_time: None,
+            created_time: None,
+            changed_time: None,
             ..document
         };
         assert_eq!(
@@ -1714,6 +2006,26 @@ mod tests {
     }
 
     #[test]
+    fn content_completeness_detects_eof_and_a_file_growing_past_the_index_limit() {
+        let temp = TempDir::new();
+        let path = temp.path().join("boundary.txt");
+        fs::write(&path, vec![b'a'; MAX_FILE_BYTES as usize]).unwrap();
+        let (text, complete) = read_indexable_text(&path, MAX_FILE_BYTES).unwrap().unwrap();
+        assert!(complete);
+        assert_eq!(text.len() as u64, MAX_FILE_BYTES);
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"extra")
+            .unwrap();
+        let (text, complete) = read_indexable_text(&path, MAX_FILE_BYTES).unwrap().unwrap();
+        assert!(!complete);
+        assert_eq!(text.len() as u64, MAX_FILE_BYTES);
+    }
+
+    #[test]
     fn binary_files_are_rejected_after_reading_only_the_head() {
         struct Counting<'a>(&'a [u8], &'a std::cell::Cell<usize>);
         impl Read for Counting<'_> {
@@ -1777,17 +2089,183 @@ mod tests {
         assert_eq!(loaded.documents.len(), index.documents.len());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn broken_symlink_index_facts_roundtrip_and_reject_contradictory_records() {
+        let dir = TempDir::new();
+        dir.file("target", "text");
+        std::os::unix::fs::symlink("missing", dir.path().join("link")).unwrap();
+        let index = build_test_index(dir.path());
+        let original = index
+            .documents
+            .iter()
+            .find(|d| d.path.ends_with("link"))
+            .unwrap();
+        assert_eq!(original.broken_symlink(), Some(true));
+        let mut saved = serde_json::to_value(original).unwrap();
+        let mut document: IndexedDocument = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(document.broken_symlink(), Some(true));
+        document.is_symlink = Some(false);
+        assert_eq!(document.broken_symlink(), None);
+        saved.as_object_mut().unwrap().remove("is_broken_symlink");
+        let old: IndexedDocument = serde_json::from_value(saved).unwrap();
+        assert_eq!(old.broken_symlink(), None);
+        let mut ordinary = index
+            .documents
+            .iter()
+            .find(|d| d.path.ends_with("target"))
+            .unwrap()
+            .clone();
+        ordinary.is_broken_symlink = None;
+        assert_eq!(ordinary.broken_symlink(), Some(false));
+    }
+
+    #[test]
+    fn exact_access_times_roundtrip_and_invalid_exact_never_falls_back() {
+        let temp = crate::testutil::TempDir::new();
+        temp.file("access.txt", "needle");
+        let index = build_test_index(temp.path());
+        let mut doc = index
+            .documents
+            .iter()
+            .find(|d| d.path.ends_with("access.txt"))
+            .unwrap()
+            .clone();
+        for time in [
+            std::time::UNIX_EPOCH + Duration::new(42, 123456789),
+            std::time::UNIX_EPOCH - Duration::new(42, 123456789),
+        ] {
+            doc.accessed_time = Some(CachedTime::capture(time));
+            let decoded: IndexedDocument =
+                serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+            assert_eq!(decoded.accessed(), Some(time));
+            assert_eq!(decoded.entry().unwrap().accessed, Some(time));
+        }
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy.as_object_mut().unwrap().remove("accessed_time");
+        legacy["accessed_secs"] = serde_json::json!(42);
+        let old: IndexedDocument = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            old.accessed(),
+            Some(std::time::UNIX_EPOCH + Duration::from_secs(42))
+        );
+        doc.accessed_time = Some(CachedTime {
+            before_epoch: false,
+            seconds: 42,
+            nanos: 1_000_000_000,
+        });
+        doc.accessed_secs = Some(42);
+        assert_eq!(doc.accessed(), None);
+        assert_eq!(doc.entry().unwrap().accessed, None);
+    }
+
+    #[test]
+    fn created_times_are_exact_and_old_or_invalid_records_remain_unknown() {
+        let temp = crate::testutil::TempDir::new();
+        temp.file("born.txt", "needle");
+        let index = build_test_index(temp.path());
+        let mut doc = index
+            .documents
+            .iter()
+            .find(|d| d.path.ends_with("born.txt"))
+            .unwrap()
+            .clone();
+        for time in [
+            std::time::UNIX_EPOCH + Duration::new(42, 123456789),
+            std::time::UNIX_EPOCH - Duration::new(42, 123456789),
+        ] {
+            doc.created_time = Some(CachedTime::capture(time));
+            let decoded: IndexedDocument =
+                serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+            assert_eq!(decoded.entry().unwrap().created, Some(time));
+        }
+        let mut old = serde_json::to_value(&doc).unwrap();
+        old.as_object_mut().unwrap().remove("created_time");
+        let old: IndexedDocument = serde_json::from_value(old).unwrap();
+        assert!(old.entry().unwrap().created.is_none());
+        doc.created_time = Some(CachedTime {
+            before_epoch: false,
+            seconds: 42,
+            nanos: 1_000_000_000,
+        });
+        assert!(doc.entry().unwrap().created.is_none());
+    }
+
+    #[test]
+    fn changed_times_are_exact_and_old_or_invalid_records_remain_unknown() {
+        let temp = crate::testutil::TempDir::new();
+        temp.file("born.txt", "needle");
+        let index = build_test_index(temp.path());
+        let mut doc = index
+            .documents
+            .iter()
+            .find(|d| d.path.ends_with("born.txt"))
+            .unwrap()
+            .clone();
+        for time in [
+            std::time::UNIX_EPOCH + Duration::new(42, 123456789),
+            std::time::UNIX_EPOCH - Duration::new(42, 123456789),
+        ] {
+            doc.changed_time = Some(CachedTime::capture(time));
+            let decoded: IndexedDocument =
+                serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+            assert_eq!(decoded.entry().unwrap().changed, Some(time));
+        }
+        let mut old = serde_json::to_value(&doc).unwrap();
+        old.as_object_mut().unwrap().remove("changed_time");
+        let old: IndexedDocument = serde_json::from_value(old).unwrap();
+        assert!(old.entry().unwrap().changed.is_none());
+        doc.changed_time = Some(CachedTime {
+            before_epoch: false,
+            seconds: 42,
+            nanos: 1_000_000_000,
+        });
+        assert!(doc.entry().unwrap().changed.is_none());
+    }
+
     #[test]
     fn document_overhead_bounds_the_largest_metadata() {
         let document = IndexedDocument {
             path: PathBuf::new(),
             is_dir: false,
+            is_symlink: Some(false),
+            is_executable: Some(false),
+            is_regular: Some(false),
+            unix_mode: Some(u32::MAX),
+            owner_uid: Some(u64::MAX),
+            owner_gid: Some(u64::MAX),
+            allocated_bytes: Some(u64::MAX),
+            hard_links: Some(u64::MAX),
+            file_type_bits: Some(u32::MAX),
+            is_empty: Some(false),
+            is_broken_symlink: Some(false),
             size: u64::MAX,
+            modified_time: Some(CachedTime {
+                before_epoch: false,
+                seconds: u64::MAX,
+                nanos: u32::MAX,
+            }),
+            changed_time: Some(CachedTime {
+                before_epoch: false,
+                seconds: u64::MAX,
+                nanos: u32::MAX,
+            }),
+            created_time: Some(CachedTime {
+                before_epoch: false,
+                seconds: u64::MAX,
+                nanos: u32::MAX,
+            }),
             modified_secs: Some(u64::MAX),
             accessed_secs: Some(u64::MAX),
+            accessed_time: Some(CachedTime {
+                before_epoch: false,
+                seconds: u64::MAX,
+                nanos: u32::MAX,
+            }),
             volume: Some(u64::MAX),
             file_id: Some(u64::MAX),
             content: Some(String::new()),
+            content_complete: false,
         };
         // Nested as the envelope nests it: { payload: { documents: [doc] } }.
         let nested = serde_json::json!({ "payload": { "documents": [document] } });
@@ -2080,7 +2558,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinks_are_listed_but_never_read_or_followed() {
+    fn symlinks_are_listed_without_reading_payloads_or_descending_targets() {
         let temp = TempDir::new();
         let target = temp.file("target.txt", "linked words");
         std::os::unix::fs::symlink(&target, temp.path().join("link.txt")).unwrap();

@@ -1,0 +1,24 @@
+{
+  "status": "passed",
+  "options_native_checks": 14,
+  "navigation_native_checks": 15,
+  "option_pointer_phases": 18,
+  "changed_counts": [
+    3,
+    2,
+    1,
+    2,
+    3,
+    2,
+    1
+  ],
+  "retained_sources_exact": true,
+  "display_original_minus_text": true,
+  "source_coordinates_verified": true,
+  "existing_navigation_operands_reconstructed": true,
+  "recording_effect_port_calls": 0,
+  "matching_binary_launch_hashes": true,
+  "full_suite_passed": 3050,
+  "ignored": 3,
+  "checks": 6
+}

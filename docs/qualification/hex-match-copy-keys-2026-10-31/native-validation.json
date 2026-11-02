@@ -1,0 +1,17 @@
+{
+  "status": "passed_scoped",
+  "phase": 25,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 2,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "prior_copy_and_clear_checkpoints": true,
+  "expected_clipboard": "DE AD BE EF",
+  "native_key": "Ctrl+Insert",
+  "physical_keys": "pending"
+}

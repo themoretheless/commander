@@ -1,0 +1,6 @@
+{
+  "scenario": "diff_navigation",
+  "out": "/tmp/commander-native-diff-reload-1793425016407035000",
+  "binary_sha256": "fab997620b9cd9a48533f419eb65eb152688888e4b85395ef4a35a1949221c38",
+  "core_sha256": "fab997620b9cd9a48533f419eb65eb152688888e4b85395ef4a35a1949221c38"
+}

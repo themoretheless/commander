@@ -1,0 +1,4 @@
+2026-10-31T02:51:05 INFO  commander::logging: logging initialized
+2026-10-31T02:51:05 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: checksums
+2026-10-31T02:51:05 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-relative-checksums-1793400661070525000
+2026-10-31T02:51:05 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

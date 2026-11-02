@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "checks": 14,
+  "link_status": "Target exists",
+  "kind": "Symlink to TXT file",
+  "target_suffix": "../right/portable.txt",
+  "size": "16 B",
+  "native_effect_calls": 0,
+  "binary_matches_launch": true
+}

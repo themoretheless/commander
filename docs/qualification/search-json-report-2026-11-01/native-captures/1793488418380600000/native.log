@@ -1,0 +1,3 @@
+2026-11-01T03:13:48 INFO  commander::logging: logging initialized
+2026-11-01T03:13:48 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: search_json
+Error: AppCreation(Custom { kind: Other, error: "Illegal byte sequence (os error 92)" })

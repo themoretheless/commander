@@ -1,0 +1,109 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: an array of `Range` that is only one element
+   --> src/app/diff_dialog.rs:200:49
+    |
+200 | ...                   let whole = [0..line.text.len()];
+    |                                   ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+    = note: `-D clippy::single-range-in-vec-init` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::single_range_in_vec_init)]`
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+200 -                                     let whole = [0..line.text.len()];
+200 +                                     let whole = (0..line.text.len()).collect::<std::vec::Vec<usize>>();
+    |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: a `Vec` of `Range` that is only one element
+   --> src/diff_intraline.rs:154:47
+    |
+154 |         assert_eq!(compare("", "x"), (vec![], vec![0..1], false));
+    |                                               ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+154 -         assert_eq!(compare("", "x"), (vec![], vec![0..1], false));
+154 +         assert_eq!(compare("", "x"), (vec![], (0..1).collect::<std::vec::Vec<usize>>(), false));
+    |
+help: if you wanted a `Vec` of len 1, try
+    |
+154 -         assert_eq!(compare("", "x"), (vec![], vec![0..1], false));
+154 +         assert_eq!(compare("", "x"), (vec![], vec![0; 1], false));
+    |
+
+error: a `Vec` of `Range` that is only one element
+   --> src/diff_intraline.rs:157:38
+    |
+157 |         assert_eq!(compare(&a, &b), (vec![6..406], vec![6..406], true));
+    |                                      ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+157 -         assert_eq!(compare(&a, &b), (vec![6..406], vec![6..406], true));
+157 +         assert_eq!(compare(&a, &b), ((6..406).collect::<std::vec::Vec<usize>>(), vec![6..406], true));
+    |
+help: if you wanted a `Vec` of len 406, try
+    |
+157 -         assert_eq!(compare(&a, &b), (vec![6..406], vec![6..406], true));
+157 +         assert_eq!(compare(&a, &b), (vec![6; 406], vec![6..406], true));
+    |
+
+error: a `Vec` of `Range` that is only one element
+   --> src/diff_intraline.rs:157:52
+    |
+157 |         assert_eq!(compare(&a, &b), (vec![6..406], vec![6..406], true));
+    |                                                    ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+157 -         assert_eq!(compare(&a, &b), (vec![6..406], vec![6..406], true));
+157 +         assert_eq!(compare(&a, &b), (vec![6..406], (6..406).collect::<std::vec::Vec<usize>>(), true));
+    |
+help: if you wanted a `Vec` of len 406, try
+    |
+157 -         assert_eq!(compare(&a, &b), (vec![6..406], vec![6..406], true));
+157 +         assert_eq!(compare(&a, &b), (vec![6..406], vec![6; 406], true));
+    |
+
+error: a `Vec` of `Range` that is only one element
+   --> src/diff_intraline.rs:160:14
+    |
+160 |             (vec![4..5], vec![4..5], true)
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+160 -             (vec![4..5], vec![4..5], true)
+160 +             ((4..5).collect::<std::vec::Vec<usize>>(), vec![4..5], true)
+    |
+help: if you wanted a `Vec` of len 5, try
+    |
+160 -             (vec![4..5], vec![4..5], true)
+160 +             (vec![4; 5], vec![4..5], true)
+    |
+
+error: a `Vec` of `Range` that is only one element
+   --> src/diff_intraline.rs:160:26
+    |
+160 |             (vec![4..5], vec![4..5], true)
+    |                          ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#single_range_in_vec_init
+help: if you wanted a `Vec` that contains the entire range, try
+    |
+160 -             (vec![4..5], vec![4..5], true)
+160 +             (vec![4..5], (4..5).collect::<std::vec::Vec<usize>>(), true)
+    |
+help: if you wanted a `Vec` of len 5, try
+    |
+160 -             (vec![4..5], vec![4..5], true)
+160 +             (vec![4..5], vec![4; 5], true)
+    |
+
+error: could not compile `commander` (bin "commander" test) due to 6 previous errors

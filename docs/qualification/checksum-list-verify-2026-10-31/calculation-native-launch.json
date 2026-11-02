@@ -1,0 +1,7 @@
+{
+  "scenario": "checksums",
+  "output": "/tmp/commander-native-list-calculation-regression-1793405346672768000",
+  "binary_sha256": "1cc9de570dcf9b0bb28c8c4525fc813faf21e46bca983005b6c5c2e548f2771d",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793405346673304000
+}

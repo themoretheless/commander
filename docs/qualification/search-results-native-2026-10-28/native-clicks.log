@@ -1,0 +1,12 @@
+2026-10-28T02:52:49 INFO  commander::logging: logging initialized
+2026-10-28T02:52:49 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: search_results
+2026-10-28T02:52:49 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 0, target [[900.9 324.0] - [928.2 339.0]], hidden 0
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 1, target [[900.9 323.0] - [928.2 340.0]], hidden 0
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 2, target [[900.9 323.0] - [928.2 340.0]], hidden 0
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 3, target [[393.3 288.2] - [503.1 303.2]], hidden 1
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 4, target [[393.3 287.2] - [503.1 304.2]], hidden 1
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 5, target [[393.3 287.2] - [503.1 304.2]], hidden 1
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 6, target [[900.9 292.0] - [928.2 307.0]], hidden 0
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 7, target [[900.9 291.0] - [928.2 308.0]], hidden 0
+2026-10-28T02:52:50 INFO  commander::visual_qa: search QA phase 8, target [[900.9 291.0] - [928.2 308.0]], hidden 0

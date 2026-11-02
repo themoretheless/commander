@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.42s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test hex_preview::tests::page_navigation_keys_load_exact_blocks_and_preserve_input_focus ... ok
+test hex_preview::tests::page_navigation_keys_handle_empty_and_exact_page_size_edges ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2851 filtered out; finished in 0.21s
+

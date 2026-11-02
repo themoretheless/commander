@@ -1,0 +1,179 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 1 test
+
+thread 'hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching' (23337873) panicked at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:101:17:
+DEBUG PANIC: Failed to acquire RwLock write after 10s. Deadlock?
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/std/src/panicking.rs:676:5
+   1: core::panicking::panic_fmt
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/panicking.rs:80:14
+   2: <epaint::mutex::RwLock<egui::context::ContextImpl>>::write::{closure#0}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:101:17
+   3: <core::option::Option<lock_api::rwlock::RwLockWriteGuard<parking_lot::raw_rwlock::RawRwLock, egui::context::ContextImpl>>>::unwrap_or_else::<<epaint::mutex::RwLock<egui::context::ContextImpl>>::write::{closure#0}>
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/option.rs:1067:21
+   4: <epaint::mutex::RwLock<egui::context::ContextImpl>>::write
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.36.2/src/mutex.rs:100:53
+   5: <egui::context::Context>::write::<bool, <egui::context::Context>::input<bool, <egui::response::Response>::clicked_by::{closure#0}>::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:765:28
+   6: <egui::context::Context>::input::<bool, <egui::response::Response>::clicked_by::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:992:14
+   7: <egui::response::Response>::clicked_by
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/response.rs:198:57
+   8: <egui::response::Response>::clicked
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/response.rs:185:66
+   9: <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}::{closure#1}
+             at ./src/hex_preview.rs:1123:157
+  10: <egui::context::Context>::data_mut::<egui::util::id_type_map::RawKey, <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}::{closure#1}>::{closure#0}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:1034:31
+  11: <egui::context::Context>::write::<egui::util::id_type_map::RawKey, <egui::context::Context>::data_mut<egui::util::id_type_map::RawKey, <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}::{closure#1}>::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:765:9
+  12: <egui::context::Context>::data_mut::<egui::util::id_type_map::RawKey, <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}::{closure#1}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:1034:14
+  13: <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}
+             at ./src/hex_preview.rs:1123:50
+  14: <<commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  15: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  16: <egui::containers::frame::Frame>::show_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:417:19
+  17: <egui::containers::frame::Frame>::show::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:405:14
+  18: <egui::containers::popup::Popup>::show::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}>::{closure#4}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/popup.rs:604:19
+  19: <egui::containers::area::Area>::show::<(), <egui::containers::popup::Popup>::show<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}>::{closure#4}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/area.rs:413:21
+  20: <egui::containers::popup::Popup>::show::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/popup.rs:601:33
+  21: <egui::containers::menu::MenuButton>::ui::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/menu.rs:331:14
+  22: <egui::ui::Ui>::menu_button::<(), &str, <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2796:42
+  23: <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}
+             at ./src/hex_preview.rs:1115:47
+  24: <egui::ui::Ui>::add_enabled_ui::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}>::{closure#0}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:1629:13
+  25: <<egui::ui::Ui>::add_enabled_ui<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}>::{closure#0} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  26: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  27: <egui::ui::Ui>::scope_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2211:19
+  28: <egui::ui::Ui>::scope::<(), <egui::ui::Ui>::add_enabled_ui<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}>::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2187:14
+  29: <egui::ui::Ui>::add_enabled_ui::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}::{closure#4}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:1625:14
+  30: <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}
+             at ./src/hex_preview.rs:1114:32
+  31: <<commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  32: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  33: <egui::ui::Ui>::scope_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2211:19
+  34: <egui::ui::Ui>::allocate_ui_with_layout_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:1344:14
+  35: <egui::ui::Ui>::horizontal_with_main_wrap_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2388:14
+  36: <egui::ui::Ui>::horizontal_wrapped::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}::{closure#5}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2368:14
+  37: <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}
+             at ./src/hex_preview.rs:1041:28
+  38: <egui::containers::scroll_area::ScrollArea>::show::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}>::{closure#0}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:964:61
+  39: <<egui::containers::scroll_area::ScrollArea>::show<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}>::{closure#0} as core::ops::function::FnOnce<(&mut egui::ui::Ui, emath::rect::Rect)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  40: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui, emath::rect::Rect), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui, emath::rect::Rect)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  41: <egui::containers::scroll_area::ScrollArea>::show_viewport_dyn::<()>::{closure#1}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:1044:17
+  42: <<egui::containers::scroll_area::ScrollArea>::show_viewport_dyn<()>::{closure#1} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  43: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  44: <egui::containers::frame::Frame>::show_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:417:19
+  45: <egui::containers::frame::Frame>::show::<(), <egui::containers::scroll_area::ScrollArea>::show_viewport_dyn<()>::{closure#1}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:405:14
+  46: <egui::containers::scroll_area::ScrollArea>::show_viewport_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:1043:14
+  47: <egui::containers::scroll_area::ScrollArea>::show::<(), <commander::hex_preview::HexViewer>::show::{closure#2}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/scroll_area.rs:964:14
+  48: <commander::hex_preview::HexViewer>::show::{closure#2}
+             at ./src/hex_preview.rs:793:22
+  49: <<commander::hex_preview::HexViewer>::show::{closure#2} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  50: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  51: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  52: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  53: <egui::containers::frame::Frame>::show_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:417:19
+  54: <egui::containers::frame::Frame>::show::<(), alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>>>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:405:14
+  55: <egui::containers::window::Window>::show_dyn::<()>::{closure#6}::{closure#0}::{closure#0}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:746:38
+  56: <<egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}::{closure#0} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  57: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = ()>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  58: <egui::ui::Ui>::scope_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2211:19
+  59: <egui::ui::Ui>::scope_builder::<(), <egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/ui.rs:2199:14
+  60: <egui::containers::collapsing_header::CollapsingState>::show_body_unindented::<(), <egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/collapsing_header.rs:231:35
+  61: <egui::containers::window::Window>::show_dyn::<()>::{closure#6}::{closure#0}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:737:26
+  62: <egui::containers::resize::Resize>::show::<core::option::Option<()>, <egui::containers::window::Window>::show_dyn<()>::{closure#6}::{closure#0}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/resize.rs:325:19
+  63: <egui::containers::window::Window>::show_dyn::<()>::{closure#6}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:721:24
+  64: <<egui::containers::window::Window>::show_dyn<()>::{closure#6} as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once::{shim:vtable#0}
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  65: <alloc::boxed::Box<dyn for<'a> core::ops::function::FnOnce<(&'a mut egui::ui::Ui,), Output = core::option::Option<()>>> as core::ops::function::FnOnce<(&mut egui::ui::Ui,)>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/alloc/src/boxed.rs:2366:9
+  66: <egui::containers::frame::Frame>::show_dyn::<core::option::Option<()>>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:417:19
+  67: <egui::containers::frame::Frame>::show::<core::option::Option<()>, <egui::containers::window::Window>::show_dyn<()>::{closure#6}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/frame.rs:405:14
+  68: <egui::containers::window::Window>::show_dyn::<()>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:720:47
+  69: <egui::containers::window::Window>::show::<(), <commander::hex_preview::HexViewer>::show::{closure#2}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/containers/window.rs:548:14
+  70: <commander::hex_preview::HexViewer>::show
+             at ./src/hex_preview.rs:789:14
+  71: commander::hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching::{closure#1}
+             at ./src/hex_preview.rs:1405:32
+  72: <egui::context::Context>::run_ui_dyn::{closure#1}
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:812:17
+  73: <egui::context::Context>::run_dyn
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:856:13
+  74: <egui::context::Context>::run_ui_dyn
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:801:14
+  75: <egui::context::Context>::run_ui::<commander::hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching::{closure#1}>
+             at /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/context.rs:795:14
+  76: commander::hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching
+             at ./src/hex_preview.rs:1404:54
+  77: commander::hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching::{closure#0}
+             at ./src/hex_preview.rs:1364:87
+  78: <commander::hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+  79: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching ... FAILED
+
+failures:
+
+failures:
+    hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2797 filtered out; finished in 10.21s
+
+error: test failed, to rerun pass `--bin commander`

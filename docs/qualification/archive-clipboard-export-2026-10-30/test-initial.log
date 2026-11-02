@@ -1,0 +1,34 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0061]: this function takes 2 arguments but 1 argument was supplied
+    --> src/app/archive_dialog.rs:1190:24
+     |
+1190 |         listing.tree = crate::archive_tree::Tree::build(&listing.members).map(std::sync::Arc::new);
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^------------------ argument #2 is missing
+     |
+note: associated function defined here
+    --> src/archive_tree.rs:20:12
+     |
+  20 |     pub fn build(
+     |            ^^^^^
+  21 |         members: &[ArchiveMember],
+  22 |         cancelled: impl Fn() -> bool,
+     |         ----------------------------
+help: provide the argument
+     |
+1190 |         listing.tree = crate::archive_tree::Tree::build(&listing.members, /* cancelled */).map(std::sync::Arc::new);
+     |                                                                         +++++++++++++++++
+
+error[E0308]: mismatched types
+    --> src/app/archive_dialog.rs:1190:24
+     |
+1190 |         listing.tree = crate::archive_tree::Tree::build(&listing.members).map(std::sync::Arc::new);
+     |         ------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Result<Arc<Tree>, String>`, found `Result<Arc<Arc<Tree>>, String>`
+     |         |
+     |         expected due to the type of this binding
+     |
+     = note: expected enum `Result<Arc<Tree>, _>`
+                found enum `Result<Arc<std::sync::Arc<Tree>>, _>`
+
+Some errors have detailed explanations: E0061, E0308.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

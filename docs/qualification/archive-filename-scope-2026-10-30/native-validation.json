@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "native scope checkbox and regex entry",
+    "scoped folder navigation and exclusion",
+    "saved-filter recall and labels",
+    "focus/layout"
+  ]
+}

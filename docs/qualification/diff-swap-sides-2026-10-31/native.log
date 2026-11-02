@@ -1,0 +1,33 @@
+2026-10-31T12:35:41 INFO  commander::logging: logging initialized
+2026-10-31T12:35:41 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: diff_swap
+2026-10-31T12:35:41 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-diff_swap-1793435735145857000
+2026-10-31T12:35:41 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 0
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 1
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 2
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 3
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 4
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 5
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 6
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 7
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 8
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 9
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 10
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 11
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 12
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 13
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 14
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 15
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 16
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 17
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 18
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 19
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 20
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 21
+2026-10-31T12:35:42 INFO  commander::visual_qa: Diff swap QA phase 22
+2026-10-31T12:35:43 INFO  commander::visual_qa: Diff swap QA phase 23
+2026-10-31T12:35:43 INFO  commander::visual_qa: Diff swap QA phase 24
+2026-10-31T12:35:43 INFO  commander::visual_qa: Diff swap QA phase 25
+2026-10-31T12:35:43 INFO  commander::visual_qa: Diff swap QA phase 26
+2026-10-31T12:35:43 INFO  commander::visual_qa: Diff swap QA phase 27
+2026-10-31T12:35:43 INFO  commander::visual_qa: Diff swap QA phase 28

@@ -1,0 +1,4 @@
+2026-10-31T01:27:19 INFO  commander::logging: logging initialized
+2026-10-31T01:27:19 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: hex_utf16_encoding
+2026-10-31T01:27:19 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-hex-utf16-column-1793395633445823000
+2026-10-31T01:27:19 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

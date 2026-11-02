@@ -1,0 +1,26 @@
+[
+  {
+    "device_id": 16777230,
+    "file_id": 254095346,
+    "hard_links": 2,
+    "name": "original.bin",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "device_id": 16777230,
+    "file_id": 254095346,
+    "hard_links": 2,
+    "name": "alias.bin",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "device_id": 16777230,
+    "file_id": 254095349,
+    "hard_links": 1,
+    "name": "link.bin",
+    "owner_gid": 20,
+    "owner_uid": 501
+  }
+]

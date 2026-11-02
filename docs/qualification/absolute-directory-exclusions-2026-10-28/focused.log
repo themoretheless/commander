@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.77s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test query::tests::absolute_directory_query_masks_keep_lexical_root_and_member_boundaries ... ok
+test search::tests::absolute_directory_query_filters_native_branches_without_inventing_archive_paths ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2560 filtered out; finished in 0.22s
+

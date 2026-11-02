@@ -1,0 +1,12 @@
+{
+  "checks_passed": 14,
+  "terminal_phase": 50,
+  "clipboard_writes": 6,
+  "full_records": 4,
+  "full_matches": 3,
+  "full_failed": 1,
+  "problems_visible": 1,
+  "matching_name_visible": 1,
+  "filtered_payloads_validated": true,
+  "binary_hash_matched": true
+}

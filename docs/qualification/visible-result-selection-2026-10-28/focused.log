@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.75s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 1 test
+test app::find_dialog::tests::bulk_visible_result_selection_excludes_hidden_and_tracks_streamed_locations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2534 filtered out; finished in 0.00s
+

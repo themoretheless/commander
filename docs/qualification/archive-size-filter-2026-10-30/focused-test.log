@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.99s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 2 tests
+test app::archive_dialog::tests::archive_size_filter_units_boundaries_and_overflow_are_exact ... ok
+test app::archive_dialog::tests::archive_size_filter_retains_navigation_hidden_selection_and_saved_settings ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2812 filtered out; finished in 0.00s
+

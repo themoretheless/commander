@@ -1,0 +1,28 @@
+{
+  "status": "passed_scoped",
+  "scenario": "hex_search",
+  "capture_phase": 123,
+  "history_positions": [
+    110001,
+    120001,
+    110001
+  ],
+  "checks_passed": 14,
+  "checks_total": 14,
+  "frame_inspected": true,
+  "input_method": "egui key events in CUA-launched native runtime",
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "remaining_gates": [
+    "physical OS keyboard delivery and VoiceOver",
+    "native Alt+Backspace",
+    "native text edit undo, popup and busy suppression",
+    "keyboard-triggered cancel and identity failure recovery"
+  ]
+}

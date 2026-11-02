@@ -1,0 +1,22 @@
+     Locking 7 packages to highest Rust 1.100.0-nightly compatible versions
+      Adding bzip2 v0.6.1
+      Adding libbz2-rs-sys v0.2.5
+      Adding lzma-sys v0.1.20
+      Adding xz2 v0.1.7
+      Adding zstd v0.13.3
+      Adding zstd-safe v7.3.0
+      Adding zstd-sys v2.1.2+zstd.1.5.7
+   Compiling libc v0.2.189
+   Compiling pkg-config v0.3.34
+   Compiling zstd-safe v7.3.0
+    Checking libbz2-rs-sys v0.2.5
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Checking bzip2 v0.6.1
+   Compiling jobserver v0.1.35
+   Compiling cc v1.4.5
+   Compiling zstd-sys v2.1.2+zstd.1.5.7
+   Compiling lzma-sys v0.1.20
+   Compiling blake3 v1.8.7
+    Checking xz2 v0.1.7
+    Checking zstd v0.13.3
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.05s

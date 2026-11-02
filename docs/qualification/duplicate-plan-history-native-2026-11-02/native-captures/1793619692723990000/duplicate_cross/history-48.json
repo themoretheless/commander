@@ -1,0 +1,76 @@
+{
+  "can_redo": false,
+  "can_undo": true,
+  "phase": 48,
+  "report": {
+    "context": {
+      "additional_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/right",
+      "configured_subfolder_levels": null,
+      "group_sort": "scan",
+      "keep_policy": "shortest_path",
+      "max_bytes": null,
+      "max_subfolder_levels": null,
+      "metadata_source": "fresh_tree_enumeration",
+      "min_bytes": 0,
+      "minimum_copies": 2,
+      "names": {
+        "case": false,
+        "exclude": "",
+        "extension": "Any",
+        "grouping": "Any",
+        "grouping_ignore_ascii_case": false,
+        "include": ""
+      },
+      "only_cross_root_groups": true,
+      "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/left",
+      "scope": "two_trees"
+    },
+    "format": "commander_duplicate_report",
+    "groups": [
+      {
+        "files": [
+          {
+            "action": "trash",
+            "member": 1,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/left/cross.bin"
+          },
+          {
+            "action": "keep",
+            "member": 2,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/right/cross.bin"
+          }
+        ],
+        "group": 1,
+        "original_group": 1,
+        "size_bytes": 11
+      },
+      {
+        "files": [
+          {
+            "action": "trash",
+            "member": 1,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/left/nested/deep.bin"
+          },
+          {
+            "action": "keep",
+            "member": 2,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9524-duplicate_cross/right/nested/deep.bin"
+          }
+        ],
+        "group": 2,
+        "original_group": 2,
+        "size_bytes": 12
+      }
+    ],
+    "snapshot": "retained_duplicate_scan_proposal",
+    "summary": {
+      "files": 4,
+      "groups": 2,
+      "partial": false,
+      "proposed_trash_bytes": 23,
+      "proposed_trash_files": 2,
+      "scan_issues": 0
+    },
+    "version": 1
+  }
+}

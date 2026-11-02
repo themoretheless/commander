@@ -8,6 +8,7 @@ pub enum BrowserMode {
     #[default]
     List,
     Icons,
+    Miller,
 }
 
 const DEFAULT_VIEW_MEMORY_CAPACITY: usize = 256;

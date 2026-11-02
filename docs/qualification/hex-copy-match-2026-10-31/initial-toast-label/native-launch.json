@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793393872.078829,
+  "binary_sha256": "3a0eef959e17ccf7947bd79d68da2872140dbd43a18c266cf4087ec8e5de91fe",
+  "scenario": "hex_match_copy",
+  "output_root": "/tmp/commander-native-hex-copy-match-1793393872032315000"
+}

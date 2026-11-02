@@ -1,0 +1,7 @@
+{
+  "scenario": "favorites",
+  "out": "/tmp/commander-native-favorite-destinations-1793410867662136000",
+  "binary_sha256": "8eb35073e7ec8104d9dfb50366629bea83d29a37b7bb88e47caeaac0287f5efb",
+  "core_sha256": "8eb35073e7ec8104d9dfb50366629bea83d29a37b7bb88e47caeaac0287f5efb",
+  "started_ns": 1793410867773734000
+}

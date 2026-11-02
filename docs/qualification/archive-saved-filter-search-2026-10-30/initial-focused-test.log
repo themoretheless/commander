@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.15s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 3 tests
+test app::archive_dialog::tests::archive_filename_scope_rebuilds_duplicates_navigation_and_saved_filters ... ok
+test query::tests::case_sensitive_query_controls_text_masks_extensions_and_saved_filters ... ok
+test app::archive_dialog::tests::saved_filter_search_pointer_input_targets_original_identity_for_recall_and_removal ... FAILED
+
+failures:
+
+---- app::archive_dialog::tests::saved_filter_search_pointer_input_targets_original_identity_for_recall_and_removal stdout ----
+
+thread 'app::archive_dialog::tests::saved_filter_search_pointer_input_targets_original_identity_for_recall_and_removal' (25264407) panicked at src/app/archive_dialog.rs:4332:21:
+assertion `left == right` failed
+  left: ""
+ right: "ёж"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::archive_dialog::tests::saved_filter_search_pointer_input_targets_original_identity_for_recall_and_removal
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 2841 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin commander`

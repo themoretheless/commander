@@ -10,6 +10,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SelectionMaskOptions {
+    pub target: SelectionTarget,
+    pub case_sensitive: bool,
+    pub ignore_accents: bool,
+    pub extensionless_star: bool,
+}
+
 /// Restrict group selection without changing the panel's visible-row filter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SelectionTarget {
@@ -38,8 +46,11 @@ impl SelectionTarget {
 mod dir_size_cache;
 mod drag;
 mod facet;
+mod link_info;
 mod listing;
 mod listing_job;
+mod miller;
+pub use miller::Widths as MillerWidths;
 mod nav;
 mod preview;
 mod selection;
@@ -55,6 +66,7 @@ use dir_size_cache::*;
 pub use dir_size_cache::{flush_cache, invalidate_size_cache};
 pub use drag::DragState;
 pub use facet::{FacetSet, KindFacet, facet_matches, filter_is_active};
+pub use link_info::{LinkInfo, LinkTargetState};
 use listing::ListingState;
 use listing_job::{ListingJobController, PendingFocus};
 // Re-export preview/visit public API under `crate::panel::...` for stable paths.
@@ -160,6 +172,8 @@ pub enum ListingIdentity {
 
 #[derive(Debug, Clone)]
 pub struct FileEntry {
+    /// Observed with lexical/followed metadata; shared cheaply by row clones.
+    pub symlink: Option<Arc<LinkInfo>>,
     pub name: String,
     pub name_lower: String,
     /// Lowercase NFD name without combining marks, computed once at listing.
@@ -170,6 +184,21 @@ pub struct FileEntry {
     pub identity: ListingIdentity,
     pub is_dir: bool,
     pub size: u64,
+    /// Filesystem-reported allocation for a regular file, captured with metadata.
+    pub allocated_size: Option<u64>,
+    /// Observed regular-file link count; use `hard_link_count()` for lexical rows.
+    pub hard_links: Option<u64>,
+    /// Lexical Unix ownership captured by the listing worker; no account lookup.
+    pub owner_uid: Option<u64>,
+    pub owner_gid: Option<u64>,
+    /// Lexical object dates, captured with existing metadata (not target dates).
+    pub accessed: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    pub accessed_str: String,
+    pub created_str: String,
+    /// Unix metadata/status change time, distinct from creation and modification.
+    pub changed: Option<SystemTime>,
+    pub changed_str: String,
     pub extension: String,
     pub modified: Option<std::time::SystemTime>,
     /// Pre-formatted date string (rendered every frame, formatted once).
@@ -180,6 +209,65 @@ pub struct FileEntry {
     /// Info never stats on the UI thread. `None` when not observed: a
     /// dangling link, or a row that was never stat-ed.
     pub permissions: Option<fs::Permissions>,
+}
+
+/// Unix block counts use 512-byte units, independently of filesystem block size.
+pub fn allocated_size(metadata: &fs::Metadata) -> Option<u64> {
+    if !metadata.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        metadata.blocks().checked_mul(512)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+pub fn hard_link_count(metadata: &fs::Metadata) -> Option<u64> {
+    if !metadata.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(metadata.nlink())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Interpret POSIX signed seconds plus a nonnegative nanosecond fraction.
+#[cfg(any(unix, test))]
+fn unix_time_parts(seconds: i64, nanos: i64) -> Option<SystemTime> {
+    if !(0..1_000_000_000).contains(&nanos) {
+        return None;
+    }
+    let whole = std::time::Duration::from_secs(seconds.unsigned_abs());
+    let base = if seconds < 0 {
+        SystemTime::UNIX_EPOCH.checked_sub(whole)?
+    } else {
+        SystemTime::UNIX_EPOCH.checked_add(whole)?
+    };
+    base.checked_add(std::time::Duration::from_nanos(nanos as u64))
+}
+
+pub fn metadata_change_time(metadata: &fs::Metadata) -> Option<SystemTime> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        unix_time_parts(metadata.ctime(), metadata.ctime_nsec())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
 }
 
 impl FileEntry {
@@ -204,6 +292,7 @@ impl FileEntry {
         let name_lower = name.to_lowercase();
         let sort_key = diacritic_sort_key(&name_lower);
         Some(Self {
+            symlink: None,
             name,
             name_lower,
             sort_key,
@@ -219,6 +308,16 @@ impl FileEntry {
             modified_str,
             size_str,
             permissions: Some(meta.permissions()),
+            allocated_size: allocated_size(meta),
+            hard_links: hard_link_count(meta),
+            owner_uid: crate::query::native_uid(meta),
+            owner_gid: crate::query::native_gid(meta),
+            accessed: meta.accessed().ok(),
+            created: meta.created().ok(),
+            accessed_str: listing_date(meta.accessed().ok()),
+            created_str: listing_date(meta.created().ok()),
+            changed: metadata_change_time(meta),
+            changed_str: listing_date(metadata_change_time(meta)),
         })
     }
 
@@ -230,17 +329,93 @@ impl FileEntry {
         let followed = lexical
             .file_type()
             .is_symlink()
-            .then(|| fs::metadata(&path).ok())
-            .flatten();
-        let dangling = lexical.file_type().is_symlink() && followed.is_none();
+            .then(|| fs::metadata(&path));
+        let link_info = followed
+            .as_ref()
+            .map(|result| Arc::new(LinkInfo::observe(&path, result)));
+        let dangling = followed.as_ref().is_some_and(Result::is_err);
         let identity = crate::path_identity::PathIdentity::from_metadata(path.clone(), &lexical);
-        let mut entry = Self::from_meta(path, followed.as_ref().unwrap_or(&lexical))?;
+        let mut entry = Self::from_meta(
+            path,
+            followed
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .unwrap_or(&lexical),
+        )?;
+        entry.symlink = link_info;
         entry.identity = ListingIdentity::Captured(identity);
+        entry.hard_links = hard_link_count(&lexical);
+        entry.owner_uid = crate::query::native_uid(&lexical);
+        entry.owner_gid = crate::query::native_gid(&lexical);
+        entry.set_lexical_dates(Some(&lexical));
         if dangling {
             // The link's own mode says nothing about a target that is gone.
             entry.permissions = None;
+            entry.allocated_size = None;
         }
         Some(entry)
+    }
+
+    fn set_lexical_dates(&mut self, metadata: Option<&fs::Metadata>) {
+        self.accessed = metadata.and_then(|m| m.accessed().ok());
+        self.created = metadata.and_then(|m| m.created().ok());
+        self.accessed_str = listing_date(self.accessed);
+        self.created_str = listing_date(self.created);
+        self.changed = metadata.and_then(metadata_change_time);
+        self.changed_str = listing_date(self.changed);
+    }
+    pub fn listing_time(&self, column: SortColumn) -> (Option<SystemTime>, &str) {
+        match column {
+            SortColumn::Accessed => (self.accessed, &self.accessed_str),
+            SortColumn::Created => (self.created, &self.created_str),
+            SortColumn::Changed => (self.changed, &self.changed_str),
+            _ => (self.modified, &self.modified_str),
+        }
+    }
+
+    pub fn filesystem_id(&self) -> Option<(u64, u64)> {
+        if let ListingIdentity::Captured(identity) = &self.identity {
+            Some((identity.volume?, identity.file_id?))
+        } else {
+            None
+        }
+    }
+    /// Inode first, device as a secondary key; never mixes unknown identities with zero.
+    pub fn inode_sort_key(&self) -> Option<(u64, u64)> {
+        self.filesystem_id().map(|(device, inode)| (inode, device))
+    }
+
+    /// Retained lexical identity only for a positively observed regular file.
+    pub fn regular_file_id(&self) -> Option<(u64, u64)> {
+        if self.is_dir || self.is_symlink() {
+            return None;
+        }
+        match &self.identity {
+            ListingIdentity::Captured(identity)
+                if identity.exists
+                    && identity.kind == Some(crate::path_identity::PathKind::File) =>
+            {
+                self.filesystem_id()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn hard_link_count(&self) -> Option<u64> {
+        if self.is_dir || self.is_symlink() {
+            None
+        } else {
+            self.hard_links
+        }
+    }
+
+    /// Only regular non-link rows expose allocation as a sortable file metric.
+    pub fn allocated_bytes(&self) -> Option<u64> {
+        if self.is_dir || self.is_symlink() {
+            None
+        } else {
+            self.allocated_size
+        }
     }
 
     /// Whether the listing captured this row as a symlink (its display
@@ -298,6 +473,11 @@ impl FileEntry {
     pub fn modified_display(&self) -> &str {
         &self.modified_str
     }
+}
+
+fn listing_date(time: Option<SystemTime>) -> String {
+    time.and_then(format_modified)
+        .unwrap_or_else(|| "Unavailable".into())
 }
 
 pub fn diacritic_sort_key(name_lower: &str) -> String {
@@ -594,6 +774,12 @@ impl PartialEq for SelectionViewKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SortColumn {
+    HardLinks,
+    Changed,
+    Inode,
+    Allocated,
+    Accessed,
+    Created,
     Name,
     Stem,
     Size,
@@ -635,9 +821,11 @@ pub struct PanelState {
     pub current_path: PathBuf,
     pub(crate) tab_title: Option<String>,
     pub(crate) tab_close_protected: bool,
+    pub(crate) tab_full_path_label: bool,
     listing: ListingState,
     selection: SelectionState,
     saved_selection: Option<(PathBuf, HashSet<PathBuf>)>,
+    pub(crate) tab_selection: crate::selection_snapshot::Snapshot,
     pub preview: Option<PreviewContent>,
     /// Per-pane directory history (back/forward); a vim-style jump trail that
     /// truncates its forward tail on a new navigation.
@@ -647,6 +835,10 @@ pub struct PanelState {
     watcher: DirectoryWatcherState,
     pub drag: DragState,
     listing_job: ListingJobController,
+    pub(crate) miller: miller::MillerState,
+    miller_context_only: bool,
+    miller_widths: miller::Widths,
+    initial_focus_child: Option<(PathBuf, String)>,
     pending_view_config: Option<ViewConfig>,
     view_apply_outcome: Option<ViewApplyOutcome>,
     workload: Option<crate::workload::WorkloadHandle>,
@@ -675,9 +867,11 @@ impl PanelState {
             current_path: path.clone(),
             tab_title: None,
             tab_close_protected: false,
+            tab_full_path_label: false,
             listing: ListingState::new(path.clone()),
             selection: SelectionState::new(path.clone()),
             saved_selection: None,
+            tab_selection: Default::default(),
             preview: None,
             history: {
                 let mut h = crate::jumplist::JumpList::new();
@@ -689,6 +883,10 @@ impl PanelState {
             watcher: DirectoryWatcherState::default(),
             drag: DragState::new(),
             listing_job: ListingJobController::default(),
+            miller: miller::MillerState::default(),
+            miller_context_only: false,
+            miller_widths: miller::Widths::default(),
+            initial_focus_child: None,
             pending_view_config: None,
             view_apply_outcome: None,
             workload: None,
@@ -716,6 +914,7 @@ impl PanelState {
     }
 
     pub(crate) fn suspend_for_tab(&mut self) {
+        self.miller = Default::default();
         self.watcher = DirectoryWatcherState::default();
         self.listing_job = ListingJobController::default();
         self.pending_view_config = None;
@@ -842,6 +1041,34 @@ impl PanelState {
         true
     }
 
+    pub fn save_tab_selection(&mut self) -> Result<(), String> {
+        if !self.can_save_selection() {
+            return Err("Wait for a complete folder listing".into());
+        }
+        let snapshot = crate::selection_snapshot::Snapshot::capture(
+            &self.current_path,
+            self.selection.selected(),
+        )?;
+        self.tab_selection = snapshot;
+        Ok(())
+    }
+    pub fn can_restore_tab_selection(&self) -> bool {
+        self.can_save_selection() && self.tab_selection.belongs_to(&self.current_path)
+    }
+    pub fn restore_tab_selection(&mut self) -> bool {
+        if !self.can_restore_tab_selection() {
+            return false;
+        }
+        let paths = self
+            .listing
+            .entries()
+            .iter()
+            .filter(|e| self.tab_selection.contains(&e.path))
+            .map(|e| e.path.clone())
+            .collect();
+        self.selection.replace_selected(paths);
+        true
+    }
     pub fn clear_selection(&mut self) {
         self.selection.clear_selected();
     }
@@ -1080,7 +1307,10 @@ impl PanelState {
         self.view.config().mode()
     }
 
-    pub const fn set_browser_mode(&mut self, mode: BrowserMode) {
+    pub fn set_browser_mode(&mut self, mode: BrowserMode) {
+        if mode != BrowserMode::Miller {
+            self.miller = Default::default();
+        }
         self.view.commit_config(self.view.config().with_mode(mode));
         self.selection.set_scroll_to_cursor(true);
     }
@@ -1100,7 +1330,20 @@ impl PanelState {
     pub fn refresh(&mut self) {
         self.change_provenance
             .record(crate::change_provenance::ChangeProvenance::Commander);
-        self.schedule_or_reload(PendingFocus::None);
+        let focus = match &self.initial_focus_child {
+            Some((path, name)) if path == &self.current_path => {
+                PendingFocus::NamedChild(name.clone())
+            }
+            _ => {
+                self.initial_focus_child = None;
+                PendingFocus::None
+            }
+        };
+        self.schedule_or_reload(focus);
+    }
+
+    pub(crate) fn queue_initial_focus_child(&mut self, name: String) {
+        self.initial_focus_child = Some((self.current_path.clone(), name));
     }
 
     fn can_async_list(&self) -> bool {
@@ -1263,6 +1506,7 @@ impl PanelState {
                 self.set_scroll_to_cursor(self.cursor() > 0);
             }
             PendingFocus::NamedChild(name) => {
+                self.initial_focus_child = None;
                 if let Some(idx) = self.named_child_position(&name) {
                     self.reveal_cursor(idx + 1);
                 }
@@ -1386,6 +1630,9 @@ impl PanelState {
     /// Returns `true` when some dir was skipped because of the walk
     /// cooldown and the caller should retry later.
     fn refresh_sizes(&mut self, forced: bool) {
+        if self.miller_context_only {
+            return;
+        }
         let filtered = self.filtered_indices();
         let path = self.current_path.clone();
         let scroll_anchor = self.scroll_anchor();
@@ -1406,6 +1653,9 @@ impl PanelState {
     }
 
     fn poll_sizes(&mut self) {
+        if self.miller_context_only {
+            return;
+        }
         let filtered = self.filtered_indices();
         let path = self.current_path.clone();
         let input = SizeScanInput {
@@ -1464,18 +1714,22 @@ impl PanelState {
                 Err(error) if vanished(&error) => continue,
                 Err(error) => Err(crate::ports::NativeFailure::from_io(&error)),
             };
-            let followed = file_type
-                .is_symlink()
-                .then(|| fs::metadata(&path).ok())
-                .flatten();
-            let dangling = file_type.is_symlink() && followed.is_none();
-            let display_metadata = followed.as_ref().or_else(|| lexical.as_ref().ok());
+            let followed = file_type.is_symlink().then(|| fs::metadata(&path));
+            let link_info = followed
+                .as_ref()
+                .map(|result| Arc::new(LinkInfo::observe(&path, result)));
+            let dangling = followed.as_ref().is_some_and(Result::is_err);
+            let display_metadata = followed
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .or_else(|| lexical.as_ref().ok());
             let Some(display_metadata) = display_metadata else {
                 complete = false;
                 continue;
             };
             match FileEntry::from_meta(path.clone(), display_metadata) {
                 Some(mut file_entry) => {
+                    file_entry.symlink = link_info;
                     if dangling {
                         // The lstat size is the link text's length, not
                         // content: a broken link has no size to show.
@@ -1484,6 +1738,12 @@ impl PanelState {
                         // Nor a target mode: there is no target.
                         file_entry.permissions = None;
                     }
+                    // Display kind/permissions may follow a link, but ownership
+                    // and link counts belong to the lexical object itself.
+                    file_entry.owner_uid = lexical.as_ref().ok().and_then(crate::query::native_uid);
+                    file_entry.owner_gid = lexical.as_ref().ok().and_then(crate::query::native_gid);
+                    file_entry.hard_links = lexical.as_ref().ok().and_then(hard_link_count);
+                    file_entry.set_lexical_dates(lexical.as_ref().ok());
                     file_entry.identity = match lexical {
                         Ok(metadata) => ListingIdentity::Captured(
                             crate::path_identity::PathIdentity::from_metadata(path, &metadata),
@@ -1608,6 +1868,9 @@ impl PanelState {
     fn load_remembered_path(&mut self, path: PathBuf) {
         self.current_path = path;
         let remembered = self.restore_view_settings();
+        if self.browser_mode() != BrowserMode::Miller {
+            self.miller = Default::default();
+        }
         if remembered.is_none() {
             self.view.clear_filters();
         }
@@ -1662,14 +1925,25 @@ impl PanelState {
     /// Select the `n` largest files in the filtered view (folders excluded).
     /// Returns how many entries were newly added to the selection.
     pub fn select_largest(&mut self, n: usize) -> usize {
+        self.select_largest_by(n, |entry| (!entry.is_dir).then_some(entry.size))
+    }
+
+    pub fn select_largest_allocated(&mut self, n: usize) -> usize {
+        self.select_largest_by(n, FileEntry::allocated_bytes)
+    }
+
+    fn select_largest_by(&mut self, n: usize, metric: impl Fn(&FileEntry) -> Option<u64>) -> usize {
         if n == 0 {
             return 0;
         }
         // Top-n needs sizes before mutation; keep a bounded heap instead of a
         // full filtered `Vec<&FileEntry>` plus a second path list.
         let mut heap = std::collections::BinaryHeap::<std::cmp::Reverse<(u64, PathBuf)>>::new();
-        for entry in self.filtered_iter().filter(|entry| !entry.is_dir) {
-            heap.push(std::cmp::Reverse((entry.size, entry.path.clone())));
+        for entry in self.filtered_iter() {
+            let Some(size) = metric(entry) else {
+                continue;
+            };
+            heap.push(std::cmp::Reverse((size, entry.path.clone())));
             if heap.len() > n {
                 heap.pop();
             }
@@ -1697,6 +1971,46 @@ impl PanelState {
         self.set_cursor(row);
         self.set_scroll_to_cursor(true);
         true
+    }
+
+    /// Move among visible selected rows without modifying picks or wrapping.
+    pub fn jump_to_selected(&mut self, forward: bool) -> bool {
+        let row = {
+            let cursor = self.cursor();
+            let mut rows = self
+                .filtered_iter()
+                .enumerate()
+                .filter(|(_, entry)| self.is_selected(&entry.path))
+                .map(|(index, _)| index + 1)
+                .filter(|&row| if forward { row > cursor } else { row < cursor });
+            if forward { rows.next() } else { rows.last() }
+        };
+        let Some(row) = row else {
+            return false;
+        };
+        self.set_cursor(row);
+        self.set_scroll_to_cursor(true);
+        true
+    }
+
+    /// Add the cursor's visible hard-link group, including the cursor, only
+    /// when another visible path has the same retained regular-file identity.
+    pub fn select_cursor_hardlink_group(&mut self) -> usize {
+        let Some(cursor) = self.cursor_entry() else {
+            return 0;
+        };
+        let Some(key) = cursor.regular_file_id() else {
+            return 0;
+        };
+        let mut has_peer = false;
+        self.visit_filtered(|_, entry| {
+            has_peer |= entry.path != cursor.path && entry.regular_file_id() == Some(key);
+            !has_peer
+        });
+        if !has_peer {
+            return 0;
+        }
+        self.select_filtered_where(|entry| entry.regular_file_id() == Some(key))
     }
 
     /// Select every filtered file sharing the cursor file's extension. Does
@@ -1740,6 +2054,25 @@ impl PanelState {
         self.select_filtered_where(|entry| entry.is_dir == folders)
     }
 
+    /// Remove only this kind in the filtered view, retaining all other picks.
+    pub fn deselect_visible_kind(&mut self, folders: bool) -> usize {
+        self.deselect_filtered_where(|entry| entry.is_dir == folders)
+    }
+
+    pub fn clear_visible_selection(&mut self) -> usize {
+        self.deselect_filtered_where(|_| true)
+    }
+
+    fn deselect_filtered_where(&mut self, predicate: impl Fn(&FileEntry) -> bool) -> usize {
+        let mut removed = 0;
+        self.update_filtered_selection(|entry, selection| {
+            if predicate(entry) {
+                removed += usize::from(selection.remove_selected(&entry.path));
+            }
+        });
+        removed
+    }
+
     /// Subtract only visible matching files, leaving hidden picks and folders intact.
     pub fn deselect_same_extension_as_cursor(&mut self) -> usize {
         let ext = match self.cursor_entry() {
@@ -1753,6 +2086,25 @@ impl PanelState {
             }
         });
         removed
+    }
+
+    /// Symlink selection uses captured lexical kinds, independent of target
+    /// type/existence. Hidden picks and nonlinks are never changed.
+    pub fn select_visible_symlinks(&mut self) -> usize {
+        self.select_filtered_where(FileEntry::is_symlink)
+    }
+    pub fn deselect_visible_symlinks(&mut self) -> usize {
+        self.deselect_filtered_where(FileEntry::is_symlink)
+    }
+    pub fn invert_visible_symlinks(&mut self) -> usize {
+        let mut changed = 0;
+        self.update_filtered_selection(|entry, selection| {
+            if entry.is_symlink() {
+                selection.toggle_selected(entry.path.clone());
+                changed += 1;
+            }
+        });
+        changed
     }
 
     /// Select the zero-byte files in the filtered view (folders excluded).
@@ -1847,6 +2199,82 @@ impl PanelState {
         added
     }
 
+    fn mask_action_paths(
+        &self,
+        mask: &str,
+        options: SelectionMaskOptions,
+        action: crate::name_list::Action,
+    ) -> Vec<PathBuf> {
+        let terms = if options.ignore_accents {
+            parse_mask_folding(mask, options.case_sensitive, true)
+        } else if options.case_sensitive {
+            parse_mask_case(mask, true)
+        } else {
+            parse_mask(mask)
+        };
+        self.filtered_iter()
+            .filter(|entry| {
+                options.target.accepts(entry.is_dir)
+                    && action.changes(self.is_selected(&entry.path))
+                    && mask_verdict(
+                        &terms,
+                        entry,
+                        options.case_sensitive,
+                        options.ignore_accents,
+                        options.extensionless_star,
+                    ) == Some(true)
+            })
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    pub fn mask_action_count(
+        &self,
+        mask: &str,
+        options: SelectionMaskOptions,
+        action: crate::name_list::Action,
+    ) -> usize {
+        if action == crate::name_list::Action::Add {
+            return self.mask_match_count_compatibility(
+                mask,
+                options.target,
+                options.case_sensitive,
+                options.ignore_accents,
+                options.extensionless_star,
+            );
+        }
+        self.mask_action_paths(mask, options, action).len()
+    }
+
+    pub fn apply_mask_action(
+        &mut self,
+        mask: &str,
+        options: SelectionMaskOptions,
+        action: crate::name_list::Action,
+    ) -> usize {
+        if action == crate::name_list::Action::Add {
+            return self.select_by_mask_compatibility(
+                mask,
+                options.target,
+                options.case_sensitive,
+                options.ignore_accents,
+                options.extensionless_star,
+            );
+        }
+        let paths = self.mask_action_paths(mask, options, action);
+        let changed = paths.len();
+        for path in paths {
+            match action {
+                crate::name_list::Action::Remove => {
+                    self.selection.remove_selected(&path);
+                }
+                crate::name_list::Action::Invert => self.selection.toggle_selected(path),
+                crate::name_list::Action::Add => unreachable!(),
+            }
+        }
+        changed
+    }
+
     /// Add exact UTF-8 basenames from a pasted list, over the current view only.
     pub fn select_by_names(&mut self, text: &str) -> Result<usize, String> {
         self.select_by_names_target(text, SelectionTarget::Both)
@@ -1857,15 +2285,44 @@ impl PanelState {
         text: &str,
         target: SelectionTarget,
     ) -> Result<usize, String> {
+        self.apply_names(text, target, crate::name_list::Action::Add)
+    }
+
+    pub fn apply_names(
+        &mut self,
+        text: &str,
+        target: SelectionTarget,
+        action: crate::name_list::Action,
+    ) -> Result<usize, String> {
         let names = crate::name_list::parse(text)?;
-        Ok(self.select_filtered_where(|entry| {
-            target.accepts(entry.is_dir)
+        let mut changed = 0;
+        self.update_filtered_selection(|entry, selection| {
+            if target.accepts(entry.is_dir)
                 && entry
                     .path
                     .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| names.contains(name))
-        }))
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| names.contains(n))
+            {
+                match action {
+                    crate::name_list::Action::Add => {
+                        changed += usize::from(selection.insert_selected(entry.path.clone()))
+                    }
+                    crate::name_list::Action::Remove => {
+                        changed += usize::from(selection.remove_selected(&entry.path))
+                    }
+                    crate::name_list::Action::Invert => {
+                        selection.toggle_selected(entry.path.clone());
+                        changed += 1;
+                    }
+                }
+            }
+        });
+        Ok(changed)
+    }
+
+    pub fn selection_revision(&self) -> u64 {
+        self.selection.revision()
     }
 
     pub fn names_match_count(&self, text: &str) -> Result<usize, String> {
@@ -1877,12 +2334,21 @@ impl PanelState {
         text: &str,
         target: SelectionTarget,
     ) -> Result<usize, String> {
+        self.names_action_count(text, target, crate::name_list::Action::Add)
+    }
+
+    pub fn names_action_count(
+        &self,
+        text: &str,
+        target: SelectionTarget,
+        action: crate::name_list::Action,
+    ) -> Result<usize, String> {
         let names = crate::name_list::parse(text)?;
         Ok(self
             .filtered_iter()
             .filter(|entry| {
                 target.accepts(entry.is_dir)
-                    && !self.is_selected(&entry.path)
+                    && action.changes(self.is_selected(&entry.path))
                     && entry
                         .path
                         .file_name()
@@ -2444,7 +2910,18 @@ mod tests {
     /// In-memory entry for pure sort/filter/selection tests.
     fn entry(name: &str, is_dir: bool, size: u64) -> FileEntry {
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: diacritic_sort_key(&name.to_lowercase()),
@@ -2593,7 +3070,7 @@ mod tests {
         let card = make_info(folder, None, None);
         assert_eq!(card.kind, "Symlink to Folder");
         assert!(
-            card.path.ends_with("folder-link \u{2192} target"),
+            card.path.ends_with("folder-link -> target"),
             "{}",
             card.path
         );
@@ -2671,6 +3148,165 @@ mod tests {
         assert_eq!(format_size(u64::MAX), "16384.00 PB");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_selection_preserves_hidden_picks_excludes_copies_and_links_and_uses_snapshot() {
+        let dir = crate::testutil::TempDir::new();
+        let original = dir.file("hard-original.txt", "bytes");
+        let alias = dir.path().join("hard-alias.txt");
+        std::fs::hard_link(&original, &alias).unwrap();
+        dir.file("hard-copy.txt", "bytes");
+        let hidden = dir.file("notes.md", "hidden");
+        std::os::unix::fs::symlink("hard-original.txt", dir.path().join("hard-link.txt")).unwrap();
+        let mut p = PanelState::new(dir.path().to_path_buf());
+        p.refresh();
+        p.set_search_query("hard-");
+        p.focus_child("hard-original.txt".into());
+        p.replace_selection([hidden.clone()]);
+        assert_eq!(p.select_cursor_hardlink_group(), 2);
+        assert_eq!(p.select_cursor_hardlink_group(), 0);
+        assert_eq!(p.selected_count(), 3);
+        assert!(p.is_selected(&original) && p.is_selected(&alias) && p.is_selected(&hidden));
+        assert_eq!(p.cursor_entry().unwrap().path, original);
+        assert!(!p.is_selected(&dir.path().join("hard-copy.txt")));
+        assert!(!p.is_selected(&dir.path().join("hard-link.txt")));
+        assert_eq!(p.clear_visible_selection(), 2);
+        p.set_search_query("hard-original");
+        assert_eq!(p.select_cursor_hardlink_group(), 0);
+        assert_eq!(p.selected_count(), 1);
+        p.set_search_query("hard-");
+        p.focus_child("hard-original.txt".into());
+        std::fs::remove_file(&original).unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        assert_eq!(p.select_cursor_hardlink_group(), 2);
+        p.set_cursor(0);
+        assert_eq!(p.select_cursor_hardlink_group(), 0);
+    }
+
+    #[test]
+    fn hardlink_selection_requires_complete_regular_identity_and_same_device() {
+        let mut a = entry("a", false, 1);
+        let mut b = entry("b", false, 1);
+        let identity = |path: PathBuf, device, file_id| {
+            ListingIdentity::Captured(crate::path_identity::PathIdentity {
+                path,
+                exists: true,
+                kind: Some(crate::path_identity::PathKind::File),
+                volume: device,
+                file_id,
+                size: 1,
+                modified_nanos: None,
+                tree_fingerprint: None,
+                observed_version: 0,
+            })
+        };
+        for (device, file_id, expected) in [
+            (Some(9), Some(u64::MAX), 2),
+            (Some(8), Some(u64::MAX), 0),
+            (None, Some(u64::MAX), 0),
+            (Some(9), None, 0),
+        ] {
+            a.identity = identity(a.path.clone(), Some(9), Some(u64::MAX));
+            b.identity = identity(b.path.clone(), device, file_id);
+            let mut p = panel_with(vec![a.clone(), b.clone()]);
+            p.focus_child("a".into());
+            assert_eq!(p.select_cursor_hardlink_group(), expected);
+        }
+        for kind in [
+            crate::path_identity::PathKind::Directory,
+            crate::path_identity::PathKind::Symlink,
+            crate::path_identity::PathKind::Other,
+        ] {
+            a.identity = identity(a.path.clone(), Some(9), Some(3));
+            if let ListingIdentity::Captured(i) = &mut a.identity {
+                i.kind = Some(kind);
+            }
+            assert_eq!(a.regular_file_id(), None);
+        }
+        a.identity = ListingIdentity::Unavailable;
+        assert_eq!(a.regular_file_id(), None);
+    }
+
+    #[test]
+    fn metadata_change_time_signed_parts_preserve_fraction_and_reject_invalid_nanos() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(unix_time_parts(0, 0), Some(UNIX_EPOCH));
+        assert_eq!(
+            unix_time_parts(-1, 999_999_999),
+            UNIX_EPOCH.checked_sub(Duration::from_nanos(1))
+        );
+        assert_eq!(
+            unix_time_parts(-1, 0),
+            UNIX_EPOCH.checked_sub(Duration::from_secs(1))
+        );
+        assert_eq!(
+            unix_time_parts(1, 123),
+            UNIX_EPOCH.checked_add(Duration::new(1, 123))
+        );
+        for nanos in [-1, 1_000_000_000, i64::MAX] {
+            assert_eq!(unix_time_parts(0, nanos), None);
+        }
+        let _ = unix_time_parts(i64::MIN, 0);
+        let _ = unix_time_parts(i64::MAX, 999_999_999);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_change_time_listing_info_and_links_keep_lexical_facts() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = crate::testutil::TempDir::new();
+        let file = dir.file("file", "content");
+        std::fs::create_dir(dir.path().join("folder")).unwrap();
+        std::os::unix::fs::symlink("file", dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("absent", dir.path().join("dangling")).unwrap();
+        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            before
+        );
+        let mut panel = PanelState::new(dir.path().to_path_buf());
+        panel.refresh();
+        for name in ["file", "folder", "link", "dangling"] {
+            let path = dir.path().join(name);
+            let raw = std::fs::symlink_metadata(&path).unwrap();
+            let expected = SystemTime::UNIX_EPOCH
+                .checked_add(std::time::Duration::new(
+                    raw.ctime().try_into().unwrap(),
+                    raw.ctime_nsec().try_into().unwrap(),
+                ))
+                .unwrap();
+            let observed = FileEntry::observe_lexical(path).unwrap();
+            let listed = panel.entries().iter().find(|e| e.name == name).unwrap();
+            for row in [&observed, listed] {
+                assert_eq!(row.changed, Some(expected));
+                let info = make_info(row, None, None);
+                assert_eq!(
+                    info.changed,
+                    format!(
+                        "{}{}",
+                        if row.is_symlink() {
+                            "Link object: "
+                        } else {
+                            ""
+                        },
+                        row.changed_str
+                    )
+                );
+            }
+        }
+        let entry = panel
+            .entries()
+            .iter()
+            .find(|e| e.name == "link")
+            .unwrap()
+            .clone();
+        let card = make_info(&entry, None, None);
+        std::fs::remove_file(dir.path().join("link")).unwrap();
+        std::fs::remove_file(file).unwrap();
+        assert_eq!(make_info(&entry, None, None), card);
+    }
+
     #[test]
     fn sort_puts_dirs_first_and_is_case_insensitive() {
         let mut p = panel_with(vec![
@@ -2682,6 +3318,88 @@ mod tests {
         p.sort_entries();
         let names: Vec<&str> = p.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["Apple", "zoo", "beta.txt", "zeta.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inode_sort_uses_retained_lexical_identity_and_preserves_selection_and_cursor() {
+        let dir = crate::testutil::TempDir::new();
+        let original = dir.file("original.txt", "bytes");
+        let alias = dir.path().join("alias.txt");
+        std::fs::hard_link(&original, &alias).unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink("original.txt", &link).unwrap();
+        let mut panel = PanelState::new(dir.path().to_path_buf());
+        panel.refresh();
+        panel.focus_child("original.txt".into());
+        panel.replace_selection([original.clone(), alias.clone()]);
+        let keys: Vec<_> = panel
+            .entries()
+            .iter()
+            .map(|e| (e.path.clone(), e.inode_sort_key()))
+            .collect();
+        assert_eq!(
+            keys.iter().find(|(p, _)| p == &original).unwrap().1,
+            keys.iter().find(|(p, _)| p == &alias).unwrap().1
+        );
+        assert_ne!(
+            keys.iter().find(|(p, _)| p == &link).unwrap().1,
+            keys.iter().find(|(p, _)| p == &original).unwrap().1
+        );
+        std::fs::remove_file(&original).unwrap();
+        for _ in 0..2 {
+            panel.set_sort(SortColumn::Inode);
+            assert_eq!(panel.cursor_entry().unwrap().path, original);
+            assert_eq!(panel.selected_count(), 2);
+            assert!(panel.is_selected(&alias));
+            for row in panel.entries() {
+                assert_eq!(
+                    row.inode_sort_key(),
+                    keys.iter().find(|(p, _)| p == &row.path).unwrap().1
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_link_sort_uses_retained_counts_and_preserves_selection_and_cursor() {
+        let dir = crate::testutil::TempDir::new();
+        let original = dir.file("original.txt", "bytes");
+        let alias = dir.path().join("alias.txt");
+        std::fs::hard_link(&original, &alias).unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink("original.txt", &link).unwrap();
+        let mut panel = PanelState::new(dir.path().to_path_buf());
+        panel.refresh();
+        panel.focus_child("original.txt".into());
+        panel.replace_selection([original.clone(), alias.clone()]);
+        let keys: Vec<_> = panel
+            .entries()
+            .iter()
+            .map(|e| (e.path.clone(), e.hard_link_count()))
+            .collect();
+        assert_eq!(
+            keys.iter().find(|(p, _)| p == &original).unwrap().1,
+            keys.iter().find(|(p, _)| p == &alias).unwrap().1
+        );
+        assert_ne!(
+            keys.iter().find(|(p, _)| p == &link).unwrap().1,
+            keys.iter().find(|(p, _)| p == &original).unwrap().1
+        );
+        std::fs::remove_file(&original).unwrap();
+        for _ in 0..2 {
+            panel.set_sort(SortColumn::HardLinks);
+            assert_eq!(panel.cursor_entry().unwrap().path, original);
+            assert_eq!(panel.selected_count(), 2);
+            assert!(panel.is_selected(&alias));
+            for row in panel.entries() {
+                assert_eq!(
+                    row.hard_link_count(),
+                    keys.iter().find(|(p, _)| p == &row.path).unwrap().1
+                );
+            }
+        }
     }
 
     #[test]
@@ -2824,6 +3542,57 @@ mod tests {
             .iter()
             .filter_map(|x| x.file_name().map(|s| s.to_string_lossy().to_string()))
             .collect()
+    }
+
+    #[test]
+    fn allocated_selection_uses_visible_known_metric_and_preserves_existing_picks() {
+        let mut sparse = entry("sparse.bin", false, 1 << 30);
+        sparse.allocated_size = Some(0);
+        let mut dense = entry("dense.bin", false, 1);
+        dense.allocated_size = Some(8192);
+        let unknown = entry("unknown.bin", false, u64::MAX);
+        let mut hidden = entry("hidden.txt", false, 1);
+        hidden.allocated_size = Some(u64::MAX);
+        let mut folder = entry("folder.bin", true, 0);
+        folder.allocated_size = Some(u64::MAX);
+        let mut p = panel_with(vec![sparse, dense, unknown, hidden, folder]);
+        p.replace_selection([PathBuf::from("/test/hidden.txt")]);
+        p.set_search_query(".bin");
+        p.focus_child("sparse.bin".into());
+        let cursor = p.cursor_entry().unwrap().path.clone();
+        assert_eq!(p.select_largest_allocated(0), 0);
+        assert_eq!(p.select_largest_allocated(1), 1);
+        assert_eq!(
+            selected_names(&p),
+            ["dense.bin".to_string(), "hidden.txt".to_string()].into()
+        );
+        assert_eq!(p.select_largest_allocated(1), 0);
+        assert_eq!(p.select_largest_allocated(usize::MAX), 1);
+        assert!(p.is_selected(&PathBuf::from("/test/sparse.bin")));
+        assert!(!p.is_selected(&PathBuf::from("/test/unknown.bin")));
+        assert_eq!(p.cursor_entry().unwrap().path, cursor);
+    }
+
+    #[test]
+    fn allocated_selection_caps_at_ten_with_stable_path_ties_independent_of_view_order() {
+        for order in [SortOrder::Asc, SortOrder::Desc] {
+            let rows = (0..15)
+                .map(|i| {
+                    let mut e = entry(&format!("file{i:02}"), false, 1);
+                    e.allocated_size = Some(4096);
+                    e
+                })
+                .collect();
+            let mut p = panel_with(rows);
+            if order == SortOrder::Desc {
+                p.set_sort(SortColumn::Name);
+            }
+            assert_eq!(p.select_largest_allocated(10), 10);
+            assert_eq!(
+                selected_names(&p),
+                (5..15).map(|i| format!("file{i:02}")).collect()
+            );
+        }
     }
 
     #[test]
@@ -3015,6 +3784,429 @@ mod tests {
         assert!(p.is_selected(&zebra));
     }
 
+    #[test]
+    fn conjunctive_filters_keep_excluded_picks_and_combine_with_facets() {
+        let temp = crate::testutil::TempDir::new();
+        temp.file("main.rs", "x");
+        let excluded = temp.file("test.rs", "x");
+        temp.file("Cargo.toml", "x");
+        let folder = temp.dir("source.rs");
+        let mut panel = PanelState::new(temp.path().into());
+        panel.refresh();
+        panel.replace_selection([excluded.clone()]);
+        panel.set_search_query(".rs$ && !^test");
+        assert_eq!(panel.filtered_count(), 2);
+        assert!(panel.is_selected(&excluded));
+        panel.set_facets(FacetSet {
+            kind: Some(KindFacet::Folders),
+            ..Default::default()
+        });
+        assert_eq!(panel.filtered_count(), 1);
+        assert_eq!(panel.filtered_get(0).unwrap().path, folder);
+        panel.set_search_query(".rs$ &&");
+        assert_eq!(panel.filtered_count(), 0);
+        assert!(panel.is_selected(&excluded));
+    }
+
+    #[test]
+    fn alternative_filters_compose_with_facets_without_losing_excluded_picks() {
+        let temp = crate::testutil::TempDir::new();
+        temp.file("main.rs", "x");
+        temp.file("Cargo.toml", "x");
+        let excluded = temp.file("notes.txt", "x");
+        let folder = temp.dir("source.rs");
+        let mut panel = PanelState::new(temp.path().into());
+        panel.refresh();
+        panel.replace_selection([excluded.clone()]);
+        panel.set_search_query(".rs$ | .toml$");
+        assert_eq!(panel.filtered_count(), 3);
+        assert!(panel.is_selected(&excluded));
+        panel.set_facets(FacetSet {
+            kind: Some(KindFacet::Folders),
+            ..Default::default()
+        });
+        assert_eq!(panel.filtered_count(), 1);
+        assert_eq!(panel.filtered_get(0).unwrap().path, folder);
+        panel.set_search_query(".rs$ |");
+        assert_eq!(panel.filtered_count(), 0);
+        assert!(panel.is_selected(&excluded));
+    }
+
+    #[test]
+    fn negated_filter_keeps_excluded_selection_and_composes_with_facets_and_export() {
+        let temp = crate::testutil::TempDir::new();
+        let excluded = temp.file("skip.tmp", "x");
+        temp.file("keep.rs", "x");
+        temp.file("other.tmp.bak", "x");
+        let folder = temp.dir("tmp-dir");
+        let mut panel = PanelState::new(temp.path().into());
+        panel.refresh();
+        panel.replace_selection([excluded.clone()]);
+        panel.set_search_query("!.tmp$");
+        assert_eq!(panel.filtered_count(), 3);
+        assert!(panel.is_selected(&excluded));
+        let query = crate::query::from_panel_filter(panel.search_query(), &panel.facets());
+        for entry in panel.entries() {
+            assert_eq!(
+                crate::search::query_matches_metadata(
+                    &query,
+                    entry,
+                    std::time::SystemTime::UNIX_EPOCH
+                ),
+                entry.path != excluded
+            );
+        }
+        panel.set_facets(FacetSet {
+            kind: Some(KindFacet::Folders),
+            ..Default::default()
+        });
+        assert_eq!(panel.filtered_count(), 1);
+        assert_eq!(panel.filtered_get(0).unwrap().path, folder);
+        panel.set_search_query("!^tmp");
+        assert_eq!(panel.filtered_count(), 0);
+        assert!(panel.is_selected(&excluded));
+    }
+
+    #[test]
+    fn pane_filter_export_agrees_with_unicode_and_fuzzy_candidates() {
+        for text in [
+            "^i.txt$", "^σ.txt$", "^ς.txt$", "'i", "ab", "'a b ", "!^i.txt$", "!σ$", "!ab",
+        ] {
+            let query = crate::query::from_panel_filter(text, &FacetSet::default());
+            for name in ["İ.txt", "σ.txt", "ς.txt", "a-b.txt", "ab.txt", "a b .txt"] {
+                let candidate = entry(name, false, 1);
+                assert_eq!(
+                    crate::search::query_matches_metadata(
+                        &query,
+                        &candidate,
+                        std::time::SystemTime::UNIX_EPOCH
+                    ),
+                    crate::name_filter::is_match(text, name),
+                    "query {text:?}, name {name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn anchored_filter_and_exported_query_agree_for_live_listing() {
+        let temp = crate::testutil::TempDir::new();
+        let picked = temp.file("xab.txt", "x");
+        temp.file("ab.txt", "x");
+        temp.file("ab.txt.bak", "x");
+        temp.file("a-b.txt", "x");
+        let mut panel = PanelState::new(temp.path().into());
+        panel.refresh();
+        panel.replace_selection([picked.clone()]);
+        for text in ["^ab", ".txt$", "^ab.txt$", "^$", "'^ab$"] {
+            panel.set_search_query(text);
+            let query = crate::query::from_panel_filter(text, &panel.facets());
+            let expected: Vec<_> = panel
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    crate::search::query_matches_metadata(
+                        &query,
+                        entry,
+                        std::time::SystemTime::now(),
+                    )
+                })
+                .map(|entry| entry.path.clone())
+                .collect();
+            let actual: Vec<_> = panel
+                .filtered_iter()
+                .map(|entry| entry.path.clone())
+                .collect();
+            assert_eq!(actual, expected, "query {text}");
+            assert!(panel.is_selected(&picked));
+        }
+        panel.set_search_query("^ab.txt$");
+        assert_eq!(panel.filtered_count(), 1);
+        assert_eq!(panel.filtered_get(0).unwrap().name, "ab.txt");
+    }
+
+    #[test]
+    fn literal_name_filter_composes_with_facets_and_keeps_excluded_picks() {
+        let temp = crate::testutil::TempDir::new();
+        let separated = temp.file("a-b.txt", "x");
+        temp.file("ab.txt", "x");
+        let folder = temp.dir("ab-folder");
+        let mut panel = PanelState::new(temp.path().into());
+        panel.refresh();
+        panel.replace_selection([separated.clone()]);
+        panel.set_search_query("ab");
+        assert_eq!(panel.filtered_count(), 3);
+        panel.set_search_query("'ab");
+        assert_eq!(panel.filtered_count(), 2);
+        assert!(panel.is_selected(&separated));
+        panel.set_facets(FacetSet {
+            kind: Some(KindFacet::Folders),
+            ..Default::default()
+        });
+        assert_eq!(panel.filtered_count(), 1);
+        assert_eq!(panel.filtered_get(0).unwrap().path, folder);
+        panel.set_facets(FacetSet::default());
+        panel.set_search_query("'a-b");
+        assert_eq!(panel.filtered_count(), 1);
+        assert_eq!(panel.filtered_get(0).unwrap().path, separated);
+    }
+
+    #[test]
+    fn visible_clear_keeps_nonmatches_elsewhere_and_saved_memory() {
+        let temp = crate::testutil::TempDir::new();
+        let visible = temp.file("keep.txt", "x");
+        let visible_dir = temp.dir("keep-dir");
+        let hidden = temp.file("hidden.txt", "x");
+        let other = temp.dir("other");
+        let elsewhere = temp.file("other/selected.txt", "x");
+        let mut panel = PanelState::new(other);
+        panel.refresh();
+        panel.replace_selection([elsewhere]);
+        panel.navigate_to(temp.path().into());
+        panel.refresh();
+        let picks = HashSet::from([visible, visible_dir, hidden.clone()]);
+        panel.replace_selection(picks.iter().cloned());
+        panel.save_selection();
+        panel.set_search_query("keep");
+        let cursor = panel.cursor();
+        assert_eq!(panel.clear_visible_selection(), 2);
+        assert_eq!(panel.clear_visible_selection(), 0);
+        assert_eq!(panel.selected_paths(), &HashSet::from([hidden]));
+        assert_eq!(panel.selected_elsewhere_count(), 1);
+        assert_eq!(panel.cursor(), cursor);
+        assert_eq!(panel.search_query(), "keep");
+        assert!(panel.restore_saved_selection());
+        assert_eq!(panel.selected_paths(), &picks);
+        assert_eq!(panel.selected_elsewhere_count(), 1);
+        panel.set_search_query("no match");
+        assert_eq!(panel.clear_visible_selection(), 0);
+        assert_eq!(panel.selected_paths(), &picks);
+    }
+
+    #[test]
+    fn selected_navigation_is_directional_filtered_and_keeps_picks() {
+        let temp = crate::testutil::TempDir::new();
+        temp.file("a-visible", "x");
+        let b = temp.file("b-visible", "x");
+        let hidden = temp.file("c-hidden", "x");
+        temp.file("d-visible", "x");
+        let e = temp.dir("e-visible");
+        let mut panel = PanelState::new(temp.path().into());
+        panel.refresh();
+        panel.toggle_folders_first();
+        panel.replace_selection([b.clone(), hidden, e.clone()]);
+        panel.set_search_query("visible");
+        let picks = panel.selected_paths().clone();
+        for (forward, expected) in [
+            (true, [Some(2), Some(2), Some(4), Some(4), None]),
+            (false, [None, None, None, Some(2), Some(2)]),
+        ] {
+            for (cursor, destination) in expected.into_iter().enumerate() {
+                panel.set_cursor(cursor);
+                panel.set_scroll_to_cursor(false);
+                assert_eq!(panel.jump_to_selected(forward), destination.is_some());
+                assert_eq!(panel.cursor(), destination.unwrap_or(cursor));
+                assert_eq!(panel.scroll_to_cursor(), destination.is_some());
+                assert_eq!(panel.selected_paths(), &picks);
+            }
+        }
+        panel.set_sort(SortColumn::Name);
+        panel.set_cursor(0);
+        assert!(panel.jump_to_selected(true));
+        assert_eq!(panel.cursor_entry().unwrap().path, e);
+        assert!(panel.jump_to_selected(true));
+        assert_eq!(panel.cursor_entry().unwrap().path, b);
+        assert!(!panel.jump_to_selected(true));
+        panel.set_search_query("no match");
+        assert!(!panel.jump_to_selected(true));
+        assert!(!panel.jump_to_selected(false));
+        assert_eq!(panel.selected_paths(), &picks);
+    }
+
+    #[test]
+    fn kind_deselection_keeps_filtered_and_other_folder_picks() {
+        let temp = crate::testutil::TempDir::new();
+        let file = temp.file("keep.txt", "x");
+        let hidden_file = temp.file("hidden.txt", "x");
+        let folder = temp.dir("keep-dir");
+        let hidden_folder = temp.dir("hidden-dir");
+        let elsewhere = temp.file("hidden-dir/elsewhere.txt", "x");
+        let mut panel = PanelState::new(hidden_folder.clone());
+        panel.refresh();
+        panel.replace_selection([elsewhere]);
+        panel.navigate_to(temp.path().into());
+        panel.refresh();
+        panel.replace_selection([
+            file.clone(),
+            hidden_file.clone(),
+            folder.clone(),
+            hidden_folder.clone(),
+        ]);
+        panel.set_search_query("keep");
+        let cursor = panel.cursor();
+        assert_eq!(panel.deselect_visible_kind(false), 1);
+        assert_eq!(panel.deselect_visible_kind(false), 0);
+        assert_eq!(
+            panel.selected_paths(),
+            &HashSet::from([hidden_file.clone(), folder, hidden_folder.clone()])
+        );
+        assert_eq!(panel.deselect_visible_kind(true), 1);
+        assert_eq!(panel.deselect_visible_kind(true), 0);
+        assert_eq!(
+            panel.selected_paths(),
+            &HashSet::from([hidden_file, hidden_folder])
+        );
+        assert_eq!(panel.selected_elsewhere_count(), 1);
+        assert_eq!(panel.cursor(), cursor);
+        assert_eq!(panel.search_query(), "keep");
+    }
+
+    #[test]
+    fn mask_remove_invert_preserve_exclusions_filtered_picks_and_folder_memory() {
+        use crate::name_list::Action;
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.file("a.rs", "a");
+        let b = temp.file("b.rs", "b");
+        let protected = temp.file("test.rs", "t");
+        let other = temp.file("other.txt", "o");
+        let folder = temp.dir("folder.rs");
+        let elsewhere = temp.file("folder.rs/elsewhere", "e");
+        let mut p = PanelState::new(folder.clone());
+        p.refresh();
+        p.select_path(elsewhere);
+        p.navigate_to(temp.path().into());
+        p.refresh();
+        p.replace_selection([a.clone(), protected.clone(), other.clone(), folder.clone()]);
+        let options = SelectionMaskOptions {
+            target: SelectionTarget::Files,
+            ..Default::default()
+        };
+        for action in [Action::Remove, Action::Invert, Action::Invert] {
+            let preview = p.mask_action_count("*.rs;!test*", options, action);
+            assert_eq!(p.apply_mask_action("*.rs;!test*", options, action), preview);
+            assert!(p.is_selected(&protected) && p.is_selected(&other) && p.is_selected(&folder));
+            assert_eq!(p.selected_elsewhere_count(), 1);
+        }
+        assert!(!p.is_selected(&a) && !p.is_selected(&b));
+        p.set_search_query("a.rs");
+        assert_eq!(p.apply_mask_action("*.rs", options, Action::Invert), 1);
+        assert!(p.is_selected(&a) && !p.is_selected(&b));
+        for mask in ["", "!*.rs", "   "] {
+            assert_eq!(p.apply_mask_action(mask, options, Action::Invert), 0);
+            assert_eq!(p.mask_action_count(mask, options, Action::Remove), 0);
+        }
+    }
+
+    #[test]
+    fn mask_actions_share_case_accents_and_extensionless_options() {
+        use crate::name_list::Action;
+        let temp = crate::testutil::TempDir::new();
+        let accented = temp.file("École.TXT", "x");
+        let plain = temp.file("README", "x");
+        let folder = temp.dir("École-folder");
+        let mut p = PanelState::new(temp.path().into());
+        p.refresh();
+        let mut options = SelectionMaskOptions {
+            target: SelectionTarget::Files,
+            case_sensitive: true,
+            ..Default::default()
+        };
+        assert_eq!(p.apply_mask_action("école.txt", options, Action::Invert), 0);
+        options.case_sensitive = false;
+        options.ignore_accents = true;
+        assert_eq!(p.mask_action_count("ecole.txt", options, Action::Invert), 1);
+        assert_eq!(p.apply_mask_action("ecole.txt", options, Action::Invert), 1);
+        assert!(p.is_selected(&accented));
+        assert_eq!(p.apply_mask_action("ecole.txt", options, Action::Remove), 1);
+        options.extensionless_star = true;
+        assert_eq!(p.apply_mask_action("*.*", options, Action::Invert), 2);
+        assert!(p.is_selected(&plain) && p.is_selected(&accented) && !p.is_selected(&folder));
+        options.target = SelectionTarget::Folders;
+        assert_eq!(p.apply_mask_action("ecole*", options, Action::Invert), 1);
+        assert!(p.is_selected(&folder));
+    }
+
+    #[test]
+    fn names_remove_and_invert_counts_preserve_filtered_kinds_and_other_folders() {
+        use crate::name_list::Action;
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.file("a.txt", "a");
+        let b = temp.file("b.txt", "b");
+        let hidden = temp.file("hidden.txt", "h");
+        let folder = temp.dir("folder");
+        let elsewhere = temp.file("folder/elsewhere", "x");
+        let mut p = PanelState::new(folder.clone());
+        p.refresh();
+        p.select_path(elsewhere.clone());
+        p.navigate_to(temp.path().into());
+        p.refresh();
+        p.replace_selection([a.clone(), hidden.clone(), folder.clone()]);
+        p.set_search_query(".txt");
+        let names = "a.txt\nb.txt\nfolder\nmissing\na.txt";
+        for action in [Action::Remove, Action::Invert, Action::Add] {
+            let preview = p
+                .names_action_count(names, SelectionTarget::Files, action)
+                .unwrap();
+            let changed = p
+                .apply_names(names, SelectionTarget::Files, action)
+                .unwrap();
+            assert_eq!(preview, changed);
+            assert!(p.is_selected(&folder));
+            assert!(p.is_selected(&hidden));
+            assert_eq!(p.selected_elsewhere_count(), 1);
+        }
+        assert!(p.is_selected(&a) && p.is_selected(&b));
+        let before = p.selected_paths().clone();
+        for action in [Action::Remove, Action::Invert] {
+            assert!(
+                p.apply_names("a.txt\n../bad", SelectionTarget::Both, action)
+                    .is_err()
+            );
+            assert_eq!(p.selected_paths(), &before);
+        }
+        p.set_search_query("a.txt");
+        assert_eq!(
+            p.apply_names("a.txt\nb.txt", SelectionTarget::Both, Action::Invert)
+                .unwrap(),
+            1
+        );
+        assert!(!p.is_selected(&a) && p.is_selected(&b));
+        p.set_search_query("");
+        assert_eq!(
+            p.apply_names("folder", SelectionTarget::Folders, Action::Remove)
+                .unwrap(),
+            1
+        );
+        assert!(!p.is_selected(&folder));
+        assert_eq!(p.selected_elsewhere_count(), 1);
+    }
+
+    #[test]
+    fn tab_selection_is_independent_folder_bound_and_rejects_over_budget_replacement() {
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.file("a.txt", "a");
+        let other = temp.dir("other");
+        let mut p = PanelState::new(temp.path().into());
+        p.refresh();
+        p.select_path(a.clone());
+        p.save_tab_selection().unwrap();
+        let old = p.tab_selection.clone();
+        p.clear_selection();
+        p.save_selection();
+        assert!(p.restore_tab_selection());
+        assert!(p.is_selected(&a));
+        p.clear_selection();
+        assert!(p.restore_saved_selection());
+        assert_eq!(p.selected_count(), 0);
+        for i in 0..1025 {
+            p.select_path(temp.path().join(format!("synthetic{i}")));
+        }
+        assert!(p.save_tab_selection().is_err());
+        assert_eq!(p.tab_selection, old);
+        p.navigate_to(other);
+        assert!(!p.can_restore_tab_selection());
+        assert!(!p.restore_tab_selection());
+    }
     #[test]
     fn saved_selection_restores_filtered_picks_and_prunes_missing_entries() {
         let root = crate::testutil::TempDir::new();
@@ -3545,13 +4737,9 @@ mod tests {
         let mut panel = PanelState::new(temp.path().to_path_buf());
         panel.refresh();
 
-        // A background listing that never gets a worker: navigation does not
-        // stat the folder on the UI thread, so nothing is recorded yet.
-        let mut limits = crate::workload::SchedulerLimits::default();
-        limits.per_kind_running[0] = 0;
-        let runtime = crate::workload::WorkloadRuntime::new(limits);
-        panel.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
-        panel.set_notify(Arc::new(|| {}));
+        // The deterministic backend holds the listing until explicitly driven.
+        // A real scheduler clamps a zero per-kind limit to one worker.
+        let _workload = deterministic_listings(&mut panel);
         panel.navigate_to(target.clone());
         assert_eq!(panel.listing.status(), DirStatus::Loading);
         assert!(!visited_paths().contains(&target));
@@ -3767,13 +4955,8 @@ mod tests {
         p.set_cursor(cursor);
         p.navigate_to(tmp.path().to_path_buf());
 
-        // Background listings that never get a worker: "downloads" stays
-        // loading while we leave it again.
-        let mut limits = crate::workload::SchedulerLimits::default();
-        limits.per_kind_running[0] = 0;
-        let runtime = crate::workload::WorkloadRuntime::new(limits);
-        p.set_workload(crate::workload::WorkloadHandle::from_runtime(runtime));
-        p.set_notify(Arc::new(|| {}));
+        // Keep the listing queued while leaving; no worker-speed assumption.
+        let _workload = deterministic_listings(&mut p);
         p.navigate_to(downloads.clone());
         assert_eq!(p.listing.status(), DirStatus::Loading);
         p.navigate_to(tmp.path().to_path_buf());

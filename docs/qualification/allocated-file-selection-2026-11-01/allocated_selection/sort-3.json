@@ -1,0 +1,185 @@
+{
+  "config": {
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "folders_by_name": false,
+    "folders_first": true,
+    "mode": "List",
+    "natural_name_sort": true,
+    "show_hidden": false,
+    "sort_col": "Name",
+    "sort_order": "Asc"
+  },
+  "cursor": "sparse.bin",
+  "entries": [
+    {
+      "allocated": null,
+      "folder": true,
+      "logical": 0,
+      "name": "Design",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 8192,
+      "folder": false,
+      "logical": 8192,
+      "name": "dense.bin",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 16384,
+      "folder": false,
+      "logical": 16384,
+      "name": "disk-00.bin",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 32768,
+      "folder": false,
+      "logical": 32768,
+      "name": "disk-01.bin",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 49152,
+      "folder": false,
+      "logical": 49152,
+      "name": "disk-02.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 65536,
+      "folder": false,
+      "logical": 65536,
+      "name": "disk-03.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 81920,
+      "folder": false,
+      "logical": 81920,
+      "name": "disk-04.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 98304,
+      "folder": false,
+      "logical": 98304,
+      "name": "disk-05.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 114688,
+      "folder": false,
+      "logical": 114688,
+      "name": "disk-06.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 131072,
+      "folder": false,
+      "logical": 131072,
+      "name": "disk-07.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 147456,
+      "folder": false,
+      "logical": 147456,
+      "name": "disk-08.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 163840,
+      "folder": false,
+      "logical": 163840,
+      "name": "disk-09.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 180224,
+      "folder": false,
+      "logical": 180224,
+      "name": "disk-10.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 196608,
+      "folder": false,
+      "logical": 196608,
+      "name": "disk-11.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 0,
+      "folder": false,
+      "logical": 0,
+      "name": "empty.bin",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 24,
+      "name": "notes.md",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 34,
+      "name": "photo.png",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 10,
+      "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 28,
+      "name": "README.txt",
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "allocated": 0,
+      "folder": false,
+      "logical": 8388608,
+      "name": "sparse.bin",
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "allocated": null,
+      "folder": false,
+      "logical": 8388608,
+      "name": "zz-link.bin",
+      "selected": true,
+      "symlink": true
+    }
+  ],
+  "phase": 23
+}

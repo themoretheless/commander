@@ -1,0 +1,10 @@
+{
+  "source": "crates.io b3sum",
+  "installation_root": "/tmp/commander-b3sum-validation-20261031",
+  "version": "b3sum 1.8.7",
+  "sha256": "1621a3bdeafd6d0a852ee08d78fe0e69849001bbe7df2d2f618c738f5d29b544",
+  "test_environment": {
+    "COMMANDER_B3SUM_VERIFY": "/tmp/commander-b3sum-validation-20261031/bin/b3sum"
+  },
+  "scope": "Explicit focused test verifies all six paths, then requires failure after mutation; CLI not required by application."
+}

@@ -1,0 +1,6 @@
+2026-11-02T15:04:04 INFO  commander::logging: logging initialized
+2026-11-02T15:04:04 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: sync_contents
+2026-11-02T15:04:04 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-02T15:04:04 INFO  commander::visual_qa: Sync contents QA phase 0
+2026-11-02T15:04:05 INFO  commander::visual_qa: Sync contents QA phase 1
+2026-11-02T15:04:05 INFO  commander::visual_qa: Sync contents QA phase 2

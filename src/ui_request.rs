@@ -11,6 +11,8 @@ use crate::transfer::TransferKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiModal {
     KeyboardHelp,
+    CustomTheme,
+    WorkspaceProfiles,
     Permissions,
     History,
     Rename,
@@ -26,7 +28,9 @@ pub enum UiModal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiRequest {
     KeyboardHelp,
+    WorkspaceProfiles,
     Permissions(Vec<crate::permissions::Target>),
+    Timestamps(Vec<crate::permissions::Target>),
     Rename(PathBuf),
     SelectMask,
     RunCommand,
@@ -42,6 +46,11 @@ pub enum UiRequest {
     DiffFiles,
     DiskTreemap,
     Find,
+    FindIdentity {
+        root: PathBuf,
+        device: u64,
+        inode: u64,
+    },
     /// Put keyboard focus in the active pane's filter box.
     FocusFilter,
     Archive(PathBuf),
@@ -67,6 +76,9 @@ pub enum UiRequest {
         error: bool,
     },
     VerifyChecksum(Vec<PathBuf>),
+    VerifyChecksumList(PathBuf),
+    OpenFavorites,
+    ImportFavoritesGtk,
     HexPreview(PathBuf),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
     Redo,
@@ -75,16 +87,17 @@ pub enum UiRequest {
 impl UiRequest {
     pub(crate) const fn modal(&self) -> Option<UiModal> {
         match self {
+            Self::WorkspaceProfiles => Some(UiModal::WorkspaceProfiles),
             Self::KeyboardHelp => Some(UiModal::KeyboardHelp),
-            Self::Permissions(_) => Some(UiModal::Permissions),
+            Self::Permissions(_) | Self::Timestamps(_) => Some(UiModal::Permissions),
             Self::Undo | Self::Redo => Some(UiModal::History),
             Self::Rename(_) => Some(UiModal::Rename),
             Self::BatchRename => Some(UiModal::BatchRename),
-            Self::Find => Some(UiModal::Find),
+            Self::Find | Self::FindIdentity { .. } => Some(UiModal::Find),
             Self::SavedSearch => Some(UiModal::SavedSearch),
             Self::ProjectCollections => Some(UiModal::Collections),
             Self::SelectMask => Some(UiModal::Mask),
-            Self::GoToPath | Self::Recent => Some(UiModal::Palette),
+            Self::GoToPath | Self::Recent | Self::OpenFavorites => Some(UiModal::Palette),
             Self::RunCommand => Some(UiModal::RunCommand),
             Self::Palette => Some(UiModal::Palette),
             Self::GatherIntoFolder
@@ -107,6 +120,8 @@ impl UiRequest {
             | Self::CopyText { .. }
             | Self::Notice { .. }
             | Self::VerifyChecksum(_)
+            | Self::ImportFavoritesGtk
+            | Self::VerifyChecksumList(_)
             | Self::HexPreview(_)
             | Self::HiddenFilesOutcome(_)
             | Self::FocusFilter => None,
@@ -116,15 +131,19 @@ impl UiRequest {
     pub(crate) const fn coalesces_when_open(&self) -> bool {
         matches!(
             self,
-            Self::KeyboardHelp
+            Self::WorkspaceProfiles
+                | Self::KeyboardHelp
                 | Self::Permissions(_)
+                | Self::Timestamps(_)
                 | Self::SelectMask
                 | Self::RunCommand
                 | Self::GoToPath
                 | Self::Recent
+                | Self::OpenFavorites
                 | Self::Palette
                 | Self::BatchRename
                 | Self::Find
+                | Self::FindIdentity { .. }
                 | Self::SavedSearch
                 | Self::ProjectCollections
         )
@@ -277,6 +296,11 @@ mod tests {
         let deferred = dispatch_snapshot(
             vec![
                 UiRequest::Find,
+                UiRequest::FindIdentity {
+                    root: PathBuf::from("/origin"),
+                    device: 0,
+                    inode: u64::MAX,
+                },
                 UiRequest::SelectMask,
                 UiRequest::ToggleQueuePanel,
             ],

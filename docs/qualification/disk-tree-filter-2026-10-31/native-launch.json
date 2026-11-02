@@ -1,0 +1,7 @@
+{
+  "scenario": "disk_tree_filter",
+  "output": "/tmp/commander-native-disk-tree-filter-1793406877112639000",
+  "binary_sha256": "9e1819d37d4b4cf235e3f8eb652aeb9ba41218aa50889900bd5b55b56eb77661",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793406877188029000
+}

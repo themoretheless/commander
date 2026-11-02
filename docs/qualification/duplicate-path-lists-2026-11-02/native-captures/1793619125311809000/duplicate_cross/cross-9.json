@@ -1,0 +1,28 @@
+{
+  "both": true,
+  "cross": true,
+  "current_left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/left",
+  "current_right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/right",
+  "fresh": true,
+  "groups": [
+    {
+      "files": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/left/cross.bin",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/right/cross.bin"
+      ],
+      "size": 11
+    },
+    {
+      "files": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/left/nested/deep.bin",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/right/nested/deep.bin"
+      ],
+      "size": 12
+    }
+  ],
+  "issues": 0,
+  "other_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/right",
+  "phase": 9,
+  "recursive": true,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-6553-duplicate_cross/left"
+}

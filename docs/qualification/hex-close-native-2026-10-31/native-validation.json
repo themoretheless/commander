@@ -1,0 +1,12 @@
+{
+  "status": "passed_scoped",
+  "phase": 153,
+  "checks": 14,
+  "before_close_checkpoint": true,
+  "popup_escape_preserves_viewer": true,
+  "f10_closes_viewer": true,
+  "left_cursor_row_refocused": true,
+  "physical_os_keys": "pending",
+  "voiceover": "pending",
+  "native_busy_close": "pending"
+}

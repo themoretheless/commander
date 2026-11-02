@@ -1,0 +1,152 @@
+{
+  "format": "commander.listing-report",
+  "version": 1,
+  "snapshot": "retained_listing_metadata",
+  "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left",
+  "scope": "visible_selected_rows",
+  "view": {
+    "sort_col": "Name",
+    "sort_order": "Asc",
+    "show_hidden": false,
+    "folders_first": true,
+    "folders_by_name": false,
+    "natural_name_sort": true,
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "mode": "List"
+  },
+  "query": ".bin",
+  "facets": {
+    "kind": null,
+    "min_size": null,
+    "max_age_days": null,
+    "min_age_days": null
+  },
+  "listing_rows": 21,
+  "visible_rows": 16,
+  "selected_rows": 13,
+  "hidden_selected_rows": 1,
+  "exported_rows": 12,
+  "rows": [
+    {
+      "row": 1,
+      "name": "disk-02.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-02.bin",
+      "kind": "File",
+      "file_size_bytes": 49152,
+      "allocated_bytes": 49152,
+      "displayed_size": "48.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.878756247Z"
+    },
+    {
+      "row": 2,
+      "name": "disk-03.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-03.bin",
+      "kind": "File",
+      "file_size_bytes": 65536,
+      "allocated_bytes": 65536,
+      "displayed_size": "64.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.879444713Z"
+    },
+    {
+      "row": 3,
+      "name": "disk-04.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-04.bin",
+      "kind": "File",
+      "file_size_bytes": 81920,
+      "allocated_bytes": 81920,
+      "displayed_size": "80.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.879673965Z"
+    },
+    {
+      "row": 4,
+      "name": "disk-05.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-05.bin",
+      "kind": "File",
+      "file_size_bytes": 98304,
+      "allocated_bytes": 98304,
+      "displayed_size": "96.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.880217845Z"
+    },
+    {
+      "row": 5,
+      "name": "disk-06.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-06.bin",
+      "kind": "File",
+      "file_size_bytes": 114688,
+      "allocated_bytes": 114688,
+      "displayed_size": "112.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.880998770Z"
+    },
+    {
+      "row": 6,
+      "name": "disk-07.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-07.bin",
+      "kind": "File",
+      "file_size_bytes": 131072,
+      "allocated_bytes": 131072,
+      "displayed_size": "128.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.881535692Z"
+    },
+    {
+      "row": 7,
+      "name": "disk-08.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-08.bin",
+      "kind": "File",
+      "file_size_bytes": 147456,
+      "allocated_bytes": 147456,
+      "displayed_size": "144.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.881819736Z"
+    },
+    {
+      "row": 8,
+      "name": "disk-09.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-09.bin",
+      "kind": "File",
+      "file_size_bytes": 163840,
+      "allocated_bytes": 163840,
+      "displayed_size": "160.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.882212990Z"
+    },
+    {
+      "row": 9,
+      "name": "disk-10.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-10.bin",
+      "kind": "File",
+      "file_size_bytes": 180224,
+      "allocated_bytes": 180224,
+      "displayed_size": "176.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.882622661Z"
+    },
+    {
+      "row": 10,
+      "name": "disk-11.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/disk-11.bin",
+      "kind": "File",
+      "file_size_bytes": 196608,
+      "allocated_bytes": 196608,
+      "displayed_size": "192.0 KB",
+      "modified_utc": "2026-10-31T21:40:25.882801246Z"
+    },
+    {
+      "row": 11,
+      "name": "sparse.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/sparse.bin",
+      "kind": "File",
+      "file_size_bytes": 8388608,
+      "allocated_bytes": 0,
+      "displayed_size": "8.0 MB",
+      "modified_utc": "2026-10-31T21:40:25.877678570Z"
+    },
+    {
+      "row": 12,
+      "name": "zz-link.bin",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66700-allocated_selection/left/zz-link.bin",
+      "kind": "Symlink",
+      "file_size_bytes": null,
+      "allocated_bytes": null,
+      "displayed_size": "8.0 MB",
+      "modified_utc": "2026-10-31T21:40:25.877678570Z"
+    }
+  ]
+}

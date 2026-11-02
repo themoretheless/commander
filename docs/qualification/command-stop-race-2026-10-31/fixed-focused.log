@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.47s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 1 test
+test app::run_command_dialog::per_item_process_tests::stopping_live_per_item_run_kills_current_group_and_leaves_later_paths_untouched ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3046 filtered out; finished in 0.04s
+

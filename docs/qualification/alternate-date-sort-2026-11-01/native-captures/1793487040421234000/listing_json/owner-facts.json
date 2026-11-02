@@ -1,0 +1,47 @@
+[
+  {
+    "name": "empty.bin",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "Design",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "sparse.bin",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "photo.png",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "dense.bin",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "README.txt",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "zz-link.bin",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "notes.md",
+    "owner_gid": 20,
+    "owner_uid": 501
+  },
+  {
+    "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+    "owner_gid": 20,
+    "owner_uid": 501
+  }
+]

@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.23s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 2 tests
+test query::tests::exact_size_file_query_excludes_folders_and_preserves_legacy_lower_bound ... ok
+test search::tests::exact_size_file_query_agrees_for_live_indexed_and_archive_entries ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2482 filtered out; finished in 0.01s
+

@@ -1,0 +1,14 @@
+2026-10-31T13:14:32 INFO  commander::logging: logging initialized
+2026-10-31T13:14:32 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: timestamps
+2026-10-31T13:14:32 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-timestamps-1793438052693815000
+2026-10-31T13:14:32 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 0
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 1
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 2
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 3
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 4
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 5
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 6
+2026-10-31T13:14:33 INFO  commander::visual_qa: Timestamp QA phase 7
+2026-10-31T13:14:34 INFO  commander::visual_qa: Timestamp QA phase 8
+2026-10-31T13:14:34 INFO  commander::visual_qa: Timestamp QA phase 9

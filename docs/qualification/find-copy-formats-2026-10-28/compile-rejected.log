@@ -1,0 +1,57 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0433]: cannot find type `FindCopyFormat` in this scope
+    --> src/app/find_dialog.rs:1972:36
+     |
+1972 |         state.result_copy_format = FindCopyFormat::Names;
+     |                                    ^^^^^^^^^^^^^^ use of undeclared type `FindCopyFormat`
+     |
+help: consider importing this enum
+     |
+1811 +     use crate::app::FindCopyFormat;
+     |
+
+error[E0433]: cannot find type `FindCopyFormat` in this scope
+    --> src/app/find_dialog.rs:1977:36
+     |
+1977 |         state.result_copy_format = FindCopyFormat::ShellArguments;
+     |                                    ^^^^^^^^^^^^^^ use of undeclared type `FindCopyFormat`
+     |
+help: consider importing this enum
+     |
+1811 +     use crate::app::FindCopyFormat;
+     |
+
+error[E0433]: cannot find type `FindCopyFormat` in this scope
+    --> src/app/find_dialog.rs:1998:36
+     |
+1998 |         state.result_copy_format = FindCopyFormat::Paths;
+     |                                    ^^^^^^^^^^^^^^ use of undeclared type `FindCopyFormat`
+     |
+help: consider importing this enum
+     |
+1811 +     use crate::app::FindCopyFormat;
+     |
+
+error[E0382]: borrow of moved value: `picker.response`
+   --> src/app/find_dialog.rs:998:43
+    |
+996 | ...se.on_hover_text("Full paths retain archive members; names omit directories; shell arguments quote real file/archive-container paths and join with spaces");
+    |       -------------------------------------------------------------------------------------------------------------------------------------------------------- `picker.response` moved due to this method call
+997 | ... = "visual-qa")]
+998 | ..._mut(|data| data.insert_temp(egui::Id::new("find-copy-format"), picker.response.rect));
+    |         ^^^^^^ value borrowed here after move                      -------------------- borrow occurs due to use in closure
+    |
+note: `egui::Response::on_hover_text` takes ownership of the receiver `self`, which moves `picker.response`
+   --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.36.2/src/response.rs:727:26
+    |
+727 |     pub fn on_hover_text(self, text: impl Into<WidgetText>) -> Self {
+    |                          ^^^^
+    = note: move occurs because `picker.response` has type `Response`, which does not implement the `Copy` trait
+help: you can `clone` the value and consume it, but this might not be your desired behavior
+    |
+996 |                         picker.response.clone().on_hover_text("Full paths retain archive members; names omit directories; shell arguments quote real file/archive-container paths and join with spaces");
+    |                                        ++++++++
+
+Some errors have detailed explanations: E0382, E0433.
+For more information about an error, try `rustc --explain E0382`.
+error: could not compile `commander` (bin "commander" test) due to 4 previous errors

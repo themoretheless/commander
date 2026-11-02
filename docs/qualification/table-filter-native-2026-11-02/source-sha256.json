@@ -1,0 +1,8 @@
+{
+  "src/table_preview.rs": "a1cd4eb4abdf067b231bdb46090e867ef8756d7e8c1972a29e9e9c8fc3e76f39",
+  "src/visual_qa.rs": "3d963b750aa9a73906716e1495eaf2154348fc6cb87dc25e4220ff7a9a060914",
+  "src/preview_find.rs": "d429b9c715e1de5db094f55b373d816b21d8e3f0be7c74a7b1bf11152e2c282f",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "target/debug/commander": "b8e8be9e096dae78e711d76b4f54d793f99bfb7358af1f4721f2bf2995f625dd"
+}

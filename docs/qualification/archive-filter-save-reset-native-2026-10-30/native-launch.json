@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793390137.14801,
+  "binary_sha256": "188b5b2f694c9b233b46af4e285e9a16e2645b6011ad72f97175d27cb8c5c96a",
+  "scenario": "archive_browser",
+  "output_root": "/tmp/commander-native-archive-filter-roundtrip-1793390137105664000"
+}

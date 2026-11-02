@@ -1,0 +1,32 @@
+{
+  "status": "passed_scoped",
+  "phase": 15,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "headings": true,
+  "final_source_row_ids": [
+    2,
+    3,
+    1,
+    4
+  ],
+  "required_prior_states": [
+    "headerless original",
+    "headings original",
+    "ascending",
+    "descending",
+    "original"
+  ],
+  "frame_inspected": true,
+  "sort_indicator": "[asc]",
+  "binary_hash_verified": true,
+  "physical_input": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture"
+}

@@ -1,0 +1,14 @@
+{
+  "tests": {
+    "passed": 2831,
+    "ignored": 3,
+    "failed": 0
+  },
+  "clippy": "passed",
+  "default_check": "passed",
+  "visual_qa_build": "passed",
+  "fmt": "passed",
+  "diff_check": "passed",
+  "native": "pending",
+  "binary_sha256": "e5e7f752c23df8d4371b5ed4dd5503492ca685ee01af475ccca6b5acb6f5df83"
+}

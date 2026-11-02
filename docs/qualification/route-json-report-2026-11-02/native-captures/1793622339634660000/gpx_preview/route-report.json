@@ -1,0 +1,98 @@
+{
+  "format": "commander.route-preview",
+  "version": 1,
+  "source_format": "GPX",
+  "distance_model": "spherical_haversine",
+  "earth_radius_m": 6371008.8,
+  "gap_policy": "no_interpolation",
+  "elevation_model": "raw_adjacent_samples",
+  "distance_m": 5550.486295560101,
+  "segments": 2,
+  "timing": {
+    "valid_points": 6,
+    "invalid_points": 0,
+    "missing_points": 0,
+    "eligible_legs": 4,
+    "timed_legs": 4,
+    "untimed_legs": 0,
+    "non_increasing_legs": 0,
+    "seconds": 480.0,
+    "distance": 5550.486295560101,
+    "average_kmh": 41.628647216700756
+  },
+  "elevation_stats": {
+    "known_points": 6,
+    "eligible_legs": 4,
+    "covered_legs": 4,
+    "ascent": 90.0,
+    "descent": 60.0
+  },
+  "points": [
+    {
+      "index": 0,
+      "segment": 1,
+      "start": true,
+      "lat": 41.7,
+      "lon": 44.79,
+      "elevation_m": 420.0,
+      "time": "2026-11-02T00:00:00+00:00",
+      "time_invalid": false,
+      "distance_m": 0.0
+    },
+    {
+      "index": 1,
+      "segment": 1,
+      "start": false,
+      "lat": 41.71,
+      "lon": 44.8,
+      "elevation_m": 460.0,
+      "time": "2026-11-02T00:01:00+00:00",
+      "time_invalid": false,
+      "distance_m": 1387.660197000015
+    },
+    {
+      "index": 2,
+      "segment": 1,
+      "start": false,
+      "lat": 41.72,
+      "lon": 44.79,
+      "elevation_m": 510.0,
+      "time": "2026-11-02T00:03:00+00:00",
+      "time_invalid": false,
+      "distance_m": 2775.243147780051
+    },
+    {
+      "index": 3,
+      "segment": 2,
+      "start": true,
+      "lat": 41.72,
+      "lon": 44.81,
+      "elevation_m": 490.0,
+      "time": "2026-11-02T01:00:00+00:00",
+      "time_invalid": false,
+      "distance_m": 2775.243147780051
+    },
+    {
+      "index": 4,
+      "segment": 2,
+      "start": false,
+      "lat": 41.71,
+      "lon": 44.82,
+      "elevation_m": 450.0,
+      "time": "2026-11-02T01:02:00+00:00",
+      "time_invalid": false,
+      "distance_m": 4162.826098560086
+    },
+    {
+      "index": 5,
+      "segment": 2,
+      "start": false,
+      "lat": 41.7,
+      "lon": 44.81,
+      "elevation_m": 430.0,
+      "time": "2026-11-02T01:05:00+00:00",
+      "time_invalid": false,
+      "distance_m": 5550.486295560101
+    }
+  ]
+}

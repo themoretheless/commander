@@ -1,0 +1,37 @@
+{
+  "status": "passed_scoped",
+  "phase": 30,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 3,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "schema": [
+    "group",
+    "action",
+    "path",
+    "size_bytes"
+  ],
+  "row_count": 3,
+  "final_roles": [
+    "trash",
+    "trash",
+    "keep"
+  ],
+  "keeper": "newest-copy.bin",
+  "required_prior_copies": [
+    "one keep/two trash",
+    "three skip",
+    "one keep/two trash"
+  ],
+  "actual_payload_validation": "CSV decoded and bound in order to full fixture paths, group1, size25, independent expected action per filename",
+  "payloads_intact_at_capture": true,
+  "frame_inspected": true,
+  "binary_hash_verified": true,
+  "physical_input_and_os_clipboard": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture"
+}

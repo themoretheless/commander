@@ -1,0 +1,6 @@
+{
+  "scenario": "per_item_command",
+  "out": "/tmp/commander-native-output-find-1793419378315177000",
+  "binary_sha256": "aaa984ef85c7981b9748786495d4edcd1ccf6a949db6e0f1ad2bede8483859db",
+  "core_sha256": "aaa984ef85c7981b9748786495d4edcd1ccf6a949db6e0f1ad2bede8483859db"
+}

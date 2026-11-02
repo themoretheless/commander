@@ -1,0 +1,11 @@
+# Precise elapsed modification-age search — 2026-10-28
+
+Independent adaptation of fd's [duration-based changed-within/changed-before filtering](https://github.com/sharkdp/fd/blob/master/src/cli.rs), using Commander's own age field and comparison model. No upstream code copied.
+
+Find accepts age:<=30min, age:>2h or combined bounds such as age:>=30min age:<2h. Operators <, <=, =, >= and > compare full available elapsed durations rather than truncated whole days/seconds. Omitted operator means <=. Whole unsigned values require an explicit unit: s/sec/second(s), m/min/minute(s), h/hour(s), d/day(s), w/week(s); unit names are case-insensitive. Multiplication is checked, fractional/negative values and unsupported units are rejected. Canonical expressions use seconds and saved JSON retains the exact comparison.
+
+Unknown modification times do not match. Future modification times have age zero, consistent with the existing relative-date clock-skew policy. Evaluation uses the search worker's reference time and observed native/index/archive modification metadata; cached and archive timestamp precision/staleness remain properties of their providers. Exact-zero age is not a whole-second bucket. Existing date: parsing, day quantization and m=30-day-month semantics are unchanged; age:m is explicitly minutes. All predicates still combine through AND in every text mode.
+
+The query regression exercises one-nanosecond neighbors around all five operator boundaries, JSON/expression round trips in every mode, unknown/future timestamps, default comparison, unit aliases, largest seconds, overflow and invalid input, and the legacy month distinction. Real native files, a newly built index and a TAR member agree across Exact/Fuzzy/Regex for recent/older/future data, content/extension conjunctions and a two-bound interval. No new ZIP-specific age fixture was added; archive reader coverage remains in the full suite.
+
+Validation: **2539 passed, 0 failed, 3 ignored** in cargo test --locked --features visual-qa; both focused regressions passed. All-target visual-qa Clippy with warnings denied, formatting and scoped whitespace checks passed. No rejected run. No new UI widget or native capture for this query-language change. No commit or push.

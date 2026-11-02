@@ -1,0 +1,3 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.21s
+  Executable unittests src/main.rs (target/debug/build/commander/817fc3ac52ddf8fd/out/commander-817fc3ac52ddf8fd)

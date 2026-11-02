@@ -1,0 +1,20 @@
+[
+  {
+    "device_id": 16777234,
+    "file_id": 251717272,
+    "hard_links": 2,
+    "name": "original.bin"
+  },
+  {
+    "device_id": 16777234,
+    "file_id": 251717272,
+    "hard_links": 2,
+    "name": "alias.bin"
+  },
+  {
+    "device_id": 16777234,
+    "file_id": 251717275,
+    "hard_links": 1,
+    "name": "link.bin"
+  }
+]

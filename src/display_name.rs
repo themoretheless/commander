@@ -39,7 +39,7 @@ fn take_end(value: &str, count: usize) -> String {
 /// Replace C0 controls and DEL with their visible Control Pictures (U+2400
 /// block), one char for one char, so a name containing a newline or tab shows
 /// in full on one row instead of only up to the break.
-fn visible_controls(name: &str) -> Cow<'_, str> {
+pub fn visible_controls(name: &str) -> Cow<'_, str> {
     if !name.chars().any(|c| c.is_ascii_control()) {
         return Cow::Borrowed(name);
     }
@@ -67,6 +67,28 @@ pub fn truncate_preserving_extension(name: &str, max_chars: usize) -> Cow<'_, st
         Cow::Borrowed(name) => truncate_visible(name, max_chars),
         Cow::Owned(visible) => Cow::Owned(truncate_visible(&visible, max_chars).into_owned()),
     }
+}
+
+/// Compact a path with visible controls, preserving its beginning and a larger
+/// identifying tail. Grapheme boundaries are retained; no filesystem access.
+pub fn truncate_path(path: &str, max_chars: usize) -> Cow<'_, str> {
+    let visible = visible_controls(path);
+    if grapheme_count(&visible) <= max_chars {
+        return visible;
+    }
+    if max_chars == 0 {
+        return Cow::Borrowed("");
+    }
+    if max_chars == 1 {
+        return Cow::Borrowed("…");
+    }
+    let content = max_chars - 1;
+    let start = content.div_ceil(4);
+    Cow::Owned(format!(
+        "{}…{}",
+        take_start(&visible, start),
+        take_end(&visible, content - start)
+    ))
 }
 
 fn truncate_visible(name: &str, max_chars: usize) -> Cow<'_, str> {
@@ -103,6 +125,19 @@ fn truncate_visible(name: &str, max_chars: usize) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_paths_preserve_identifying_tail_graphemes_and_visible_controls() {
+        assert_eq!(truncate_path("/a/folder.name", 40), "/a/folder.name");
+        assert_eq!(truncate_path("0123456789ABCDEFGHIJ", 9), "01…EFGHIJ");
+        assert_eq!(truncate_path("/long/path/e\u{301}👩‍💻", 4), "/…e\u{301}👩‍💻");
+        assert_eq!(truncate_path("a\nb\tc", 40), "a␊b␉c");
+        for budget in 0..=40 {
+            let result = truncate_path("/very/long/folder.name/e\u{301}👩‍💻", budget);
+            assert!(result.graphemes(true).count() <= budget);
+            assert!(!result.contains(['\n', '\r', '\t']));
+        }
+    }
 
     #[test]
     fn leaves_short_names_borrowed() {

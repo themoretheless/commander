@@ -1,0 +1,15 @@
+# Exclude batch-rename targets — 2026-10-30
+
+Independent adaptation of [Double Commander’s removal of files from the Multi-Rename list](https://doublecmd.github.io/doc/en/multirename.html#interface), cohort repository #3. Commander provides an explicit Exclude preview-row button rather than adding a global Delete-key binding. No upstream code copied.
+
+Exclude removes a target from the current captured batch without touching the file or changing panel selection. Remaining order is preserved and numbering compacts. The removed name remains in existing siblings, so another target cannot assume that name will be vacated. Removing a directory also removes its target-kind entry while retaining its existing sibling name. Removing the last target closes the empty dialog through the existing cancel path, without submitting a rename. Target exclusion is runtime context, not a rule/preset field.
+
+Edits are deferred until preview rendering ends; exclusion takes precedence over reordering if both are queued. Same-frame submission is blocked while either operation is pending. Successful exclusion clears cached validation and the stale error and requests repaint; out-of-range requests are no-ops. The next validation sees the smaller target set and recomputes the ordinal mapping and collision constraints.
+
+Three regressions verify compacted 10/12 numbering, maintained target order, cache/error invalidation, out-of-range handling, directory-kind cleanup and the empty final set. A previously valid two-file swap becomes a blocked collision after one participant is excluded, proving its existing sibling name is retained. Real workspace acceptance verifies excluded payload preservation, collision refusal, successful rename of only the included file and Undo without changing the excluded file.
+
+Native RenameOptions retains earlier single-target, pair-order and two-target file-order stages. At phase 82 it requires TXT-TXT.txt→01.txt and notes.md→02.md, clicks Exclude on row zero, then requires notes.md→01.md as the only preview target at phase 85. Both original fixture paths must still exist. This native scenario verifies exclusion and compaction while keeping one row available for capture; last-target closure is implemented through the existing cancel branch and its empty-set predicate is covered by the unit regression.
+
+Full locked visual-qa tests: **2619 passed, 0 failed, 3 ignored**. All-target Clippy with warnings denied passed. Native/build/format evidence follows below. No commit or push; the broader 99-repository transfer objective remains open.
+
+Final locked build, `cargo fmt --check` and `git diff --check` passed. Fresh CUA-launched native capture **16/16**, with all native-effect counters zero and a manifest newer than native-launch.json. Frame inspected: the only remaining row is notes.md→01.md, Exclude stays available and the summary reads 1 of 1 will change. Both original fixture paths are required by readiness. The QA app captured and exited before attachment observation; no test process remained.

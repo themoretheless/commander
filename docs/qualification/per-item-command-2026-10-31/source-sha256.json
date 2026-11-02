@@ -1,0 +1,12 @@
+{
+  "src/command_batch.rs": "22a912e65abcf1a041c20412ace9077fc5c8618b88c5ea8f91a923847d45df91",
+  "src/cmdtemplate.rs": "b8c08c81fed32bc7e65881b603dd998ed35c924acdf3a7ce9cc8c244c83d5668",
+  "src/command_recipes.rs": "49c78e50c7d55134c0ad5d593f2c3abbd9dcd256d871183461ee852e68e48392",
+  "src/template_exchange.rs": "3809b1af352475aa9876023087afc5907e47feca8d68de99f2647a6fa768cd88",
+  "src/template_browser.rs": "dc4c4f080a4c134a4267c4655138c2907240b013e72f838b3b76214ae1c6cb5d",
+  "src/app/mod.rs": "12341680ebe66a233bf7fa1f9a5ca517c461430cd91cdf3035cc8dc7ce93942a",
+  "src/app/run_command_dialog.rs": "52c1d6ae315d48195ff896575d60afd5382b3f7c23cab9e52c1e6fa8ed4e0351",
+  "src/main.rs": "521103742a62be8c294ea398b95a642a95e1c120cbb7dfc4ffca1677b3aaa2a5",
+  "src/visual_qa.rs": "277afecbdb3f70b3bcbdb88b1e4d0d13a25ed2cae6f0fd474b1f7e973dbc75fb",
+  ".github/workflows/ci.yml": "21012db37d10a9156d8f0abc38c04a330e89d33340dca9683e39e9dc98f49fd5"
+}

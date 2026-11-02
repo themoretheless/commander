@@ -1,0 +1,13 @@
+{
+  "src/bookmark_exchange.rs": "b861766b78bff10784ef749ff4cb83539cf2762743e7e38e1cb943a5630807c7",
+  "src/app/bookmark_import_dialog.rs": "059d9872ba0b66f6805d8a3224934471e3ba8c9832013c019190ad7b62ce60c9",
+  "src/workspace.rs": "8c4905c31a218559704c4b751fcdf0d120607c47d04aae237451a3bb50fa9849",
+  "src/workspace/tests.rs": "2e50bf9c0fb7aa7b4d44c6fd283b6519e87b6ba7f99193b016c6a50dd86d34e1",
+  "src/app/mod.rs": "5727899aa489987111464d0fbe73d7cb15a86be8d90ed1e6211b2e9c1ca3df15",
+  "src/app/update.rs": "e3decb99836c6cc5f14b9dc375700a81680945fbe119f0c1cef71e10261ccc33",
+  "src/main.rs": "0d659f1ce67c966cab4fbdb0ae4e2628ac61adfa9ddba287493a7d3d6779d816",
+  "src/command.rs": "e57c47b1e88e955927ec6d6fa7e2304b841c5e9693e4744be6d6eb023c83854f",
+  "src/ui_request.rs": "8fab13829246cd153c5a09abd5aa811beecb1fcef31c0c35b0dabbb46cd57cca",
+  "src/visual_qa.rs": "22cbdbbd02abce15f0b36397470a179ed6e90f8eb73dc4a36b5381120d6f8089",
+  ".github/workflows/ci.yml": "bd0e4730b46ffc1d789b678064bae068d6e7e993228edcefa8e7b4d3116bffe4"
+}

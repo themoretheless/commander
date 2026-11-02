@@ -1,0 +1,17 @@
+error[internal]: left behind trailing whitespace
+    --> /Users/themoretheless/Documents/Sources/commander/src/app/find_dialog.rs:1185:1185:80
+     |
+1185 | ...                   ui.close(); menu_action = true; 
+     |                                                      ^
+     |
+
+error[internal]: left behind trailing whitespace
+    --> /Users/themoretheless/Documents/Sources/commander/src/app/find_dialog.rs:1192:1192:80
+     |
+1192 | ...                   ui.close(); menu_action = true; 
+     |                                                      ^
+     |
+
+warning: rustfmt has failed to format. See previous 2 errors.
+
+

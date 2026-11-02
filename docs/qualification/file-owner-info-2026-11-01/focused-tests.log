@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 13s
+     Running unittests src/main.rs (target/debug/build/commander/fe7ee4c0c1810202/out/commander-fe7ee4c0c1810202)
+
+running 3 tests
+test panel::preview::ownership_tests::owner_metadata_info_preserves_full_width_zero_and_independent_unknowns ... ok
+test listing_report::tests::owner_metadata_json_keeps_exact_cached_values_and_null_unknowns ... ok
+test panel::preview::ownership_tests::owner_metadata_listing_and_info_retain_lexical_objects_without_restat ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 3128 filtered out; finished in 0.01s
+

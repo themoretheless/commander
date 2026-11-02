@@ -22,6 +22,7 @@ pub struct Target {
 pub struct Row {
     pub target: Target,
     pub mode: Option<u32>,
+    pub times: Option<crate::timestamps::Snapshot>,
     pub error: Option<String>,
 }
 
@@ -31,6 +32,8 @@ pub struct Plan {
     all_bits: u32,
     any_bits: u32,
     unavailable: usize,
+    time_unavailable: usize,
+    time_count_cache: std::cell::Cell<Option<(crate::timestamps::Change, usize)>>,
     count_cache: std::cell::Cell<Option<(Change, usize)>>,
 }
 
@@ -81,6 +84,23 @@ impl Plan {
     pub fn ready(&self) -> bool {
         !self.rows.is_empty() && self.unavailable == 0
     }
+    pub fn times_ready(&self) -> bool {
+        self.ready() && self.time_unavailable == 0
+    }
+    pub fn changed_times_count(&self, change: crate::timestamps::Change) -> usize {
+        if let Some((cached, count)) = self.time_count_cache.get()
+            && cached == change
+        {
+            return count;
+        }
+        let count = self
+            .rows
+            .iter()
+            .filter(|r| r.times.is_some_and(|t| change.changed(t)))
+            .count();
+        self.time_count_cache.set(Some((change, count)));
+        count
+    }
     pub fn changed_count(&self, change: Change) -> usize {
         if let Some((cached, count)) = self.count_cache.get()
             && cached == change
@@ -103,9 +123,18 @@ impl Plan {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum Binding {
+    Version,
+    Object,
+}
+
 #[cfg(unix)]
-fn checked_file(target: &Target) -> Result<(std::fs::File, u32), String> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+pub fn checked_metadata(
+    target: &Target,
+    binding: Binding,
+) -> Result<(std::fs::File, std::fs::Metadata), String> {
+    use std::os::unix::fs::OpenOptionsExt;
     if target.capture_on_worker {
         return Err("The selected path must be inspected before commit".into());
     }
@@ -129,18 +158,46 @@ fn checked_file(target: &Target) -> Result<(std::fs::File, u32), String> {
         .map_err(|error| format!("Could not open a protected handle: {error}"))?;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
     let actual = PathIdentity::from_metadata(target.path.clone(), &metadata);
-    if !expected.same_shallow_binding(&actual) {
+    if !match binding {
+        Binding::Version => expected.same_shallow_binding(&actual),
+        Binding::Object => expected.path == actual.path && expected.same_object(&actual),
+    } {
         return Err("Item changed since the listing; refresh and select it again".into());
     }
-    Ok((file, metadata.permissions().mode() & 0o7777))
+    Ok((file, metadata))
 }
 
 #[cfg(not(unix))]
-fn checked_file(_target: &Target) -> Result<(std::fs::File, u32), String> {
+pub fn checked_metadata(
+    _target: &Target,
+    _binding: Binding,
+) -> Result<(std::fs::File, std::fs::Metadata), String> {
     Err("POSIX permissions are only supported on Unix hosts".into())
 }
 
+fn checked_file(target: &Target) -> Result<(std::fs::File, u32), String> {
+    let (file, metadata) = checked_metadata(target, Binding::Version)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok((file, metadata.permissions().mode() & 0o7777))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, metadata);
+        Err("POSIX metadata editing requires Unix".into())
+    }
+}
+
 pub fn inspect(targets: Vec<Target>, cancelled: &dyn Fn() -> bool) -> Result<Plan, String> {
+    inspect_with_binding(targets, Binding::Version, cancelled)
+}
+
+pub fn inspect_with_binding(
+    targets: Vec<Target>,
+    binding: Binding,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Plan, String> {
     let mut plan = Plan::default();
     let mut observed_mode = false;
     for mut target in targets {
@@ -158,6 +215,7 @@ pub fn inspect(targets: Vec<Target>, cancelled: &dyn Fn() -> bool) -> Result<Pla
                     plan.rows.push(Row {
                         target,
                         mode: None,
+                        times: None,
                         error: Some("Selected item no longer exists".into()),
                     });
                     continue;
@@ -167,15 +225,33 @@ pub fn inspect(targets: Vec<Target>, cancelled: &dyn Fn() -> bool) -> Result<Pla
                     plan.rows.push(Row {
                         target,
                         mode: None,
+                        times: None,
                         error: Some(format!("Could not inspect selected item: {error}")),
                     });
                     continue;
                 }
             }
         }
-        let (mode, error) = match checked_file(&target) {
-            Ok((_, mode)) => (Some(mode), None),
-            Err(error) => (None, Some(error)),
+        let (mode, times, error) = match checked_metadata(&target, binding) {
+            Ok((_, metadata)) => {
+                target.identity = ListingIdentity::Captured(PathIdentity::from_metadata(
+                    target.path.clone(),
+                    &metadata,
+                ));
+                #[cfg(unix)]
+                let mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    Some(metadata.permissions().mode() & 0o7777)
+                };
+                #[cfg(not(unix))]
+                let mode = None;
+                (
+                    mode,
+                    crate::timestamps::Snapshot::from_metadata(&metadata),
+                    None,
+                )
+            }
+            Err(error) => (None, None, Some(error)),
         };
         if let Some(mode) = mode {
             if !observed_mode {
@@ -189,9 +265,13 @@ pub fn inspect(targets: Vec<Target>, cancelled: &dyn Fn() -> bool) -> Result<Pla
         if error.is_some() || mode.is_none() {
             plan.unavailable += 1;
         }
+        if times.is_none() {
+            plan.time_unavailable += 1;
+        }
         plan.rows.push(Row {
             target,
             mode,
+            times,
             error,
         });
     }

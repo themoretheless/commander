@@ -1,0 +1,11 @@
+{
+  "src/hex_preview.rs": "d18d192b1901989222f714ac5857933fd202b914898ad5da50e7e138bea540c9",
+  "src/hex_search.rs": "32f139cd2e7fa0b8ad7c9a7b2e691a3fca431eccff8705fe75d83d916542819d",
+  "src/workload.rs": "f0003faecd70bd01276842d4e1340cff660b631ca34e543358dd4a10c628e4c5",
+  "Cargo.toml": "dcec9f2aa8b974617e0e0282986bd4841d73e261d32602002d821691158fc74b",
+  "Cargo.lock": "47e55f80f8616385151c99167ef972a2546bd7e5623e79ef50a3c30d815178dd",
+  "README.md": "a05690a6cfb4de461f6d1c24dd91ee14718c2352a5273c275dd15341568aaf93",
+  "docs/strata-parity.md": "3ce64a84518bed3cc2bf71bff0115c4c65d9e56515fd71cf55b3642b2716feb4",
+  "docs/research/feature-transfers-2026-10-27.md": "1084abcc871881901394003a7774a1cd10c0cb72f3e125aad70e7ebfa75e4a30",
+  "target/debug/commander": "e36309babdd754df6ac363ef823903ca96e62aa82af3f966b545f26109f88972"
+}

@@ -1,0 +1,25 @@
+# Recursive duplicate search — 2026-10-31
+
+Independently adapts [fclones recursive/non-recursive selection](https://github.com/pkolaczk/fclones#features), repository #85 in the cohort. No upstream implementation is copied.
+
+## Behavior
+
+**Include subfolders** switches the duplicate finder from existing pane-listing candidates to a new background enumeration of the captured folder. Hidden folders are included. Known symbolic links and non-regular/empty files are skipped; observed physical file identities are collapsed across the tree using the same volume/file-id rule as the existing listing scan. Observed directory IDs are also visited once. Hard-link representatives prefer shallower paths and then lexical order. Platforms without captured file IDs cannot provide identity collapse.
+
+Recursive **Rescan** enumerates again and captures file metadata afresh, discovering added files. The default unchecked scope continues to use the existing pane listing without extra directory enumeration. Changing scope restarts immediately; keep policy and sorting survive, while all manual choices and cached group indices are cleared/rebuilt. The captured root remains visible even for empty results. Nested copies show root-relative paths so identical basenames are distinguishable, including their accessible radio labels. Full paths remain available on hover and in CSV.
+
+The worker exposes enumeration/hash stages and counts paths that fail enumeration, metadata access or hashing. Results show a partial-scan warning instead of silently suggesting a complete search. Closing/cancelling drops the worker handle and requests cancellation; enumeration checks between entries and hashing checks between files. An already-running individual hash is not interrupted mid-read. Group digest confirmation, clipboard ownership and separate identity-bound Trash workflow are retained. No actual Trash action was exercised in this qualification.
+
+This is ordinary filesystem traversal, not a descriptor-pinned sandbox: concurrent parent-directory replacement races are outside the no-follow qualification. Mounted directory trees are not excluded. No parallel-traversal, recursion-depth selector, name/size filters, multi-root parity, scalability or performance advantage is claimed.
+
+## Verification
+
+Final source-frozen checks: **2902 tests passed, 3 ignored**, visual-qa build, all-target Clippy with warnings denied, default cargo check, formatting and diff checks. Logs/commands are adjacent in `checks.json`. The initial pass found a visibility-style Clippy issue, corrected before the final full rerun; initial logs are retained in `initial-pass`. An obsolete single-directory header helper/test was removed because the actual captured root now owns the header.
+
+Real-file asynchronous tests verify nested and hidden discovery, no symlink-file/directory/loop traversal, hard-link collapse and captured identities, empty-file exclusion, total/hashed counts, a fresh added nested file and changed payload on repeat scan. Missing/file roots produce a warning with no results. Pre-cancelled traversal returns nothing, and deleted candidates produce failed-hash counts without unverified groups. Label regression covers distinct same-basename relative paths. Existing rescan preference/empty-result regressions remain passing.
+
+The new `duplicate_recursive` native scene is in the CI matrix (52 scenes). It starts with no same-folder duplicates, enables the checkbox, waits for three real 20-byte copies across the root, nested and hidden directories, selects newest retention and potential-savings order, validates a four-record CSV, disables scope and verifies empty results with preferences retained, then re-enables and validates the same proposal/CSV. Terminal phase 21 requires two exact recording clipboard writes, the known newest hidden keeper, 40 proposed bytes and unchanged fixture payloads. The fixture includes a hard link and a symbolic directory loop. The scanner finishes with zero scan issues; the separate pane watcher logs loop warnings for this intentional fixture. Watcher handling was not changed.
+
+Fresh macOS eframe/Glow capture: **14/14 checks**, clipboard 2, all other native effects zero. `frame.png` was visually inspected: selected Include subfolders/newest/potential-savings controls and all three relative paths are visible. A fresh `duplicate_sort` regression from the same binary also passes **14/14**, preserving a manually chosen long-path keeper, skipped small group and two ordered CSV copies; `legacy-frame.png` was inspected. Both launch hashes match the debug binary and app core.
+
+The short-lived app completed its captures before launch observation, which reported application-not-found; fresh unique manifests establish completion. Fixtures are temporary and removed after capture. Native OS clipboard delivery, physical input, VoiceOver, error-warning GUI variants, actual nested Trash/undo and cross-platform GUI qualification are outside this evidence. Full 99-repository parity remains open.

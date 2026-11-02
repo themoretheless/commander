@@ -1,0 +1,19 @@
+{
+  "status": "passed_scoped",
+  "phase": 6,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "character_encoding": "Windows-1251",
+  "expected_characters": "\u041f\u0440\u0438\u0432\u0435\u0442",
+  "offset": 0,
+  "width": 16,
+  "other_native_encodings": "pending",
+  "physical_keys": "pending"
+}

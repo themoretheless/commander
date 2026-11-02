@@ -1,0 +1,135 @@
+{
+  "config": {
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "folders_by_name": false,
+    "folders_first": true,
+    "mode": "List",
+    "natural_name_sort": true,
+    "show_hidden": false,
+    "sort_col": "Name",
+    "sort_order": "Asc"
+  },
+  "cursor": "hard-original.txt",
+  "entries": [
+    {
+      "identity": [
+        16777230,
+        254197280
+      ],
+      "name": "hard-alias.txt",
+      "regular_identity": [
+        16777230,
+        254197280
+      ],
+      "selected": true,
+      "symlink": false
+    },
+    {
+      "identity": [
+        16777230,
+        254197283
+      ],
+      "name": "hard-copy.txt",
+      "regular_identity": [
+        16777230,
+        254197283
+      ],
+      "selected": false,
+      "symlink": false
+    },
+    {
+      "identity": [
+        16777230,
+        254197284
+      ],
+      "name": "hard-link.txt",
+      "regular_identity": null,
+      "selected": false,
+      "symlink": true
+    },
+    {
+      "identity": [
+        16777230,
+        254197280
+      ],
+      "name": "hard-original.txt",
+      "regular_identity": [
+        16777230,
+        254197280
+      ],
+      "selected": true,
+      "symlink": false
+    }
+  ],
+  "phase": 11,
+  "report": {
+    "exported_rows": 2,
+    "facets": {
+      "kind": null,
+      "max_age_days": null,
+      "min_age_days": null,
+      "min_size": null
+    },
+    "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36881-hardlink_selection/left",
+    "format": "commander.listing-report",
+    "hidden_selected_rows": 1,
+    "listing_rows": 9,
+    "query": "hard-",
+    "rows": [
+      {
+        "accessed_utc": "2026-11-01T22:26:29.453261368Z",
+        "allocated_bytes": 4096,
+        "changed_utc": "2026-11-01T22:26:29.454049747Z",
+        "created_utc": "2026-11-01T22:26:29.453261368Z",
+        "device_id": 16777230,
+        "displayed_size": "10 B",
+        "file_id": 254197280,
+        "file_size_bytes": 10,
+        "hard_links": 2,
+        "kind": "File",
+        "modified_utc": "2026-11-01T22:26:29.453418911Z",
+        "name": "hard-alias.txt",
+        "owner_gid": 20,
+        "owner_uid": 501,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36881-hardlink_selection/left/hard-alias.txt",
+        "row": 1
+      },
+      {
+        "accessed_utc": "2026-11-01T22:26:29.453261368Z",
+        "allocated_bytes": 4096,
+        "changed_utc": "2026-11-01T22:26:29.454049747Z",
+        "created_utc": "2026-11-01T22:26:29.453261368Z",
+        "device_id": 16777230,
+        "displayed_size": "10 B",
+        "file_id": 254197280,
+        "file_size_bytes": 10,
+        "hard_links": 2,
+        "kind": "File",
+        "modified_utc": "2026-11-01T22:26:29.453418911Z",
+        "name": "hard-original.txt",
+        "owner_gid": 20,
+        "owner_uid": 501,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36881-hardlink_selection/left/hard-original.txt",
+        "row": 2
+      }
+    ],
+    "scope": "visible_selected_rows",
+    "selected_rows": 3,
+    "snapshot": "retained_listing_metadata",
+    "version": 1,
+    "view": {
+      "case_sensitive_name_sort": false,
+      "density": "Comfortable",
+      "folders_by_name": false,
+      "folders_first": true,
+      "mode": "List",
+      "natural_name_sort": true,
+      "show_hidden": false,
+      "sort_col": "Name",
+      "sort_order": "Asc"
+    },
+    "visible_rows": 4
+  },
+  "selected": 3
+}

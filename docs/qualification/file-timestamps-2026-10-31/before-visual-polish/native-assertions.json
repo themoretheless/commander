@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "timestamps_native_checks": 16,
+  "timestamps_same_binary_passes": 2,
+  "permissions_regression_checks": 16,
+  "input_phases": 27,
+  "invalid_input_cannot_apply": true,
+  "offset_converted_to_utc": true,
+  "exact_committed_file_times": true,
+  "unselected_file_unchanged": true,
+  "reload_has_usable_rebound_rows": true,
+  "now_draft_not_applied": true,
+  "all_recording_effect_calls": 0,
+  "real_metadata_writes_in_fixture": true,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3087,
+  "ignored": 3,
+  "checks": 6
+}

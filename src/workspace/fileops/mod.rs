@@ -21,7 +21,7 @@ pub use drop::drop_dragged;
 pub use drop::{
     DragSession, cancel_drag, drag_session, drop_dragged_as, transfer_selection_into_cursor_folder,
 };
-pub use link::{LinkReport, create_hardlinks, create_symlinks};
+pub use link::{LinkReport, create_hardlinks, create_relative_symlinks, create_symlinks};
 pub use mkdir::create_dir;
 pub use pending::confirm_pending_op;
 pub use rename::{

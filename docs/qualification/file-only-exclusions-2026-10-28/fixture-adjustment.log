@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.90s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test search::tests::exclude_file_query_keeps_directories_and_archive_descendants ... FAILED
+test query::tests::exclude_file_query_preserves_masks_case_and_saved_semantics ... ok
+
+failures:
+
+---- search::tests::exclude_file_query_keeps_directories_and_archive_descendants stdout ----
+
+thread 'search::tests::exclude_file_query_keeps_directories_and_archive_descendants' (88055888) panicked at src/search.rs:2972:21:
+assertion `left == right` failed: false: type:file excludefile:*.tmp excludefile:*.bak content:needle
+  left: 2
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    search::tests::exclude_file_query_keeps_directories_and_archive_descendants
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2547 filtered out; finished in 0.48s
+
+error: test failed, to rerun pass `--bin commander`

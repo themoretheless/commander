@@ -1,0 +1,12 @@
+{
+  "src/visual_qa.rs": "5be64da499f3e80f7ccad948c10b95c9799a282773c7c23edceda40548bbfdcd",
+  "src/app/keys.rs": "8e0360921506e8046d5147cd8f256c12c60ebc479b38d62668e9854c47810ea4",
+  "src/panel/miller.rs": "153b965d46dfe9d577d981e2140338334cbd58e00492be1216bd58ba022afdc3",
+  "src/workspace.rs": "04c9e3d5ca78dac465c23735dde307a9bc28b230ade34ca34433542b9835fe5a",
+  "src/workspace/tests.rs": "79bdead3b960a1e962226c0e4e71645b084a38889097404bbf8f7b8089ddfc04",
+  "src/panel.rs": "9100502b51cb1ed609efba2a23527b1df906ccfa95c0c520f22b83dff4006357",
+  "src/app/miller_browser.rs": "d8313b164c6d64f50af803fbd7bfe50cd200ae8ae09ec528088ed332df1e1e7f",
+  "src/app/file_list.rs": "1640a2430f35e9507f6ecc72c591ceea6e98d1cdb33f39855daf5aade05f420f",
+  "src/workspace/tabs.rs": "5bb1c4071e97d0fc78e789c75fa3aa62652d72a7fb1cfd549b5bded1d0fd4756",
+  "src/session.rs": "742f40fdfaabe0fe8294c9bb11ebf1d0714bf5c8da65e6e7190c0e42c44a4ffe"
+}

@@ -137,6 +137,10 @@ pub struct Session {
     pub theme_follow_system: bool,
     #[serde(default)]
     pub theme_palette: Option<String>,
+    #[serde(default)]
+    pub custom_theme: serde_json::Value,
+    #[serde(default)]
+    pub sync_profiles: serde_json::Value,
     pub ui_scale: f32,
     pub show_tree: bool,
     pub tree_width: f32,
@@ -157,6 +161,8 @@ pub struct Session {
     /// Monotonic counter stamped onto each palette command run.
     #[serde(default)]
     pub palette_tick: u64,
+    #[serde(default)]
+    pub custom_shortcuts: serde_json::Value,
     /// Persisted `Cmd+P` destinations and their frecency metadata.
     #[serde(default)]
     pub recent_paths: Vec<PathBuf>,
@@ -389,6 +395,12 @@ fn session_for_persistence(session: &Session) -> Session {
                 entries.push(tab.clone());
             }
         }
+        tabs.closed
+            .retain(|closed| closed.tab.path.is_absolute() && closed.tab.path.to_str().is_some());
+        if tabs.closed.len() > crate::workspace::tabs::MAX_CLOSED_TABS {
+            tabs.closed
+                .drain(..tabs.closed.len() - crate::workspace::tabs::MAX_CLOSED_TABS);
+        }
         tabs.entries = entries;
         tabs.active = active;
     }
@@ -424,6 +436,8 @@ mod tests {
             theme_dark: true,
             theme_follow_system: true,
             theme_palette: None,
+            custom_theme: serde_json::Value::Null,
+            sync_profiles: serde_json::Value::Null,
             ui_scale: 1.1,
             show_tree: true,
             tree_width: 220.0,
@@ -444,6 +458,7 @@ mod tests {
             ),
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 7,
+            custom_shortcuts: serde_json::Value::Null,
             recent_paths: Vec::new(),
             recent_stats: crate::panel::VisitStats::default(),
             recent_order: crate::panel::RecentOrder::Frecency,
@@ -635,6 +650,235 @@ mod tests {
         assert_eq!(persisted[0], PathBuf::from("/deep"));
         assert_eq!(persisted[1], PathBuf::from("/deep/a"));
         assert_eq!(persisted, persisted_tree_expanded(&expanded));
+    }
+
+    #[test]
+    fn sync_comparison_profiles_survive_atomic_session_reopen() {
+        let temp = TempDir::new();
+        let mut profiles = crate::sync_profiles::State::from_saved(serde_json::Value::Null);
+        profiles
+            .save(
+                crate::sync_profiles::Preset {
+                    name: "Work".into(),
+                    left: temp.path().into(),
+                    right: temp.path().into(),
+                    policy: crate::sync::SyncPolicy::TwoWay,
+                    left_hidden: true,
+                    right_hidden: false,
+                    compare_contents: true,
+                    dry_run: true,
+                },
+                false,
+            )
+            .unwrap();
+        let mut session = sample(temp.path().into(), temp.path().into());
+        session.sync_profiles = profiles.saved();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let loaded = load_at(&persist, &path).value.unwrap();
+        assert_eq!(
+            crate::sync_profiles::State::from_saved(loaded.sync_profiles).entries,
+            profiles.entries
+        );
+    }
+
+    #[test]
+    fn custom_theme_survives_atomic_session_reopen() {
+        let temp = TempDir::new();
+        let mut state = crate::custom_theme::State::default();
+        state.seed(crate::theme::ThemeColors::dark());
+        state.apply().unwrap();
+        let mut session = sample(temp.path().into(), temp.path().into());
+        session.custom_theme = state.saved();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let loaded = load_at(&persist, &path).value.unwrap();
+        assert_eq!(loaded.custom_theme, session.custom_theme);
+        let restored = crate::custom_theme::State::from_saved(loaded.custom_theme);
+        assert_eq!(
+            restored.colors().unwrap().bg_panel,
+            crate::theme::ThemeColors::dark().bg_panel
+        );
+    }
+
+    #[test]
+    fn tab_selection_survives_atomic_session_reopen_without_automatic_selection() {
+        use crate::command::Command;
+        use crate::workspace::{ActivePanel, Workspace};
+        let temp = TempDir::new();
+        let left = temp.dir("left");
+        let right = temp.dir("right");
+        let a = left.join("a.txt");
+        let b = left.join("b.txt");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let mut ws = Workspace::new(left.clone(), right.clone());
+        ws.left.refresh();
+        ws.left.select_path(a.clone());
+        ws.left.select_path(b.clone());
+        ws.execute(Command::SaveTabSelection);
+        assert!(ws.left.can_restore_tab_selection());
+        let mut session = sample(left.clone(), right.clone());
+        session.left_tabs = ws.tab_snapshot(ActivePanel::Left);
+        session.right_tabs = ws.tab_snapshot(ActivePanel::Right);
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        std::fs::remove_file(&b).unwrap();
+        let restored = load_at(&persist, &path).value.unwrap();
+        let mut fresh = Workspace::new(left, right);
+        fresh.restore_tabs(&restored.left_tabs, &restored.right_tabs);
+        assert_eq!(fresh.left.selected_count(), 0);
+        fresh.left.refresh();
+        assert_eq!(fresh.left.selected_count(), 0);
+        fresh.left.set_search_query("no-match");
+        fresh.execute(Command::RestoreTabSelection);
+        assert!(fresh.left.is_selected(&a));
+        assert!(!fresh.left.is_selected(&b));
+        assert_eq!(fresh.left.selected_count(), 1);
+        fresh.execute(Command::ForgetTabSelection);
+        assert!(!fresh.left.can_restore_tab_selection());
+        assert_eq!(fresh.left.selected_count(), 1);
+    }
+    #[test]
+    fn custom_shortcuts_round_trip_and_invalid_preferences_preserve_the_session() {
+        let temp = TempDir::new();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut session = sample(temp.path().into(), temp.path().into());
+        let raw = serde_json::json!([{"keys":"Alt+G H","command":"Reverse sort order"}]);
+        let mut state = crate::keybindings::State::from_saved(raw.clone());
+        assert!(state.error.is_none());
+        state.apply().unwrap();
+        session.custom_shortcuts = state.saved();
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let restored = load_at(&persist, &path).value.unwrap();
+        assert_eq!(restored.custom_shortcuts, raw);
+        assert!(
+            crate::keybindings::State::from_saved(restored.custom_shortcuts)
+                .error
+                .is_none()
+        );
+        session.custom_shortcuts = serde_json::json!({"unknown":"future-format"});
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let restored = load_at(&persist, &path).value.unwrap();
+        assert_eq!(restored.left_path, temp.path());
+        let invalid = crate::keybindings::State::from_saved(restored.custom_shortcuts.clone());
+        assert!(invalid.error.is_some());
+        assert_eq!(invalid.saved(), restored.custom_shortcuts);
+        let mut legacy = serde_json::to_value(&session).unwrap();
+        legacy.as_object_mut().unwrap().remove("custom_shortcuts");
+        assert!(
+            serde_json::from_value::<Session>(legacy)
+                .unwrap()
+                .custom_shortcuts
+                .is_null()
+        );
+    }
+    #[test]
+    fn closed_tab_histories_survive_atomic_session_save_and_reopen_independently() {
+        use crate::panel::BrowserMode;
+        use crate::workspace::{ActivePanel, Workspace};
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.dir("A");
+        let b = temp.dir("B");
+        let c = temp.dir("C");
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        for (side, folder, title, mode, width) in [
+            (ActivePanel::Left, &a, "Alpha", BrowserMode::Miller, 333.0),
+            (ActivePanel::Right, &b, "Beta", BrowserMode::Icons, 280.0),
+            (ActivePanel::Left, &c, "Gamma", BrowserMode::List, 310.0),
+        ] {
+            assert!(ws.new_tab(side, Some(folder.clone())));
+            let index = ws.active_tab_index(side);
+            assert!(ws.set_tab_title(side, index, title));
+            assert!(ws.set_tab_full_path_label(side, index, true));
+            let panel = if side == ActivePanel::Left {
+                &mut ws.left
+            } else {
+                &mut ws.right
+            };
+            panel.set_browser_mode(mode);
+            panel.resize_miller_column(folder.clone(), width);
+            assert!(ws.close_tab(side));
+        }
+        let mut session = sample(temp.path().into(), temp.path().into());
+        session.left_tabs = ws.tab_snapshot(ActivePanel::Left);
+        session.right_tabs = ws.tab_snapshot(ActivePanel::Right);
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let restored = load_at(&persist, &path).value.unwrap();
+        let mut fresh = Workspace::new(temp.path().into(), temp.path().into());
+        fresh.restore_tabs(&restored.left_tabs, &restored.right_tabs);
+        assert_eq!(
+            fresh.closed_tab_paths(ActivePanel::Left),
+            vec![a.clone(), c.clone()]
+        );
+        assert_eq!(fresh.closed_tab_paths(ActivePanel::Right), vec![b.clone()]);
+        assert!(fresh.reopen_closed_tab_at(ActivePanel::Left, 0));
+        assert_eq!(fresh.active_tab_index(ActivePanel::Left), 1);
+        assert_eq!(fresh.left.current_path, a);
+        assert_eq!(fresh.left.tab_title.as_deref(), Some("Alpha"));
+        assert!(fresh.left.tab_full_path_label);
+        assert_eq!(fresh.left.browser_mode(), BrowserMode::Miller);
+        assert_eq!(fresh.left.miller_column_width(&a, 220.0), 333.0);
+        assert_eq!(fresh.closed_tab_paths(ActivePanel::Left), vec![c]);
+        assert!(fresh.reopen_closed_tab(ActivePanel::Right));
+        assert_eq!(fresh.right.current_path, b);
+        assert_eq!(fresh.right.browser_mode(), BrowserMode::Icons);
+        assert_eq!(fresh.right.tab_title.as_deref(), Some("Beta"));
+        assert_eq!(fresh.right.miller_column_width(&b, 220.0), 280.0);
+        assert_eq!(fresh.closed_tab_count(ActivePanel::Right), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_closed_root_is_omitted_without_poisoning_the_session() {
+        use crate::workspace::{ActivePanel, Workspace};
+        use std::os::unix::ffi::OsStringExt;
+        let temp = crate::testutil::TempDir::new();
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        assert!(ws.new_tab(ActivePanel::Left, None));
+        assert!(ws.close_tab(ActivePanel::Left));
+        let mut session = sample(temp.path().into(), temp.path().into());
+        session.left_tabs = ws.tab_snapshot(ActivePanel::Left);
+        session.left_tabs.closed[0].tab.path =
+            PathBuf::from(std::ffi::OsString::from_vec(b"/closed-\xff".to_vec()));
+        let filtered = session_for_persistence(&session);
+        assert!(filtered.left_tabs.closed.is_empty());
+        assert_eq!(filtered.left_tabs.entries, session.left_tabs.entries);
+        assert!(serde_json::to_vec(&filtered).is_ok());
+        assert_eq!(session.left_tabs.closed.len(), 1);
+    }
+
+    #[test]
+    fn miller_geometry_survives_atomic_session_file_for_active_and_background_tabs() {
+        use crate::workspace::{ActivePanel, Workspace};
+        let temp = crate::testutil::TempDir::new();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.left.resize_miller_column(temp.path().into(), 281.0);
+        assert!(ws.new_tab(ActivePanel::Left, None));
+        ws.left.resize_miller_column(temp.path().into(), 333.0);
+        let mut session = sample(temp.path().into(), temp.path().into());
+        session.left_tabs = ws.tab_snapshot(ActivePanel::Left);
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let restored = load_at(&persist, &path).value.unwrap();
+        let mut fresh = Workspace::new(temp.path().into(), temp.path().into());
+        fresh.restore_tabs(&restored.left_tabs, &restored.right_tabs);
+        assert_eq!(fresh.left.miller_column_width(temp.path(), 220.0), 333.0);
+        assert!(fresh.select_tab(ActivePanel::Left, 0));
+        assert_eq!(fresh.left.miller_column_width(temp.path(), 220.0), 281.0);
     }
 
     #[test]

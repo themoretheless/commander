@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.10s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 2 tests
+test hex_preview::tests::bookmark_shortcuts_set_and_jump_all_ten_slots_through_guarded_reads ... FAILED
+test hex_preview::tests::bookmark_shortcuts_ignore_unrelated_modifiers_busy_errors_and_empty_slots ... ok
+
+failures:
+
+---- hex_preview::tests::bookmark_shortcuts_set_and_jump_all_ten_slots_through_guarded_reads stdout ----
+
+thread 'hex_preview::tests::bookmark_shortcuts_set_and_jump_all_ten_slots_through_guarded_reads' (25209411) panicked at src/hex_preview.rs:2138:13:
+assertion `left == right` failed
+  left: None
+ right: Some(0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hex_preview::tests::bookmark_shortcuts_set_and_jump_all_ten_slots_through_guarded_reads
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2841 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `--bin commander`

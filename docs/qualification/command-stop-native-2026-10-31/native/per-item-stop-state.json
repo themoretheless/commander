@@ -1,0 +1,42 @@
+{
+  "batch": {
+    "cancelled": true,
+    "completed": 1,
+    "failed": 1,
+    "stopped_on_error": false,
+    "succeeded": 0,
+    "total": 2
+  },
+  "context": {
+    "attempted_invocations": 1,
+    "execution": "per_item_continue",
+    "initial_working_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left",
+    "inputs": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left/first.txt",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left/later.txt"
+    ],
+    "name": "Stop qualification",
+    "opening_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left",
+    "other_directory": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/right",
+    "template": "printf started > {paths}.started; printf 'ready\\n'; sleep 30; printf done > {paths}",
+    "working_directory_policy": "opening"
+  },
+  "error": "Per-item command cancelled",
+  "exit_code": null,
+  "files": [
+    {
+      "contents": "initial\n",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left/first.txt",
+      "started": "started"
+    },
+    {
+      "contents": "initial\n",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left/later.txt",
+      "started": null
+    }
+  ],
+  "phase": 6,
+  "run_present": false,
+  "stderr": "\n--- item 1 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left/first.txt ---\nInvocation terminated by signal\n",
+  "stdout": "Per item: 1 / 2 completed · 0 succeeded · 1 failed · 1 remaining · cancelled\n\n--- item 1 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-53044-per_item_stop/left/first.txt ---\nready\n"
+}

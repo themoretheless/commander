@@ -1,0 +1,32 @@
+2026-10-31T13:05:43 INFO  commander::logging: logging initialized
+2026-10-31T13:05:43 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: timestamps
+2026-10-31T13:05:43 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-timestamps-1793437534349806000
+2026-10-31T13:05:43 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 0
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 1
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 2
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 3
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 4
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 5
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 6
+2026-10-31T13:05:43 INFO  commander::visual_qa: Timestamp QA phase 7
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 8
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 9
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 10
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 11
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 12
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 13
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 14
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 15
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 16
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 17
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 18
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 19
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 20
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 21
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 22
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 23
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 24
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 25
+2026-10-31T13:05:44 INFO  commander::visual_qa: Timestamp QA phase 26
+Error: AppCreation(Custom { kind: Other, error: "screenshot event timed out after 1143 frames and 10.0s (0 attempts): attempts=0, pending=0, stable=0, listings=8/4, probes=ProbeSnapshot { viewport: [[0.0 0.0] - [1280.0 760.0]], pixels_per_point: 2.0, left_pane: Some(ProbeRecord { rect: [[0.0 37.5] - [637.0 760.0]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: false, hovered: false }), right_pane: Some(ProbeRecord { rect: [[637.0 37.5] - [1280.0 760.0]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: false, hovered: false }), confirmation: Some(ProbeRecord { rect: [[345.0 170.0] - [935.0 590.0]], layer_id: LayerId { Middle Id::new(Some(\"Change file timestamps\")) }, enabled: true, hovered: false }), left_row: Some(ProbeRecord { rect: [[0.0 280.5] - [636.0 308.5]], layer_id: LayerId { Background Id::new(\"background\") }, enabled: false, hovered: false }), background_enabled: Some(false), modal_owner: Some(\"Permissions\"), modal_above_background: Some(true), painted_glyphs: {BreadcrumbChevron: [[132.8 86.0] - [139.8 97.0]], SortTriangle: [[76.0 208.0] - [83.0 215.0]], ParentUp: [[15.0 257.5] - [27.0 269.5]], FileDocument: [[21.5 314.0] - [38.5 333.0]], ToolbarCompare: [[1203.1 12.8] - [1219.1 23.8]], NavigationTriangle: [[15.5 86.0] - [24.5 97.0]]} }, " })

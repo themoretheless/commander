@@ -1,0 +1,6 @@
+{
+  "scenario": "per_item_command",
+  "out": "/tmp/commander-native-output-text-size-1793420023176847000",
+  "binary_sha256": "60278d55474fd18924eed5a5f772cdc984ff224a49997bc280c75e70327fd962",
+  "core_sha256": "60278d55474fd18924eed5a5f772cdc984ff224a49997bc280c75e70327fd962"
+}

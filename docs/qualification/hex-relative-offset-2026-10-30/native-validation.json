@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native relative Go/Enter/error/layout capture",
+  "binary_sha256": "cab7a828166d9e325c10a7a3a14bbc7206f29102d1bf0adf82cb9490be1a779c",
+  "core_coverage": "relative parser and deterministic worker page transitions passed",
+  "earlier_native_gates": "remain pending"
+}

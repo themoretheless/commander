@@ -1,0 +1,21 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0308]: mismatched types
+    --> src/query.rs:1085:74
+     |
+1085 |             assert_eq!(parse_permissions(&format!("{label}+")).unwrap(), (bit, 0));
+     |                                                                          ^^^^^^^^ expected `PermissionPattern`, found `(u32, {integer})`
+     |
+     = note: expected struct `PermissionPattern`
+                 found tuple `(u32, {integer})`
+
+error[E0308]: mismatched types
+    --> src/query.rs:1086:74
+     |
+1086 |             assert_eq!(parse_permissions(&format!("{label}-")).unwrap(), (0, bit));
+     |                                                                          ^^^^^^^^ expected `PermissionPattern`, found `({integer}, u32)`
+     |
+     = note: expected struct `PermissionPattern`
+                 found tuple `({integer}, u32)`
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

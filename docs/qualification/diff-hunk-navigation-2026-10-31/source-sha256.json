@@ -1,0 +1,11 @@
+{
+  "src/diff_navigation.rs": "1c11696932b38c5b1d8055cf546dbc59c347874285a3c320a74614a5b5149b13",
+  "src/app/diff_dialog.rs": "2a37b5d71b06d22dc081c2afaac593b09ea17e0104231aa440cded41e6eb538c",
+  "src/app/keys.rs": "bc6780e65f3345f7e065994a8ea8e9c2effff2ad940893b6d244bc522c41d0e4",
+  "src/app/mod.rs": "c6c80770fceb68415b1edaf67148b0ba3c726661ab1f9a9dd57d81343be3011e",
+  "src/app/update.rs": "c09a2653f033ad673d2bce93d4e926bebdecb809db53a7141e7fd93859d1c95c",
+  "src/app/ui_state.rs": "e6ed6c00e03930bdd6d5083cd7d0d1c991747fed70ed1e9fc1ee108bcc1aa3e6",
+  "src/main.rs": "4f41b2aa9bb7da3d8965bf216943d62c0ff8b5b2b4cc9f5a07f57f83083bb191",
+  "src/visual_qa.rs": "5699b3f8fc3ccb04d0b2bae77cf6fd67531460fd6cb1e6008bdb17d0fd323431",
+  ".github/workflows/ci.yml": "1fa2de2481c6c80c8459b3ac8a156d803272b530d23913ea4532145fcab307d3"
+}

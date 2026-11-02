@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "platform": "macos",
+  "status": "attempted",
+  "framebuffer": "attempted",
+  "failure_kind": "capture_attempted",
+  "detail": "starting native eframe/Glow framebuffer capture",
+  "renderer": null,
+  "native_menu_model": "automated_pure_contract",
+  "native_menu_pixels": "excluded_use_native_release_qa_evidence",
+  "whole_window_capture": "excluded_use_native_release_qa_evidence",
+  "voice_over": "excluded_use_native_release_qa_attestation"
+}

@@ -1,0 +1,6 @@
+{
+  "scenario": "diff_intraline",
+  "out": "/tmp/commander-native-diff_intraline-1793430002536163000",
+  "binary_sha256": "fbad5984575957334ddc6aec35ed737a23697549e136695ec09c7a548c0d3389",
+  "core_sha256": "fbad5984575957334ddc6aec35ed737a23697549e136695ec09c7a548c0d3389"
+}

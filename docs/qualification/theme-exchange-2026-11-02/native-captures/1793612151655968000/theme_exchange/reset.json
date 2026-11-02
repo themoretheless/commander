@@ -1,0 +1,11 @@
+{
+  "draft": "invalid theme draft",
+  "error": "expected value at line 1 column 1",
+  "panel": [
+    27,
+    24,
+    21
+  ],
+  "phase": 29,
+  "saved": null
+}

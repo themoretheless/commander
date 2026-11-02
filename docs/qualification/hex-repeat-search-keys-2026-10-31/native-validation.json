@@ -1,0 +1,22 @@
+{
+  "status": "passed_scoped",
+  "phase": 19,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "expected_offsets": [
+    1,
+    6,
+    1,
+    6
+  ],
+  "final_panel_selected_count": 0,
+  "final_offset": 6,
+  "physical_keys": "pending"
+}

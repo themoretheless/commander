@@ -1,0 +1,11 @@
+{
+  "checks_passed": 14,
+  "phase": 30,
+  "source_binary_matched": true,
+  "clipboard_writes": 5,
+  "root_bytes": 306,
+  "visible_rows": 5,
+  "target_one_root_tenths": 32,
+  "target_one_parent_tenths": 333,
+  "compressed_top_level_root_tenths": 196
+}

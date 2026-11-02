@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.64s
+     Running unittests src/main.rs (target/debug/build/commander/4d4d4532840d43cf/out/commander-4d4d4532840d43cf)
+
+running 7 tests
+test rtf_preview::tests::destinations_binary_hidden_text_and_field_instructions_are_inert ... ok
+test rtf_preview::tests::symbols_paragraphs_and_format_groups_preserve_only_visible_text ... ok
+test rtf_preview::tests::group_scoping_fallback_tokens_and_unicode_alternatives_do_not_duplicate_text ... ok
+test rtf_preview::tests::body_text_font_codepages_unicode_and_table_cells_are_preserved ... ok
+test rtf_preview::tests::multibyte_font_encodings_and_document_charset_switches_are_strict ... ok
+test rtf_preview::tests::malformed_or_truncated_documents_do_not_return_partial_text ... ok
+test rtf_preview::tests::bounded_output_depth_input_tokens_and_cancellation_are_enforced ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 2711 filtered out; finished in 0.05s
+

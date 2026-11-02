@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.99s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 14 tests
+test fs_util::tests::copy_name_truncation_keeps_unicode_character_boundaries ... ok
+test image_cache::tests::control_character_threshold_allows_exactly_one_in_twenty ... ok
+test rename::tests::character_edits_compose_with_replacement_and_extension_case ... ok
+test rename::tests::character_edit_scopes_handle_extensions_folders_and_dotfiles ... ok
+test name_filter::tests::unicode_ranges_are_character_indices_and_match_the_predicate ... ok
+test rename::tests::character_scope_defaults_and_validation_preserve_existing_guards ... ok
+test app::batch_rename_dialog::tests::character_target_changes_refresh_cached_proposals_and_submit_rules ... ok
+test rename_presets::tests::character_targets_round_trip_in_presets ... ok
+test preview_find::tests::regex_unicode_anchors_capture_groups_and_zero_width_are_character_ranges ... ok
+test preview_find::tests::literal_unicode_search_uses_character_offsets ... ok
+test preview_find::tests::whole_words_exclude_unicode_word_interiors_and_keep_character_offsets ... ok
+test workspace::tests::extension_character_edit_preserves_payload_undo_redo_and_refuses_collision ... ok
+test hex_preview::tests::single_byte_character_columns_decode_cyrillic_and_keep_raw_bytes_and_alignment ... ok
+test hex_preview::tests::character_encoding_menu_and_copy_page_use_same_snapshot_without_work ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 2853 filtered out; finished in 0.10s
+

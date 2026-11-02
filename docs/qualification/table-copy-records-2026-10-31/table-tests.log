@@ -1,0 +1,18 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.37s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 10 tests
+test table_preview::tests::quoted_multiline_unicode_and_ragged_rows ... ok
+test table_preview::tests::formulas_are_plain_text_and_empty_files_have_no_rows ... ok
+test table_preview::tests::tsv_preserves_empty_cells_and_escaped_quotes ... ok
+test table_preview::tests::heading_and_natural_sort_preserve_record_identity_and_equal_key_order ... ok
+test table_preview::tests::row_filter_composes_with_heading_sort_unicode_and_literal_cell_boundaries ... ok
+test table_preview::tests::bounds_rows_columns_and_unicode_bytes ... ok
+test table_preview::tests::pointer_record_copy_requests_exact_filtered_records_once_and_blocks_empty_views ... ok
+test table_preview::tests::pointer_heading_sort_and_reload_keep_panes_and_source_independent ... ok
+test table_preview::tests::pointer_row_filter_fuzzy_clear_and_cached_empty_results_preserve_sort ... ok
+test table_preview::tests::visible_record_export_round_trips_csv_tsv_headings_ragged_and_literal_values ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 2879 filtered out; finished in 0.12s
+

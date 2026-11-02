@@ -1,0 +1,11 @@
+{
+  "active": "right",
+  "clipboard_writes": 2,
+  "cursor": "portable.txt",
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84770-symlink_workflow/left",
+  "occupied": "occupied destination\n",
+  "phase": 48,
+  "relative_target": "../left/portable.txt",
+  "right": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-84770-symlink_workflow/left",
+  "source": "portable source\n"
+}

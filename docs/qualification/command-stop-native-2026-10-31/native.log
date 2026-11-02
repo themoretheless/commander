@@ -1,0 +1,10 @@
+2026-10-31T10:44:47 INFO  commander::logging: logging initialized
+2026-10-31T10:44:47 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: per_item_stop
+2026-10-31T10:44:47 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-command-stop-1793429082294982000
+2026-10-31T10:44:47 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T10:44:48 INFO  commander::visual_qa: Per-item Stop QA phase 0, target Id::new("run-command-button"), rect [[375.0 421.5] - [417.8 445.5]]
+2026-10-31T10:44:48 INFO  commander::visual_qa: Per-item Stop QA phase 1, target Id::new("run-command-button"), rect [[375.0 421.5] - [417.8 445.5]]
+2026-10-31T10:44:48 INFO  commander::visual_qa: Per-item Stop QA phase 2, target Id::new("run-command-button"), rect [[375.0 421.5] - [417.8 445.5]]
+2026-10-31T10:44:48 INFO  commander::visual_qa: Per-item Stop QA phase 3, target Id::new("run-command-stop"), rect [[654.4 459.5] - [699.2 483.5]]
+2026-10-31T10:44:48 INFO  commander::visual_qa: Per-item Stop QA phase 4, target Id::new("run-command-stop"), rect [[654.4 459.5] - [699.2 483.5]]
+2026-10-31T10:44:48 INFO  commander::visual_qa: Per-item Stop QA phase 5, target Id::new("run-command-stop"), rect [[654.4 459.5] - [699.2 483.5]]

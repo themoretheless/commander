@@ -1,0 +1,13 @@
+# Archive modification-date filter — 2026-10-30
+
+Independent adaptation of [fd modification-time constraints](https://github.com/sharkdp/fd/blob/master/doc/fd.1), cohort #77. Modified (UTC) adds absolute calendar-date filtering to the loaded archive listing. This transfer uses UTC dates; fd's relative durations, RFC3339 instants and local-time input remain outside this milestone.
+
+A single YYYY-MM-DD matches that UTC day. start.. includes midnight at the start; ..end excludes midnight at the end; start..end combines both. Blank disables the predicate, including for unknown timestamps. An active predicate requires a known declared modification time. Comparisons use SystemTime directly, so known Unix epoch zero, pre-epoch times and subsecond endpoint differences remain meaningful without converting member times through a narrower calendar type.
+
+Date syntax is strictly four-digit year, two-digit month/day with actual calendar validation. Input is capped at 24 UTF-8 bytes, endpoints may have surrounding whitespace, and equal/reversed/empty ranges, malformed dates and unavailable system-time conversions are rejected. Single-day upper bounds use the following UTC midnight, including leap days. No wall-clock or local-zone read is required. Invalid input fails closed for both real and synthetic rows and shows a dedicated error; raw text keeps Reset available for invalid whitespace-only input.
+
+The independently cached predicate intersects all existing path/mode/scope/size/depth/type/folder/narrowing conditions. Valid date ranges preserve synthetic navigation folders, hidden selections and existing copy/extraction membership. Saved snapshots carry date text in identity, labels and the combined 16 KiB text cap; date-only saves, recall and unified Reset share the existing owners. The new field has a stable ID and accessibility label. No payload or worker I/O is added.
+
+Two parser/pipeline regressions cover UTC day boundaries down to one nanosecond, pre-epoch dates, leap/invalid days, year 9999, missing vs known-zero timestamps, open ranges, malformed/conflicting endpoints, visible-cache rebuild, synthetic navigation, hidden selection and saved/Reset recovery. Native entry/error/recall/focus/layout remains pending: CUA is not exposed in this continuation, no native launch was attempted, and previous captures do not qualify the changed controls/labels.
+
+Validation: locked visual-QA suite passed 2825 tests (3 ignored); Clippy with warnings denied, default locked check, visual-QA build, formatting and diff whitespace checks passed. Source/binary hashes are recorded alongside the logs. No commit or push performed.

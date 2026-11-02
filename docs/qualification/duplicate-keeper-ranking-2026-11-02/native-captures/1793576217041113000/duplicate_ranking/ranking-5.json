@@ -1,0 +1,103 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "groups": [
+    [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/root-copy.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/first/alpha.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/long-copy/the-very-very-longest-basename-copy.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/wide-folder/x",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/middle/nested/zulu.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/deep/a/b/mid.bin"
+    ]
+  ],
+  "keep": [
+    2
+  ],
+  "report": {
+    "context": {
+      "configured_subfolder_levels": null,
+      "group_sort": "scan",
+      "keep_policy": "longest_name",
+      "max_bytes": null,
+      "max_subfolder_levels": null,
+      "metadata_source": "fresh_tree_enumeration",
+      "min_bytes": 0,
+      "minimum_copies": 2,
+      "names": {
+        "case": false,
+        "exclude": "",
+        "extension": "Any",
+        "grouping": "Any",
+        "grouping_ignore_ascii_case": false,
+        "include": ""
+      },
+      "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left",
+      "scope": "recursive"
+    },
+    "format": "commander_duplicate_report",
+    "groups": [
+      {
+        "files": [
+          {
+            "action": "trash",
+            "member": 1,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/root-copy.bin"
+          },
+          {
+            "action": "trash",
+            "member": 2,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/first/alpha.bin"
+          },
+          {
+            "action": "keep",
+            "member": 3,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/long-copy/the-very-very-longest-basename-copy.bin"
+          },
+          {
+            "action": "trash",
+            "member": 4,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/wide-folder/x"
+          },
+          {
+            "action": "trash",
+            "member": 5,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/middle/nested/zulu.bin"
+          },
+          {
+            "action": "trash",
+            "member": 6,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-17157-duplicate_ranking/left/deep/a/b/mid.bin"
+          }
+        ],
+        "group": 1,
+        "original_group": 1,
+        "size_bytes": 18
+      }
+    ],
+    "snapshot": "retained_duplicate_scan_proposal",
+    "summary": {
+      "files": 6,
+      "groups": 1,
+      "partial": false,
+      "proposed_trash_bytes": 90,
+      "proposed_trash_files": 5,
+      "scan_issues": 0
+    },
+    "version": 1
+  }
+}

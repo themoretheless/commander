@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: value assigned to `load_profile` is never read
+   --> src/app/sync_dialog.rs:420:21
+    |
+420 |                     load_profile = Some(swapped_comparison(state));
+    |                     ^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.71s

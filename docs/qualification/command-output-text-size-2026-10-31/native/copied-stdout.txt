@@ -1,0 +1,9 @@
+Per item: 2 / 2 completed · 2 succeeded · 0 failed · 0 remaining
+
+--- item 1 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/left/notes.md ---
+/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/right
+notes.md
+
+--- item 2 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/left/Design ---
+/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-32575-per_item_command/right
+Design

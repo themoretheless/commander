@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "choose both new formats and inspect wrapped layout",
+    "recording clipboard exact output for visible/hidden selected members",
+    "OS pasteboard delivery"
+  ]
+}

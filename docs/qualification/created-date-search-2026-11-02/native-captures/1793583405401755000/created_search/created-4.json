@@ -1,0 +1,18 @@
+{
+  "expression": "name:born- created-after:2026-11-02T01:36:55.247338652+00:00 created-before:2026-11-02T01:36:55.290273286+00:00",
+  "matched": 1,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-48201-created_search/left",
+  "rows": [
+    {
+      "created_ns": 1793583415268865511,
+      "explanations": [
+        "literal \"born-\"",
+        "created-after:2026-11-02T01:36:55.247338652+00:00",
+        "created-before:2026-11-02T01:36:55.290273286+00:00"
+      ],
+      "name": "born-middle.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

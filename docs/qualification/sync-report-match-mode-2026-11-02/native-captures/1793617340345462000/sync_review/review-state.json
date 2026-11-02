@@ -1,0 +1,115 @@
+{
+  "baseline": [
+    {
+      "direction": "ToRight",
+      "name": "Design",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToRight",
+      "name": "README.txt",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToRight",
+      "name": "notes.md",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToRight",
+      "name": "photo.png",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToRight",
+      "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "Archive",
+      "status": "RightOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "invoice.pdf",
+      "status": "RightOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "release.zip",
+      "status": "RightOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "source.rs",
+      "status": "RightOnly"
+    }
+  ],
+  "descending": true,
+  "export_scope": "shown_rows",
+  "hidden_planned": 0,
+  "indices": [
+    8,
+    7,
+    1,
+    4,
+    3,
+    2,
+    6,
+    0,
+    5
+  ],
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-94346-sync_review/left",
+  "query": "",
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-94346-sync_review/right",
+  "rows": [
+    {
+      "direction": "ToRight",
+      "name": "Design",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToRight",
+      "name": "README.txt",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "Skip",
+      "name": "notes.md",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToRight",
+      "name": "photo.png",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToRight",
+      "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "status": "LeftOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "Archive",
+      "status": "RightOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "invoice.pdf",
+      "status": "RightOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "release.zip",
+      "status": "RightOnly"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "source.rs",
+      "status": "RightOnly"
+    }
+  ],
+  "scope": "All",
+  "sort": "name"
+}

@@ -1,0 +1,4 @@
+2026-10-31T09:19:02 INFO  commander::logging: logging initialized
+2026-10-31T09:19:02 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: diff_navigation
+2026-10-31T09:19:02 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-diff-lines-1793423930199526000
+2026-10-31T09:19:02 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

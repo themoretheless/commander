@@ -1,0 +1,32 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.79s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 3 tests
+test query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match ... FAILED
+test query::tests::strict_size_decimal_bounds_round_exactly_without_float_saturation ... FAILED
+test query::tests::strict_size_operators_exclude_the_bound ... ok
+
+failures:
+
+---- query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match stdout ----
+
+thread 'query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match' (87703972) panicked at src/query.rs:1830:13:
+assertion failed: Query::parse(&format!("size:>{}B", u64::MAX), mode).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- query::tests::strict_size_decimal_bounds_round_exactly_without_float_saturation stdout ----
+
+thread 'query::tests::strict_size_decimal_bounds_round_exactly_without_float_saturation' (87703970) panicked at src/query.rs:1803:17:
+assertion `left == right` failed: 9007199254740993.0B
+  left: [MinSize(9007199254740992), MaxSize(9007199254740992)]
+ right: [MinSize(9007199254740993), MaxSize(9007199254740993)]
+
+
+failures:
+    query::tests::strict_size_decimal_bounds_round_exactly_without_float_saturation
+    query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 2541 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin commander`

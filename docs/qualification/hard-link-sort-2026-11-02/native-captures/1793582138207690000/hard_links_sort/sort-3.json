@@ -1,0 +1,98 @@
+{
+  "config": {
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "folders_by_name": false,
+    "folders_first": true,
+    "mode": "List",
+    "natural_name_sort": true,
+    "show_hidden": false,
+    "sort_col": "Name",
+    "sort_order": "Desc"
+  },
+  "cursor": "links-middle.txt",
+  "entries": [
+    {
+      "hard_links": null,
+      "name": "links-folder",
+      "selected": false,
+      "size": 0
+    },
+    {
+      "hard_links": 3,
+      "name": "links-old.txt",
+      "selected": true,
+      "size": 8
+    },
+    {
+      "hard_links": 3,
+      "name": "links-new.txt",
+      "selected": false,
+      "size": 8
+    },
+    {
+      "hard_links": 1,
+      "name": "links-middle.txt",
+      "selected": false,
+      "size": 5
+    },
+    {
+      "hard_links": null,
+      "name": "links-link.txt",
+      "selected": false,
+      "size": 8
+    }
+  ],
+  "phase": 23,
+  "report": {
+    "exported_rows": 1,
+    "facets": {
+      "kind": null,
+      "max_age_days": null,
+      "min_age_days": null,
+      "min_size": null
+    },
+    "folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-25045-hard_links_sort/left",
+    "format": "commander.listing-report",
+    "hidden_selected_rows": 1,
+    "listing_rows": 10,
+    "query": "links-",
+    "rows": [
+      {
+        "accessed_utc": "2026-11-02T01:15:45.021087631Z",
+        "allocated_bytes": 4096,
+        "changed_utc": "2026-11-02T01:15:45.022506088Z",
+        "created_utc": "2026-11-02T01:15:45.021087631Z",
+        "device_id": 16777230,
+        "displayed_size": "8 B",
+        "file_id": 255261053,
+        "file_size_bytes": 8,
+        "hard_links": 3,
+        "kind": "File",
+        "modified_utc": "2026-11-02T01:15:45.021188256Z",
+        "name": "links-old.txt",
+        "owner_gid": 20,
+        "owner_uid": 501,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-25045-hard_links_sort/left/links-old.txt",
+        "row": 1
+      }
+    ],
+    "scope": "visible_selected_rows",
+    "selected_rows": 2,
+    "snapshot": "retained_listing_metadata",
+    "version": 1,
+    "view": {
+      "case_sensitive_name_sort": false,
+      "density": "Comfortable",
+      "folders_by_name": false,
+      "folders_first": true,
+      "mode": "List",
+      "natural_name_sort": true,
+      "show_hidden": false,
+      "sort_col": "Name",
+      "sort_order": "Desc"
+    },
+    "visible_rows": 5
+  },
+  "selected": 2
+}

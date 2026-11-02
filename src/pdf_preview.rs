@@ -49,18 +49,40 @@ enum Mode {
 #[derive(Debug)]
 enum Content {
     Image(Page),
+    Search(crate::pdf_search::Report),
     Text {
         text: Arc<str>,
         number: usize,
         total: usize,
     },
 }
+enum Job {
+    Page(Mode),
+    Search(crate::pdf_search::Query),
+}
 
+#[cfg(test)]
 fn load(
     identity: &PreviewIdentity,
     page: usize,
     cancelled: impl Fn() -> bool,
     mode: Mode,
+) -> Result<Content, String> {
+    load_job(
+        identity,
+        page,
+        cancelled,
+        &Job::Page(mode),
+        &AtomicUsize::new(0),
+    )
+}
+
+fn load_job(
+    identity: &PreviewIdentity,
+    page: usize,
+    cancelled: impl Fn() -> bool,
+    job: &Job,
+    progress: &AtomicUsize,
 ) -> Result<Content, String> {
     if IN_FLIGHT
         .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
@@ -122,9 +144,9 @@ fn load(
     if cancelled() {
         return Err("PDF preview cancelled".into());
     }
-    let rendered = match mode {
-        Mode::Image => Content::Image(rasterize(&bytes, page)?),
-        Mode::Text => {
+    let rendered = match job {
+        Job::Page(Mode::Image) => Content::Image(rasterize(&bytes, page)?),
+        Job::Page(Mode::Text) => {
             let (text, total) = crate::pdf_text::extract(&bytes, page)?;
             Content::Text {
                 text,
@@ -132,6 +154,9 @@ fn load(
                 total,
             }
         }
+        Job::Search(query) => Content::Search(crate::pdf_text::search(
+            &bytes, query, &cancelled, progress,
+        )?),
     };
     if cancelled() {
         return Err("PDF preview cancelled".into());
@@ -329,6 +354,8 @@ struct Run {
     receiver: mpsc::Receiver<Result<Content, String>>,
     cancelled: Arc<AtomicBool>,
     started: Instant,
+    search: bool,
+    progress: Arc<AtomicUsize>,
 }
 impl Drop for Run {
     fn drop(&mut self) {
@@ -340,6 +367,15 @@ fn start(
     number: usize,
     ctx: &egui::Context,
     mode: Mode,
+) -> Result<Run, String> {
+    start_job(identity, number, ctx, Job::Page(mode))
+}
+
+fn start_job(
+    identity: PreviewIdentity,
+    number: usize,
+    ctx: &egui::Context,
+    job: Job,
 ) -> Result<Run, String> {
     crate::provider_runtime::activate_builtin_explained(
         "native-preview",
@@ -353,6 +389,9 @@ fn start(
     let (sender, receiver) = mpsc::channel();
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancel = cancelled.clone();
+    let progress = Arc::new(AtomicUsize::new(0));
+    let scanned = progress.clone();
+    let search = matches!(&job, Job::Search(_));
     let repaint = ctx.clone();
     crate::workload::submit(
         crate::workload::TaskSpec::new(
@@ -363,11 +402,12 @@ fn start(
         .priority(crate::workload::Priority::Interactive)
         .estimated_bytes(MAX_INPUT),
         move |token| {
-            let result = load(
+            let result = load_job(
                 &identity,
                 number,
                 || token.is_cancelled() || cancel.load(Ordering::Acquire),
-                mode,
+                &job,
+                &scanned,
             );
             let _ = sender.send(result);
             repaint.request_repaint();
@@ -378,6 +418,8 @@ fn start(
         receiver,
         cancelled,
         started: Instant::now(),
+        search,
+        progress,
     })
 }
 
@@ -393,6 +435,13 @@ struct Slot {
     texture: Option<(usize, egui::TextureHandle)>,
     run: Option<Run>,
     error: Option<String>,
+    search_query: String,
+    search_case: bool,
+    search_smart_case: bool,
+    search_regex: bool,
+    search_whole_words: bool,
+    search_report: Option<crate::pdf_search::Report>,
+    search_error: Option<String>,
 }
 #[derive(Default)]
 pub struct Cache {
@@ -429,6 +478,26 @@ impl Cache {
             Mode::Image => slot.texture.as_ref().map(|(page, _)| *page),
             Mode::Text => slot.text.as_ref().map(|(page, _)| *page),
         }
+    }
+    #[cfg(feature = "visual-qa")]
+    pub fn search_pages(&self, side: &str) -> Option<Vec<usize>> {
+        self.slots[usize::from(side == "right")]
+            .search_report
+            .as_ref()
+            .map(|report| report.hits.iter().map(|hit| hit.page).collect())
+    }
+    #[cfg(feature = "visual-qa")]
+    pub fn search_modes(&self, side: &str) -> Option<[bool; 3]> {
+        self.slots[usize::from(side == "right")]
+            .search_report
+            .as_ref()
+            .map(|report| {
+                [
+                    report.query.regex,
+                    report.query.whole_words,
+                    report.query.smart_case,
+                ]
+            })
     }
     #[cfg(feature = "visual-qa")]
     pub fn diagnostic(&self, side: &str) -> String {
@@ -473,6 +542,12 @@ impl Cache {
         }
         if let Some(run) = &slot.run {
             match run.receiver.try_recv() {
+                Ok(Ok(Content::Search(report))) => {
+                    slot.total = report.total;
+                    slot.search_report = Some(report);
+                    slot.search_error = None;
+                    slot.run = None;
+                }
                 Ok(Ok(Content::Text {
                     text,
                     number,
@@ -498,16 +573,33 @@ impl Cache {
                     slot.error = None;
                 }
                 Ok(Err(error)) => {
+                    let search = run.search;
                     slot.run = None;
-                    slot.error = Some(error);
+                    if search {
+                        slot.search_error = Some(error);
+                    } else {
+                        slot.error = Some(error);
+                    }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    let search = run.search;
                     slot.run = None;
-                    slot.error = Some("PDF worker stopped before completing".into());
+                    if search {
+                        slot.search_error =
+                            Some("PDF search worker stopped before completing".into());
+                    } else {
+                        slot.error = Some("PDF worker stopped before completing".into());
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) if run.started.elapsed() > TIMEOUT => {
+                    let search = run.search;
                     slot.run = None;
-                    slot.error = Some("PDF preview timed out; retry or open externally".into());
+                    if search {
+                        slot.search_error =
+                            Some("PDF search timed out; retry or open externally".into());
+                    } else {
+                        slot.error = Some("PDF preview timed out; retry or open externally".into());
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -621,6 +713,7 @@ impl Cache {
                 ui.label(format!("{:.0}% of Fit", slot.zoom * 100.0));
             }
         });
+        render_document_search(ui, slot, identity, side, &mut requested);
         if let Some(error) = &slot.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
             if ui.button("Retry PDF page").clicked() {
@@ -666,6 +759,178 @@ impl Cache {
                     );
                 });
         }
+    }
+}
+
+fn render_document_search(
+    ui: &mut egui::Ui,
+    slot: &mut Slot,
+    identity: &PreviewIdentity,
+    side: &str,
+    requested: &mut Option<usize>,
+) {
+    let mut start_search = false;
+    let mut cancel_search = false;
+    let mut picked = None;
+    let response = egui::CollapsingHeader::new("Search entire PDF")
+        .id_salt(("pdf-document-search", side))
+        .show(ui, |ui| {
+            let busy = slot.run.is_some();
+            ui.horizontal_wrapped(|ui| {
+                let query = ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut slot.search_query)
+                        .char_limit(256)
+                        .desired_width(200.0)
+                        .hint_text("Text in all pages"),
+                );
+                let case = ui.add_enabled(
+                    !busy,
+                    egui::Checkbox::new(&mut slot.search_case, "Match case"),
+                );
+                let smart = ui.add_enabled(
+                    !busy, egui::Checkbox::new(&mut slot.search_smart_case, "Smart case"),
+                ).on_hover_text("Ignore case unless the query contains Unicode uppercase characters. Match case overrides this; inline regex flags still apply.");
+                let regex =
+                    ui.add_enabled(!busy, egui::Checkbox::new(&mut slot.search_regex, "Regex"));
+                let words = ui.add_enabled(
+                    !busy,
+                    egui::Checkbox::new(&mut slot.search_whole_words, "Whole words"),
+                );
+                if query.changed() || case.changed() || regex.changed() || words.changed() || smart.changed() {
+                    slot.search_report = None;
+                    slot.search_error = None;
+                }
+                let search = ui.add_enabled(
+                    !busy && slot.total > 0 && !slot.search_query.is_empty(),
+                    egui::Button::new("Search all pages"),
+                );
+                start_search = search.clicked()
+                    || (!busy
+                        && query.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::new(("pdf-document-search-smart", side)),
+                        smart.rect,
+                    );
+                    data.insert_temp(
+                        egui::Id::new(("pdf-document-search-regex", side)),
+                        regex.rect,
+                    );
+                    data.insert_temp(
+                        egui::Id::new(("pdf-document-search-words", side)),
+                        words.rect,
+                    );
+                    data.insert_temp(
+                        egui::Id::new(("pdf-document-search-query", side)),
+                        query.rect,
+                    );
+                    data.insert_temp(
+                        egui::Id::new(("pdf-document-search-start", side)),
+                        search.rect,
+                    );
+                });
+            });
+            ui.small("All pages · no OCR · up to 4096 pages");
+            if let Some(run) = slot.run.as_ref().filter(|run| run.search) {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "Searching page {} / {}",
+                        run.progress.load(Ordering::Relaxed),
+                        slot.total
+                    ));
+                    if ui.button("Cancel document search").clicked() {
+                        cancel_search = true;
+                    }
+                });
+            }
+            if let Some(error) = &slot.search_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            if let Some(report) = &slot.search_report {
+                ui.label(if report.hits.is_empty() {
+                    format!("No matches in {} pages", report.total)
+                } else {
+                    format!(
+                        "{} matching page(s) / {} searched",
+                        report.hits.len(),
+                        report.total
+                    )
+                });
+                egui::ScrollArea::vertical()
+                    .id_salt(("pdf-document-search-results", side))
+                    .max_height(120.0)
+                    .show_rows(ui, 24.0, report.hits.len(), |ui, range| {
+                        for hit in &report.hits[range] {
+                            let response = ui.add_enabled(
+                                !busy,
+                                egui::Button::new(format!(
+                                    "Page {} · {}{} matches",
+                                    hit.page,
+                                    hit.count,
+                                    if hit.limited { "+" } else { "" }
+                                )),
+                            );
+                            #[cfg(any(test, feature = "visual-qa"))]
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(
+                                    egui::Id::new(("pdf-document-search-hit", side, hit.page)),
+                                    response.rect,
+                                )
+                            });
+                            if response.clicked() {
+                                picked = Some((hit.page, report.query.clone()));
+                            }
+                        }
+                    });
+            }
+        });
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(("pdf-document-search-toggle", side)),
+            response.header_response.rect,
+        )
+    });
+    #[cfg(not(any(test, feature = "visual-qa")))]
+    let _ = response;
+    if cancel_search {
+        slot.run = None;
+        slot.search_report = None;
+        slot.search_error = Some("PDF document search cancelled".into());
+    } else if start_search {
+        *requested = None;
+        slot.search_report = None;
+        slot.search_error = None;
+        let query = crate::pdf_search::Query {
+            text: slot.search_query.clone(),
+            case_sensitive: slot.search_case,
+            smart_case: slot.search_smart_case,
+            regex: slot.search_regex,
+            whole_words: slot.search_whole_words,
+        };
+        match start_job(identity.clone(), slot.number, ui.ctx(), Job::Search(query)) {
+            Ok(run) => slot.run = Some(run),
+            Err(error) => slot.search_error = Some(error),
+        }
+    } else if let Some((page, query)) = picked {
+        slot.mode = Mode::Text;
+        slot.text = None;
+        *requested = Some(page);
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new(("pdf-page-text", side)).with("find"),
+                crate::preview_find::PreviewFind::with_query_options(
+                    &query.text,
+                    query.case_sensitive,
+                    query.regex,
+                    query.whole_words,
+                    query.smart_case,
+                ),
+            )
+        });
     }
 }
 
@@ -749,6 +1014,9 @@ fn render_page_text(
     });
     let mut scroll = egui::ScrollArea::both()
         .id_salt(id.with("scroll"))
+        // Search controls can wrap; the page text must fit the remaining height
+        // instead of imposing ScrollArea's default minimum on the whole pane.
+        .min_scrolled_height(0.0)
         .auto_shrink([false; 2]);
     if new_page {
         scroll = scroll.scroll_offset(egui::Vec2::ZERO);
@@ -862,6 +1130,47 @@ mod tests {
         cache.retain(&ctx, None, None);
         assert!(cache.shown_page("right").is_none());
         assert!(cache.slots[1].identity.is_none());
+    }
+
+    #[test]
+    fn closing_a_pdf_cancels_document_search_and_discards_late_completion() {
+        let ctx = egui::Context::default();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        let report = || crate::pdf_search::Report {
+            query: crate::pdf_search::Query {
+                text: "second".into(),
+                case_sensitive: false,
+                ..Default::default()
+            },
+            total: 2,
+            hits: vec![crate::pdf_search::Hit {
+                page: 2,
+                count: 1,
+                limited: false,
+            }],
+        };
+        let mut cache = Cache::default();
+        cache.slots[1] = Slot {
+            identity: Some(PreviewIdentity {
+                path: "search.pdf".into(),
+                size: 0,
+                modified: None,
+            }),
+            search_report: Some(report()),
+            run: Some(Run {
+                receiver,
+                cancelled: cancelled.clone(),
+                started: Instant::now(),
+                search: true,
+                progress: Arc::new(AtomicUsize::new(1)),
+            }),
+            ..Default::default()
+        };
+        cache.retain(&ctx, None, None);
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(cache.slots[1].search_report.is_none());
+        assert!(sender.send(Ok(Content::Search(report()))).is_err());
     }
 
     #[test]

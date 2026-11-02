@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "checks": 16,
+  "expected_cwd": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/right",
+  "actual_cwd_lines": 2,
+  "original_selection_preserved": true,
+  "binary_sha256": "8e06a1262b5d3e8976b1ee1eeba91c1336e2589fe8620f5a8a73f5a09c332d28"
+}

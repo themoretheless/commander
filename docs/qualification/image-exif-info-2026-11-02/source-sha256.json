@@ -1,0 +1,16 @@
+{
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "src/image_metadata.rs": "b9cab1fef50e58413e76543b41d48f6942e8e350659ee15ba4c9862b23de17d8",
+  "src/panel/preview.rs": "e392d36f37a97025be9a56ccb96247839fe81d0c600e18b765cfff7d3157d410",
+  "src/app/mod.rs": "2c71cda4de2580a735b08ecb157c87870e2a61af44af5d7db539ca8ca0bed6a7",
+  "src/app/preload.rs": "e5a9c3cfd0ecf34651173142453344aabf89780b0885260073b28afe0111756f",
+  "src/app/render.rs": "33a949e9cef09c47e3e406e0a2bd39d96905c6f7eea000c4d299b2f1e268f2ff",
+  "src/app/update.rs": "f37beb1b87e48a8e5e01d9e977f0695e35c9b239afebb79e54cf4f15ac347798",
+  "src/visual_qa.rs": "0f86a1496460258416ab6a79b7d9db3bab46e69799d0ff2debf8dfb94921fc91",
+  "src/main.rs": "29922f0f6c35bffc1b02c9fb1c243cc94074fd93baa088b7c09f2f0d53d18127",
+  ".github/workflows/ci.yml": "92d4a5a1dac09afd6f7335b8cc9cc2c28a0ca43fd4f1cd6c99497433f4cca642",
+  "THIRD_PARTY_LICENSES.md": "977b8799a63df1fd249d1b8cf67be13471c6e3172c6a2001b2e8f831be6b0f01",
+  "data/licenses/kamadak-exif-BSD-2-Clause.txt": "17c496a77909a1f26006427d27e58a1d1514baa6a332240aa5fc543e3fa7295d",
+  "data/licenses/mutate-once-BSD-2-Clause.txt": "0c1b89e5705ae3a3f7275120e175c8ce7b1f82b1752594f8c513ae467f9e6b22"
+}

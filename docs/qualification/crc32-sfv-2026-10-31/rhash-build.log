@@ -1,0 +1,22 @@
+Cloning into '/tmp/commander-rhash-validation-20261031'...
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  calc_sums.c -o calc_sums.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  hash_print.c -o hash_print.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  common_func.c -o common_func.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  hash_update.c -o hash_update.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  file.c -o file.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  file_mask.c -o file_mask.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  file_set.c -o file_set.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  find_file.c -o find_file.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  hash_check.c -o hash_check.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  output.c -o output.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  -DSYSCONFDIR=\"/usr/local/etc\" parse_cmdline.c -o parse_cmdline.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations   rhash_main.c -o rhash_main.o
+cc -c -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  win_utils.c -o win_utils.o
+cd librhash && /Library/Developer/CommandLineTools/usr/bin/make lib-shared
+test "xlibrhash.1.dylib" = "xlibrhash.1.4.6.dylib" || ( \
+	  rm -f librhash.1.dylib && \
+	  ln -s librhash.1.4.6.dylib librhash.1.dylib )
+rm -f librhash.dylib
+ln -s librhash.1.dylib librhash.dylib
+cc -O2 -DNDEBUG -pipe -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -W -Wstrict-prototypes -Wnested-externs -Winline -Wpointer-arith -Wbad-function-cast -Wmissing-prototypes -Wmissing-declarations  -fpic -DRHASH_XVERSION=0x01040600 algorithms.c byte_order.c plug_openssl.c rhash.c rhash_torrent.c aich.c blake2b.c blake2s.c blake3.c crc32.c ed2k.c edonr.c hex.c md4.c md5.c sha1.c sha_ni.c sha256.c sha512.c sha3.c ripemd-160.c gost12.c gost94.c has160.c snefru.c tiger.c tiger_sbox.c tth.c torrent.c util.c whirlpool.c whirlpool_sbox.c   -dynamiclib -Wl,-install_name,librhash.1.dylib/librhash.1.4.6.dylib -o librhash.1.4.6.dylib
+cc calc_sums.o hash_print.o common_func.o hash_update.o file.o file_mask.o file_set.o find_file.o hash_check.o output.o parse_cmdline.o rhash_main.o win_utils.o librhash/librhash.1.4.6.dylib   -o rhash

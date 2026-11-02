@@ -1,0 +1,7 @@
+{
+  "scenario": "duplicate_sort",
+  "output": "/tmp/commander-native-recursive-legacy-sort-1793404146781434000",
+  "binary_sha256": "2604c5833da5e9a5a868a12e80486d0648fc122658dcacd0c357844707c275f8",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793404146781640000
+}

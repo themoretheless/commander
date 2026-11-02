@@ -1,0 +1,16 @@
+{
+  "format": "commander.command-templates",
+  "version": 4,
+  "templates": [
+    {
+      "name": "Folder sizes",
+      "raw": "du -sh {paths}",
+      "exts": [],
+      "kind": "folders",
+      "limits": {
+        "min": 1,
+        "max": null
+      }
+    }
+  ]
+}

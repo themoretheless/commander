@@ -1,0 +1,14 @@
+{
+  "src/diff_goto.rs": "a5457fda8dc78743a192226750d4b27ef7ab592f2a9da255a78691b0b70a31ac",
+  "src/diff_find.rs": "8e4b7415243c85da0e1cd5707178601170be8274f037b0d4e7835d6e0a6d914c",
+  "src/diff_context.rs": "1bf822adf8f95f67be890d7a4c4ec0b101a8f8791e21d5e177dd91f92ed1b3ee",
+  "src/diff_navigation.rs": "8d2868272954ccfb52b670cf6a0a36460f637760e2ea3a051d744cc42887f017",
+  "src/app/diff_dialog.rs": "5ed55be139523c9d7457238c89cc8f7141ef0a780e156620696997c8433b46f6",
+  "src/app/keys.rs": "4ba2d8b33fd6cecd7990318fc7dae8a238caf9c8d1d635386d20c9336be88c75",
+  "src/app/mod.rs": "c287251c3e6fb52bd6469c1c1c5304abddd56c12aac3fafbcb7f4299f0cd4e49",
+  "src/app/update.rs": "1753f713e7e68cc7f5f4e9ddb1c41e905270edb1c5f8e4fc94cf0e5acdc4bd1b",
+  "src/app/ui_state.rs": "bfdf6fefafe0e167305034aee0112382e6b1fa28b3b8d006a89f44302d97c587",
+  "src/main.rs": "6ec1db84737976178fe83323e9c0cfa0e75cf8fd5d1848a9f560f9821eb024c2",
+  "src/visual_qa.rs": "e364c5006ccd9dccf61ce10f2b0ef14b2aee6ebd5fd36735cbe1c77b497a7f74",
+  ".github/workflows/ci.yml": "1fa2de2481c6c80c8459b3ac8a156d803272b530d23913ea4532145fcab307d3"
+}

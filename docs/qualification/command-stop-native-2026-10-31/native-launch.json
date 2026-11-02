@@ -1,0 +1,6 @@
+{
+  "scenario": "per_item_stop",
+  "out": "/tmp/commander-native-command-stop-1793429082294982000",
+  "binary_sha256": "5a4bb9a273055dce4c9bb8bab2aa0eee06283f7df332fe74459f7e8f9f66ecf0",
+  "core_sha256": "5a4bb9a273055dce4c9bb8bab2aa0eee06283f7df332fe74459f7e8f9f66ecf0"
+}

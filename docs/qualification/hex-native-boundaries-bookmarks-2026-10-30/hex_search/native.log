@@ -1,0 +1,4 @@
+2026-10-30T23:25:30 INFO  commander::logging: logging initialized
+2026-10-30T23:25:30 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: hex_search
+2026-10-30T23:25:30 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-hex-boundaries-1793388325732476000
+2026-10-30T23:25:30 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

@@ -1,0 +1,21 @@
+2026-10-31T05:57:57 INFO  commander::logging: logging initialized
+2026-10-31T05:57:57 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: favorite_import
+2026-10-31T05:57:57 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-bookmark-exchange-1793411868550248000
+2026-10-31T05:57:57 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 0, target Id::new("bookmark-import-input"), rect [[561.0 131.7] - [1239.0 210.5]]
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 1, target Id::new("bookmark-import-input"), rect [[561.0 131.7] - [1239.0 210.5]]
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 2, target Id::new("bookmark-import-input"), rect [[561.0 131.7] - [1239.0 210.5]]
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 3, target Id::new("bookmark-import-input"), rect [[561.0 131.7] - [1239.0 210.5]]
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 4, target Id::new("bookmark-import-input"), rect [[561.0 131.7] - [1239.0 210.5]]
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 5, target Id::new("bookmark-import-preview"), rect [[561.0 334.7] - [694.0 358.7]]
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 6, target Id::new("bookmark-import-preview"), rect [[561.0 334.7] - [694.0 358.7]]
+2026-10-31T05:57:57 INFO  commander::visual_qa: Favorite import QA phase 7, target Id::new("bookmark-import-preview"), rect [[561.0 334.7] - [694.0 358.7]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 8, target Id::new(("bookmark-import-row", 3)), rect [[561.0 471.0] - [585.0 495.0]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 9, target Id::new(("bookmark-import-row", 3)), rect [[561.0 471.0] - [585.0 495.0]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 10, target Id::new(("bookmark-import-row", 3)), rect [[561.0 471.0] - [585.0 495.0]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 11, target Id::new("bookmark-import-apply"), rect [[561.0 601.2] - [728.6 625.2]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 12, target Id::new("bookmark-import-apply"), rect [[561.0 601.2] - [728.6 625.2]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 13, target Id::new("bookmark-import-apply"), rect [[561.0 601.2] - [728.6 625.2]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 14, target Id::new("bookmark-import-export"), rect [[561.0 648.2] - [703.5 672.2]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 15, target Id::new("bookmark-import-export"), rect [[561.0 648.2] - [703.5 672.2]]
+2026-10-31T05:57:58 INFO  commander::visual_qa: Favorite import QA phase 16, target Id::new("bookmark-import-export"), rect [[561.0 648.2] - [703.5 672.2]]

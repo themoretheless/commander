@@ -1,0 +1,13 @@
+# Manage recently closed folder tabs
+
+Commander extension of the existing recently closed tabs workflow inspired by [Ranger tab_restore](https://github.com/ranger/ranger/blob/master/ranger/core/actions.py) and [Nimble Commander recently closed locations](https://github.com/mikekazakov/nimble-commander/blob/ee4abffb165019106c7420db5ea8b51623e4baa4/Docs/Help.md). No claim of identical upstream Forget/Clear UI; no upstream implementation copied.
+
+Closed menu rows now use saved tab presentation names, including custom titles/full-path label preference, with the location in hover/accessibility text. Each row offers Forget and the menu offers Clear history. The menu stays usable at the eight-open-tab limit; only Reopen is disabled. Actions apply after rendering a stable snapshot, target exact record indexes (including duplicate paths), and do not activate a pane, read directories, delete files or clear live previews/selection. Existing pending-operation/modal guards apply. Changes appear in the next session snapshot.
+
+Focused coverage: real egui menu/pointer events at capacity and with reopen available; duplicate-location index identity; independent pane history; untouched cursor, selection, listing revision and preview; invalid-index/no-op behavior; session serialization of clearing; modal guards. Native FolderTabs extends its original route with opening Closed, forgetting the newest record, reopening the menu and clearing the remaining history. A neighboring MillerBrowser capture retains the independent resize/keyboard/F3 regression route.
+
+Gate logs, source/binary/core/validator hashes, exact history state artifacts and independent verification are included. Limits: this is a native event-scene capture, not physical OS pointer delivery, and does not qualify a GUI restart of session history. The broader cohort scope remains open.
+
+Final qualification: **3217 passed / 3 ignored**, all six gates passed, both native workflows **14/14**, all external-effect counters zero, and `verify.py` passed final source/binary/core/validator identities and all history/neighbor artifacts. Both final frames were visually inspected. The normal-feature check retains only the unrelated unused `response` warning in `src/diff_find.rs:136`; the newly diagnostic-only path getter is gated to tests/visual-QA. Previous green evidence before that cleanup is retained under `superseded-diagnostic-gate` with its original captures.
+
+Final captures: `native-captures/1793597249668137000/folder_tabs` and `native-captures/1793597278491009000/miller_browser`. CUA attachment errors followed successful terminal captures; manifest/process inspection was used instead of relaunching them.

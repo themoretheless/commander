@@ -1,0 +1,11 @@
+{
+  "src/sync_profiles.rs": "7a00e5d07455ddc1e1f0cde0d668a4b5e465f5c258b2238303cd05e1af0d9a00",
+  "src/main.rs": "a29e4220a3acd41ca7084358b7f19f549bda072d37c1d05de23716a1bc372dc1",
+  "src/session.rs": "b77865a96e3b8b6975590e17c226732507e0bff1410fd3e8061439964b04ed29",
+  "src/app/mod.rs": "087dac13e524f3c8558a045683aed2967f5219958bc0f31beeff07429ba60855",
+  "src/app/sync_dialog.rs": "3ab0a8b5af12a88742916df59a87a62b853ab6e532d75f98dfb0ed39596fabad",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969",
+  "deny.toml": "094e72ea6213c365bfc698825170b65d6d60b06eec7ec8a99be6efaae11ca219",
+  "target/debug/commander": "64852bd8ac002bacd029a4069cf0996ccb6847140875935707de21742ebaed12"
+}

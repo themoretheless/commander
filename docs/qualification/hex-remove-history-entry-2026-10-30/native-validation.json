@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "native Remove and recall in both popups",
+    "new row hit targets and popup layout",
+    "busy interaction and focus"
+  ]
+}

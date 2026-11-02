@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.29s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 3 tests
+test app::archive_dialog::tests::archive_selection_mask_rejects_invalid_input_and_respects_case_and_real_records ... ok
+test app::archive_dialog::tests::archive_selection_mask_keeps_view_hidden_choices_and_duplicate_ids ... ok
+test app::archive_dialog::tests::archive_selection_mask_pointer_actions_change_selection_without_changing_mask ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2831 filtered out; finished in 0.04s
+

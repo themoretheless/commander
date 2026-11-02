@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: unnecessary `>= y + 1` or `x - 1 >=`
+   --> src/hex_search.rs:391:17
+    |
+391 |                 progress.load(Ordering::Relaxed) <= data.len() as u64 + pattern.len() as u64 - 1
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change it to: `progress.load(Ordering::Relaxed) < data.len() as u64 + pattern.len() as u64`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#int_plus_one
+    = note: `-D clippy::int-plus-one` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::int_plus_one)]`
+
+error: manual implementation of `.is_multiple_of()`
+    --> src/visual_qa.rs:2966:24
+     |
+2966 |                     if step % 3 != 0 {
+     |                        ^^^^^^^^^^^^^ help: replace with: `!step.is_multiple_of(3)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#manual_is_multiple_of
+     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

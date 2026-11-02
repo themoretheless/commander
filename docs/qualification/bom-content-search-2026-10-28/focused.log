@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.05s
+     Running unittests src/main.rs (target/debug/build/commander/817fc3ac52ddf8fd/out/commander-817fc3ac52ddf8fd)
+
+running 6 tests
+test search_text::tests::bom_search_decoder_malformed_units_remain_lossy_and_prefixes_do_not_panic ... ok
+test search_text::tests::bom_search_decoder_decodes_both_orders_and_preserves_payload_bom ... ok
+test content_index::tests::bom_search_index_expansion_respects_decoded_quota ... ok
+test content_index::tests::bom_search_index_quota_uses_decoded_bytes ... ok
+test search::tests::bom_search_agrees_across_native_index_zip_and_tar ... ok
+test search::tests::bom_search_utf16_surrogate_cut_cannot_manufacture_a_word_boundary ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 2578 filtered out; finished in 0.48s
+

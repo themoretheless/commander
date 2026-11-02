@@ -1,0 +1,807 @@
+{
+  "compact": true,
+  "context_lines": 3,
+  "current": 2,
+  "display_rows": 28,
+  "hidden": 159,
+  "hunks": [
+    {
+      "left_len": 1,
+      "left_start": 11,
+      "right_len": 1,
+      "right_start": 11,
+      "rows": [
+        10,
+        12
+      ]
+    },
+    {
+      "left_len": 1,
+      "left_start": 91,
+      "right_len": 1,
+      "right_start": 91,
+      "rows": [
+        91,
+        93
+      ]
+    },
+    {
+      "left_len": 1,
+      "left_start": 161,
+      "right_len": 1,
+      "right_start": 161,
+      "rows": [
+        162,
+        164
+      ]
+    }
+  ],
+  "left_text": "context 0\ncontext 1\ncontext 2\ncontext 3\ncontext 4\ncontext 5\ncontext 6\ncontext 7\ncontext 8\ncontext 9\nold change 10\ncontext 11\ncontext 12\ncontext 13\ncontext 14\ncontext 15\ncontext 16\ncontext 17\ncontext 18\ncontext 19\ncontext 20\ncontext 21\ncontext 22\ncontext 23\ncontext 24\ncontext 25\ncontext 26\ncontext 27\ncontext 28\ncontext 29\ncontext 30\ncontext 31\ncontext 32\ncontext 33\ncontext 34\ncontext 35\ncontext 36\ncontext 37\ncontext 38\ncontext 39\ncontext 40\ncontext 41\ncontext 42\ncontext 43\ncontext 44\ncontext 45\ncontext 46\ncontext 47\ncontext 48\ncontext 49\ncontext 50\ncontext 51\ncontext 52\ncontext 53\ncontext 54\ncontext 55\ncontext 56\ncontext 57\ncontext 58\ncontext 59\ncontext 60\ncontext 61\ncontext 62\ncontext 63\ncontext 64\ncontext 65\ncontext 66\ncontext 67\ncontext 68\ncontext 69\ncontext 70\ncontext 71\ncontext 72\ncontext 73\ncontext 74\ncontext 75\ncontext 76\ncontext 77\ncontext 78\ncontext 79\ncontext 80\ncontext 81\ncontext 82\ncontext 83\ncontext 84\ncontext 85\ncontext 86\ncontext 87\ncontext 88\ncontext 89\nold change 90\ncontext 91\ncontext 92\ncontext 93\ncontext 94\ncontext 95\ncontext 96\ncontext 97\ncontext 98\ncontext 99\ncontext 100\ncontext 101\ncontext 102\ncontext 103\ncontext 104\ncontext 105\ncontext 106\ncontext 107\ncontext 108\ncontext 109\ncontext 110\ncontext 111\ncontext 112\ncontext 113\ncontext 114\ncontext 115\ncontext 116\ncontext 117\ncontext 118\ncontext 119\ncontext 120\ncontext 121\ncontext 122\ncontext 123\ncontext 124\ncontext 125\ncontext 126\ncontext 127\ncontext 128\ncontext 129\ncontext 130\ncontext 131\ncontext 132\ncontext 133\ncontext 134\ncontext 135\ncontext 136\ncontext 137\ncontext 138\ncontext 139\ncontext 140\ncontext 141\ncontext 142\ncontext 143\ncontext 144\ncontext 145\ncontext 146\ncontext 147\ncontext 148\ncontext 149\ncontext 150\ncontext 151\ncontext 152\ncontext 153\ncontext 154\ncontext 155\ncontext 156\ncontext 157\ncontext 158\ncontext 159\nold change 160\ncontext 161\ncontext 162\ncontext 163\ncontext 164\ncontext 165\ncontext 166\ncontext 167\ncontext 168\ncontext 169\ncontext 170\ncontext 171\ncontext 172\ncontext 173\ncontext 174\ncontext 175\ncontext 176\ncontext 177\ncontext 178\ncontext 179\n",
+  "minus_name": "diff.txt (right)",
+  "offset": [
+    0.0,
+    0.0
+  ],
+  "plus_name": "diff.txt (left)",
+  "right_text": "context 0\ncontext 1\ncontext 2\ncontext 3\ncontext 4\ncontext 5\ncontext 6\ncontext 7\ncontext 8\ncontext 9\nnew change 10\ncontext 11\ncontext 12\ncontext 13\ncontext 14\ncontext 15\ncontext 16\ncontext 17\ncontext 18\ncontext 19\ncontext 20\ncontext 21\ncontext 22\ncontext 23\ncontext 24\ncontext 25\ncontext 26\ncontext 27\ncontext 28\ncontext 29\ncontext 30\ncontext 31\ncontext 32\ncontext 33\ncontext 34\ncontext 35\ncontext 36\ncontext 37\ncontext 38\ncontext 39\ncontext 40\ncontext 41\ncontext 42\ncontext 43\ncontext 44\ncontext 45\ncontext 46\ncontext 47\ncontext 48\ncontext 49\ncontext 50\ncontext 51\ncontext 52\ncontext 53\ncontext 54\ncontext 55\ncontext 56\ncontext 57\ncontext 58\ncontext 59\ncontext 60\ncontext 61\ncontext 62\ncontext 63\ncontext 64\ncontext 65\ncontext 66\ncontext 67\ncontext 68\ncontext 69\ncontext 70\ncontext 71\ncontext 72\ncontext 73\ncontext 74\ncontext 75\ncontext 76\ncontext 77\ncontext 78\ncontext 79\ncontext 80\ncontext 81\ncontext 82\ncontext 83\ncontext 84\ncontext 85\ncontext 86\ncontext 87\ncontext 88\ncontext 89\nnew change 90\ncontext 91\ncontext 92\ncontext 93\ncontext 94\ncontext 95\ncontext 96\ncontext 97\ncontext 98\ncontext 99\ncontext 100\ncontext 101\ncontext 102\ncontext 103\ncontext 104\ncontext 105\ncontext 106\ncontext 107\ncontext 108\ncontext 109\ncontext 110\ncontext 111\ncontext 112\ncontext 113\ncontext 114\ncontext 115\ncontext 116\ncontext 117\ncontext 118\ncontext 119\ncontext 120\ncontext 121\ncontext 122\ncontext 123\ncontext 124\ncontext 125\ncontext 126\ncontext 127\ncontext 128\ncontext 129\ncontext 130\ncontext 131\ncontext 132\ncontext 133\ncontext 134\ncontext 135\ncontext 136\ncontext 137\ncontext 138\ncontext 139\ncontext 140\ncontext 141\ncontext 142\ncontext 143\ncontext 144\ncontext 145\ncontext 146\ncontext 147\ncontext 148\ncontext 149\ncontext 150\ncontext 151\ncontext 152\ncontext 153\ncontext 154\ncontext 155\ncontext 156\ncontext 157\ncontext 158\ncontext 159\nnew change 160\ncontext 161\ncontext 162\ncontext 163\ncontext 164\ncontext 165\ncontext 166\ncontext 167\ncontext 168\ncontext 169\ncontext 170\ncontext 171\ncontext 172\ncontext 173\ncontext 174\ncontext 175\ncontext 176\ncontext 177\ncontext 178\ncontext 179\n",
+  "rows": [
+    {
+      "kind": "Equal",
+      "text": "context 0"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 1"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 2"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 3"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 4"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 5"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 6"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 7"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 8"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 9"
+    },
+    {
+      "kind": "Delete",
+      "text": "new change 10"
+    },
+    {
+      "kind": "Insert",
+      "text": "old change 10"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 11"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 12"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 13"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 14"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 15"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 16"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 17"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 18"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 19"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 20"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 21"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 22"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 23"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 24"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 25"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 26"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 27"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 28"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 29"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 30"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 31"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 32"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 33"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 34"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 35"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 36"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 37"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 38"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 39"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 40"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 41"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 42"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 43"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 44"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 45"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 46"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 47"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 48"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 49"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 50"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 51"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 52"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 53"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 54"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 55"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 56"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 57"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 58"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 59"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 60"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 61"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 62"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 63"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 64"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 65"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 66"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 67"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 68"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 69"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 70"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 71"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 72"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 73"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 74"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 75"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 76"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 77"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 78"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 79"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 80"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 81"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 82"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 83"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 84"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 85"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 86"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 87"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 88"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 89"
+    },
+    {
+      "kind": "Delete",
+      "text": "new change 90"
+    },
+    {
+      "kind": "Insert",
+      "text": "old change 90"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 91"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 92"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 93"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 94"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 95"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 96"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 97"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 98"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 99"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 100"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 101"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 102"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 103"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 104"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 105"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 106"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 107"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 108"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 109"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 110"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 111"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 112"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 113"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 114"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 115"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 116"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 117"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 118"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 119"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 120"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 121"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 122"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 123"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 124"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 125"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 126"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 127"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 128"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 129"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 130"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 131"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 132"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 133"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 134"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 135"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 136"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 137"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 138"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 139"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 140"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 141"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 142"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 143"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 144"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 145"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 146"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 147"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 148"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 149"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 150"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 151"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 152"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 153"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 154"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 155"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 156"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 157"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 158"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 159"
+    },
+    {
+      "kind": "Delete",
+      "text": "new change 160"
+    },
+    {
+      "kind": "Insert",
+      "text": "old change 160"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 161"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 162"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 163"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 164"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 165"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 166"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 167"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 168"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 169"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 170"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 171"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 172"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 173"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 174"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 175"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 176"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 177"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 178"
+    },
+    {
+      "kind": "Equal",
+      "text": "context 179"
+    }
+  ],
+  "visible": [
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166
+  ]
+}

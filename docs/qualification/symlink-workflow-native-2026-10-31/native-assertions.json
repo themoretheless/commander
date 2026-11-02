@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "checks": 14,
+  "palette_commands": 4,
+  "relative_target": "../left/portable.txt",
+  "resolved_target": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-78197-symlink_workflow/left/portable.txt",
+  "created_collision_name": "portable link 2.txt",
+  "recording_clipboard_writes": 2,
+  "cursor": "portable.txt",
+  "right_parent_revealed": true,
+  "source_contents_unchanged": true,
+  "collision_contents_unchanged": true,
+  "binary_matches_launch": true
+}

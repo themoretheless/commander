@@ -1,0 +1,16 @@
+{
+  "status": "passed_scoped",
+  "phase": 13,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 1,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "expected_clipboard": "DE AD BE EF",
+  "system_clipboard": "isolated recording only",
+  "physical_keys": "pending"
+}

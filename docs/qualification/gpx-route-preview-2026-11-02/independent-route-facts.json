@@ -1,0 +1,55 @@
+[
+  {
+    "scenario": "gpx_preview",
+    "source_sha256": "5b8c8b5a315c0dfc5ca381a7305cefe428f84e18e304d6cecf9800fff7e0905e",
+    "points": [
+      {
+        "lat": 41.7,
+        "lon": 44.79,
+        "elevation": 420.0,
+        "start": true,
+        "distance_m": 0.0
+      },
+      {
+        "lat": 41.71,
+        "lon": 44.8,
+        "elevation": 460.0,
+        "start": false,
+        "distance_m": 1387.660197000015
+      },
+      {
+        "lat": 41.72,
+        "lon": 44.79,
+        "elevation": 510.0,
+        "start": false,
+        "distance_m": 2775.243147780051
+      },
+      {
+        "lat": 41.72,
+        "lon": 44.81,
+        "elevation": 490.0,
+        "start": true,
+        "distance_m": 2775.243147780051
+      },
+      {
+        "lat": 41.71,
+        "lon": 44.82,
+        "elevation": 450.0,
+        "start": false,
+        "distance_m": 4162.826098560086
+      },
+      {
+        "lat": 41.7,
+        "lon": 44.81,
+        "elevation": 430.0,
+        "start": false,
+        "distance_m": 5550.486295560101
+      }
+    ],
+    "distance_m": 5550.486295560101
+  },
+  {
+    "scenario": "image_header_info",
+    "source_sha256": "3784a398e7938f2ea56e3dd9720b6db1716a260a22ac023f053ad0005a778bcf"
+  }
+]

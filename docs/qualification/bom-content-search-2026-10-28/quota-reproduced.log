@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.76s
+     Running unittests src/main.rs (target/debug/build/commander/817fc3ac52ddf8fd/out/commander-817fc3ac52ddf8fd)
+
+running 1 test
+test content_index::tests::bom_search_index_quota_uses_decoded_bytes ... FAILED
+
+failures:
+
+---- content_index::tests::bom_search_index_quota_uses_decoded_bytes stdout ----
+
+thread 'content_index::tests::bom_search_index_quota_uses_decoded_bytes' (89692918) panicked at src/content_index.rs:1625:17:
+assertion `left == right` failed: 1: false
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    content_index::tests::bom_search_index_quota_uses_decoded_bytes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2580 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin commander`

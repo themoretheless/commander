@@ -1,0 +1,4 @@
+2026-11-02T11:16:07 INFO  commander::logging: logging initialized
+2026-11-02T11:16:07 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: gpx_preview
+2026-11-02T11:16:07 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+Error: AppCreation(Custom { kind: Other, error: "1 visual QA checks failed" })

@@ -1,0 +1,29 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<&str, &std::io::Error>`
+     --> src/visual_qa.rs:10472:106
+      |
+10472 |                     && std::fs::read_to_string(self.fixture.right.join("portable link 2.txt")).as_deref()==Ok("portable source\n")
+      |                        ----------------------------------------------------------------------------------^^----------------------- std::result::Result<&str, _>
+      |                        |
+      |                        std::result::Result<&str, &std::io::Error>
+      |
+note: `std::result::Result<&str, &std::io::Error>` does not implement `PartialEq<std::result::Result<&str, _>>`
+     --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/result.rs:558:0
+      |
+      = note: `std::result::Result<&str, &std::io::Error>` is defined in another crate
+
+error[E0369]: binary operation `==` cannot be applied to type `std::result::Result<&str, &std::io::Error>`
+     --> src/visual_qa.rs:10473:99
+      |
+10473 |                     && std::fs::read_to_string(self.fixture.right.join("portable.txt")).as_deref()==Ok("occupied destination\n")
+      |                        ---------------------------------------------------------------------------^^---------------------------- std::result::Result<&str, _>
+      |                        |
+      |                        std::result::Result<&str, &std::io::Error>
+      |
+note: `std::result::Result<&str, &std::io::Error>` does not implement `PartialEq<std::result::Result<&str, _>>`
+     --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/result.rs:558:0
+      |
+      = note: `std::result::Result<&str, &std::io::Error>` is defined in another crate
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors

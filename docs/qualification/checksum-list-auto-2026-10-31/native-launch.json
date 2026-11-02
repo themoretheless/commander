@@ -1,0 +1,7 @@
+{
+  "scenario": "checksum_list",
+  "out": "/tmp/commander-native-checksum-list-auto-1793409307712587000",
+  "binary_sha256": "1f83f73b1d1c185e55a13f5ad8817d84fa8f6db1eb47dc65116b119707a0feac",
+  "core_sha256": "1f83f73b1d1c185e55a13f5ad8817d84fa8f6db1eb47dc65116b119707a0feac",
+  "started_ns": 1793409307820762000
+}

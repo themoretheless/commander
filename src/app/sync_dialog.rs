@@ -18,6 +18,7 @@ type PlanResult = Result<(Vec<crate::sync::SyncAction>, crate::sync_guard::PlanS
 /// clicks or policy changes therefore never pile up concurrent full scans.
 pub struct PlanScan {
     receiver: std::sync::mpsc::Receiver<PlanResult>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     rerun: bool,
     /// Policy the rows on screen were built with, so the user's per-row
     /// direction edits can be told from defaults and carried into the new
@@ -32,8 +33,33 @@ impl PlanScan {
         let right = state.right_dir.clone();
         let (left_hidden, right_hidden) = (state.left_show_hidden, state.right_show_hidden);
         let policy = state.policy;
-        let build =
-            move || crate::sync_guard::build_plan(&left, &right, left_hidden, right_hidden, policy);
+        let contents = state.compare_contents;
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = cancelled.clone();
+        let build = move || {
+            let cancel = || worker_cancel.load(std::sync::atomic::Ordering::Relaxed);
+            if cancel() {
+                return Err("Synchronization scan cancelled".into());
+            }
+            let result = if contents {
+                crate::sync_guard::build_plan_with_contents(
+                    &left,
+                    &right,
+                    left_hidden,
+                    right_hidden,
+                    policy,
+                    true,
+                    &cancel,
+                )
+            } else {
+                crate::sync_guard::build_plan(&left, &right, left_hidden, right_hidden, policy)
+            };
+            if cancel() {
+                Err("Synchronization scan cancelled".into())
+            } else {
+                result
+            }
+        };
         let worker_sender = sender.clone();
         let spawned = std::thread::Builder::new()
             .name("sync-plan".to_string())
@@ -45,6 +71,7 @@ impl PlanScan {
         }
         Self {
             receiver,
+            cancelled,
             rerun: false,
             shown_policy: None,
         }
@@ -62,6 +89,13 @@ impl PlanScan {
     }
 }
 
+impl Drop for PlanScan {
+    fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Rows whose direction the user changed from `policy`'s default.
 fn edited_directions(
     actions: &[crate::sync::SyncAction],
@@ -69,7 +103,7 @@ fn edited_directions(
 ) -> std::collections::HashMap<String, SyncDirection> {
     actions
         .iter()
-        .filter(|a| a.direction != crate::sync::default_direction(a.status, policy))
+        .filter(|a| a.direction != a.default_direction(policy))
         .map(|a| (a.name.clone(), a.direction))
         .collect()
 }
@@ -111,7 +145,7 @@ fn kept_edits_note(kept: usize) -> Option<String> {
 /// (copying those would only add work).
 fn set_all_directions(actions: &mut [crate::sync::SyncAction], dir: SyncDirection) {
     for action in actions {
-        if action.status != SyncStatus::Identical && action.allows(dir) {
+        if !action.matching() && action.allows(dir) {
             action.direction = dir;
         }
     }
@@ -188,7 +222,11 @@ fn poll_plan(state: &mut SyncState) {
 /// the rows currently on screen were built with.
 fn request_plan(state: &mut SyncState, shown_policy: SyncPolicy) {
     match state.scan.as_mut() {
-        Some(scan) => scan.rerun = true,
+        Some(scan) => {
+            scan.rerun = true;
+            scan.cancelled
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         None => {
             let mut scan = PlanScan::start(state);
             scan.shown_policy = Some(shown_policy);
@@ -235,6 +273,52 @@ const fn unavailable_reason(status: SyncStatus, dir: SyncDirection) -> &'static 
     }
 }
 
+fn capture_preset(state: &SyncState, name: String) -> crate::sync_profiles::Preset {
+    crate::sync_profiles::Preset {
+        name,
+        left: state.left_dir.clone(),
+        right: state.right_dir.clone(),
+        policy: state.policy,
+        left_hidden: state.left_show_hidden,
+        right_hidden: state.right_show_hidden,
+        compare_contents: state.compare_contents,
+        dry_run: state.dry_run,
+    }
+}
+fn swapped_comparison(state: &SyncState) -> crate::sync_profiles::Preset {
+    let mut preset = capture_preset(state, "Swapped comparison".into());
+    std::mem::swap(&mut preset.left, &mut preset.right);
+    std::mem::swap(&mut preset.left_hidden, &mut preset.right_hidden);
+    preset.policy = match preset.policy {
+        SyncPolicy::TwoWay => SyncPolicy::TwoWay,
+        SyncPolicy::MirrorLeftToRight => SyncPolicy::MirrorRightToLeft,
+        SyncPolicy::MirrorRightToLeft => SyncPolicy::MirrorLeftToRight,
+    };
+    preset
+}
+fn load_preset(state: &mut SyncState, preset: &crate::sync_profiles::Preset) -> Result<(), String> {
+    preset.validate()?;
+    if state.scan.is_some() {
+        return Err("Wait for the current comparison before loading a profile".into());
+    }
+    state.left_dir = preset.left.clone();
+    state.right_dir = preset.right.clone();
+    state.policy = preset.policy;
+    state.left_show_hidden = preset.left_hidden;
+    state.right_show_hidden = preset.right_hidden;
+    state.compare_contents = preset.compare_contents;
+    state.dry_run = preset.dry_run;
+    state.actions.clear();
+    state.stamp = None;
+    state.settings_fingerprint = 0;
+    state.allow_large_plan = false;
+    state.kept_edits = 0;
+    state.review = Default::default();
+    state.error = None;
+    state.scan = Some(PlanScan::start(state));
+    Ok(())
+}
+
 impl App {
     pub(crate) fn open_sync(&mut self) {
         let policy = SyncPolicy::TwoWay;
@@ -249,6 +333,9 @@ impl App {
             .map_or_else(String::new, |path| path.to_string_lossy().into_owned());
         let marker_enabled = guard.health_marker.is_some();
         let mut state = SyncState {
+            compare_contents: false,
+            review: Default::default(),
+            export_scope: Default::default(),
             policy,
             durability: self.ws.durability_profile,
             version_retention: self.ws.version_retention,
@@ -287,6 +374,9 @@ impl App {
         let mut new_policy: Option<SyncPolicy> = None;
         let mut refresh_plan = false;
         let mut commit = false;
+        let mut copy_plan = None;
+        let mut load_profile = None;
+        let mut shown_edit_result = None;
         let mut cancel = false;
 
         // Borrow the sync state only for the window body (no `self.ws` use here).
@@ -305,7 +395,7 @@ impl App {
             }
             let pending = to_right + to_left;
 
-            ui.vertical(|ui| {
+            egui::ScrollArea::vertical().id_salt("sync-sheet-body").max_height(ui.available_height().max(1.0)).auto_shrink([false,false]).show(ui,|ui| {
                 ui.label(
                     egui::RichText::new("Synchronize panels")
                         .size(13.0)
@@ -323,6 +413,13 @@ impl App {
                         )
                         .truncate(),
                     );
+                }
+                let swap = ui.add_enabled(!scanning, egui::Button::new("Swap comparison sides"))
+                    .on_hover_text("Swap folders and hidden-file settings, preserving source and destination. Builds a fresh plan and clears row edits and large-plan approval.");
+                #[cfg(any(test,feature="visual-qa"))]
+                ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("sync-swap-comparison"),swap.rect));
+                if swap.clicked() {
+                    load_profile = Some(swapped_comparison(state));
                 }
                 ui.add_space(8.0);
 
@@ -358,6 +455,20 @@ impl App {
                         }
                     }
                 });
+                let response=ui.checkbox(&mut state.compare_contents,"Compare file contents").on_hover_text("Fresh byte comparison of paired regular files, including equal metadata and different dates. Directory contents remain outside this shallow plan.");
+                #[cfg(any(test,feature="visual-qa"))]
+                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("sync-compare-contents"),response.rect));
+                if response.changed(){refresh_plan=true;
+                    if !state.compare_contents && matches!(state.review.scope,crate::sync_review::Scope::SameContents|crate::sync_review::Scope::DifferentContents|crate::sync_review::Scope::UnverifiedContents){state.review.scope=crate::sync_review::Scope::All;}
+                }
+                if state.compare_contents {
+                    let equal=state.actions.iter().filter(|a|a.content==crate::sync_content::Comparison::Equal).count();
+                    let different=state.actions.iter().filter(|a|a.content==crate::sync_content::Comparison::Different).count();
+                    let failed=state.actions.iter().filter(|a|a.content.error().is_some()).count();
+                    ui.small(format!("Contents: {equal} equal, {different} different, {failed} unverified pairs"));
+                    if failed>0 {ui.colored_label(t.accent_warning,"Unverified pairs stay skipped until a successful rescan; turn off content comparison to use metadata only.");}
+                }
+                if let Some(scan)=state.scan.as_ref() && ui.button("Cancel comparison").clicked(){scan.cancelled.store(true,std::sync::atomic::Ordering::Relaxed);}
                 ui.horizontal(|ui| {
                     // Applying writes these back as the app-wide defaults
                     // (as the copy/move sheet does), so say so.
@@ -401,6 +512,7 @@ impl App {
                     });
                 });
 
+                if let Some(preset) = self.sync_profiles.editor(ui,capture_preset(state,String::new()),!scanning) { load_profile=Some(preset); }
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(6.0);
@@ -452,14 +564,47 @@ impl App {
                         }
                     });
                 }
+                state.review.show(ui,&state.actions);
+                ui.horizontal_wrapped(|ui| {
+                    let enabled=crate::sync_report::ready(state) && !state.review.indices.is_empty() && !refresh_plan && new_policy.is_none();
+                    for edit in crate::sync_review::Edit::ALL {
+                        let response=ui.add_enabled(enabled,egui::Button::new(edit.label())).on_hover_text(edit.hint());
+                        #[cfg(any(test,feature="visual-qa"))]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("sync-shown-edit",edit.label())),response.rect));
+                        if response.clicked() {
+                            let targeted=state.review.indices.len();
+                            let changed=state.review.edit_shown(&mut state.actions,state.policy,edit);
+                            shown_edit_result=Some((edit,targeted,changed));
+                        }
+                    }
+                });
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Copy scope");
+                    for scope in crate::sync_report::Scope::ALL {
+                        let response=ui.selectable_value(&mut state.export_scope,scope,scope.label());
+                        #[cfg(any(test,feature="visual-qa"))]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("sync-export",scope.key())),response.rect));
+                        #[cfg(not(any(test,feature="visual-qa")))]
+                        let _=response;
+                    }
+                    for format in crate::sync_report::Format::ALL {
+                        let response=ui.add_enabled(crate::sync_report::ready(state),egui::Button::new(format.label()));
+                        if response.clicked() {copy_plan=Some(format);}
+                        #[cfg(any(test,feature="visual-qa"))]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("sync-export",format.key())),response.rect));
+                    }
+                });
+
                 // Fixed-height rows, so only the visible ones are laid out.
                 const ROW_H: f32 = 22.0;
-                let rows = state.actions.len();
+                let rows = state.review.indices.len();
                 egui::ScrollArea::vertical()
                     .max_height(280.0)
                     .auto_shrink([false, true])
                     .show_rows(ui, ROW_H, rows, |ui, range| {
-                        for a in &mut state.actions[range] {
+                        for &index in &state.review.indices[range] {
+                            let a=&mut state.actions[index];
                             ui.horizontal(|ui| {
                                 ui.set_height(ROW_H);
                                 // Direction control: ← skip → as selectable arrows.
@@ -494,16 +639,19 @@ impl App {
                                             direction_label(dir, &a.name),
                                         )
                                     });
+                                    #[cfg(any(test,feature="visual-qa"))]
+                                    ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("sync-direction",index,format!("{dir:?}"))),response.rect));
                                     if response.clicked() {
                                         a.direction = dir;
                                     }
                                 }
                                 ui.add_space(6.0);
                                 let status = ui.label(
-                                    egui::RichText::new(status_label(a.status))
+                                    egui::RichText::new(match &a.content {crate::sync_content::Comparison::Equal=>"same contents",crate::sync_content::Comparison::Unavailable(_)=>"unverified contents",_=>status_label(a.status)})
                                         .size(10.0)
-                                        .color(status_color(a.status, t)),
+                                        .color(if a.content.error().is_some(){t.accent_warning}else if a.content==crate::sync_content::Comparison::Equal{t.text_muted}else{status_color(a.status,t)}),
                                 );
+                                let status=if let Some(error)=a.content.error(){status.on_hover_text(error)}else{status};
                                 ui.add_space(6.0);
                                 let name = ui.label(
                                     egui::RichText::new(&a.name)
@@ -594,7 +742,7 @@ impl App {
                 let guard_ready = !scanning
                     && marker_error.is_none()
                     && state.error.is_none()
-                    && state.stamp.is_some()
+                    && state.stamp.as_ref().is_some_and(|stamp|stamp.compare_contents==state.compare_contents)
                     && (assessment.circuit_breaker.is_none() || state.allow_large_plan);
 
                 ui.add_space(6.0);
@@ -655,6 +803,42 @@ impl App {
 
         if cancel {
             self.ui.tools.sync = None;
+            return;
+        }
+        if let Some(preset) = load_profile {
+            if let Some(state) = self.ui.tools.sync.as_mut()
+                && let Err(error) = load_preset(state, &preset)
+            {
+                state.error = Some(error);
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if let Some((edit, targeted, changed)) = shown_edit_result {
+            self.toast(
+                ctx,
+                crate::toasts::ToastKind::Info,
+                format!(
+                    "{}: {changed} of {targeted} shown rows changed",
+                    edit.label()
+                ),
+                false,
+            );
+            return;
+        }
+        if let Some(format) = copy_plan {
+            let result = if refresh_plan || new_policy.is_some() {
+                Err("Wait for the refreshed plan before copying".to_string())
+            } else if let Some(state) = self.ui.tools.sync.as_mut() {
+                state.review.refresh(&state.actions);
+                crate::sync_report::export(state, state.export_scope, format)
+            } else {
+                return;
+            };
+            match result {
+                Ok(text) => self.write_clipboard(&text, "synchronization plan", ctx),
+                Err(error) => self.toast(ctx, crate::toasts::ToastKind::Error, error, false),
+            }
             return;
         }
         let mut shown_policy = None;
@@ -754,7 +938,7 @@ const fn status_label(status: SyncStatus) -> &'static str {
         SyncStatus::LeftNewer => "left newer",
         SyncStatus::RightNewer => "right newer",
         SyncStatus::Differing => "differs",
-        SyncStatus::Identical => "identical",
+        SyncStatus::Identical => "matching metadata",
         SyncStatus::DirectoryPair => "folder pair",
         SyncStatus::TypeConflict => "type conflict",
         SyncStatus::CaseConflict => "case conflict",
@@ -780,6 +964,9 @@ mod tests {
 
     fn sync_state(left: &std::path::Path, right: &std::path::Path) -> super::SyncState {
         super::SyncState {
+            compare_contents: false,
+            review: Default::default(),
+            export_scope: Default::default(),
             policy: SyncPolicy::MirrorLeftToRight,
             durability: crate::operation::DurabilityProfile::Fast,
             version_retention: crate::operation::VersionRetentionPolicy::ALL[0],
@@ -808,6 +995,217 @@ mod tests {
             std::thread::yield_now();
             poll_plan(state);
         }
+    }
+
+    #[test]
+    fn content_scan_rebuilds_directions_without_treating_verified_skips_as_manual_edits() {
+        let dir = crate::testutil::TempDir::new();
+        let left = dir.dir("left");
+        let right = dir.dir("right");
+        let a = dir.file("left/same", "same");
+        let b = dir.file("right/same", "same");
+        for (path, date) in [(&a, "2022-01-01"), (&b, "2020-01-01")] {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_modified(crate::query::parse_absolute_time(date).unwrap()),
+                )
+                .unwrap();
+        }
+        let mut state = sync_state(&left, &right);
+        state.scan = Some(PlanScan::start(&state));
+        wait_for_plan(&mut state);
+        assert_eq!(state.actions[0].direction, SyncDirection::ToRight);
+        state.compare_contents = true;
+        request_plan(&mut state, SyncPolicy::MirrorLeftToRight);
+        wait_for_plan(&mut state);
+        assert!(state.stamp.as_ref().unwrap().compare_contents);
+        assert_eq!(state.actions[0].direction, SyncDirection::Skip);
+        assert!(super::edited_directions(&state.actions, state.policy).is_empty());
+        let mut forced = state.actions.clone();
+        super::set_all_directions(&mut forced, SyncDirection::ToRight);
+        assert_eq!(forced[0].direction, SyncDirection::Skip);
+        state.compare_contents = false;
+        assert!(!crate::sync_report::ready(&state));
+        request_plan(&mut state, SyncPolicy::MirrorLeftToRight);
+        wait_for_plan(&mut state);
+        assert_eq!(state.actions[0].direction, SyncDirection::ToRight);
+    }
+
+    #[test]
+    fn review_filters_preserve_complete_scan_assessment_stamp_and_hidden_bulk_actions() {
+        let temp = crate::testutil::TempDir::new();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("shown.txt"), "one").unwrap();
+        std::fs::write(left.join("hidden.txt"), "two").unwrap();
+        let mut state = sync_state(&left, &right);
+        state.scan = Some(PlanScan::start(&state));
+        assert!(!crate::sync_report::ready(&state));
+        assert!(
+            crate::sync_report::export(
+                &state,
+                crate::sync_report::Scope::Full,
+                crate::sync_report::Format::Json
+            )
+            .is_err()
+        );
+        wait_for_plan(&mut state);
+        let actions = state.actions.clone();
+        let fingerprint = state.settings_fingerprint;
+        let assessment = crate::sync_guard::assess(&state.actions, &state.guard);
+        state.review.query = "shown".into();
+        state.review.scope = crate::sync_review::Scope::Planned;
+        state.review.refresh(&state.actions);
+        assert_eq!(state.review.indices.len(), 1);
+        assert_eq!(state.review.hidden_planned, 1);
+        assert_eq!(state.actions, actions);
+        assert_eq!(state.settings_fingerprint, fingerprint);
+        assert!(state.stamp.is_some());
+        assert_eq!(
+            crate::sync_guard::assess(&state.actions, &state.guard),
+            assessment
+        );
+        assert_eq!(assessment.planned_actions, 2);
+        let index = state.review.indices[0];
+        state.actions[index].direction = SyncDirection::Skip;
+        state.review.refresh(&state.actions);
+        assert!(state.review.indices.is_empty());
+        assert_eq!(state.review.hidden_planned, 1);
+        set_all_directions(&mut state.actions, SyncDirection::ToRight);
+        state.review.refresh(&state.actions);
+        assert_eq!(state.actions, actions);
+        assert_eq!(state.review.hidden_planned, 1);
+        let shown = state.policy;
+        request_plan(&mut state, shown);
+        wait_for_plan(&mut state);
+        state.review.refresh(&state.actions);
+        assert_eq!(state.review.query, "shown");
+        assert_eq!(state.review.indices.len(), 1);
+        assert_eq!(state.review.hidden_planned, 1);
+        assert!(!right.join("shown.txt").exists());
+        assert!(!right.join("hidden.txt").exists());
+    }
+
+    #[test]
+    fn swapping_comparison_preserves_physical_copy_direction_and_rebuilds_the_plan() {
+        let temp = crate::testutil::TempDir::new();
+        let left = temp.dir("left");
+        let right = temp.dir("right");
+        temp.file("left/only-left.txt", "source");
+        let mut state = sync_state(&left, &right);
+        state.left_show_hidden = true;
+        state.right_show_hidden = false;
+        state.compare_contents = true;
+        state.dry_run = true;
+        for policy in [
+            SyncPolicy::TwoWay,
+            SyncPolicy::MirrorLeftToRight,
+            SyncPolicy::MirrorRightToLeft,
+        ] {
+            state.policy = policy;
+            let before = super::capture_preset(&state, "Swapped comparison".into());
+            let swapped = super::swapped_comparison(&state);
+            assert_eq!(swapped.left, right);
+            assert_eq!(swapped.right, left);
+            assert!(!swapped.left_hidden && swapped.right_hidden);
+            let expected_policy = match policy {
+                SyncPolicy::TwoWay => SyncPolicy::TwoWay,
+                SyncPolicy::MirrorLeftToRight => SyncPolicy::MirrorRightToLeft,
+                SyncPolicy::MirrorRightToLeft => SyncPolicy::MirrorLeftToRight,
+            };
+            assert_eq!(swapped.policy, expected_policy);
+            assert!(swapped.compare_contents && swapped.dry_run);
+            super::load_preset(&mut state, &swapped).unwrap();
+            wait_for_plan(&mut state);
+            let restored = super::swapped_comparison(&state);
+            assert_eq!(restored, before);
+            super::load_preset(&mut state, &restored).unwrap();
+            wait_for_plan(&mut state);
+        }
+        state.policy = SyncPolicy::MirrorLeftToRight;
+        state.allow_large_plan = true;
+        state.review.query = "old filter".into();
+        let swapped = super::swapped_comparison(&state);
+        super::load_preset(&mut state, &swapped).unwrap();
+        assert!(state.actions.is_empty() && state.stamp.is_none());
+        assert!(!state.allow_large_plan && state.review.query.is_empty());
+        wait_for_plan(&mut state);
+        assert!(state.error.is_none());
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(state.actions[0].direction, SyncDirection::ToLeft);
+        assert_eq!(state.stamp.as_ref().unwrap().left_root, right);
+        assert_eq!(state.stamp.as_ref().unwrap().right_root, left);
+        assert!(!right.join("only-left.txt").exists());
+        assert_eq!(
+            std::fs::read(left.join("only-left.txt")).unwrap(),
+            b"source"
+        );
+    }
+    #[test]
+    fn loading_sync_profile_invalidates_old_plan_and_compares_fresh_without_copying() {
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.dir("a");
+        let b = temp.dir("b");
+        let c = temp.dir("c");
+        let d = temp.dir("d");
+        let file = temp.file("c/new.txt", "new bytes");
+        let mut state = sync_state(&a, &b);
+        state.actions = vec![test_action(
+            "old",
+            SyncStatus::LeftOnly,
+            SyncDirection::ToRight,
+        )];
+        state.allow_large_plan = true;
+        state.settings_fingerprint = 42;
+        state.review.query = "old".into();
+        state.guard.set_marker("health").unwrap();
+        let guard = state.guard.clone();
+        let preset = crate::sync_profiles::Preset {
+            name: "Work".into(),
+            left: c.clone(),
+            right: d.clone(),
+            policy: SyncPolicy::MirrorLeftToRight,
+            left_hidden: true,
+            right_hidden: false,
+            compare_contents: true,
+            dry_run: true,
+        };
+        super::load_preset(&mut state, &preset).unwrap();
+        assert!(state.actions.is_empty() && state.stamp.is_none() && !state.allow_large_plan);
+        assert_eq!(state.settings_fingerprint, 0);
+        assert_eq!(state.guard, guard);
+        assert!(state.review.query.is_empty());
+        assert!(super::load_preset(&mut state, &preset).is_err());
+        wait_for_plan(&mut state);
+        assert!(state.error.is_none());
+        let stamp = state.stamp.as_ref().unwrap();
+        assert_eq!(stamp.left_root, c);
+        assert_eq!(stamp.right_root, d);
+        assert!(stamp.compare_contents);
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(state.actions[0].name, "new.txt");
+        assert_eq!(state.guard, guard);
+        assert!(state.dry_run);
+        assert!(!state.allow_large_plan);
+        assert!(!d.join("new.txt").exists());
+        assert_eq!(std::fs::read(file).unwrap(), b"new bytes");
+    }
+    #[test]
+    fn invalid_sync_profile_does_not_change_the_current_comparison() {
+        let temp = crate::testutil::TempDir::new();
+        let mut state = sync_state(temp.path(), temp.path());
+        state.allow_large_plan = true;
+        let before = super::capture_preset(&state, "Work".into());
+        let mut invalid = before.clone();
+        invalid.left = "relative".into();
+        assert!(super::load_preset(&mut state, &invalid).is_err());
+        assert_eq!(super::capture_preset(&state, "Work".into()), before);
+        assert!(state.allow_large_plan);
+        assert!(state.scan.is_none());
     }
 
     #[test]

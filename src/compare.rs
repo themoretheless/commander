@@ -387,7 +387,18 @@ mod tests {
 
     fn fake(name: &str, size: u64, modified: Option<SystemTime>) -> FileEntry {
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),
@@ -493,6 +504,16 @@ mod tests {
     fn fake_dir(name: &str) -> FileEntry {
         FileEntry {
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             is_dir: true,
             ..fake(name, 0, None)
         }
@@ -514,6 +535,16 @@ mod tests {
             // known to differ: its contents were never compared.
             FileEntry {
                 permissions: None,
+                allocated_size: None,
+                hard_links: None,
+                owner_uid: None,
+                owner_gid: None,
+                accessed: None,
+                created: None,
+                accessed_str: "Unavailable".into(),
+                created_str: "Unavailable".into(),
+                changed: None,
+                changed_str: "Unavailable".into(),
                 size: 4096,
                 modified: t,
                 ..fake_dir("folders")

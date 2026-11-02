@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.26s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 4 tests
+test search::tests::directory_exclusion_query_does_not_treat_symlinks_as_directories ... ok
+test search::tests::directory_exclusion_query_keeps_archive_containers_and_virtual_scope ... ok
+test search::tests::directory_exclusion_query_prunes_live_indexed_zip_and_tar_directories_only ... ok
+test query::tests::directory_exclusion_query_preserves_files_case_and_saved_masks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2554 filtered out; finished in 0.47s
+

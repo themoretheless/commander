@@ -1,0 +1,16 @@
+# Hex row-width keyboard adjustment — 2026-10-30
+
+Independent adaptation of [Far Manager hex-mode width keys](https://github.com/FarGroup/FarManager/blob/master/far/FarEng.hlf.m4), cohort #37. Alt+Left/Right changes the displayed/copied row width by one byte. Ctrl+Alt+Left/Right moves to the strictly next lower/higher multiple of 16, bounded to Commander's existing 1–64 range. At 16 the coarse decrease reaches the minimum 1; at 64 coarse increase stays 64. The shortcuts affect hex and decimal byte layouts through the same RowWidth owner.
+
+Busy work, open popups and any focused egui widget suppress these commands. This preserves text-field word movement and focused control navigation. Alt is required; Shift and macOS Command combinations are rejected. Width changes do not read the file, move the loaded page/history/bookmarks or alter search settings. Existing formatter and Copy page owners consume the chosen width. The width control hover and README explain the bindings and focus requirement.
+
+Two new input/worker regressions cover all four commands at 1/8/16/17/31/32/63/64, retained exact position/history/bookmarks, no queued work, unrelated modifiers, focused query/offset fields, open popup and in-flight page read. All four focused row-width regressions pass, including existing all-width byte round-trips and actual preset/Copy page pointer actions.
+
+The HexSearch native scene is extended after the previously qualified sequence with guarded width transitions 8 -> 9 -> 16 -> 32 -> 31 -> 16. Each subsequent group requires its predecessor's exact width before sending the next key. Final capture requires phase 117 and width 16, retaining the loaded offset 110001 and slot-10 bookmark. Native launch and results are recorded below after execution. Physical macOS key delivery, wide manual entry and VoiceOver remain separate gates. No commit or push performed.
+
+
+Fresh final native HexSearch capture passed 14/14 checks with all recorded effects zero. The framebuffer was inspected and shows width 16, exact position 110001, slot 10 at 0x1ADB1 and 83.90% status. This is native rendering with injected egui key events, not physical OS key-delivery qualification. CUA's post-exit AXError.cannotComplete is consistent with fresh successful capture artifacts and terminal process state.
+
+Two rejected native runs exposed existing scenario input races before reaching the new keys: phase 54 missed a previous-search release as the next stage moved the pointer in the same frame; after isolating stages, phase 36 exposed target movement during layout settlement. Their manifests/logs and launch hashes are retained. The scene now executes only its frame-start stage and waits for an unchanged target rectangle for 60 ms before the hover/press/release sequence. Readiness still requires every exact original offset and every new width; no assertion or timeout was relaxed.
+
+Final verification after the QA settlement fix: locked visual-QA suite passed 2843 tests (3 ignored); Clippy with warnings denied, default locked check, formatting and diff whitespace checks passed. The final visual-QA build passed (build-settled.log) before the fresh native capture and its binary hash still matches. CUA reports the own QA application no longer running.

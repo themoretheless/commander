@@ -32,7 +32,47 @@ pub struct Bookmarks {
     pub items: Vec<Bookmark>,
 }
 
+#[derive(PartialEq, Eq)]
+struct NaturalKey(String);
+impl Ord for NaturalKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::natural_sort::compare(&self.0, &other.0)
+    }
+}
+impl PartialOrd for NaturalKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Explicit one-shot ordering; later additions/manual moves retain their usual behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FavoriteOrder {
+    Name,
+    Path,
+    Slot,
+}
+
 impl Bookmarks {
+    /// Stable, case-insensitive natural ordering, without probing any path.
+    /// Slot order puts assigned 1–9 first and retains unassigned relative order.
+    pub fn sort(&mut self, order: FavoriteOrder) -> bool {
+        let before: Vec<_> = self.items.iter().map(|b| b.path.clone()).collect();
+        match order {
+            FavoriteOrder::Slot => self.items.sort_by_key(|b| b.slot.unwrap_or(u8::MAX)),
+            FavoriteOrder::Name | FavoriteOrder::Path => {
+                self.items.sort_by_cached_key(|b| {
+                    let value = if order == FavoriteOrder::Name {
+                        b.name.clone()
+                    } else {
+                        b.path.to_string_lossy().into_owned()
+                    };
+                    NaturalKey(value.to_lowercase())
+                });
+            }
+        }
+        self.items.iter().map(|b| &b.path).ne(before.iter())
+    }
     /// Bookmark `path` under `name`. De-duplicated by path: if the path is
     /// already bookmarked the call is a no-op (first-seen entry and order are
     /// kept) and returns `false`; otherwise it is appended and returns `true`.
@@ -56,17 +96,20 @@ impl Bookmarks {
         self.items.len() != before
     }
 
-    /// Rename the bookmark for `path`. Returns whether one was found.
-    // Tested and ready; the Favorites context menu does not offer renaming
-    // yet, so it is not called from non-test code.
-    #[allow(dead_code)]
+    /// Change only the display label; preserve path, order and quick-jump slot.
+    /// Invalid, unknown and unchanged entries are no-ops.
     pub fn rename(&mut self, path: &Path, new_name: impl Into<String>) -> bool {
+        let new_name = new_name.into();
+        let name = new_name.trim();
+        if !valid_name(&new_name) {
+            return false;
+        }
         match self.items.iter_mut().find(|b| b.path == path) {
-            Some(b) => {
-                b.name = new_name.into();
+            Some(b) if b.name != name => {
+                b.name = name.into();
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
@@ -149,6 +192,13 @@ impl Bookmarks {
             });
         }
     }
+}
+
+/// Labels are one line, bounded by Unicode scalar count; no folder I/O.
+pub fn valid_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && !name.chars().any(char::is_control)
+        && name.trim().chars().take(257).count() <= 256
 }
 
 /// A render-ready Favorites row: the bookmark plus whether either panel is
@@ -256,6 +306,55 @@ mod tests {
     }
 
     #[test]
+    fn favorite_sort_is_natural_stable_metadata_preserving_and_idempotent() {
+        let mut store = Bookmarks::default();
+        for (name, path) in [
+            ("Проект 10", "/p10"),
+            ("Проект 2", "/p2"),
+            ("Alpha", "/a10"),
+            ("ALPHA", "/a2"),
+        ] {
+            store.add(name, path);
+        }
+        store.assign_slot(Path::new("/p10"), 9);
+        store.assign_slot(Path::new("/a2"), 1);
+        let original = store.clone();
+        assert!(store.sort(FavoriteOrder::Name));
+        assert_eq!(
+            store
+                .items
+                .iter()
+                .map(|b| b.path.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["/a10", "/a2", "/p2", "/p10"]
+        );
+        assert!(!store.sort(FavoriteOrder::Name));
+        assert!(store.sort(FavoriteOrder::Slot));
+        assert_eq!(
+            store
+                .items
+                .iter()
+                .map(|b| b.path.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["/a2", "/p10", "/a10", "/p2"]
+        );
+        assert!(!store.sort(FavoriteOrder::Slot));
+        assert!(store.sort(FavoriteOrder::Path));
+        assert_eq!(
+            store
+                .items
+                .iter()
+                .map(|b| b.path.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["/a2", "/a10", "/p2", "/p10"]
+        );
+        for b in &store.items {
+            assert_eq!(original.by_path(&b.path), Some(b));
+        }
+        assert!(!Bookmarks::default().sort(FavoriteOrder::Name));
+    }
+
+    #[test]
     fn add_dedupes_by_path_and_keeps_first_seen() {
         let mut b = Bookmarks::default();
         assert!(b.add("Code", "/a"));
@@ -298,6 +397,33 @@ mod tests {
         assert!(!b.contains(Path::new("/home/me/docs")));
         assert!(!b.remove(Path::new("/home/me/docs"))); // already gone
         assert_eq!(b.items.len(), 2);
+    }
+
+    #[test]
+    fn label_edits_reject_invalid_values_and_preserve_path_slot_and_order() {
+        let mut store = bm();
+        let path = Path::new("/home/me/docs");
+        assert!(store.assign_slot(path, 3));
+        let original = store.clone();
+        for name in [
+            "".to_string(),
+            "  ".into(),
+            "x\ny".into(),
+            "\tX".into(),
+            "a".repeat(257),
+        ] {
+            assert!(!store.rename(path, name));
+            assert_eq!(store, original);
+        }
+        assert!(store.rename(path, "  Документы / Work  "));
+        assert_eq!(store.items[1].name, "Документы / Work");
+        assert_eq!(store.items[1].path, original.items[1].path);
+        assert_eq!(store.items[1].slot, Some(3));
+        assert_eq!(store.items[0], original.items[0]);
+        assert_eq!(store.items[2], original.items[2]);
+        assert!(!store.rename(path, "Документы / Work"));
+        assert!(!store.rename(Path::new("/missing"), "Elsewhere"));
+        assert!(store.rename(path, "я".repeat(256)));
     }
 
     #[test]

@@ -1,0 +1,39 @@
+[
+  {
+    "scenario": "image_metadata_json",
+    "source_sha256": "b03fbff897d68b36757136cec57fef67f207d5d2c7fe54e96a65204b18c31183",
+    "properties": {
+      "Format": "JPEG",
+      "Header dimensions": "4 \u00d7 3 pixels",
+      "Camera maker": "\"Commander QA\"",
+      "Camera model": "\"Fixture Camera\"",
+      "Lens": "\"QA 50mm\"",
+      "Taken": "2026-11-02 12:34:56",
+      "Exposure": "1/125 s",
+      "Aperture": "f/2.8",
+      "ISO": "200",
+      "Focal length": "50 mm",
+      "Orientation": "row 0 at right and column 0 at top",
+      "Pixel width": "4 pixels",
+      "Pixel height": "3 pixels",
+      "GPS latitude": "41 deg 43 min 0 sec N",
+      "GPS longitude": "44 deg 47 min 0 sec E",
+      "GPS altitude": "450 meters above sea level",
+      "Artist": "\"QA Photographer\"",
+      "Copyright": "\"QA rights reserved\"",
+      "Software": "\"Commander QA encoder\"",
+      "Taken UTC offset": "\"+05:30\"",
+      "Taken subsecond digits": "\"250\"",
+      "Exposure program": "aperture priority",
+      "Metering mode": "pattern"
+    }
+  },
+  {
+    "scenario": "image_header_info",
+    "source_sha256": "3784a398e7938f2ea56e3dd9720b6db1716a260a22ac023f053ad0005a778bcf",
+    "properties": {
+      "Format": "PNG",
+      "Header dimensions": "4 \u00d7 3 pixels"
+    }
+  }
+]

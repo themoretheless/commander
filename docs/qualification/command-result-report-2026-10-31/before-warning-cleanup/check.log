@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `key` is never used
+  --> src/command_report.rs:38:18
+   |
+28 | impl Format {
+   | ----------- method in this implementation
+...
+38 |     pub const fn key(self) -> &'static str {
+   |                  ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.07s

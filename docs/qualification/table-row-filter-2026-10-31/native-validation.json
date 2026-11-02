@@ -1,0 +1,34 @@
+{
+  "status": "passed_scoped",
+  "phase": 29,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "query": "fl2",
+  "fuzzy": true,
+  "headings": true,
+  "final_source_row_ids": [
+    2,
+    3
+  ],
+  "required_prior_states": [
+    "all prior header/sort states",
+    "literal zero results",
+    "fuzzy two results",
+    "Clear restores sorted four rows",
+    "retype after Clear"
+  ],
+  "frame_inspected": true,
+  "binary_hash_verified": true,
+  "physical_input": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture",
+  "capture_output": "/tmp/commander-native-table-filter-final-1793398999754923000",
+  "binary_sha256": "158c9537ec9824c8cd4f6634a0a51d554fc7f7d422f9d8536ab3fc685c0a72ba",
+  "final_recapture": true
+}

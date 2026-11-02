@@ -1,0 +1,15 @@
+{
+  "clip": {
+    "max_x": 1280.0,
+    "max_y": 746.0,
+    "min_x": 637.0,
+    "min_y": 317.5
+  },
+  "row": {
+    "max_x": 810.96875,
+    "max_y": 496.0,
+    "min_x": 651.0,
+    "min_y": 472.0
+  },
+  "target": "Taken UTC offset"
+}

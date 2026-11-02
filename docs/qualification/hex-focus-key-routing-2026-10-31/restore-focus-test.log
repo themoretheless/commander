@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.28s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 1 test
+test hex_preview::tests::keyboard_search_restores_focus_after_disabled_busy_frame_without_stealing_other_focus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2855 filtered out; finished in 0.10s
+

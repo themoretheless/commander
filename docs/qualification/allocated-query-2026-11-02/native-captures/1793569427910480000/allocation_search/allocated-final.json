@@ -1,0 +1,19 @@
+{
+  "expression": "allocated:=0 size:>1MB name:disk-",
+  "matched": 1,
+  "rows": [
+    {
+      "allocated": 0,
+      "explanations": [
+        "allocated:>=0B (observed 0 allocated bytes)",
+        "allocated:<=0B (observed 0 allocated bytes)",
+        "size:>=1048577B",
+        "literal \"disk-\""
+      ],
+      "name": "disk-sparse",
+      "size": 8388608
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

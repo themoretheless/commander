@@ -1,0 +1,19 @@
+{
+  "tests": {
+    "passed": 2813,
+    "ignored": 3,
+    "failed": 0
+  },
+  "all_widths_tested": 64,
+  "byte_radices_tested": [
+    "hex",
+    "decimal"
+  ],
+  "clippy": "passed",
+  "default_check": "passed",
+  "visual_qa_build": "passed",
+  "fmt": "passed",
+  "diff_check": "passed",
+  "native": "pending",
+  "binary_sha256": "036332c339146638a65b59e516a7ed420d9f03c1a34ed3c64f682bf3e29d2885"
+}

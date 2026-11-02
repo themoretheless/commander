@@ -1,0 +1,72 @@
+{
+  "distance_m": 5550.486295560101,
+  "points": [
+    {
+      "distance_m": 0.0,
+      "elevation": 420.0,
+      "invalid_time": false,
+      "lat": 41.7,
+      "lon": 44.79,
+      "start": true,
+      "time": null
+    },
+    {
+      "distance_m": 1387.660197000015,
+      "elevation": 460.0,
+      "invalid_time": false,
+      "lat": 41.71,
+      "lon": 44.8,
+      "start": false,
+      "time": null
+    },
+    {
+      "distance_m": 2775.243147780051,
+      "elevation": 510.0,
+      "invalid_time": false,
+      "lat": 41.72,
+      "lon": 44.79,
+      "start": false,
+      "time": null
+    },
+    {
+      "distance_m": 2775.243147780051,
+      "elevation": 490.0,
+      "invalid_time": false,
+      "lat": 41.72,
+      "lon": 44.81,
+      "start": true,
+      "time": "2026-11-02T01:00:00+00:00"
+    },
+    {
+      "distance_m": 4162.826098560086,
+      "elevation": 450.0,
+      "invalid_time": false,
+      "lat": 41.71,
+      "lon": 44.82,
+      "start": false,
+      "time": "2026-11-02T01:02:00+00:00"
+    },
+    {
+      "distance_m": 5550.486295560101,
+      "elevation": 430.0,
+      "invalid_time": false,
+      "lat": 41.7,
+      "lon": 44.81,
+      "start": false,
+      "time": "2026-11-02T01:05:00+00:00"
+    }
+  ],
+  "segments": 2,
+  "timing": {
+    "average_kmh": 33.30291777336061,
+    "distance": 2775.243147780051,
+    "eligible_legs": 4,
+    "invalid_points": 0,
+    "missing_points": 3,
+    "non_increasing_legs": 0,
+    "seconds": 300.0,
+    "timed_legs": 2,
+    "untimed_legs": 2,
+    "valid_points": 3
+  }
+}

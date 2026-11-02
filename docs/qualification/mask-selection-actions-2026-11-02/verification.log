@@ -1,0 +1,1 @@
+PASS: six gates; 3257 passed / 3 ignored; mask and literal-name workflows each 14/14; exact Remove/Invert/Invert/Add sets and legacy Add exclusion subtraction; source/binary/tool hashes. Previous dependency audit failures remain open.

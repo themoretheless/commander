@@ -1,0 +1,20 @@
+{
+  "path": "/Users/themoretheless/.kimi-code/bin/fd",
+  "sha256": "bbd98b652be41796406f9d793a2909a717fd871d0e0b824f72fb85c645ad5366",
+  "version": "fd 10.4.2",
+  "command": [
+    "/Users/themoretheless/.kimi-code/bin/fd",
+    "--hidden",
+    "--no-ignore",
+    "--absolute-path",
+    "--print0",
+    "--exact-depth",
+    "1",
+    "--search-path",
+    "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-parent-fd-vz5np7ng/scope [literal]"
+  ],
+  "results_relative_to_fixture": [
+    "scope [literal]/child.txt",
+    "scope [literal]/nested"
+  ]
+}

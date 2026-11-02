@@ -411,6 +411,23 @@ pub(super) fn request_cursor_row_refocus(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+/// A foreground viewer owns navigation; retire deferred pane focus requests
+/// and release only remembered pane rows, preserving text fields and menus.
+pub(super) fn release_pane_row_focus(ctx: &egui::Context) {
+    let focused = ctx.memory(|memory| memory.focused());
+    let pane_owns_focus = focused.is_some_and(|id| {
+        ctx.data(|data| {
+            ["left", "right"]
+                .into_iter()
+                .any(|side| data.get_temp::<egui::Id>(list_focus_key(side)) == Some(id))
+        })
+    });
+    ctx.data_mut(|data| data.remove::<u64>(egui::Id::new(REFOCUS_CURSOR_ROW)));
+    if pane_owns_focus {
+        ctx.memory_mut(|memory| memory.surrender_focus(focused.unwrap()));
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Refocus {
     /// Focus the cursor row now.
@@ -648,7 +665,7 @@ fn map_ranges_to_display(
 
 impl App {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_file_list(
+    pub(crate) fn render_file_list_plain(
         ui: &mut egui::Ui,
         panel: &mut PanelState,
         image_cache: &mut crate::image_cache::ImageCache,
@@ -868,7 +885,7 @@ impl App {
                 let filtered = panel.filtered_indices();
                 // Active filter query, for highlighting matched characters in
                 // each visible row. Trimmed to match panel filtering semantics.
-                let query = panel.search_query().trim().to_string();
+                let query = crate::name_filter::normalized_query(panel.search_query()).to_string();
 
                 if filtered.is_empty() {
                     // Distinguish a filtered-to-nothing list, a truly empty
@@ -1092,6 +1109,42 @@ impl App {
                         Some(modified) => crate::reldate::relative_date(modified, now),
                         None => entry.modified_display().to_string(),
                     };
+                    let time_column = panel.view_config().sort_column();
+                    let (listed_time, listed_time_text) = entry.listing_time(time_column);
+                    let links_display=(time_column==SortColumn::HardLinks).then(||entry.hard_link_count().map_or_else(||if entry.is_dir || entry.is_symlink(){"—".into()}else{"Unavailable".into()},|n|n.to_string()));
+                    let links_hint="Listing-time regular-file hard-link count; includes names outside this folder. No count is inferred for links, directories or unavailable metadata. This is not reclaimable space.";
+                    let inode_display = (time_column == SortColumn::Inode).then(|| {
+                        entry
+                            .filesystem_id()
+                            .map_or_else(|| "Unavailable".into(), |(_, inode)| inode.to_string())
+                    });
+                    let inode_hint = inode_display
+                        .as_ref()
+                        .and_then(|_| entry.filesystem_id())
+                        .map(|(device, inode)| {
+                            format!(
+                                "{}Device {device}, inode {inode}. Listing-time observation.",
+                                if entry.is_symlink() {
+                                    "Link object: "
+                                } else {
+                                    ""
+                                }
+                            )
+                        });
+                    let time_label: std::borrow::Cow<'_, str> = if let Some(links)=&links_display {std::borrow::Cow::Borrowed(links)} else if let Some(inode) = &inode_display
+                    {
+                        std::borrow::Cow::Borrowed(inode)
+                    } else if matches!(
+                        time_column,
+                        SortColumn::Accessed | SortColumn::Created | SortColumn::Changed
+                    ) {
+                        std::borrow::Cow::Owned(listed_time.map_or_else(
+                            || listed_time_text.to_string(),
+                            |time| crate::reldate::relative_date(time, now),
+                        ))
+                    } else {
+                        std::borrow::Cow::Borrowed(&modified_label)
+                    };
                     let measured = if entry.is_dir {
                         size_snapshot
                             .size_of(&entry.path)
@@ -1099,7 +1152,15 @@ impl App {
                     } else {
                         Some(entry.size_display().to_string())
                     };
-                    let size_text = measured.as_deref().unwrap_or("\u{2026}");
+                    let allocated_display =
+                        (panel.view_config().sort_column() == SortColumn::Allocated).then(|| {
+                            entry
+                                .allocated_bytes()
+                                .map_or_else(|| "Unavailable".into(), format_size)
+                        });
+                    let size_text = allocated_display
+                        .as_deref()
+                        .unwrap_or(measured.as_deref().unwrap_or("\u{2026}"));
                     let compare_status =
                         compare.map(|map| crate::compare::classify_entry(entry, map));
                     let item_count = if entry.is_dir {
@@ -1120,17 +1181,42 @@ impl App {
                         ui,
                         &row_resp,
                         &semantics,
-                        row_spoken_label(
-                            &semantics.label,
-                            item_count,
-                            compare_status.map(|status| compare_marker(status).1),
-                        ),
+                        {
+                            let label = row_spoken_label(
+                                &semantics.label,
+                                item_count,
+                                compare_status.map(|status| compare_marker(status).1),
+                            );
+                            let label = match time_column {
+                                SortColumn::HardLinks=>format!("{label}; Hard links: {time_label}; {links_hint}"),
+                                SortColumn::Inode => format!(
+                                    "{label}; Inode: {time_label}; {}",
+                                    inode_hint
+                                        .as_deref()
+                                        .unwrap_or("Filesystem identity unavailable")
+                                ),
+                                SortColumn::Accessed => format!("{label}; Accessed: {time_label}"),
+                                SortColumn::Changed => {
+                                    format!("{label}; Metadata changed: {time_label}")
+                                }
+                                SortColumn::Created => format!("{label}; Created: {time_label}"),
+                                _ => label,
+                            };
+                            match &allocated_display {
+                                Some(size) => format!("{label}; Allocated size: {size}"),
+                                None => label,
+                            }
+                        },
                         grid_row_index(idx / columns, can_go_up),
                     );
                     if icons {
                         ui.ctx().accesskit_node_builder(row_resp.id, |node| {
                             node.set_column_index(idx % columns);
                         });
+                    }
+                    #[cfg(feature = "visual-qa")]
+                    if panel.browser_mode() == crate::panel::BrowserMode::Miller {
+                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("miller-active",panel_side,entry.name.as_str())),row_resp.rect));
                     }
                     let accesskit_context_menu_requested = ui.is_enabled()
                         && crate::accessibility::consume_show_context_menu(ui.ctx(), row_resp.id);
@@ -1310,6 +1396,21 @@ impl App {
                                     .size(metrics.meta_pt)
                                     .color(t.text_muted),
                             );
+                            if let Some(links)=&links_display {
+                                ui.label(egui::RichText::new(format!("Hard links: {links}")).size(metrics.meta_pt).color(t.text_muted)).on_hover_text(links_hint);
+                            }
+                            if let Some(inode) = &inode_display {
+                                ui.label(
+                                    egui::RichText::new(format!("Inode: {inode}"))
+                                        .size(metrics.meta_pt)
+                                        .color(t.text_muted),
+                                )
+                                .on_hover_text(
+                                    inode_hint
+                                        .as_deref()
+                                        .unwrap_or("Filesystem identity unavailable"),
+                                );
+                            }
                             if is_selected {
                                 ui.label(
                                     egui::RichText::new("✓ Selected")
@@ -1384,9 +1485,8 @@ impl App {
                             } else {
                                 // Score the full name (what the filter matched) and
                                 // carry the hits through the truncation.
-                                let ranges = crate::fuzzy::score(&query, &entry.name)
-                                    .map(|m| m.matched_ranges)
-                                    .unwrap_or_default();
+                                let ranges =
+                                    crate::name_filter::matched_ranges(&query, &entry.name);
                                 let ranges = if shortened {
                                     map_ranges_to_display(&entry.name, &display_name, &ranges)
                                 } else {
@@ -1433,12 +1533,18 @@ impl App {
                                     |ui| {
                                         ui.add_space(4.0);
                                         let modified_resp = ui.label(
-                                            egui::RichText::new(&modified_label)
+                                            egui::RichText::new(time_label.as_ref())
                                                 .size(metrics.meta_pt)
                                                 .color(t.text_muted),
                                         );
-                                        if entry.modified.is_some() {
-                                            modified_resp.on_hover_text(&entry.modified_str);
+                                        if links_display.is_some() {modified_resp.on_hover_text(links_hint);} else if inode_display.is_some() {
+                                            modified_resp.on_hover_text(
+                                                inode_hint
+                                                    .as_deref()
+                                                    .unwrap_or("Filesystem identity unavailable"),
+                                            );
+                                        } else if listed_time.is_some() {
+                                            modified_resp.on_hover_text(listed_time_text);
                                         }
                                         ui.add_space(10.0);
                                         ui.label(
@@ -1500,7 +1606,9 @@ impl App {
                         // Space/Enter on the focused row is not a Shift-click.
                         if row_resp.clicked_by(egui::PointerButton::Primary) {
                             match row_click_kind(ui.input(|input| input.modifiers)) {
-                                RowClick::Plain => {}
+                                RowClick::Plain => {
+                                    if panel.browser_mode() == crate::panel::BrowserMode::Miller && entry.is_dir { navigate_to=Some(entry.path.clone()); }
+                                }
                                 RowClick::Toggle => pending_toggle = Some(entry.path.clone()),
                                 RowClick::Range => {
                                     pending_range = Some(click_range(cursor, row_cursor));
@@ -2415,6 +2523,43 @@ mod tests {
 
             assert_eq!(panel.current_path, temp.path(), "{key:?}");
         }
+    }
+
+    #[test]
+    fn viewer_releases_only_pane_rows_and_cancels_deferred_refocus() {
+        let temp = crate::testutil::TempDir::new();
+        std::fs::write(temp.path().join("a.txt"), "a").unwrap();
+        let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
+        panel.refresh();
+        panel.set_cursor(1);
+        let ctx = egui::Context::default();
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        super::request_cursor_row_refocus(&ctx);
+        render_list_frame(&ctx, &mut panel, Vec::new());
+        assert!(ctx.memory(|m| m.focused().is_some()));
+        super::request_cursor_row_refocus(&ctx);
+        super::release_pane_row_focus(&ctx);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        for _ in 0..4 {
+            render_list_frame(&ctx, &mut panel, Vec::new());
+        }
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        for id in [
+            egui::Id::new("hex-search-query"),
+            egui::Id::new("popup-item"),
+        ] {
+            ctx.memory_mut(|m| m.request_focus(id));
+            super::release_pane_row_focus(&ctx);
+            assert!(
+                ctx.memory(|m| m.has_focus(id)),
+                "preserve another focus owner"
+            );
+        }
+        let right = egui::Id::new("right-pane-row");
+        ctx.data_mut(|d| d.insert_temp(super::list_focus_key("right"), right));
+        ctx.memory_mut(|m| m.request_focus(right));
+        super::release_pane_row_focus(&ctx);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
     }
 
     #[test]

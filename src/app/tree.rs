@@ -29,6 +29,13 @@ impl From<Vec<PathBuf>> for ChildCacheEntry {
 
 pub(super) type ChildCache = std::collections::HashMap<(PathBuf, bool), ChildCacheEntry>;
 
+#[derive(Debug, PartialEq, Eq)]
+enum FavoriteAction {
+    Edit(crate::workspace::FavoriteEdit),
+    Open(crate::workspace::FavoriteTarget),
+    Sort(crate::bookmarks::FavoriteOrder),
+}
+
 struct ChildLoadResult {
     key: (PathBuf, bool),
     ticket: u64,
@@ -320,8 +327,38 @@ impl App {
             &self.ws.right.current_path,
         );
         let (mut nav, edit) = Self::render_favorites(ui, t, &rows);
-        if let Some((path, edit)) = edit {
-            self.ws.edit_favorite(&path, edit);
+        if let Some((path, action)) = edit {
+            match action {
+                FavoriteAction::Sort(order) => {
+                    let _ = self.ws.sort_favorites(order);
+                }
+                FavoriteAction::Edit(edit) => self.ws.edit_favorite(&path, edit),
+                FavoriteAction::Open(target) => {
+                    let destination = match target {
+                        crate::workspace::FavoriteTarget::OtherPanel => {
+                            Some(self.ws.active.other())
+                        }
+                        crate::workspace::FavoriteTarget::CurrentPanel
+                        | crate::workspace::FavoriteTarget::NewTab => Some(self.ws.active),
+                        crate::workspace::FavoriteTarget::BackgroundTab => None,
+                    };
+                    if self.ws.open_favorite(&path, target) {
+                        if destination.is_some_and(|side| {
+                            super::update::pane_tool_covers(&self.ui.tools, side)
+                        }) {
+                            self.ui.tools = super::ui_state::PaneTools::default();
+                        }
+                        ui.ctx().request_repaint();
+                    } else {
+                        self.toast(
+                            ui.ctx(),
+                            crate::toasts::ToastKind::Info,
+                            "Could not open favorite: finish pending operations or free a tab slot",
+                            false,
+                        );
+                    }
+                }
+            }
         }
 
         let root = PathBuf::from("/");
@@ -349,10 +386,7 @@ impl App {
         ui: &mut egui::Ui,
         t: &ThemeColors,
         rows: &[crate::bookmarks::RailRow],
-    ) -> (
-        Option<PathBuf>,
-        Option<(PathBuf, crate::workspace::FavoriteEdit)>,
-    ) {
+    ) -> (Option<PathBuf>, Option<(PathBuf, FavoriteAction)>) {
         if rows.is_empty() {
             return (None, None);
         }
@@ -381,6 +415,10 @@ impl App {
                     t.bg_hover.linear_multiply(0.3),
                 );
             }
+            #[cfg(any(test, feature = "visual-qa"))]
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new(("favorite-row", &row.path)), rect)
+            });
             paint_focus_ring(ui, &resp);
             let mut x = rect.left() + 6.0;
             // Slot digit (fixed-width gutter so names align with/without a slot).
@@ -402,12 +440,153 @@ impl App {
             resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &row.name)
             });
-            if resp.clicked() {
+            if resp.clicked_by(egui::PointerButton::Middle) {
+                edit = Some((
+                    row.path.clone(),
+                    FavoriteAction::Open(crate::workspace::FavoriteTarget::BackgroundTab),
+                ));
+            } else if resp.clicked() {
                 nav = Some(row.path.clone());
             }
-            resp.on_hover_text(favorite_tooltip(&row.path, row.slot))
-                .context_menu(|ui| {
-                    use crate::workspace::FavoriteEdit;
+            let resp = resp.on_hover_text(favorite_tooltip(&row.path, row.slot));
+            egui::Popup::context_menu(&resp)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    use crate::workspace::{FavoriteEdit, FavoriteTarget};
+                    for (label, target) in [
+                        ("Open in other panel", FavoriteTarget::OtherPanel),
+                        ("Open in new tab", FavoriteTarget::NewTab),
+                        ("Open in background tab", FavoriteTarget::BackgroundTab),
+                    ] {
+                        let response = ui.button(label);
+                        #[cfg(any(test, feature = "visual-qa"))]
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(
+                                egui::Id::new(("favorite-open", &row.path, label)),
+                                response.rect,
+                            )
+                        });
+                        if response.clicked() {
+                            edit = Some((row.path.clone(), FavoriteAction::Open(target)));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    ui.label("Favorite name");
+                    let draft_id = egui::Id::new(("favorite-name-draft", &row.path));
+                    let frame = ui.ctx().cumulative_frame_nr();
+                    let (last_frame, mut draft) = ui
+                        .ctx()
+                        .data_mut(|data| data.get_temp::<(u64, String)>(draft_id))
+                        .unwrap_or((frame, row.name.clone()));
+                    if frame > last_frame.saturating_add(1) {
+                        draft.clone_from(&row.name);
+                    }
+                    let input = ui.add(
+                        egui::TextEdit::singleline(&mut draft)
+                            .char_limit(256)
+                            .desired_width(220.0),
+                    );
+                    input.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::TextEdit,
+                            input.enabled(),
+                            "Favorite display name",
+                        )
+                    });
+                    #[cfg(any(test, feature = "visual-qa"))]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            egui::Id::new(("favorite-name-input", &row.path)),
+                            input.rect,
+                        )
+                    });
+                    let valid = crate::bookmarks::valid_name(&draft);
+                    let save = ui.add_enabled(
+                        valid && draft.trim() != row.name,
+                        egui::Button::new("Save favorite name"),
+                    );
+                    #[cfg(any(test, feature = "visual-qa"))]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            egui::Id::new(("favorite-name-save", &row.path)),
+                            save.rect,
+                        )
+                    });
+                    if !valid {
+                        ui.small("Use 1–256 characters without control characters.");
+                    }
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(draft_id, (frame, draft.clone())));
+                    if valid
+                        && draft.trim() != row.name
+                        && (save.clicked()
+                            || (input.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter))))
+                    {
+                        edit = Some((
+                            row.path.clone(),
+                            FavoriteAction::Edit(FavoriteEdit::Rename(draft)),
+                        ));
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.label("Quick-jump slot (replaces its current assignment)");
+                    ui.horizontal(|ui| {
+                        for slot in 1..=crate::bookmarks::MAX_SLOT {
+                            let response = ui
+                                .selectable_label(row.slot == Some(slot), slot.to_string())
+                                .on_hover_text(format!(
+                                    "Assign Cmd+{slot} to {}",
+                                    row.path.display()
+                                ));
+                            #[cfg(any(test, feature = "visual-qa"))]
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(
+                                    egui::Id::new(("favorite-slot", &row.path, slot)),
+                                    response.rect,
+                                )
+                            });
+                            if response.clicked() {
+                                edit = Some((
+                                    row.path.clone(),
+                                    FavoriteAction::Edit(FavoriteEdit::AssignSlot(slot)),
+                                ));
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    let sort_menu = ui.menu_button("Sort all Favorites", |ui| {
+                        use crate::bookmarks::FavoriteOrder;
+                        for (label, order) in [
+                            ("By name", FavoriteOrder::Name),
+                            ("By path", FavoriteOrder::Path),
+                            ("By quick-jump slot", FavoriteOrder::Slot),
+                        ] {
+                            let response = ui.button(label);
+                            #[cfg(any(test, feature = "visual-qa"))]
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(
+                                    egui::Id::new(("favorite-sort", &row.path, order)),
+                                    response.rect,
+                                )
+                            });
+                            if response.clicked() {
+                                edit = Some((row.path.clone(), FavoriteAction::Sort(order)));
+                                ui.close();
+                            }
+                        }
+                    });
+                    #[cfg(any(test, feature = "visual-qa"))]
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            egui::Id::new(("favorite-sort-menu", &row.path)),
+                            sort_menu.response.rect,
+                        )
+                    });
+                    #[cfg(not(any(test, feature = "visual-qa")))]
+                    let _ = sort_menu;
                     let items = [
                         ("Move up", FavoriteEdit::MoveUp, index > 0),
                         ("Move down", FavoriteEdit::MoveDown, index < last),
@@ -420,7 +599,7 @@ impl App {
                     ];
                     for (label, choice, enabled) in items {
                         if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                            edit = Some((row.path.clone(), choice));
+                            edit = Some((row.path.clone(), FavoriteAction::Edit(choice)));
                             ui.close();
                         }
                     }
@@ -656,6 +835,246 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favorite_name_field_keeps_its_menu_open_and_saves_only_the_bound_label() {
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("/fixture/folder");
+        let rows = vec![crate::bookmarks::RailRow {
+            name: "Folder".into(),
+            path: path.clone(),
+            slot: Some(3),
+            is_current: false,
+        }];
+        let edits = std::cell::RefCell::new(Vec::new());
+        let navigations = std::cell::RefCell::new(Vec::new());
+        let frame = |events| {
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let (nav, edit) = App::render_favorites(ui, &ThemeColors::dark(), &rows);
+                    if let Some(edit) = edit {
+                        edits.borrow_mut().push(edit);
+                    }
+                    if let Some(nav) = nav {
+                        navigations.borrow_mut().push(nav);
+                    }
+                },
+            ));
+        };
+        let click = |id, button| {
+            let rect = ctx.data(|data| data.get_temp::<egui::Rect>(id)).unwrap();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(rect.center())];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(events);
+            }
+        };
+        frame(Vec::new());
+        click(
+            egui::Id::new(("favorite-row", &path)),
+            egui::PointerButton::Secondary,
+        );
+        frame(Vec::new());
+        frame(Vec::new());
+        assert!(egui::Popup::is_any_open(&ctx));
+        click(
+            egui::Id::new(("favorite-name-input", &path)),
+            egui::PointerButton::Primary,
+        );
+        assert!(
+            egui::Popup::is_any_open(&ctx),
+            "focusing the editor must not close its menu"
+        );
+        assert!(ctx.egui_wants_keyboard_input());
+        frame(vec![egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                command: true,
+                mac_cmd: true,
+                ctrl: true,
+                ..Default::default()
+            },
+        }]);
+        frame(vec![egui::Event::Text("Проект UI".into())]);
+        assert!(edits.borrow().is_empty());
+        click(
+            egui::Id::new(("favorite-name-save", &path)),
+            egui::PointerButton::Primary,
+        );
+        frame(Vec::new());
+        assert_eq!(
+            *edits.borrow(),
+            vec![(
+                path,
+                FavoriteAction::Edit(crate::workspace::FavoriteEdit::Rename("Проект UI".into()))
+            )]
+        );
+        assert!(navigations.borrow().is_empty());
+        assert!(!egui::Popup::is_any_open(&ctx));
+    }
+
+    #[test]
+    fn favorite_sort_submenu_dispatches_the_explicit_order_without_navigation() {
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("/fixture/folder");
+        let rows = vec![crate::bookmarks::RailRow {
+            name: "Folder".into(),
+            path: path.clone(),
+            slot: Some(3),
+            is_current: false,
+        }];
+        let edits = std::cell::RefCell::new(Vec::new());
+        let navigations = std::cell::RefCell::new(Vec::new());
+        let frame = |events| {
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let (nav, edit) = App::render_favorites(ui, &ThemeColors::dark(), &rows);
+                    if let Some(edit) = edit {
+                        edits.borrow_mut().push(edit);
+                    }
+                    if let Some(nav) = nav {
+                        navigations.borrow_mut().push(nav);
+                    }
+                },
+            ));
+        };
+        let click = |id, button| {
+            let rect = ctx.data(|data| data.get_temp::<egui::Rect>(id)).unwrap();
+            for phase in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(rect.center())];
+                if phase > 0 {
+                    events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                frame(events);
+            }
+        };
+        frame(Vec::new());
+        click(
+            egui::Id::new(("favorite-row", &path)),
+            egui::PointerButton::Secondary,
+        );
+        frame(Vec::new());
+        frame(Vec::new());
+        assert!(egui::Popup::is_any_open(&ctx));
+        click(
+            egui::Id::new(("favorite-sort-menu", &path)),
+            egui::PointerButton::Primary,
+        );
+        frame(Vec::new());
+        frame(Vec::new());
+        click(
+            egui::Id::new((
+                "favorite-sort",
+                &path,
+                crate::bookmarks::FavoriteOrder::Name,
+            )),
+            egui::PointerButton::Primary,
+        );
+        frame(Vec::new());
+        assert_eq!(
+            *edits.borrow(),
+            vec![(
+                path,
+                FavoriteAction::Sort(crate::bookmarks::FavoriteOrder::Name)
+            )]
+        );
+        assert!(navigations.borrow().is_empty());
+    }
+
+    #[test]
+    fn favorite_middle_click_requests_a_background_tab_without_active_navigation() {
+        let ctx = egui::Context::default();
+        let path = PathBuf::from("/fixture/favorite");
+        let rows = vec![crate::bookmarks::RailRow {
+            name: "Pinned".into(),
+            path: path.clone(),
+            slot: Some(2),
+            is_current: false,
+        }];
+        let actions = std::cell::RefCell::new(Vec::new());
+        let navs = std::cell::RefCell::new(Vec::new());
+        let frame = |events| {
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let (nav, action) = egui::ScrollArea::both()
+                        .show(ui, |ui| {
+                            App::render_favorites(ui, &ThemeColors::dark(), &rows)
+                        })
+                        .inner;
+                    if let Some(nav) = nav {
+                        navs.borrow_mut().push(nav);
+                    }
+                    if let Some(action) = action {
+                        actions.borrow_mut().push(action);
+                    }
+                },
+            ))
+        };
+        frame(Vec::new());
+        let rect = ctx
+            .data(|data| data.get_temp::<egui::Rect>(egui::Id::new(("favorite-row", &path))))
+            .unwrap();
+        for phase in 0..3 {
+            let mut events = vec![egui::Event::PointerMoved(rect.center())];
+            if phase > 0 {
+                events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Middle,
+                    pressed: phase == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            frame(events);
+        }
+        assert!(navs.borrow().is_empty());
+        assert_eq!(
+            *actions.borrow(),
+            vec![(
+                path,
+                FavoriteAction::Open(crate::workspace::FavoriteTarget::BackgroundTab)
+            )]
+        );
+        assert!(!egui::Popup::is_any_open(&ctx));
+    }
 
     #[test]
     fn clicking_an_expanded_node_collapses_it_and_it_stays_collapsed() {

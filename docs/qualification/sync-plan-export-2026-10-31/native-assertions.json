@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "checks": 15,
+  "full_rows": 9,
+  "shown_rows": 1,
+  "full_planned": 8,
+  "shown_planned": 0,
+  "clipboard_writes": 3,
+  "original_row_identity": true,
+  "only_edited_row": "notes.md",
+  "binary_matches_launch": true
+}

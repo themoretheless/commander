@@ -107,6 +107,12 @@ macro_rules! define_modal_store {
 }
 
 define_modal_store!(
+    WorkspaceProfiles => WorkspaceProfiles {
+        workspace_profiles: Option<crate::workspace_profile::Editor>, option
+    },
+    CustomTheme => CustomTheme {
+        custom_theme_open: bool, bool
+    },
     Permissions => Permissions {
         permissions: Option<super::permissions_dialog::PermissionState>, option
     },
@@ -318,7 +324,7 @@ mod tests {
 
     #[test]
     fn registry_covers_all_ui_modals_with_unique_surfaces() {
-        assert_eq!(UI_MODAL_REGISTRY.len(), 11);
+        assert_eq!(UI_MODAL_REGISTRY.len(), 13);
         for (index, (modal, surface)) in UI_MODAL_REGISTRY.iter().enumerate() {
             assert_eq!(modal.surface(), *surface);
             assert_eq!(UiModal::from_surface(*surface), Some(*modal));
@@ -403,6 +409,14 @@ mod tests {
         assert!(!tools.any_open());
         tools.replace_on(crate::workspace::ActivePanel::Right);
         tools.diff = Some(DiffState {
+            intraline: Default::default(),
+            source: None,
+            options: Default::default(),
+            paths: Default::default(),
+            jump: Default::default(),
+            find: Default::default(),
+            context_view: Default::default(),
+            navigation: Default::default(),
             name_a: "a".into(),
             name_b: "b".into(),
             lines: Vec::new(),

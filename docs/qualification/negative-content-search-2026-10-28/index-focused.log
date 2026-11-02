@@ -1,0 +1,13 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.71s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 5 tests
+test search::tests::negative_content_query_does_not_infer_absence_from_partial_text ... ok
+test query::tests::negative_content_query_preserves_syntax_and_requires_inspection ... ok
+test search::tests::negative_content_query_skips_a_real_file_with_a_match_beyond_the_read_cap ... ok
+test search::tests::negative_content_query_does_not_assume_legacy_cached_text_is_complete ... ok
+test search::tests::negative_content_query_agrees_for_live_indexed_and_archived_text ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2486 filtered out; finished in 0.02s
+

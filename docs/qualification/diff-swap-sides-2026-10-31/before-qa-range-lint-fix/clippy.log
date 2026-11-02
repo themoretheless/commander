@@ -1,0 +1,16 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: manual `RangeInclusive::contains` implementation
+    --> src/visual_qa.rs:5732:20
+     |
+5732 |                   if phase >= 20
+     |  ____________________^
+5733 | |                     && phase <= 23
+     | |__________________________________^ help: use: `(20..=23).contains(&phase)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#manual_range_contains
+     = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

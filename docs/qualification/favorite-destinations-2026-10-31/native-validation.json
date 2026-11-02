@@ -1,0 +1,28 @@
+{
+  "checks_passed": 14,
+  "phase": 41,
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "active": "Left",
+  "left_tabs": [
+    "left/Design",
+    "left",
+    "right",
+    "left/Design"
+  ],
+  "active_left_tab": 1,
+  "right_tabs": [
+    "left"
+  ],
+  "active_right_tab": 0,
+  "bookmark_label_preserved": true,
+  "slot_preserved": 3,
+  "actual_state_independently_parsed": true,
+  "binary_hash_matched": true
+}

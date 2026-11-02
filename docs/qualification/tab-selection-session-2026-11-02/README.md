@@ -1,0 +1,11 @@
+# Persistent tab selection
+
+Inspired by [Double Commander selection save/load](https://doublecmd.github.io/doc/en/help.html), implemented independently in Commander. This extends the existing process-local selection memory with one explicit persistent snapshot per tab; it does not implement Double Commander selection-file compatibility.
+
+Palette commands: Save selection for this tab, Restore tab selection, Forget tab selection. Loading a session restores metadata only. Restore uses a complete, matching retained listing, includes filtered-out entries and skips missing entries without additional filesystem reads. Folder matching is lexical. Forget retains current picks. Open and recently closed tabs carry the snapshot.
+
+Limits: 1,024 direct-child native names and 14 KiB native root/name data per snapshot. Rejected saves retain the previous set. Native byte/unit encoding preserves non-UTF-8 Unix names; incompatible-platform or corrupt optional snapshots are discarded as a whole. Existing session size and atomic-write gates still apply; the native data budget is not a serialized session size guarantee.
+
+Six new regression tests cover native round trips, invalid/oversized sets, independent process-local memory, actual atomic session save/load into a fresh workspace, disappeared and filtered files, closed-tab reopening and optional corruption. Validation: all six gates passed (build, full tests, strict Clippy, ordinary check, formatting, diff whitespace); 3,253 tests passed and 3 were ignored. See checks.json and tests.log for authoritative results. Native palette workflow tab_selection_session passed 14/14 with recorded selections 2 -> 0 -> 2 -> 2 and an unchanged snapshot until Forget. The previous folder_tabs workflow passed 14/14, including recorded closed-history counts 4 -> 3 -> 0. Both screenshots were visually inspected; all native effect counters are zero. The fixture seeds initial picks, then commands run through egui palette key events. This is not physical OS-keyboard input or a process-level restart test; atomic session reopening is covered by the fresh-workspace regression. The new scenario is included in CI. No dependencies changed; previous dependency audit failures remain unresolved.
+
+The 99-repository transfer goal remains open.

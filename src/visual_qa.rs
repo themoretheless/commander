@@ -13,10 +13,115 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+
+fn capture_allocation_facts(root: &Path, output: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mut stack = vec![root.to_owned()];
+        let mut facts = Vec::new();
+        while let Some(path) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return false;
+            };
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    return false;
+                };
+                let path = entry.path();
+                let Ok(m) = std::fs::symlink_metadata(&path) else {
+                    return false;
+                };
+                facts.push(serde_json::json!({"relative_path":path.strip_prefix(root).unwrap(),"regular":m.is_file(),"directory":m.is_dir(),"symlink":m.file_type().is_symlink(),"dev":m.dev(),"ino":m.ino(),"links":m.nlink(),"length":m.len(),"blocks":m.blocks()}));
+                if m.is_dir() {
+                    stack.push(path);
+                }
+            }
+        }
+        serde_json::to_vec_pretty(&facts).is_ok_and(|v| std::fs::write(output, v).is_ok())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, output);
+        false
+    }
+}
+
+const ACCESS_EXPRESSIONS: [&str; 3] = [
+    "name:access- accessed-after:2026-01-01T00:00:00.25Z accessed-before:2026-01-01T00:00:00.75Z",
+    "name:access- accessed-before:1970-01-01",
+    "name:access- accessed-after:2026-01-01T00:00:00.75Z",
+];
+fn accessed_search_snapshot(state: &crate::app::FindState, path: &Path) -> bool {
+    serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"name":h.entry.name,"accessed_ns":h.entry.accessed.and_then(|t|match t.duration_since(std::time::UNIX_EPOCH){Ok(d)=>i64::try_from(d.as_nanos()).ok(),Err(e)=>i64::try_from(e.duration().as_nanos()).ok().and_then(|n|n.checked_neg())}),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(path,b).is_ok())
+}
+fn created_search_snapshot(state: &crate::app::FindState, path: &Path) -> bool {
+    serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"name":h.entry.name,"created_ns":h.entry.created.and_then(|t|match t.duration_since(std::time::UNIX_EPOCH){Ok(d)=>i64::try_from(d.as_nanos()).ok(),Err(e)=>i64::try_from(e.duration().as_nanos()).ok().and_then(|n|n.checked_neg())}),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(path,b).is_ok())
+}
+fn changed_search_snapshot(state: &crate::app::FindState, path: &Path) -> bool {
+    serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"name":h.entry.name,"changed_ns":h.entry.changed.and_then(|t|match t.duration_since(std::time::UNIX_EPOCH){Ok(d)=>i64::try_from(d.as_nanos()).ok(),Err(e)=>i64::try_from(e.duration().as_nanos()).ok().and_then(|n|n.checked_neg())}),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(path,b).is_ok())
+}
 
 const QA_SCHEMA: u32 = 1;
+fn capture_owner_facts(folder: &std::path::Path, output: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let facts = std::fs::read_dir(folder).and_then(|entries| entries.map(|entry| {
+            let entry=entry?;let metadata=std::fs::symlink_metadata(entry.path())?;
+            Ok(serde_json::json!({"name":entry.file_name().to_string_lossy(),"owner_uid":metadata.uid(),"owner_gid":metadata.gid()}))
+        }).collect::<std::io::Result<Vec<_>>>());
+        facts.is_ok_and(|facts| {
+            serde_json::to_vec_pretty(&facts)
+                .is_ok_and(|bytes| std::fs::write(output, bytes).is_ok())
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (folder, output);
+        true
+    }
+}
+
+fn duplicate_component_snapshot(state: &crate::app::DupState, path: &std::path::Path) -> bool {
+    serde_json::to_vec_pretty(&serde_json::json!({"applied":state.names.rules,"draft":state.name_draft,"groups":state.groups.iter().map(|g|g.files.iter().map(|f|&f.path).collect::<Vec<_>>()).collect::<Vec<_>>(),"keep":state.keep,"report":crate::duplicate_report::json(state).ok().and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok())})).is_ok_and(|bytes|std::fs::write(path,bytes).is_ok())
+}
+const RELATIVE_PATHS: [(&str, &str); 7] = [
+    ("left", "docs/report.bin"),
+    ("left", "img/item.bin"),
+    ("left", "misc/local.bin"),
+    ("right", "Docs/REPORT.BIN"),
+    ("right", "img/item.bin"),
+    ("right", "else/local.bin"),
+    ("right", "Docs/unique.bin"),
+];
+const RANKING_PATHS: [&str; 7] = [
+    "root-copy.bin",
+    "first/alpha.bin",
+    "middle/nested/zulu.bin",
+    "deep/a/b/mid.bin",
+    "wide-folder/x",
+    "long-copy/the-very-very-longest-basename-copy.bin",
+    "unique-same-size.bin",
+];
+fn links_search_snapshot(state: &crate::app::FindState, path: &std::path::Path) -> bool {
+    serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"path":h.entry.path,"name":h.entry.name,"hard_links":h.entry.hard_link_count(),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(path,bytes).is_ok())
+}
 const TIMEOUT: Duration = Duration::from_secs(10);
+fn diff_fixture_text(right: bool) -> String {
+    (0..180)
+        .map(|i| {
+            if [10, 90, 160].contains(&i) {
+                format!("{} change {i}\n", if right { "new" } else { "old" })
+            } else {
+                format!("context {i}\n")
+            }
+        })
+        .collect()
+}
+const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
+const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
 const CAPTURE_RETRY_AFTER: Duration = Duration::from_secs(2);
 const MAX_CAPTURE_ATTEMPTS: u8 = 3;
 
@@ -26,20 +131,127 @@ enum Scenario {
     IconsGrid,
     ImagePreview,
     PdfPreview,
+    PdfSearch,
+    PdfRegex,
     Checksums,
+    ChecksumList,
+    DiskTreeFilter,
+    SyncReview,
+    SyncContents,
+    DiffNavigation,
+    DiffOptions,
+    DiffIntraline,
+    DiffSwap,
+    SymlinkWorkflow,
+    SymlinkInfo,
+    AllocatedInfo,
+    FileIdentityInfo,
+    ExifInfo,
+    ExifDetailsInfo,
+    ImageMetadataJson,
+    ExifPngInfo,
+    ExifTiffInfo,
+    ExifWebpInfo,
+    ImageHeaderInfo,
+
+    AllocatedSort,
+    TimeSort,
+    ChangedSort,
+    InodeSort,
+    HardLinksSort,
+    ListingJson,
+    AllocatedSelection,
+    HardlinkSelection,
+    DiskUsageExport,
+    DiskAllocation,
+    DiskCount,
+    DuplicatePolicy,
+    DuplicateRanking,
+    DuplicateSort,
+    DuplicateRecursive,
+    DuplicateSizes,
+    DuplicateNames,
+    DuplicateExtensions,
+    DuplicateComponents,
+    DuplicateRelative,
+    DuplicateDepth,
+    DuplicateCopies,
+    DuplicateReport,
+    DuplicateRoots,
+    DuplicateCross,
     HexPreview,
     HexSearch,
+    HexAlignment,
+    HexMatchCopy,
+    HexCharacterEncoding,
+    HexUtf8Encoding,
+    HexUtf16Encoding,
+    HexRepeatSearch,
+    HexCharacterKeys,
+    HexBomEncoding,
     Permissions,
+    Timestamps,
     RenamePresets,
     RenameTarget,
     RenameOptions,
     NameList,
+    NameListActions,
+    MaskActions,
+    CustomTheme,
+    ThemeExchange,
+    WorkspaceProfiles,
+    ProfileTabs,
+    ProfileNames,
+    ProfileExchange,
     FolderTabs,
+    MillerBrowser,
+    TabPathLabels,
+    Favorites,
+    FavoriteImport,
+    FavoritePicker,
+    TemplateBrowser,
+    PerItemCommand,
+    PerItemStop,
+    SearchResults,
+    SearchJson,
+    BrokenLinkSearch,
+    OwnerSearch,
+    IdentityFind,
+    LinksSearch,
+    AllocationSearch,
+    AccessedSearch,
+    CreatedSearch,
+    ChangedSearch,
+    TimeGroups,
+    FindSort,
+    ParentSearch,
     CodePreview,
     UnicodePreview,
+    DocxPreview,
+    OdtPreview,
+    XlsxPreview,
+    OdsPreview,
+    PptxPreview,
+    OdpPreview,
+    EpubPreview,
+    FictionbookPreview,
+    RtfPreview,
     RegexPreview,
     JsonPreview,
+    GpxPreview,
+    KmlPreview,
+    CustomShortcuts,
+    CustomNavigation,
+    ShortcutHints,
+    ShortcutExchange,
+    TabSelectionSession,
+    TablePreview,
     ArchiveBrowser,
+    ArchiveFuzzy,
+    ArchiveExport,
+    ArchiveBzip2,
+    ArchiveXz,
+    ArchiveZstd,
     MinimumWindow,
     Zoom200Accessible,
     ConfirmationOwner,
@@ -49,25 +261,178 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Self; 22] = [
+    fn image_info_fixture(self) -> Option<(&'static str, &'static str, bool)> {
+        match self {
+            Self::ExifInfo | Self::ExifDetailsInfo | Self::ImageMetadataJson => {
+                Some(("photo-exif.jpg", "jpeg", true))
+            }
+            Self::ExifPngInfo => Some(("photo-exif.png", "png", true)),
+            Self::ExifTiffInfo => Some(("photo-exif.tiff", "tiff", true)),
+            Self::ExifWebpInfo => Some(("photo-exif.webp", "webp", true)),
+            Self::ImageHeaderInfo => Some(("photo-header.png", "png", false)),
+            _ => None,
+        }
+    }
+
+    fn archive_kind(self) -> Option<crate::archive::ArchiveKind> {
+        use crate::archive::ArchiveKind;
+        match self {
+            Self::ArchiveBrowser | Self::ArchiveFuzzy | Self::ArchiveExport => {
+                Some(ArchiveKind::Tar)
+            }
+            Self::ArchiveBzip2 => Some(ArchiveKind::TarBz2),
+            Self::ArchiveXz => Some(ArchiveKind::TarXz),
+            Self::ArchiveZstd => Some(ArchiveKind::TarZstd),
+            _ => None,
+        }
+    }
+    fn archive_name(self) -> &'static str {
+        match self {
+            Self::ArchiveBzip2 => "sample.tar.bz2",
+            Self::ArchiveXz => "sample.tar.xz",
+            Self::ArchiveZstd => "sample.tar.zst",
+            _ => "sample.tar",
+        }
+    }
+
+    fn office_text(self) -> Option<&'static str> {
+        match self {
+            Self::DocxPreview | Self::OdtPreview => {
+                Some("Office preview\nmessage: café / ёж 🌍\nA\tB\n")
+            }
+            Self::XlsxPreview | Self::OdsPreview => Some(crate::spreadsheet_preview::FIXTURE_TEXT),
+            Self::PptxPreview | Self::OdpPreview => Some(crate::presentation_preview::FIXTURE_TEXT),
+            Self::EpubPreview => Some(crate::epub_preview::FIXTURE_TEXT),
+            Self::FictionbookPreview => Some(crate::fictionbook_preview::FIXTURE_TEXT),
+            Self::RtfPreview => Some(crate::rtf_preview::FIXTURE_TEXT),
+            _ => None,
+        }
+    }
+    const ALL: [Self; 128] = [
         Self::DesktopBase,
         Self::IconsGrid,
         Self::ImagePreview,
         Self::PdfPreview,
+        Self::PdfSearch,
+        Self::PdfRegex,
         Self::Checksums,
+        Self::ChecksumList,
+        Self::DiskTreeFilter,
+        Self::SyncReview,
+        Self::SyncContents,
+        Self::DiffNavigation,
+        Self::DiffOptions,
+        Self::DiffIntraline,
+        Self::DiffSwap,
+        Self::SymlinkWorkflow,
+        Self::SymlinkInfo,
+        Self::AllocatedInfo,
+        Self::FileIdentityInfo,
+        Self::ExifInfo,
+        Self::ExifDetailsInfo,
+        Self::ImageMetadataJson,
+        Self::ExifPngInfo,
+        Self::ExifTiffInfo,
+        Self::ExifWebpInfo,
+        Self::ImageHeaderInfo,
+        Self::AllocatedSort,
+        Self::TimeSort,
+        Self::ChangedSort,
+        Self::InodeSort,
+        Self::HardLinksSort,
+        Self::ListingJson,
+        Self::AllocatedSelection,
+        Self::HardlinkSelection,
+        Self::DiskUsageExport,
+        Self::DiskAllocation,
+        Self::DiskCount,
+        Self::DuplicatePolicy,
+        Self::DuplicateRanking,
+        Self::DuplicateSort,
+        Self::DuplicateRecursive,
+        Self::DuplicateSizes,
+        Self::DuplicateNames,
+        Self::DuplicateExtensions,
+        Self::DuplicateComponents,
+        Self::DuplicateRelative,
+        Self::DuplicateDepth,
+        Self::DuplicateCopies,
+        Self::DuplicateReport,
+        Self::DuplicateRoots,
+        Self::DuplicateCross,
         Self::HexPreview,
         Self::HexSearch,
+        Self::HexAlignment,
+        Self::HexMatchCopy,
+        Self::HexCharacterEncoding,
+        Self::HexUtf8Encoding,
+        Self::HexUtf16Encoding,
+        Self::HexRepeatSearch,
+        Self::HexCharacterKeys,
+        Self::HexBomEncoding,
         Self::Permissions,
+        Self::Timestamps,
         Self::RenamePresets,
         Self::RenameTarget,
         Self::RenameOptions,
         Self::NameList,
+        Self::NameListActions,
+        Self::MaskActions,
+        Self::CustomTheme,
+        Self::ThemeExchange,
+        Self::WorkspaceProfiles,
+        Self::ProfileTabs,
+        Self::ProfileNames,
+        Self::ProfileExchange,
         Self::FolderTabs,
+        Self::MillerBrowser,
+        Self::TabPathLabels,
+        Self::Favorites,
+        Self::FavoriteImport,
+        Self::FavoritePicker,
+        Self::TemplateBrowser,
+        Self::PerItemCommand,
+        Self::PerItemStop,
+        Self::SearchResults,
+        Self::SearchJson,
+        Self::BrokenLinkSearch,
+        Self::OwnerSearch,
+        Self::IdentityFind,
+        Self::LinksSearch,
+        Self::AllocationSearch,
+        Self::AccessedSearch,
+        Self::CreatedSearch,
+        Self::ChangedSearch,
+        Self::TimeGroups,
+        Self::FindSort,
+        Self::ParentSearch,
         Self::CodePreview,
         Self::UnicodePreview,
+        Self::DocxPreview,
+        Self::OdtPreview,
+        Self::XlsxPreview,
+        Self::OdsPreview,
+        Self::PptxPreview,
+        Self::OdpPreview,
+        Self::EpubPreview,
+        Self::FictionbookPreview,
+        Self::RtfPreview,
         Self::RegexPreview,
         Self::JsonPreview,
+        Self::GpxPreview,
+        Self::KmlPreview,
+        Self::CustomShortcuts,
+        Self::CustomNavigation,
+        Self::ShortcutHints,
+        Self::ShortcutExchange,
+        Self::TabSelectionSession,
+        Self::TablePreview,
         Self::ArchiveBrowser,
+        Self::ArchiveFuzzy,
+        Self::ArchiveExport,
+        Self::ArchiveBzip2,
+        Self::ArchiveXz,
+        Self::ArchiveZstd,
         Self::MinimumWindow,
         Self::Zoom200Accessible,
         Self::ConfirmationOwner,
@@ -86,20 +451,127 @@ impl Scenario {
             Self::IconsGrid => "icons_grid",
             Self::ImagePreview => "image_preview",
             Self::PdfPreview => "pdf_preview",
+            Self::PdfSearch => "pdf_search",
+            Self::PdfRegex => "pdf_regex",
             Self::Checksums => "checksums",
+            Self::ChecksumList => "checksum_list",
+            Self::DiskTreeFilter => "disk_tree_filter",
+            Self::SyncReview => "sync_review",
+            Self::SyncContents => "sync_contents",
+            Self::DiffNavigation => "diff_navigation",
+            Self::DiffOptions => "diff_options",
+            Self::DiffIntraline => "diff_intraline",
+            Self::DiffSwap => "diff_swap",
+            Self::SymlinkWorkflow => "symlink_workflow",
+            Self::SymlinkInfo => "symlink_info",
+            Self::AllocatedInfo => "allocated_info",
+            Self::FileIdentityInfo => "file_identity_info",
+            Self::ExifInfo => "exif_info",
+            Self::ExifDetailsInfo => "exif_details_info",
+            Self::ImageMetadataJson => "image_metadata_json",
+            Self::ExifPngInfo => "exif_png_info",
+            Self::ExifTiffInfo => "exif_tiff_info",
+            Self::ExifWebpInfo => "exif_webp_info",
+            Self::ImageHeaderInfo => "image_header_info",
+
+            Self::AllocatedSort => "allocated_sort",
+            Self::TimeSort => "time_sort",
+            Self::ChangedSort => "changed_sort",
+            Self::InodeSort => "inode_sort",
+            Self::HardLinksSort => "hard_links_sort",
+            Self::ListingJson => "listing_json",
+            Self::AllocatedSelection => "allocated_selection",
+            Self::HardlinkSelection => "hardlink_selection",
+            Self::DiskUsageExport => "disk_usage_export",
+            Self::DiskAllocation => "disk_allocation",
+            Self::DiskCount => "disk_count",
+            Self::DuplicatePolicy => "duplicate_policy",
+            Self::DuplicateRanking => "duplicate_ranking",
+            Self::DuplicateSort => "duplicate_sort",
+            Self::DuplicateRecursive => "duplicate_recursive",
+            Self::DuplicateSizes => "duplicate_sizes",
+            Self::DuplicateNames => "duplicate_names",
+            Self::DuplicateExtensions => "duplicate_extensions",
+            Self::DuplicateComponents => "duplicate_components",
+            Self::DuplicateRelative => "duplicate_relative",
+            Self::DuplicateDepth => "duplicate_depth",
+            Self::DuplicateCopies => "duplicate_copies",
+            Self::DuplicateReport => "duplicate_report",
+            Self::DuplicateRoots => "duplicate_roots",
+            Self::DuplicateCross => "duplicate_cross",
             Self::HexPreview => "hex_preview",
             Self::HexSearch => "hex_search",
+            Self::HexAlignment => "hex_alignment",
+            Self::HexMatchCopy => "hex_match_copy",
+            Self::HexCharacterEncoding => "hex_character_encoding",
+            Self::HexUtf8Encoding => "hex_utf8_encoding",
+            Self::HexUtf16Encoding => "hex_utf16_encoding",
+            Self::HexRepeatSearch => "hex_repeat_search",
+            Self::HexCharacterKeys => "hex_character_keys",
+            Self::HexBomEncoding => "hex_bom_encoding",
             Self::Permissions => "permissions",
+            Self::Timestamps => "timestamps",
             Self::RenamePresets => "rename_presets",
             Self::RenameTarget => "rename_target",
             Self::RenameOptions => "rename_options",
             Self::NameList => "name_list",
+            Self::NameListActions => "name_list_actions",
+            Self::MaskActions => "mask_actions",
+            Self::CustomTheme => "custom_theme",
+            Self::ThemeExchange => "theme_exchange",
+            Self::WorkspaceProfiles => "workspace_profiles",
+            Self::ProfileTabs => "profile_tabs",
+            Self::ProfileNames => "profile_names",
+            Self::ProfileExchange => "profile_exchange",
             Self::FolderTabs => "folder_tabs",
+            Self::MillerBrowser => "miller_browser",
+            Self::TabPathLabels => "tab_path_labels",
+            Self::Favorites => "favorites",
+            Self::FavoriteImport => "favorite_import",
+            Self::FavoritePicker => "favorite_picker",
+            Self::TemplateBrowser => "template_browser",
+            Self::PerItemCommand => "per_item_command",
+            Self::PerItemStop => "per_item_stop",
+            Self::SearchResults => "search_results",
+            Self::SearchJson => "search_json",
+            Self::BrokenLinkSearch => "broken_link_search",
+            Self::OwnerSearch => "owner_search",
+            Self::IdentityFind => "identity_find",
+            Self::LinksSearch => "links_search",
+            Self::AllocationSearch => "allocation_search",
+            Self::AccessedSearch => "accessed_search",
+            Self::CreatedSearch => "created_search",
+            Self::ChangedSearch => "changed_search",
+            Self::TimeGroups => "time_groups",
+            Self::FindSort => "find_sort",
+            Self::ParentSearch => "parent_search",
             Self::CodePreview => "code_preview",
             Self::UnicodePreview => "unicode_preview",
+            Self::DocxPreview => "docx_preview",
+            Self::OdtPreview => "odt_preview",
+            Self::XlsxPreview => "xlsx_preview",
+            Self::OdsPreview => "ods_preview",
+            Self::PptxPreview => "pptx_preview",
+            Self::OdpPreview => "odp_preview",
+            Self::EpubPreview => "epub_preview",
+            Self::FictionbookPreview => "fictionbook_preview",
+            Self::RtfPreview => "rtf_preview",
             Self::RegexPreview => "regex_preview",
             Self::JsonPreview => "json_preview",
+            Self::GpxPreview => "gpx_preview",
+            Self::KmlPreview => "kml_preview",
+            Self::CustomShortcuts => "custom_shortcuts",
+            Self::CustomNavigation => "custom_navigation",
+            Self::ShortcutHints => "shortcut_hints",
+            Self::ShortcutExchange => "shortcut_exchange",
+            Self::TabSelectionSession => "tab_selection_session",
+            Self::TablePreview => "table_preview",
             Self::ArchiveBrowser => "archive_browser",
+            Self::ArchiveFuzzy => "archive_fuzzy",
+            Self::ArchiveExport => "archive_export",
+            Self::ArchiveBzip2 => "archive_bzip2",
+            Self::ArchiveXz => "archive_xz",
+            Self::ArchiveZstd => "archive_zstd",
             Self::MinimumWindow => "minimum_window",
             Self::Zoom200Accessible => "zoom_200_accessible",
             Self::ConfirmationOwner => "confirmation_owner",
@@ -114,20 +586,126 @@ impl Scenario {
             | Self::IconsGrid
             | Self::ImagePreview
             | Self::PdfPreview
+            | Self::PdfSearch
+            | Self::PdfRegex
             | Self::Checksums
+            | Self::ChecksumList
+            | Self::DiffNavigation
+            | Self::DiffOptions
+            | Self::DiffIntraline
+            | Self::DiffSwap
+            | Self::SymlinkWorkflow
+            | Self::SymlinkInfo
+            | Self::AllocatedInfo
+            | Self::FileIdentityInfo
+            | Self::ExifInfo
+            | Self::ExifDetailsInfo
+            | Self::ImageMetadataJson
+            | Self::ExifPngInfo
+            | Self::ExifTiffInfo
+            | Self::ExifWebpInfo
+            | Self::ImageHeaderInfo
+            | Self::AllocatedSort
+            | Self::InodeSort
+            | Self::HardLinksSort
+            | Self::ChangedSort
+            | Self::TimeSort
+            | Self::ListingJson
+            | Self::HardlinkSelection
+            | Self::AllocatedSelection
+            | Self::SyncReview
+            | Self::SyncContents
+            | Self::DiskTreeFilter
+            | Self::DiskUsageExport
+            | Self::DiskAllocation
+            | Self::DiskCount
+            | Self::DuplicatePolicy
+            | Self::DuplicateRanking
+            | Self::DuplicateSort
+            | Self::DuplicateRecursive
+            | Self::DuplicateSizes
+            | Self::DuplicateExtensions
+            | Self::DuplicateComponents
+            | Self::DuplicateRelative
+            | Self::DuplicateNames
+            | Self::DuplicateDepth
+            | Self::DuplicateCopies
+            | Self::DuplicateReport
+            | Self::DuplicateRoots
+            | Self::DuplicateCross
             | Self::HexPreview
             | Self::HexSearch
+            | Self::HexAlignment
+            | Self::HexMatchCopy
+            | Self::HexCharacterEncoding
+            | Self::HexUtf8Encoding
+            | Self::HexUtf16Encoding
+            | Self::HexRepeatSearch
+            | Self::HexCharacterKeys
+            | Self::HexBomEncoding
             | Self::Permissions
+            | Self::Timestamps
             | Self::RenamePresets
             | Self::RenameTarget
             | Self::RenameOptions
+            | Self::ProfileExchange
+            | Self::ProfileNames
+            | Self::ProfileTabs
+            | Self::WorkspaceProfiles
+            | Self::ThemeExchange
+            | Self::CustomTheme
+            | Self::MaskActions
+            | Self::NameListActions
             | Self::NameList
             | Self::FolderTabs
+            | Self::MillerBrowser
+            | Self::TabPathLabels
+            | Self::Favorites
+            | Self::FavoriteImport
+            | Self::FavoritePicker
+            | Self::TemplateBrowser
+            | Self::PerItemCommand
+            | Self::PerItemStop
+            | Self::SearchResults
+            | Self::SearchJson
+            | Self::BrokenLinkSearch
+            | Self::IdentityFind
+            | Self::LinksSearch
+            | Self::OwnerSearch
+            | Self::ParentSearch
+            | Self::AllocationSearch
+            | Self::AccessedSearch
+            | Self::CreatedSearch
+            | Self::ChangedSearch
+            | Self::TimeGroups
+            | Self::FindSort
             | Self::CodePreview
             | Self::UnicodePreview
+            | Self::DocxPreview
+            | Self::OdtPreview
+            | Self::XlsxPreview
+            | Self::OdsPreview
+            | Self::PptxPreview
+            | Self::OdpPreview
+            | Self::EpubPreview
+            | Self::FictionbookPreview
+            | Self::RtfPreview
             | Self::RegexPreview
+            | Self::TabSelectionSession
+            | Self::ShortcutExchange
+            | Self::ShortcutHints
+            | Self::CustomNavigation
+            | Self::CustomShortcuts
+            | Self::KmlPreview
+            | Self::GpxPreview
             | Self::JsonPreview
+            | Self::TablePreview
             | Self::ArchiveBrowser
+            | Self::ArchiveFuzzy
+            | Self::ArchiveExport
+            | Self::ArchiveBzip2
+            | Self::ArchiveXz
+            | Self::ArchiveZstd
             | Self::ConfirmationOwner
             | Self::PaneTool => [1280.0, 760.0],
         }
@@ -152,20 +730,126 @@ impl Scenario {
             | Self::IconsGrid
             | Self::ImagePreview
             | Self::PdfPreview
+            | Self::PdfSearch
+            | Self::PdfRegex
             | Self::Checksums
+            | Self::ChecksumList
+            | Self::DiffNavigation
+            | Self::DiffOptions
+            | Self::DiffIntraline
+            | Self::DiffSwap
+            | Self::SymlinkWorkflow
+            | Self::SymlinkInfo
+            | Self::AllocatedInfo
+            | Self::FileIdentityInfo
+            | Self::ExifInfo
+            | Self::ExifDetailsInfo
+            | Self::ImageMetadataJson
+            | Self::ExifPngInfo
+            | Self::ExifTiffInfo
+            | Self::ExifWebpInfo
+            | Self::ImageHeaderInfo
+            | Self::AllocatedSort
+            | Self::InodeSort
+            | Self::HardLinksSort
+            | Self::ChangedSort
+            | Self::TimeSort
+            | Self::ListingJson
+            | Self::HardlinkSelection
+            | Self::AllocatedSelection
+            | Self::SyncReview
+            | Self::SyncContents
+            | Self::DiskTreeFilter
+            | Self::DiskUsageExport
+            | Self::DiskAllocation
+            | Self::DiskCount
+            | Self::DuplicatePolicy
+            | Self::DuplicateRanking
+            | Self::DuplicateSort
+            | Self::DuplicateRecursive
+            | Self::DuplicateSizes
+            | Self::DuplicateExtensions
+            | Self::DuplicateComponents
+            | Self::DuplicateRelative
+            | Self::DuplicateNames
+            | Self::DuplicateDepth
+            | Self::DuplicateCopies
+            | Self::DuplicateReport
+            | Self::DuplicateRoots
+            | Self::DuplicateCross
             | Self::HexPreview
             | Self::HexSearch
+            | Self::HexAlignment
+            | Self::HexMatchCopy
+            | Self::HexCharacterEncoding
+            | Self::HexUtf8Encoding
+            | Self::HexUtf16Encoding
+            | Self::HexRepeatSearch
+            | Self::HexCharacterKeys
+            | Self::HexBomEncoding
             | Self::Permissions
+            | Self::Timestamps
             | Self::RenamePresets
             | Self::RenameTarget
             | Self::RenameOptions
+            | Self::ProfileExchange
+            | Self::ProfileNames
+            | Self::ProfileTabs
+            | Self::WorkspaceProfiles
+            | Self::ThemeExchange
+            | Self::CustomTheme
+            | Self::MaskActions
+            | Self::NameListActions
             | Self::NameList
             | Self::FolderTabs
+            | Self::MillerBrowser
+            | Self::TabPathLabels
+            | Self::Favorites
+            | Self::FavoriteImport
+            | Self::FavoritePicker
+            | Self::TemplateBrowser
+            | Self::PerItemCommand
+            | Self::PerItemStop
+            | Self::SearchResults
+            | Self::SearchJson
+            | Self::BrokenLinkSearch
+            | Self::IdentityFind
+            | Self::LinksSearch
+            | Self::OwnerSearch
+            | Self::ParentSearch
+            | Self::AllocationSearch
+            | Self::AccessedSearch
+            | Self::CreatedSearch
+            | Self::ChangedSearch
+            | Self::TimeGroups
+            | Self::FindSort
             | Self::CodePreview
             | Self::UnicodePreview
+            | Self::DocxPreview
+            | Self::OdtPreview
+            | Self::XlsxPreview
+            | Self::OdsPreview
+            | Self::PptxPreview
+            | Self::OdpPreview
+            | Self::EpubPreview
+            | Self::FictionbookPreview
+            | Self::RtfPreview
             | Self::RegexPreview
+            | Self::TabSelectionSession
+            | Self::ShortcutExchange
+            | Self::ShortcutHints
+            | Self::CustomNavigation
+            | Self::CustomShortcuts
+            | Self::KmlPreview
+            | Self::GpxPreview
             | Self::JsonPreview
+            | Self::TablePreview
             | Self::ArchiveBrowser
+            | Self::ArchiveFuzzy
+            | Self::ArchiveExport
+            | Self::ArchiveBzip2
+            | Self::ArchiveXz
+            | Self::ArchiveZstd
             | Self::ConfirmationOwner
             | Self::PaneTool => ThemeMode::Dark,
         }
@@ -179,14 +863,34 @@ impl Scenario {
     }
 
     const fn show_tree(self) -> bool {
-        matches!(self, Self::MinimumWindow)
+        matches!(
+            self,
+            Self::MinimumWindow | Self::Favorites | Self::FavoriteImport
+        )
     }
 
     const fn modal_owner(self) -> Option<&'static str> {
         match self {
             Self::ConfirmationOwner => Some("Confirmation"),
-            Self::Permissions => Some("Permissions"),
+            Self::FavoritePicker | Self::ShortcutHints => Some("Palette"),
+            Self::TemplateBrowser | Self::PerItemCommand | Self::PerItemStop => Some("RunCommand"),
+            Self::Permissions | Self::Timestamps => Some("Permissions"),
             Self::NameList => Some("Mask"),
+            Self::CustomTheme | Self::ThemeExchange => Some("CustomTheme"),
+            Self::ProfileNames | Self::ProfileExchange => Some("WorkspaceProfiles"),
+            Self::SearchResults
+            | Self::SearchJson
+            | Self::BrokenLinkSearch
+            | Self::IdentityFind
+            | Self::LinksSearch
+            | Self::OwnerSearch
+            | Self::ParentSearch
+            | Self::AllocationSearch
+            | Self::AccessedSearch
+            | Self::CreatedSearch
+            | Self::ChangedSearch
+            | Self::TimeGroups
+            | Self::FindSort => Some("Find"),
             Self::RenamePresets | Self::RenameTarget | Self::RenameOptions => Some("BatchRename"),
             _ => None,
         }
@@ -197,7 +901,10 @@ impl Scenario {
     }
 
     const fn opens_pane_tool(self) -> bool {
-        matches!(self, Self::PaneTool)
+        matches!(
+            self,
+            Self::PaneTool | Self::SyncReview | Self::SyncContents | Self::DiffNavigation
+        )
     }
 }
 
@@ -289,8 +996,14 @@ fn run(request: Request) -> eframe::Result<()> {
     write_unfinished_manifest(&scenario_dir, request.scenario, "attempted", None)
         .map_err(app_error)?;
 
-    if (request.scenario == Scenario::Permissions && !cfg!(unix))
-        || (request.scenario == Scenario::PdfPreview && !cfg!(target_os = "macos"))
+    if (matches!(
+        request.scenario,
+        Scenario::Permissions | Scenario::Timestamps
+    ) && !cfg!(unix))
+        || (matches!(
+            request.scenario,
+            Scenario::PdfPreview | Scenario::PdfSearch | Scenario::PdfRegex
+        ) && !cfg!(target_os = "macos"))
     {
         let detail = "This native preview scenario is unavailable on this host";
         write_capabilities(
@@ -323,6 +1036,8 @@ fn run(request: Request) -> eframe::Result<()> {
             .with_min_inner_size(viewport)
             .with_max_inner_size(viewport)
             .with_resizable(false)
+            .with_active(true)
+            .with_visible(true)
             .with_titlebar_shown(false)
             .with_fullsize_content_view(true),
         persist_window: false,
@@ -459,6 +1174,706 @@ impl Fixture {
             .and_then(|()| std::fs::create_dir_all(right.join("Archive")))
             .map_err(|error| format!("could not create QA fixture: {error}"))?;
 
+        if matches!(
+            scenario,
+            Scenario::WorkspaceProfiles
+                | Scenario::ProfileTabs
+                | Scenario::ProfileNames
+                | Scenario::ProfileExchange
+        ) {
+            std::fs::write(
+                left.join("Design/profile-left.txt"),
+                "profile fixture left\n",
+            )
+            .and_then(|()| {
+                std::fs::write(
+                    right.join("Archive/profile-right.txt"),
+                    "profile fixture right\n",
+                )
+            })
+            .map_err(|e| e.to_string())?;
+        }
+
+        if scenario == Scenario::SearchJson {
+            for name in ["report-a.txt", "report-b.txt", "report-hidden.txt"] {
+                std::fs::write(left.join(name), b"report\n").map_err(|e| e.to_string())?;
+            }
+            #[cfg(unix)]
+            let (raw_path_supported, raw_path_error) = {
+                use std::os::unix::ffi::OsStringExt;
+                match std::fs::write(
+                    left.join(std::ffi::OsString::from_vec(b"report-\xff.txt".to_vec())),
+                    b"raw path\n",
+                ) {
+                    Ok(()) => (true, None),
+                    Err(error)
+                        if error.raw_os_error() == Some(libc::EILSEQ)
+                            || error.kind() == std::io::ErrorKind::InvalidInput =>
+                    {
+                        std::fs::write(left.join("report-\n.txt"), b"raw path\n")
+                            .map_err(|e| e.to_string())?;
+                        (false, Some(error.to_string()))
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            #[cfg(not(unix))]
+            let (raw_path_supported, raw_path_error) = {
+                std::fs::write(left.join("report-special.txt"), b"raw path\n")
+                    .map_err(|e| e.to_string())?;
+                (
+                    false,
+                    Some("Unix byte filenames are not supported on this platform".to_string()),
+                )
+            };
+            std::fs::write(root.join("path-capability.json"),serde_json::to_vec_pretty(&serde_json::json!({"raw_path_supported":raw_path_supported,"raw_path_error":raw_path_error})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("search.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file(
+                "report-archive.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"archived report\n").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::HardlinkSelection {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("hard-original.txt"), "same bytes")
+                .map_err(|e| e.to_string())?;
+            std::fs::hard_link(left.join("hard-original.txt"), left.join("hard-alias.txt"))
+                .map_err(|e| e.to_string())?;
+            std::fs::write(left.join("hard-copy.txt"), "same bytes").map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("hard-original.txt", left.join("hard-link.txt"))
+                .map_err(|e| e.to_string())?;
+            let facts=["hard-original.txt","hard-alias.txt","hard-copy.txt","hard-link.txt"].into_iter().map(|name|{let m=std::fs::symlink_metadata(left.join(name)).map_err(|e|e.to_string())?;Ok(serde_json::json!({"name":name,"device":m.dev(),"inode":m.ino(),"links":m.nlink(),"symlink":m.file_type().is_symlink()}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("hardlink-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::InodeSort {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("inode-old.txt"), "original").map_err(|e| e.to_string())?;
+            std::fs::write(left.join("inode-middle.txt"), "other").map_err(|e| e.to_string())?;
+            std::fs::hard_link(left.join("inode-old.txt"), left.join("inode-new.txt"))
+                .map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("inode-old.txt", left.join("inode-link.txt"))
+                .map_err(|e| e.to_string())?;
+            let facts=["inode-old.txt","inode-middle.txt","inode-new.txt","inode-link.txt"].into_iter().map(|name|{let m=std::fs::symlink_metadata(left.join(name)).map_err(|e|e.to_string())?;Ok(serde_json::json!({"name":name,"device":m.dev(),"inode":m.ino(),"symlink":m.file_type().is_symlink()}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("inode-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::HardLinksSort {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("links-old.txt"), "original").map_err(|e| e.to_string())?;
+            std::fs::write(left.join("links-middle.txt"), "other").map_err(|e| e.to_string())?;
+            std::fs::hard_link(left.join("links-old.txt"), left.join("links-new.txt"))
+                .map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("links-old.txt", left.join("links-link.txt"))
+                .map_err(|e| e.to_string())?;
+            std::fs::hard_link(left.join("links-old.txt"), right.join("outside-alias.txt"))
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir(left.join("links-folder")).map_err(|e| e.to_string())?;
+            let facts=["links-old.txt","links-middle.txt","links-new.txt","links-link.txt","links-folder"].into_iter().map(|name|{let m=std::fs::symlink_metadata(left.join(name)).map_err(|e|e.to_string())?;Ok(serde_json::json!({"name":name,"device":m.dev(),"inode":m.ino(),"links":m.nlink(),"regular":m.is_file(),"directory":m.is_dir(),"symlink":m.file_type().is_symlink()}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("links-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::ChangedSort {
+            use std::os::unix::fs::MetadataExt;
+            for (name, age) in [
+                ("change-old.txt", 86400),
+                ("change-middle.txt", 172800),
+                ("change-new.txt", 259200),
+            ] {
+                let path = left.join(name);
+                std::fs::write(&path, "change").map_err(|e| e.to_string())?;
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|f| {
+                        f.set_times(
+                            std::fs::FileTimes::new()
+                                .set_modified(SystemTime::now() - Duration::from_secs(age)),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
+            std::fs::create_dir(left.join("change-folder")).map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("change-old.txt", left.join("change-link.txt"))
+                .map_err(|e| e.to_string())?;
+            let facts=["change-old.txt","change-middle.txt","change-new.txt","change-folder","change-link.txt"].into_iter().map(|name|{let path=left.join(name);let m=std::fs::symlink_metadata(&path).map_err(|e|e.to_string())?;let shown=std::fs::metadata(&path).unwrap_or_else(|_|m.clone());Ok(serde_json::json!({"name":name,"changed_seconds":m.ctime(),"changed_nanos":m.ctime_nsec(),"modified":shown.modified().ok(),"folder":shown.is_dir(),"symlink":m.file_type().is_symlink()}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("changed-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::TimeSort {
+            let mut facts = Vec::new();
+            let anchor = SystemTime::now();
+            for (name, accessed, modified) in [
+                ("clock-old.txt", 3 * 86400, 86400),
+                ("clock-middle.txt", 2 * 86400, 2 * 86400),
+                ("clock-new.txt", 86400, 3 * 86400),
+            ] {
+                let path = left.join(name);
+                std::fs::write(&path, b"clock\n").map_err(|e| e.to_string())?;
+                let file = std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .map_err(|e| e.to_string())?;
+                file.set_times(
+                    std::fs::FileTimes::new()
+                        .set_accessed(anchor - Duration::from_secs(accessed))
+                        .set_modified(anchor - Duration::from_secs(modified)),
+                )
+                .map_err(|e| e.to_string())?;
+                let raw = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                facts.push(serde_json::json!({"name":name,"accessed":raw.accessed().ok(),"created":raw.created().ok(),"modified":raw.modified().ok()}));
+            }
+            std::fs::write(
+                root.join("time-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::PerItemStop {
+            for name in ["first.txt", "later.txt"] {
+                std::fs::write(left.join(name), "initial\n").map_err(|e| e.to_string())?;
+            }
+        }
+        if matches!(
+            scenario,
+            Scenario::AllocatedInfo
+                | Scenario::AllocatedSort
+                | Scenario::ListingJson
+                | Scenario::AllocatedSelection
+        ) {
+            std::fs::File::create(left.join("sparse.bin"))
+                .and_then(|file| file.set_len(8 * 1024 * 1024))
+                .map_err(|e| e.to_string())?;
+        }
+        if matches!(
+            scenario,
+            Scenario::AllocatedSort | Scenario::ListingJson | Scenario::AllocatedSelection
+        ) {
+            std::fs::write(left.join("empty.bin"), [])
+                .and_then(|_| std::fs::write(left.join("dense.bin"), vec![7u8; 8192]))
+                .map_err(|e| e.to_string())?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("sparse.bin", left.join("zz-link.bin"))
+                .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::AllocatedSelection {
+            for index in 0..12 {
+                std::fs::write(
+                    left.join(format!("disk-{index:02}.bin")),
+                    vec![7u8; (index + 1) * 16384],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::FileIdentityInfo {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("original.bin"), b"shared bytes\n")
+                .and_then(|_| std::fs::hard_link(left.join("original.bin"), left.join("alias.bin")))
+                .map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("original.bin", left.join("link.bin"))
+                .map_err(|e| e.to_string())?;
+            let facts=["original.bin","alias.bin","link.bin"].into_iter().map(|name|{
+                let metadata=std::fs::symlink_metadata(left.join(name)).map_err(|e|e.to_string())?;
+                Ok(serde_json::json!({"name":name,"device_id":metadata.dev(),"file_id":metadata.ino(),"hard_links":metadata.nlink(),"owner_uid":metadata.uid(),"owner_gid":metadata.gid()}))
+            }).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("identity-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::SymlinkInfo {
+            std::fs::write(right.join("portable.txt"), "portable source\n")
+                .map_err(|e| e.to_string())?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("../right/portable.txt", left.join("link.txt"))
+                .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::SymlinkWorkflow {
+            std::fs::write(left.join("portable.txt"), "portable source\n")
+                .and_then(|_| std::fs::write(right.join("portable.txt"), "occupied destination\n"))
+                .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::ParentSearch {
+            let folder = left.join("scope [literal]");
+            std::fs::create_dir_all(folder.join("nested")).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(left.join("scope [literal]-other"))
+                .map_err(|e| e.to_string())?;
+            for path in [
+                folder.join("child.txt"),
+                folder.join("nested/child.txt"),
+                left.join("scope [literal]-other/child.txt"),
+            ] {
+                std::fs::write(path, "needle").map_err(|e| e.to_string())?;
+            }
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("bundle.zip")).map_err(|e| e.to_string())?,
+            );
+            for name in ["child.txt", "nested/child.txt", "nested/deep/child.txt"] {
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .map_err(|e| e.to_string())?;
+                std::io::Write::write_all(&mut zip, b"needle").map_err(|e| e.to_string())?;
+            }
+            zip.finish().map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::FindSort {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("sort-file10.bin"), vec![7u8; 8192])
+                .map_err(|e| e.to_string())?;
+            std::fs::hard_link(left.join("sort-file10.bin"), left.join("sort-alias.bin"))
+                .map_err(|e| e.to_string())?;
+            std::fs::File::create(left.join("sort-file2.bin"))
+                .and_then(|f| f.set_len(65536))
+                .map_err(|e| e.to_string())?;
+            std::fs::write(left.join("sort-empty.bin"), b"").map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("sort-file10.bin", left.join("sort-link"))
+                .map_err(|e| e.to_string())?;
+            for name in ["sort-file10.bin", "sort-alias.bin"] {
+                std::fs::File::open(left.join(name))
+                    .and_then(|f| {
+                        f.set_times(
+                            std::fs::FileTimes::new().set_modified(
+                                crate::query::parse_absolute_time("2020-01-01").unwrap(),
+                            ),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file("sort-member.bin", zip::write::SimpleFileOptions::default())
+                .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"zipxx").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+            let mut facts = Vec::new();
+            for name in [
+                "sort-file10.bin",
+                "sort-alias.bin",
+                "sort-file2.bin",
+                "sort-empty.bin",
+                "sort-link",
+                "other.zip",
+            ] {
+                let m = std::fs::symlink_metadata(left.join(name)).map_err(|e| e.to_string())?;
+                facts.push(serde_json::json!({"name":name,"size":m.len(),"blocks":m.blocks(),"links":m.nlink(),"regular":m.is_file(),"symlink":m.file_type().is_symlink(),"modified_seconds":m.mtime(),"modified_nanos":m.mtime_nsec()}));
+            }
+            std::fs::write(root.join("sort-facts.json"),serde_json::to_vec_pretty(&serde_json::json!({"facts":facts,"utc_offset_seconds":chrono::Local::now().offset().local_minus_utc()})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        }
+        #[cfg(target_os = "macos")]
+        if scenario == Scenario::TimeGroups {
+            use std::os::macos::fs::MetadataExt;
+            let mut facts = Vec::new();
+            for (name, modified) in [
+                (
+                    "group-old.txt",
+                    crate::query::parse_absolute_time("2020-01-01").unwrap(),
+                ),
+                (
+                    "group-new.txt",
+                    SystemTime::now() + Duration::from_secs(7 * 86400),
+                ),
+            ] {
+                let path = left.join(name);
+                std::fs::write(&path, b"date groups").map_err(|e| e.to_string())?;
+                std::fs::File::open(&path)
+                    .and_then(|f| f.set_times(std::fs::FileTimes::new().set_modified(modified)))
+                    .map_err(|e| e.to_string())?;
+                let m = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                if name == "group-old.txt"
+                    && m.created().map_err(|e| e.to_string())?
+                        > SystemTime::now() - Duration::from_secs(400 * 86400)
+                {
+                    return Err("Old birth fixture was not established".into());
+                }
+                facts.push(serde_json::json!({"name":name,"created_seconds":m.st_birthtime(),"created_nanos":m.st_birthtime_nsec(),"changed_seconds":m.st_ctime(),"changed_nanos":m.st_ctime_nsec(),"modified_seconds":m.st_mtime(),"modified_nanos":m.st_mtime_nsec()}));
+            }
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file("group-member.txt", zip::write::SimpleFileOptions::default())
+                .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"unknown dates").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+            let archive =
+                std::fs::symlink_metadata(left.join("other.zip")).map_err(|e| e.to_string())?;
+            std::fs::write(root.join("group-facts.json"),serde_json::to_vec_pretty(&serde_json::json!({"facts":facts,"utc_offset_seconds":chrono::Local::now().offset().local_minus_utc(),"archive_modified_seconds":archive.st_mtime(),"archive_modified_nanos":archive.st_mtime_nsec()})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::ChangedSearch {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let names = ["status-first.txt", "status-middle.txt", "status-last.txt"];
+            for name in names {
+                let path = left.join(name);
+                std::fs::write(&path, b"status fixture").map_err(|e| e.to_string())?;
+                std::fs::File::open(&path)
+                    .and_then(|f| {
+                        f.set_times(
+                            std::fs::FileTimes::new()
+                                .set_modified(SystemTime::now() + Duration::from_secs(7 * 86400)),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                    .map_err(|e| e.to_string())?;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            let mut facts = Vec::new();
+            let mut dates = Vec::new();
+            for name in names {
+                let path = left.join(name);
+                let before = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| e.to_string())?;
+                let m = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                dates
+                    .push(crate::panel::metadata_change_time(&m).ok_or("Status time unavailable")?);
+                facts.push(serde_json::json!({"name":name,"seconds":m.ctime(),"nanos":m.ctime_nsec(),"before_seconds":before.ctime(),"before_nanos":before.ctime_nsec(),"before_mode":before.mode()&0o7777,"mode":m.mode()&0o7777,"before_modified_seconds":before.mtime(),"before_modified_nanos":before.mtime_nsec(),"modified_seconds":m.mtime(),"modified_nanos":m.mtime_nsec(),"before_size":before.len(),"size":m.len()}));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if !(dates[0] < dates[1] && dates[1] < dates[2]) {
+                return Err("Status-time fixture needs distinct timestamps".into());
+            }
+            let a = chrono::DateTime::<chrono::Utc>::from(dates[0]).to_rfc3339();
+            let b = chrono::DateTime::<chrono::Utc>::from(dates[1]).to_rfc3339();
+            let c = chrono::DateTime::<chrono::Utc>::from(dates[2]).to_rfc3339();
+            let expressions = [
+                format!("name:status- changed-after:{a} changed-before:{c}"),
+                format!("name:status- changed-before:{a}"),
+                format!("name:status- changed-after:{b}"),
+            ];
+            std::fs::write(
+                root.join("changed-facts.json"),
+                serde_json::to_vec_pretty(
+                    &serde_json::json!({"facts":facts,"expressions":expressions}),
+                )
+                .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file(
+                "status-member.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"unknown status time")
+                .map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+        }
+        #[cfg(target_os = "macos")]
+        if scenario == Scenario::CreatedSearch {
+            use std::os::macos::fs::MetadataExt;
+            let mut facts = Vec::new();
+            let mut dates = Vec::new();
+            for name in ["born-first.txt", "born-middle.txt", "born-last.txt"] {
+                let path = left.join(name);
+                std::fs::write(&path, b"birth fixture").map_err(|e| e.to_string())?;
+                std::fs::File::open(&path)
+                    .and_then(|f| {
+                        f.set_times(
+                            std::fs::FileTimes::new()
+                                .set_modified(SystemTime::now() + Duration::from_secs(7 * 86400)),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                let m = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                let born = m.created().map_err(|e| e.to_string())?;
+                dates.push(born);
+                facts.push(serde_json::json!({"name":name,"seconds":m.st_birthtime(),"nanos":m.st_birthtime_nsec(),"modified_seconds":m.st_mtime()}));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if !(dates[0] < dates[1] && dates[1] < dates[2]) {
+                return Err("Birth-time fixture needs three distinct timestamps".into());
+            }
+            let a = chrono::DateTime::<chrono::Utc>::from(dates[0]).to_rfc3339();
+            let b = chrono::DateTime::<chrono::Utc>::from(dates[1]).to_rfc3339();
+            let c = chrono::DateTime::<chrono::Utc>::from(dates[2]).to_rfc3339();
+            let expressions = [
+                format!("name:born- created-after:{a} created-before:{c}"),
+                format!("name:born- created-before:{a}"),
+                format!("name:born- created-after:{b}"),
+            ];
+            std::fs::write(
+                root.join("created-facts.json"),
+                serde_json::to_vec_pretty(
+                    &serde_json::json!({"facts":facts,"expressions":expressions}),
+                )
+                .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file("born-member.txt", zip::write::SimpleFileOptions::default())
+                .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"unknown birth").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::AccessedSearch {
+            use std::os::unix::fs::MetadataExt;
+            for (name, value) in [
+                ("access-early.txt", "2026-01-01T00:00:00.1Z"),
+                ("access-middle.txt", "2026-01-01T00:00:00.5Z"),
+                ("access-late.txt", "2026-01-01T00:00:00.9Z"),
+                ("access-pre.txt", "1969-12-31T23:59:59.5Z"),
+            ] {
+                let path = left.join(name);
+                std::fs::write(&path, b"access fixture").map_err(|e| e.to_string())?;
+                std::fs::File::open(&path)
+                    .and_then(|f| {
+                        f.set_times(
+                            std::fs::FileTimes::new()
+                                .set_accessed(crate::query::parse_absolute_time(value).unwrap())
+                                .set_modified(
+                                    crate::query::parse_absolute_time("2020-01-01").unwrap(),
+                                ),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file(
+                "access-member.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"unknown access").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+            let facts=["access-early.txt","access-middle.txt","access-late.txt","access-pre.txt"].into_iter().map(|name|{let m=std::fs::symlink_metadata(left.join(name)).map_err(|e|e.to_string())?;Ok(serde_json::json!({"name":name,"seconds":m.atime(),"nanos":m.atime_nsec(),"modified_seconds":m.mtime()}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("accessed-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::AllocationSearch {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("disk-empty"), []).map_err(|e| e.to_string())?;
+            std::fs::File::create(left.join("disk-sparse"))
+                .and_then(|f| f.set_len(8 * 1024 * 1024))
+                .map_err(|e| e.to_string())?;
+            std::fs::write(left.join("disk-dense"), vec![7u8; 8192]).map_err(|e| e.to_string())?;
+            std::fs::create_dir(left.join("disk-folder")).map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("disk-dense", left.join("disk-link"))
+                .map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file("disk-member", zip::write::SimpleFileOptions::default())
+                .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"archive allocation is unknown\n")
+                .map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+            let facts=["disk-empty","disk-sparse","disk-dense"].into_iter().map(|name|{let m=std::fs::symlink_metadata(left.join(name)).map_err(|e|e.to_string())?;Ok(serde_json::json!({"name":name,"logical":m.len(),"allocated":m.blocks().checked_mul(512)}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("allocation-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::LinksSearch {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("link-original.txt"), b"needle\n")
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(left.join("nested/deep")).map_err(|e| e.to_string())?;
+            for name in ["nested/link-alias.txt", "nested/deep/link-third.txt"] {
+                std::fs::hard_link(left.join("link-original.txt"), left.join(name))
+                    .map_err(|e| e.to_string())?;
+            }
+            std::fs::write(left.join("link-copy.txt"), b"needle\n").map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("link-original.txt", left.join("link-symlink.txt"))
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir(left.join("link-folder")).map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file("link-member.txt", zip::write::SimpleFileOptions::default())
+                .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"needle\n").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+            let facts=["link-original.txt","nested/link-alias.txt","nested/deep/link-third.txt","link-copy.txt","link-symlink.txt","link-folder","other.zip"].into_iter().map(|path|{let m=std::fs::symlink_metadata(left.join(path)).map_err(|e|e.to_string())?;Ok(serde_json::json!({"path":path,"nlink":m.nlink(),"device":m.dev(),"inode":m.ino(),"regular":m.is_file(),"symlink":m.file_type().is_symlink(),"directory":m.is_dir()}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("links-facts.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({"root":left,"facts":facts}))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let reference = std::process::Command::new("/usr/bin/find")
+                .arg(&left)
+                .args(["-type", "f", "-links", "+1", "-name", "link-*", "-print0"])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !reference.status.success() {
+                return Err("independent find -links reference failed".into());
+            }
+            std::fs::write(root.join("links-find-reference.bin"), reference.stdout)
+                .map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::IdentityFind {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("identity-original.txt"), "same bytes")
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir(left.join("nested")).map_err(|e| e.to_string())?;
+            std::fs::hard_link(
+                left.join("identity-original.txt"),
+                left.join("nested/identity-alias.txt"),
+            )
+            .map_err(|e| e.to_string())?;
+            std::fs::write(left.join("identity-copy.txt"), "same bytes")
+                .map_err(|e| e.to_string())?;
+            std::os::unix::fs::symlink("identity-original.txt", left.join("identity-link.txt"))
+                .map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("other.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file(
+                "identity-member.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"same bytes").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+            let facts=["identity-original.txt","nested/identity-alias.txt","identity-copy.txt","identity-link.txt"].into_iter().map(|path|{let m=std::fs::symlink_metadata(left.join(path)).map_err(|e|e.to_string())?;Ok(serde_json::json!({"path":path,"device":m.dev(),"inode":m.ino(),"symlink":m.file_type().is_symlink()}))}).collect::<Result<Vec<_>,String>>()?;
+            std::fs::write(
+                root.join("identity-facts.json"),
+                serde_json::to_vec_pretty(&facts).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::OwnerSearch {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::write(left.join("owned-native.txt"), "native owner needle\n")
+                .map_err(|e| e.to_string())?;
+            let meta = std::fs::symlink_metadata(left.join("owned-native.txt"))
+                .map_err(|e| e.to_string())?;
+            std::fs::write(
+                root.join("owner-facts.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({"uid":meta.uid(),"gid":meta.gid()}))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut tar = tar::Builder::new(
+                std::fs::File::create(left.join("owners.tar")).map_err(|e| e.to_string())?,
+            );
+            for (name, uid, gid) in [
+                ("owned-alpha.txt", 424242, 606060),
+                ("owned-beta.txt", 424243, 606061),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(7);
+                header.set_mode(0o644);
+                header.set_uid(uid);
+                header.set_gid(gid);
+                header.set_cksum();
+                tar.append_data(&mut header, name, &b"needle\n"[..])
+                    .map_err(|e| e.to_string())?;
+            }
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_uid(424242);
+            header.set_gid(606060);
+            header.set_entry_type(tar::EntryType::Symlink);
+            tar.append_link(&mut header, "owned-link", "owned-beta.txt")
+                .map_err(|e| e.to_string())?;
+            tar.finish().map_err(|e| e.to_string())?;
+            let mut zip = zip::ZipWriter::new(
+                std::fs::File::create(left.join("owners.zip")).map_err(|e| e.to_string())?,
+            );
+            zip.start_file(
+                "owned-unknown.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut zip, b"needle\n").map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::BrokenLinkSearch {
+            std::fs::write(left.join("target.txt"), "existing target\n")
+                .map_err(|e| e.to_string())?;
+            for (name, target) in [
+                ("broken.lnk", "missing-target"),
+                ("chain.lnk", "broken.lnk"),
+                ("notdir.lnk", "target.txt/child"),
+                ("valid.lnk", "target.txt"),
+                ("directory.lnk", "Design"),
+                ("loop.lnk", "loop.lnk"),
+            ] {
+                std::os::unix::fs::symlink(target, left.join(name)).map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::DiffSwap {
+            std::fs::write(
+                left.join("diff.txt"),
+                "HEAD  a\r\nsame\nleft one\nleft two\nend",
+            )
+            .and_then(|_| std::fs::write(right.join("diff.txt"), "head a\r\nsame\nright\nend\n"))
+            .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::DiffIntraline {
+            std::fs::write(
+                left.join("diff.txt"),
+                "header\nlet color = red; let size = 12;\nunchanged\nremoved only\nend\n",
+            )
+            .and_then(|_| {
+                std::fs::write(
+                    right.join("diff.txt"),
+                    "header\nlet color = blue; let size = 13;\nunchanged\nend\n",
+                )
+            })
+            .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::DiffOptions {
+            std::fs::write(
+                left.join("diff.txt"),
+                "alpha  beta\nSAME\nk e p t\r\nx\tz\nold\nend\n",
+            )
+            .and_then(|_| {
+                std::fs::write(
+                    right.join("diff.txt"),
+                    "alpha beta\nsame\nkept\nx       z\nnew\nend\n",
+                )
+            })
+            .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::DiffNavigation {
+            std::fs::write(left.join("diff.txt"), diff_fixture_text(false))
+                .and_then(|_| std::fs::write(right.join("diff.txt"), diff_fixture_text(true)))
+                .map_err(|error| error.to_string())?;
+        }
         let long_name = "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt";
         for (path, contents) in [
             (left.join("README.txt"), "Commander visual QA fixture\n"),
@@ -474,6 +1889,14 @@ impl Fixture {
         ] {
             std::fs::write(path, contents)
                 .map_err(|error| format!("could not write QA fixture: {error}"))?;
+        }
+        if let Some((name, format, with_exif)) = scenario.image_info_fixture() {
+            let bytes = if format == "jpeg" {
+                crate::image_metadata::fixture()
+            } else {
+                crate::image_metadata::container_fixture(format, with_exif)
+            };
+            std::fs::write(left.join(name), bytes).map_err(|e| e.to_string())?;
         }
         if matches!(scenario, Scenario::IconsGrid | Scenario::ImagePreview) {
             let (width, height) = if scenario == Scenario::ImagePreview {
@@ -504,7 +1927,61 @@ impl Fixture {
             for offset in [4094, 65534] {
                 data[offset..offset + 4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
             }
+            for offset in [8190, 70000] {
+                let text = "Привет🌍".as_bytes();
+                data[offset..offset + text.len()].copy_from_slice(text);
+            }
+            for (mode, offsets) in [
+                (crate::hex_search::InputMode::Utf16Le, [90001, 100001]),
+                (crate::hex_search::InputMode::Utf16Be, [110001, 120001]),
+            ] {
+                let text = mode.parse("Привет🌍").unwrap();
+                for offset in offsets {
+                    data[offset..offset + text.len()].copy_from_slice(&text);
+                }
+            }
             std::fs::write(left.join("bytes.bin"), data).map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::HexBomEncoding {
+            let mut bytes = vec![0xfe, 0xff];
+            bytes.extend("Привет".encode_utf16().flat_map(u16::to_be_bytes));
+            std::fs::write(left.join("bytes.bin"), bytes).map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::HexUtf16Encoding {
+            let bytes: Vec<_> = "AПривет🌍Z"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            std::fs::write(left.join("bytes.bin"), bytes).map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::HexUtf8Encoding {
+            std::fs::write(left.join("bytes.bin"), "AПривет🌍Z")
+                .map_err(|error| error.to_string())?;
+        }
+        if matches!(
+            scenario,
+            Scenario::HexCharacterEncoding | Scenario::HexCharacterKeys
+        ) {
+            std::fs::write(left.join("bytes.bin"), [0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2])
+                .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::HexRepeatSearch {
+            std::fs::write(
+                left.join("bytes.bin"),
+                [0, 0xde, 0xad, 0xbe, 0xef, 0, 0xde, 0xad, 0xbe, 0xef, 0],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::HexMatchCopy {
+            std::fs::write(left.join("bytes.bin"), [0, 0xde, 0xad, 0xbe, 0xef, 0])
+                .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::HexAlignment {
+            std::fs::write(
+                left.join("bytes.bin"),
+                (0..4097).map(|i| i as u8).collect::<Vec<_>>(),
+            )
+            .map_err(|error| error.to_string())?;
         }
         if scenario == Scenario::HexPreview {
             std::fs::write(
@@ -512,6 +1989,23 @@ impl Fixture {
                 (0..8197).map(|index| index as u8).collect::<Vec<_>>(),
             )
             .map_err(|error| error.to_string())?;
+        }
+        if matches!(
+            scenario,
+            Scenario::Favorites | Scenario::FavoriteImport | Scenario::FavoritePicker
+        ) {
+            std::fs::write(left.join("Design/keep.txt"), b"favorite fixture\n")
+                .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::MillerBrowser {
+            std::fs::create_dir_all(left.join("column-A/inner")).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(left.join("column-B")).map_err(|e| e.to_string())?;
+            std::fs::write(left.join("column-A/a.txt"), "Miller A owner\n")
+                .map_err(|e| e.to_string())?;
+            std::fs::write(left.join("column-A/inner/leaf.txt"), "Miller inner owner\n")
+                .map_err(|e| e.to_string())?;
+            std::fs::write(left.join("column-B/a.txt"), "Miller B owner\n")
+                .map_err(|e| e.to_string())?;
         }
         if scenario == Scenario::FolderTabs {
             std::fs::write(
@@ -528,12 +2022,286 @@ impl Fixture {
             std::fs::write(left.join("item.txt"), "original bytes")
                 .map_err(|error| error.to_string())?;
         }
+        if matches!(
+            scenario,
+            Scenario::DiskTreeFilter
+                | Scenario::DiskUsageExport
+                | Scenario::DiskAllocation
+                | Scenario::DiskCount
+        ) {
+            for (name, bytes) in [
+                ("alpha/shared/target-one/a.bin", 10),
+                ("alpha/other/b.bin", 20),
+                ("beta/shared/target-two/c.bin", 30),
+                ("beta/other/d.bin", 40),
+                ("gamma/unrelated/e.bin", 50),
+            ] {
+                let path = left.join(name);
+                std::fs::create_dir_all(path.parent().unwrap())
+                    .map_err(|error| error.to_string())?;
+                std::fs::write(path, vec![b'd'; bytes]).map_err(|error| error.to_string())?;
+            }
+        }
+        if matches!(scenario, Scenario::DiskAllocation | Scenario::DiskCount) {
+            std::fs::create_dir_all(left.join("sparse")).map_err(|e| e.to_string())?;
+            std::fs::write(left.join("sparse/readme.txt"), b"allocation fixture")
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(left.join("sparse/inner")).map_err(|e| e.to_string())?;
+            std::fs::File::create(left.join("sparse/inner/large.bin"))
+                .and_then(|f| f.set_len(32 * 1024 * 1024))
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(left.join("dense/inner")).map_err(|e| e.to_string())?;
+            std::fs::write(left.join("dense/direct.bin"), vec![7u8; 8192])
+                .map_err(|e| e.to_string())?;
+            std::fs::write(left.join("dense/inner/data.bin"), vec![8u8; 8192])
+                .map_err(|e| e.to_string())?;
+            std::fs::hard_link(
+                left.join("dense/inner/data.bin"),
+                left.join("dense/inner/alias.bin"),
+            )
+            .map_err(|e| e.to_string())?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("dense/direct.bin", left.join("data-link"))
+                .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::DiskCount {
+            std::fs::create_dir_all(left.join("many")).map_err(|e| e.to_string())?;
+            for i in 0..10 {
+                std::fs::write(left.join(format!("many/empty-{i}")), b"")
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::ChecksumList {
+            for (name, content) in [
+                ("verify-good.txt", "abc"),
+                ("nested/verify-good.txt", "abc"),
+                ("verify-bad.txt", "changed"),
+            ] {
+                let path = left.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+                std::fs::write(path, content).map_err(|e| e.to_string())?;
+            }
+            let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+            let list = [
+                "verify-good.txt",
+                "nested/verify-good.txt",
+                "verify-bad.txt",
+                "verify-missing.txt",
+            ]
+            .iter()
+            .map(|name| format!("SHA256 (./{name}) = {hash}\n"))
+            .collect::<String>();
+            std::fs::write(left.join("verify.checksums"), list).map_err(|e| e.to_string())?;
+        }
+        if matches!(
+            scenario,
+            Scenario::DuplicateRoots | Scenario::DuplicateCross
+        ) {
+            for folder in [&left, &right] {
+                std::fs::create_dir_all(folder.join("nested")).map_err(|e| e.to_string())?;
+                std::fs::write(folder.join("cross.bin"), "cross dupe\n")
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(folder.join("nested/deep.bin"), "nested dupe\n")
+                    .map_err(|e| e.to_string())?;
+            }
+            for name in ["own-1.bin", "own-2.bin"] {
+                std::fs::write(left.join(name), "local dupe\n").map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::DuplicateCopies {
+            std::fs::create_dir_all(left.join("nested")).map_err(|e| e.to_string())?;
+            std::fs::write(left.join("nested/z-extra.bin"), [b'L'; 64])
+                .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::DuplicateDepth {
+            std::fs::create_dir_all(left.join("one/two")).map_err(|e| e.to_string())?;
+            for name in ["a.dat", "b.dat", "one/c.dat", "one/two/d.dat"] {
+                std::fs::write(left.join(name), "depth dupe\n").map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::DuplicateRelative {
+            std::fs::write(right.join("release.zip"), b"relative unique zip\n")
+                .map_err(|e| e.to_string())?;
+            for (side, name) in RELATIVE_PATHS {
+                let base = if side == "left" { &left } else { &right };
+                let path = base.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+                std::fs::write(
+                    path,
+                    if name.ends_with("unique.bin") {
+                        b"relative noncopy\n"
+                    } else {
+                        b"relative content\n"
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::DuplicateComponents {
+            for name in [
+                "A/album/report.txt",
+                "B/album/report.txt",
+                "C/Album/REPORT.TXT",
+                "D/other/report.bin",
+                "E/other/another.bin",
+                "F/third/unique.txt",
+            ] {
+                let path = left.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+                std::fs::write(
+                    path,
+                    if name.ends_with("unique.txt") {
+                        b"other-data!"
+                    } else {
+                        b"same-data!!"
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::DuplicateExtensions {
+            for name in [
+                "one.txt",
+                "two.txt",
+                "three.TXT",
+                "one.bin",
+                "two.bin",
+                "bare-a",
+                "bare-b",
+            ] {
+                std::fs::write(left.join(name), b"extension duplicate\n")
+                    .map_err(|e| e.to_string())?;
+            }
+            std::fs::write(left.join("unique.txt"), b"different content!!\n")
+                .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::DuplicateNames {
+            std::fs::create_dir_all(left.join("nested")).map_err(|e| e.to_string())?;
+            for name in [
+                "one.JPG",
+                "two.jpg",
+                "skip.jpg",
+                "note.txt",
+                "nested/three.jpg",
+                "nested/skip.jpg",
+            ] {
+                std::fs::write(left.join(name), "named dupe\n").map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::DuplicateRecursive {
+            let now = std::time::SystemTime::now();
+            for (name, age) in [
+                ("original.bin", 7200),
+                ("nested/copy.bin", 3600),
+                (".hidden/deep/copy.bin", 60),
+            ] {
+                let path = left.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+                std::fs::write(&path, b"recursive duplicate\n").map_err(|e| e.to_string())?;
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(now - std::time::Duration::from_secs(age)))
+                    .map_err(|e| e.to_string())?;
+            }
+            #[cfg(unix)]
+            {
+                std::fs::hard_link(
+                    left.join("original.bin"),
+                    left.join("nested/zz-hardlink.bin"),
+                )
+                .map_err(|e| e.to_string())?;
+                std::os::unix::fs::symlink(&left, left.join("loop-link"))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if matches!(
+            scenario,
+            Scenario::DuplicateSort
+                | Scenario::DuplicateSizes
+                | Scenario::DuplicateCopies
+                | Scenario::DuplicateReport
+        ) {
+            for name in ["a1.bin", "a2.bin", "a3.bin"] {
+                std::fs::write(left.join(name), [b's'; 10]).map_err(|error| error.to_string())?;
+            }
+            for name in ["z.bin", "z-long-copy.bin"] {
+                std::fs::write(left.join(name), [b'L'; 64]).map_err(|error| error.to_string())?;
+            }
+        }
+        if scenario == Scenario::DuplicateRanking {
+            for name in RANKING_PATHS {
+                let path = left.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+                std::fs::write(
+                    path,
+                    if name == "unique-same-size.bin" {
+                        b"another-content!!\n"
+                    } else {
+                        b"ranking duplicate\n"
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::DuplicatePolicy {
+            let now = std::time::SystemTime::now();
+            for (name, age) in [
+                ("a.bin", 7200),
+                ("middle.bin", 3600),
+                ("newest-copy.bin", 60),
+            ] {
+                let path = left.join(name);
+                std::fs::write(&path, b"duplicate policy fixture\n")
+                    .map_err(|error| error.to_string())?;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .and_then(|file| {
+                        file.set_times(
+                            std::fs::FileTimes::new().set_modified(now - Duration::from_secs(age)),
+                        )
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         if scenario == Scenario::Checksums {
             std::fs::write(left.join("checksum.txt"), "abc").map_err(|error| error.to_string())?;
         }
-        if scenario == Scenario::PdfPreview {
+        if matches!(
+            scenario,
+            Scenario::PdfPreview | Scenario::PdfSearch | Scenario::PdfRegex
+        ) {
             std::fs::write(left.join("preview.pdf"), crate::pdf_preview::fixture())
                 .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::TablePreview {
+            std::fs::write(
+                left.join("preview.csv"),
+                "Name,Count\nfile10,2\nfile2,10\nfile2,1\nёж,3\n",
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::CustomNavigation {
+            for n in 0..10 {
+                std::fs::write(left.join(format!("nav{n:02}.txt")), "navigation fixture")
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::CustomShortcuts {
+            std::fs::write(left.join(".shortcut-hidden.txt"), "hidden fixture")
+                .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::KmlPreview {
+            std::fs::write(
+                left.join("preview.kml"),
+                crate::route_preview::kml_fixture(),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if scenario == Scenario::GpxPreview {
+            std::fs::write(left.join("preview.gpx"), crate::route_preview::fixture())
+                .map_err(|e| e.to_string())?;
         }
         if scenario == Scenario::JsonPreview {
             std::fs::write(left.join("preview.json"), r#"{"z":9007199254740993123456789,"message":"café / ёж","nested":{"message":"second"},"z":-0.00e+007}"#).map_err(|error| error.to_string())?;
@@ -542,6 +2310,45 @@ impl Fixture {
             std::fs::write(
                 left.join("regex.txt"),
                 "item-12\nITEM-34\nxitem-56\n[abc]\n",
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::RtfPreview {
+            std::fs::write(left.join("preview.rtf"), crate::rtf_preview::fixture())
+                .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::FictionbookPreview {
+            std::fs::write(
+                left.join("preview.fb2"),
+                crate::fictionbook_preview::fixture(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if scenario == Scenario::EpubPreview {
+            std::fs::write(left.join("preview.epub"), crate::epub_preview::fixture())
+                .map_err(|error| error.to_string())?;
+        }
+        if matches!(scenario, Scenario::PptxPreview | Scenario::OdpPreview) {
+            let pptx = scenario == Scenario::PptxPreview;
+            std::fs::write(
+                left.join(if pptx { "preview.pptx" } else { "preview.odp" }),
+                crate::presentation_preview::fixture(pptx),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if matches!(scenario, Scenario::XlsxPreview | Scenario::OdsPreview) {
+            let xlsx = scenario == Scenario::XlsxPreview;
+            std::fs::write(
+                left.join(if xlsx { "preview.xlsx" } else { "preview.ods" }),
+                crate::spreadsheet_preview::fixture(xlsx),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        if matches!(scenario, Scenario::DocxPreview | Scenario::OdtPreview) {
+            let docx = scenario == Scenario::DocxPreview;
+            std::fs::write(
+                left.join(if docx { "preview.docx" } else { "preview.odt" }),
+                crate::office_preview::fixture(docx),
             )
             .map_err(|error| error.to_string())?;
         }
@@ -565,10 +2372,9 @@ fn main() {
             std::fs::write(left.join("preview.rs"), code)
                 .map_err(|error| format!("could not create code fixture: {error}"))?;
         }
-        if scenario == Scenario::ArchiveBrowser {
+        if scenario.archive_kind().is_some() {
             let create_archive = || -> std::io::Result<()> {
-                let file = std::fs::File::create(left.join("sample.tar"))?;
-                let mut builder = tar::Builder::new(file);
+                let mut builder = tar::Builder::new(Vec::new());
                 for (name, bytes) in [
                     (
                         "docs/notes.txt",
@@ -588,9 +2394,88 @@ fn main() {
                     header.set_cksum();
                     builder.append_data(&mut header, name, bytes)?;
                 }
-                builder.finish()
+                if scenario == Scenario::ArchiveBrowser {
+                    let mut header = tar::Header::new_gnu();
+                    header.set_size(6);
+                    header.set_mode(0o644);
+                    header.set_mtime(37);
+                    header.set_cksum();
+                    builder.append_data(
+                        &mut header,
+                        "src/.cache/secret.txt",
+                        b"hidden".as_slice(),
+                    )?;
+                }
+                let bytes = builder.into_inner()?;
+                std::fs::write(
+                    left.join(scenario.archive_name()),
+                    crate::archive::encode_tar_fixture(scenario.archive_kind().unwrap(), &bytes)?,
+                )
             };
             create_archive().map_err(|error| format!("could not create TAR fixture: {error}"))?;
+        }
+        #[cfg(unix)]
+        if scenario == Scenario::SyncContents {
+            for (name, a, b) in [
+                ("same-stat.bin", "aaaa", "bbbb"),
+                ("same-bytes.txt", "same payload", "same payload"),
+                ("different-size.txt", "x", "long"),
+            ] {
+                for (dir, bytes) in [(&left, a), (&right, b)] {
+                    let path = dir.join(name);
+                    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                    let date = if name == "same-bytes.txt" && dir == &left {
+                        "2022-01-01"
+                    } else {
+                        "2020-01-01"
+                    };
+                    std::fs::File::open(path)
+                        .and_then(|f| {
+                            f.set_times(
+                                std::fs::FileTimes::new()
+                                    .set_modified(crate::query::parse_absolute_time(date).unwrap()),
+                            )
+                        })
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            for dir in [&left, &right] {
+                std::os::unix::fs::symlink("same-bytes.txt", dir.join("unverified.lnk"))
+                    .map_err(|e| e.to_string())?;
+                std::fs::create_dir(dir.join("paired-folder"))
+                    .and_then(|_| {
+                        std::fs::write(
+                            dir.join("paired-folder/child"),
+                            if dir == &left {
+                                "left child"
+                            } else {
+                                "right child"
+                            },
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if scenario == Scenario::Timestamps {
+            for (name, modified) in [
+                ("times-a.txt", "2020-01-01"),
+                ("times-b.txt", "2021-01-01"),
+                ("times-untouched.txt", "1999-01-01"),
+            ] {
+                let path = left.join(name);
+                std::fs::write(&path, b"timestamp fixture\n").map_err(|e| e.to_string())?;
+                std::fs::File::open(path)
+                    .and_then(|f| {
+                        f.set_times(
+                            std::fs::FileTimes::new()
+                                .set_modified(crate::query::parse_absolute_time(modified).unwrap())
+                                .set_accessed(
+                                    crate::query::parse_absolute_time("2022-01-01").unwrap(),
+                                ),
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
         }
         if scenario == Scenario::Permissions {
             let path = left.join("permissions.txt");
@@ -951,20 +2836,70 @@ struct VisualQaApp {
     capture_probes: HashMap<u64, ProbeSnapshot>,
     confirmation_requested: bool,
     pane_tool_opened: bool,
+    sync_review_phase: u8,
+    sync_contents_phase: u8,
+    sync_contents_input_at: Instant,
+    diff_navigation_phase: u8,
+    diff_options_phase: u8,
+    diff_options_input_at: Instant,
+    diff_intraline_phase: u8,
+    diff_swap_phase: u8,
+    symlink_phase: u8,
+    symlink_info_phase: u8,
+    sync_review_baseline: Option<Vec<crate::sync::SyncAction>>,
     pdf_click_phase: u8,
     image_click_phase: u8,
     checksum_click_phase: u8,
+    checksum_list_phase: u8,
+    favorite_phase: u8,
+    favorite_import_phase: u8,
+    favorite_picker_phase: u8,
+    template_browser_phase: u8,
+    per_item_stop_phase: u8,
+    disk_tree_phase: u8,
+    disk_export_phase: u8,
+    disk_export_first_json: Option<String>,
+    duplicate_phase: u8,
+    duplicate_sort_phase: u8,
+    duplicate_recursive_phase: u8,
+    duplicate_sizes_phase: u8,
+    duplicate_names_phase: u8,
+    duplicate_depth_phase: u8,
+    duplicate_copies_phase: u8,
+    duplicate_report_phase: u8,
+    duplicate_roots_phase: u8,
+    duplicate_cross_phase: u8,
     hex_click_phase: u8,
     hex_search_phase: u8,
+    hex_verified_before_close: bool,
+    hex_clear_verified: bool,
+    hex_pointer_target: Option<(egui::Id, egui::Rect, Instant)>,
     regex_click_phase: u8,
     text_size_click_phase: u8,
     tab_group_phase: u8,
+    search_results_phase: u8,
+    broken_link_phase: u8,
+    owner_search_phase: u8,
+    allocation_search_phase: u8,
+    search_json_phase: u8,
+    timestamp_phase: u8,
+    timestamp_input_at: Instant,
+    search_results_wait: u8,
+    search_restore_retries: u8,
     selection_groups_applied: bool,
     name_list_phase: u8,
     json_mode_phase: u8,
+    table_phase: u8,
+    archive_copy_phase: u8,
+    archive_copy_settle: u8,
     preset_click_phase: u8,
     rename_target_phase: u8,
     rename_options_phase: u8,
+    rename_range_phase: u8,
+    rename_insert_phase: u8,
+    rename_character_phase: u8,
+    rename_letter_phase: u8,
+    rename_keep_phase: u8,
     last_probe_summary: String,
     pending_screenshot: Option<(u64, Arc<ColorImage>)>,
     pending_event_error: Option<String>,
@@ -1019,6 +2954,95 @@ impl VisualQaApp {
             Arc::new(FakeTrash(Arc::clone(&counters))),
             Arc::new(FakeFreeSpace(Arc::clone(&counters))),
         );
+        if matches!(
+            scenario,
+            Scenario::TemplateBrowser | Scenario::PerItemCommand
+        ) {
+            use crate::cmdtemplate::{Template, Templates};
+            inner.command_templates = Some(Templates {
+                items: vec![
+                    Template {
+                        name: "Архив ZIP".into(),
+                        raw: if scenario == Scenario::PerItemCommand {
+                            "pwd; printf '%s\\n' {names}".into()
+                        } else {
+                            "unzip {paths}".into()
+                        },
+                        exts: vec!["zip".into()],
+                        require_all: false,
+                        working_dir: if scenario == Scenario::PerItemCommand {
+                            crate::cmdtemplate::WorkingDirectory::OtherPane
+                        } else {
+                            Default::default()
+                        },
+                        execution: if scenario == Scenario::PerItemCommand {
+                            crate::cmdtemplate::ExecutionMode::PerItemContinue
+                        } else {
+                            Default::default()
+                        },
+                        kind: if scenario == Scenario::PerItemCommand {
+                            crate::cmdtemplate::InputKind::Any
+                        } else {
+                            crate::cmdtemplate::InputKind::Files
+                        },
+                        limits: Default::default(),
+                    },
+                    Template {
+                        name: "Notes".into(),
+                        raw: "wc -l {paths}".into(),
+                        exts: vec!["md".into()],
+                        require_all: false,
+                        working_dir: Default::default(),
+                        execution: Default::default(),
+                        kind: Default::default(),
+                        limits: Default::default(),
+                    },
+                    Template {
+                        name: "Inspect".into(),
+                        raw: "file {paths}".into(),
+                        exts: vec![],
+                        require_all: false,
+                        working_dir: Default::default(),
+                        execution: Default::default(),
+                        kind: Default::default(),
+                        limits: Default::default(),
+                    },
+                ],
+            });
+        }
+        if scenario == Scenario::FavoritePicker {
+            for index in 0..150 {
+                inner.ws.bookmarks.add(
+                    format!("Place {index}"),
+                    fixture.left.join(format!("unused-{index}")),
+                );
+            }
+            inner
+                .ws
+                .bookmarks
+                .add("Проект GTK", fixture.left.join("Design"));
+            inner
+                .ws
+                .bookmarks
+                .assign_slot(&fixture.left.join("Design"), 7);
+            inner.ws.bookmarks.add("RootHere", fixture.left.clone());
+        }
+        if scenario == Scenario::FavoriteImport {
+            inner
+                .ws
+                .bookmarks
+                .add("Existing Workspace", fixture.left.clone());
+            inner.ws.bookmarks.assign_slot(&fixture.left, 3);
+        }
+        if scenario == Scenario::Favorites {
+            inner.ws.bookmarks.add("Workspace", fixture.left.clone());
+            inner.ws.bookmarks.assign_slot(&fixture.left, 3);
+            inner.ws.bookmarks.add("Other", fixture.right.clone());
+            inner
+                .ws
+                .bookmarks
+                .add("Design", fixture.left.join("Design"));
+        }
         if scenario == Scenario::FolderTabs {
             let opened_design = inner.ws.new_tab(
                 crate::workspace::ActivePanel::Left,
@@ -1049,6 +3073,22 @@ impl VisualQaApp {
                 ));
             }
         }
+        if scenario == Scenario::TabPathLabels {
+            use crate::workspace::ActivePanel;
+            if !inner
+                .ws
+                .new_background_tab(ActivePanel::Left, fixture.left.join("Design"))
+                || !inner.ws.set_tab_title(ActivePanel::Left, 1, "Work")
+                || !inner
+                    .ws
+                    .set_tab_close_protection(ActivePanel::Left, 1, true)
+            {
+                return Err(VisualQaCreationError::Setup(
+                    "could not prepare background labeled tab".into(),
+                ));
+            }
+            inner.ws.active = ActivePanel::Right;
+        }
         if scenario == Scenario::IconsGrid {
             inner
                 .ws
@@ -1072,25 +3112,1286 @@ impl VisualQaApp {
             capture_probes: HashMap::new(),
             confirmation_requested: false,
             pane_tool_opened: false,
+            sync_review_phase: 0,
+            sync_contents_phase: 0,
+            sync_contents_input_at: Instant::now(),
+            diff_navigation_phase: 0,
+            diff_options_phase: 0,
+            diff_options_input_at: Instant::now(),
+            diff_intraline_phase: 0,
+            diff_swap_phase: 0,
+            symlink_phase: 0,
+            symlink_info_phase: 0,
+            sync_review_baseline: None,
             pdf_click_phase: 0,
             image_click_phase: 0,
             checksum_click_phase: 0,
+            checksum_list_phase: 0,
+            favorite_phase: 0,
+            favorite_import_phase: 0,
+            favorite_picker_phase: 0,
+            template_browser_phase: 0,
+            per_item_stop_phase: 0,
+            disk_tree_phase: 0,
+            disk_export_phase: 0,
+            disk_export_first_json: None,
+            duplicate_phase: 0,
+            duplicate_sort_phase: 0,
+            duplicate_recursive_phase: 0,
+            duplicate_sizes_phase: 0,
+            duplicate_names_phase: 0,
+            duplicate_depth_phase: 0,
+            duplicate_copies_phase: 0,
+            duplicate_report_phase: 0,
+            duplicate_roots_phase: 0,
+            duplicate_cross_phase: 0,
             hex_click_phase: 0,
             hex_search_phase: 0,
+            hex_verified_before_close: false,
+            hex_clear_verified: false,
+            hex_pointer_target: None,
             regex_click_phase: 0,
             text_size_click_phase: 0,
             tab_group_phase: 0,
+            search_results_phase: 0,
+            broken_link_phase: 0,
+            owner_search_phase: 0,
+            allocation_search_phase: 0,
+            search_json_phase: 0,
+            timestamp_phase: 0,
+            timestamp_input_at: Instant::now(),
+            search_results_wait: 0,
+            search_restore_retries: 0,
             selection_groups_applied: false,
             name_list_phase: 0,
             json_mode_phase: 0,
+            table_phase: 0,
+            archive_copy_phase: 0,
+            archive_copy_settle: 0,
             preset_click_phase: 0,
             rename_target_phase: 0,
             rename_options_phase: 0,
+            rename_range_phase: 0,
+            rename_insert_phase: 0,
+            rename_character_phase: 0,
+            rename_letter_phase: 0,
+            rename_keep_phase: 0,
             last_probe_summary: "no rendered frame yet".to_string(),
             pending_screenshot: None,
             pending_event_error: None,
             renderer,
         })
+    }
+
+    fn parent_search_expressions(&self) -> [String; 3] {
+        let parent = |path: PathBuf| {
+            crate::query::Query {
+                predicates: vec![crate::query::Predicate::Parent(
+                    path.to_string_lossy().into_owned(),
+                )],
+                mode: crate::query::MatchMode::Exact,
+            }
+            .to_expression()
+        };
+        [
+            parent(self.fixture.left.join("scope [literal]")),
+            format!(
+                "{} content:needle type:regular",
+                parent(self.fixture.left.join("scope [literal]"))
+            ),
+            parent(crate::archive::virtual_member_path(
+                &self.fixture.left.join("bundle.zip"),
+                Path::new("nested"),
+            )),
+        ]
+    }
+
+    fn hex_target_settled(&mut self, id: egui::Id, rect: egui::Rect) -> bool {
+        if let Some((old_id, old_rect, since)) = self.hex_pointer_target
+            && old_id == id
+            && old_rect == rect
+        {
+            return since.elapsed() >= Duration::from_millis(60);
+        }
+        self.hex_pointer_target = Some((id, rect, Instant::now()));
+        false
+    }
+
+    fn archive_export_csv(&self, selected: bool) -> String {
+        let mut text = String::from(
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated\n",
+        );
+        let rows: &[(usize, &str, usize)] = if selected {
+            &[(0, "docs/notes.txt", 30)]
+        } else {
+            &[
+                (1, "src/main.rs", 83),
+                (4, "src/file2.rs", 4),
+                (3, "src/file10.rs", 4),
+            ]
+        };
+        for (index, path, size) in rows {
+            text.push_str(&format!(
+                "{},{index},{path},file,{size},,1970-01-01T00:00:37Z,false\n",
+                self.fixture.left.join("sample.tar").display()
+            ));
+        }
+        text
+    }
+
+    fn created_search_expressions(&self) -> Vec<String> {
+        std::fs::read(self.fixture.root.join("created-facts.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| serde_json::from_value(v["expressions"].clone()).ok())
+            .unwrap_or_default()
+    }
+    fn changed_search_expressions(&self) -> Vec<String> {
+        std::fs::read(self.fixture.root.join("changed-facts.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| serde_json::from_value(v["expressions"].clone()).ok())
+            .unwrap_or_default()
+    }
+    fn disk_usage_export_json_ready(&self, added: bool, writes: usize) -> bool {
+        if self.counters.clipboard.load(Ordering::Relaxed) != writes {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+        else {
+            return false;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        let count = if added { 9 } else { 8 };
+        if json["schema"] != 1
+            || json["scope"] != "bounded_disk_usage_snapshot"
+            || json["root"].as_str() != self.fixture.left.to_str()
+            || json["summary"]["logical_bytes"].as_u64() != Some(if added { 306 } else { 246 })
+            || json["directory_rows_are_nested_totals"] != true
+            || json["status"]["inaccessible_count"] != 0
+            || ![
+                "cancelled",
+                "tree_truncated",
+                "map_truncated",
+                "inaccessible_paths_truncated",
+            ]
+            .iter()
+            .all(|key| json["status"][key].as_bool() == Some(false))
+        {
+            return false;
+        }
+        let Some(directories) = json["directories"]
+            .as_array()
+            .filter(|rows| rows.len() == count)
+        else {
+            return false;
+        };
+        let Some(items) = json["map_items"]
+            .as_array()
+            .filter(|rows| rows.len() == count)
+        else {
+            return false;
+        };
+        directories
+            .iter()
+            .any(|row| row["relative_path"] == "gamma/unrelated" && row["logical_bytes"] == 50)
+            && items.iter().any(|row| {
+                row["relative_path"] == "README.txt"
+                    && row["logical_bytes"] == 28
+                    && row["is_directory"] == false
+            })
+            && items.iter().any(|row| {
+                row["relative_path"] == "beta"
+                    && row["logical_bytes"] == 70
+                    && row["is_directory"] == true
+            })
+            && (!added
+                || (directories.iter().any(|row| {
+                    row["relative_path"] == "delta/shared/target-three"
+                        && row["logical_bytes"] == 60
+                }) && items
+                    .iter()
+                    .any(|row| row["relative_path"] == "delta" && row["logical_bytes"] == 60)))
+    }
+
+    fn disk_usage_export_csv_ready(&self, added: bool, writes: usize) -> bool {
+        let paths = if added {
+            vec![
+                "alpha",
+                "alpha/shared/target-one",
+                "beta",
+                "beta/shared/target-two",
+                "delta/shared/target-three",
+            ]
+        } else {
+            vec![
+                "alpha",
+                "alpha/shared/target-one",
+                "beta",
+                "beta/shared/target-two",
+            ]
+        };
+        if !self.disk_tree_filter_ready(
+            ("target", false, false),
+            Some((if added { 3 } else { 2 }, &paths)),
+            added,
+            crate::app::DiskUsageMode::Tree,
+        ) || self.counters.clipboard.load(Ordering::Relaxed) != writes
+        {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+        else {
+            return false;
+        };
+        let Ok(rows) = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(text.as_bytes())
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        let mut expected = vec![
+            ("beta", 70, 2, 0, true),
+            ("beta/shared/target-two", 30, 1, 1, false),
+        ];
+        if added {
+            expected.push(("delta/shared/target-three", 60, 1, 0, false));
+        }
+        expected.extend([
+            ("alpha", 30, 2, 0, true),
+            ("alpha/shared/target-one", 10, 1, 1, false),
+        ]);
+        if rows.len() != expected.len() + 1
+            || !rows[0].iter().eq([
+                "root",
+                "path",
+                "relative_path",
+                "depth",
+                "logical_bytes",
+                "files",
+                "unreadable",
+                "context",
+                "query",
+                "fuzzy",
+                "match_case",
+                "scan_cancelled",
+                "tree_truncated",
+                "inaccessible_count",
+                "collapsed",
+                "metric",
+                "known_bytes",
+                "unknown_measurements",
+                "measurement_overflowed",
+                "measurement_complete",
+                "file_allocation_bytes",
+                "measurement_unit",
+                "known_value",
+                "file_count",
+            ])
+        {
+            return false;
+        }
+        rows[1..]
+            .iter()
+            .zip(expected)
+            .all(|(row, (relative, bytes, files, depth, context))| {
+                row.len() == 24
+                    && Some(&row[0]) == self.fixture.left.to_str()
+                    && Some(&row[1]) == self.fixture.left.join(relative).to_str()
+                    && &row[2] == relative
+                    && row[3].parse::<usize>() == Ok(depth)
+                    && row[4].parse::<u64>() == Ok(bytes)
+                    && row[5].parse::<usize>() == Ok(files)
+                    && &row[6] == "false"
+                    && row[7].parse::<bool>() == Ok(context)
+                    && &row[8] == "target"
+                    && row.iter().skip(9).take(4).all(|value| value == "false")
+                    && &row[13] == "0"
+                    && &row[14] == "false"
+                    && &row[15] == "logical"
+                    && row[16].parse::<u64>() == Ok(bytes)
+                    && &row[17] == "0"
+                    && &row[18] == "false"
+                    && &row[19] == "true"
+                    && row[20].is_empty()
+            })
+    }
+
+    fn disk_tree_collapse_ready(&self, shown: usize, closed: usize) -> bool {
+        self.inner.ui.tools.treemap.as_ref().is_some_and(|state| {
+            state.run.is_none()
+                && state.error.is_none()
+                && state.tree_filter.is_current()
+                && state.tree_filter.options.query.is_empty()
+                && state.tree_filter.indices.len() == shown
+                && state.tree_filter.options.collapsed.len() == closed
+                && state.tree_filter.hidden_by_collapse == 9 - shown
+                && state.overview.as_ref().is_some_and(|snapshot| {
+                    snapshot.root == self.fixture.left
+                        && snapshot.progress.bytes == 306
+                        && snapshot.nodes.len() == 9
+                        && !snapshot.cancelled
+                        && !snapshot.truncated
+                })
+        })
+    }
+
+    fn disk_tree_collapsed_csv_ready(&self) -> bool {
+        if self.counters.clipboard.load(Ordering::Relaxed) != 6 {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|text| text.clone())
+        else {
+            return false;
+        };
+        let mut reader = csv::Reader::from_reader(text.as_bytes());
+        if !reader
+            .headers()
+            .is_ok_and(|header| header.len() == 24 && &header[14] == "collapsed")
+        {
+            return false;
+        }
+        let Ok(rows) = reader.records().collect::<Result<Vec<_>, _>>() else {
+            return false;
+        };
+        rows.len() == 7
+            && rows.iter().all(|row| {
+                row.len() == 24
+                    && row[8].is_empty()
+                    && &row[7] == "false"
+                    && Some(&row[0]) == self.fixture.left.to_str()
+                    && !row[2].starts_with("alpha/")
+            })
+            && rows.iter().any(|row| {
+                &row[2] == "alpha" && &row[4] == "30" && &row[5] == "2" && &row[14] == "true"
+            })
+            && rows.iter().filter(|row| &row[14] == "true").count() == 1
+            && rows
+                .iter()
+                .any(|row| &row[2] == "beta/shared/target-two" && &row[4] == "30")
+    }
+
+    fn recorded_clipboard_dump(&self, name: &str) -> bool {
+        self.counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+            .is_some_and(|text| std::fs::write(self.scenario_dir.join(name), text).is_ok())
+    }
+
+    fn disk_tree_filter_ready(
+        &self,
+        options: (&str, bool, bool),
+        expected: Option<(usize, &[&str])>,
+        added: bool,
+        mode: crate::app::DiskUsageMode,
+    ) -> bool {
+        let Some(state) = self.inner.ui.tools.treemap.as_ref() else {
+            return false;
+        };
+        let Some(snapshot) = &state.overview else {
+            return false;
+        };
+        let view = &state.tree_filter;
+        if state.run.is_some()
+            || state.mode != mode
+            || snapshot.cancelled
+            || snapshot.truncated
+            || snapshot.inaccessible_count != 0
+            || snapshot.root != self.fixture.left
+            || snapshot.progress.bytes != if added { 306 } else { 246 }
+            || !view.is_ready()
+            || view.options.query != options.0
+            || view.options.fuzzy != options.1
+            || view.options.match_case != options.2
+        {
+            return false;
+        }
+        let mut paths: Vec<_> = view
+            .indices
+            .iter()
+            .filter_map(|&index| snapshot.nodes.get(index).map(|node| node.path.clone()))
+            .collect();
+        paths.sort();
+        if let Some((matches, expected)) = expected {
+            let mut expected: Vec<_> = expected
+                .iter()
+                .map(|path| self.fixture.left.join(path))
+                .collect();
+            expected.sort();
+            if view.matches != matches || paths != expected {
+                return false;
+            }
+        } else if view.matches != snapshot.nodes.len()
+            || view.indices != (0..snapshot.nodes.len()).collect::<Vec<_>>()
+        {
+            return false;
+        }
+        [
+            ("alpha/shared/target-one/a.bin", 10),
+            ("alpha/other/b.bin", 20),
+            ("beta/shared/target-two/c.bin", 30),
+            ("beta/other/d.bin", 40),
+            ("gamma/unrelated/e.bin", 50),
+        ]
+        .iter()
+        .all(|(name, bytes)| {
+            std::fs::read(self.fixture.left.join(name)).is_ok_and(|data| data == vec![b'd'; *bytes])
+        }) && (!added
+            || std::fs::read(self.fixture.left.join("delta/shared/target-three/f.bin"))
+                .is_ok_and(|data| data == [b'd'; 60]))
+    }
+
+    fn checksum_list_ready(&self, corrected: bool, copied: usize) -> bool {
+        self.checksum_list_algorithm_ready(corrected, copied, crate::checksum::Algorithm::Sha256)
+    }
+    fn checksum_list_algorithm_ready(
+        &self,
+        corrected: bool,
+        copied: usize,
+        algorithm: crate::checksum::Algorithm,
+    ) -> bool {
+        use crate::checksum_list::Status;
+        let Some(report) = self.inner.checksum_list_report() else {
+            return false;
+        };
+        let hash = match algorithm {
+            crate::checksum::Algorithm::Md5 => "900150983cd24fb0d6963f7d28e17f72",
+            _ => "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        if report.error.is_some()
+            || report.cancelled
+            || report.algorithm != Some(algorithm)
+            || report.total != 4
+            || report.rows.len() != 4
+        {
+            return false;
+        }
+        for (index, name) in [
+            "./verify-good.txt",
+            "./nested/verify-good.txt",
+            "./verify-bad.txt",
+            "./verify-missing.txt",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let row = &report.rows[index];
+            if row.name != *name || row.expected != hash {
+                return false;
+            }
+            if index == 3 {
+                if !matches!(row.status, Status::Error(_)) || row.actual.is_some() {
+                    return false;
+                }
+            } else if index == 2 && !corrected {
+                if row.status != Status::Mismatch || row.actual.as_deref() == Some(hash) {
+                    return false;
+                }
+            } else if row.status != Status::Match || row.actual.as_deref() != Some(hash) {
+                return false;
+            }
+        }
+        if std::fs::read(self.fixture.left.join("verify-good.txt"))
+            .ok()
+            .as_deref()
+            != Some(b"abc")
+            || std::fs::read(self.fixture.left.join("nested/verify-good.txt"))
+                .ok()
+                .as_deref()
+                != Some(b"abc")
+            || std::fs::read(self.fixture.left.join("verify-bad.txt"))
+                .ok()
+                .as_deref()
+                != Some(if corrected {
+                    b"abc".as_slice()
+                } else {
+                    b"changed".as_slice()
+                })
+        {
+            return false;
+        }
+        copied == 0
+            || (self.counters.clipboard.load(Ordering::Relaxed) == copied
+                && self
+                    .counters
+                    .clipboard_text
+                    .lock()
+                    .ok()
+                    .and_then(|value| value.clone())
+                    .as_deref()
+                    == Some(report.text().as_str()))
+    }
+
+    fn checksum_list_filtered_copy_ready(&self, problems: bool, writes: usize) -> bool {
+        use crate::checksum_list_view::Filter;
+        let (filter, query, name) = if problems {
+            (Filter::Problems, "", "./verify-missing.txt")
+        } else {
+            (Filter::Matches, "nested", "./nested/verify-good.txt")
+        };
+        if !self.checksum_list_algorithm_ready(true, 0, crate::checksum::Algorithm::Md5)
+            || !self.inner.checksum_list_view_is(filter, query, &[name])
+            || self.counters.clipboard.load(Ordering::Relaxed) != writes
+        {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+        else {
+            return false;
+        };
+        let lines: Vec<_> = text.lines().collect();
+        lines.len() == 4
+            && lines[0] == "MD5 checksum list"
+            && lines[1] == "Verified 4 of 4 records: 3 match, 0 mismatch, 1 failed"
+            && lines[2]
+                == format!(
+                    "Visible records: 1 of 4 completed; status={}; query=\"{query}\"",
+                    filter.label()
+                )
+            && if problems {
+                lines[3].starts_with("ERROR ./verify-missing.txt expected=900150983cd24fb0d6963f7d28e17f72 actual=- (")
+            } else {
+                lines[3]
+                    == "MATCH ./nested/verify-good.txt expected=900150983cd24fb0d6963f7d28e17f72 actual=900150983cd24fb0d6963f7d28e17f72"
+            }
+    }
+
+    fn favorite_ready(&self, assigned: bool, navigated: bool) -> bool {
+        let path = self.fixture.left.join("Design");
+        let store = &self.inner.ws.bookmarks;
+        let loaded = crate::bookmarks::load_with(self.inner.persistence.as_ref());
+        store.items.len() == 3
+            && store.items[0].path == self.fixture.left
+            && store.items[0].name == "Workspace"
+            && store.items[0].slot == if assigned { None } else { Some(3) }
+            && store.items[1].path == self.fixture.right
+            && store.items[1].name == "Other"
+            && store.items[1].slot.is_none()
+            && store.items[2].path == path
+            && store.items[2].name == "Проект UI"
+            && store.items[2].slot == if assigned { Some(3) } else { None }
+            && loaded.store == *store
+            && self.inner.ws.left.current_path
+                == if navigated {
+                    path.clone()
+                } else {
+                    self.fixture.left.clone()
+                }
+            && self.inner.ws.right.current_path == self.fixture.right
+            && std::fs::read(path.join("keep.txt"))
+                .is_ok_and(|bytes| bytes == b"favorite fixture\n")
+            && !self.fixture.left.join("Проект UI").exists()
+    }
+
+    fn favorite_navigation_ready(&self, stage: u8) -> bool {
+        use crate::workspace::ActivePanel;
+        let ws = &self.inner.ws;
+        let design = self.fixture.left.join("Design");
+        let mut paths = vec![design.clone()];
+        if stage >= 2 {
+            paths.push(self.fixture.left.clone());
+        }
+        if stage == 3 {
+            paths.push(design.clone());
+        }
+        if stage >= 4 {
+            paths.push(self.fixture.right.clone());
+            paths.push(design.clone());
+        }
+        let saved = ws.tab_snapshot(ActivePanel::Left);
+        let valid = ws.active == ActivePanel::Left
+            && ws.tab_count(ActivePanel::Right) == 1
+            && ws.right.current_path == self.fixture.left
+            && ws.active_tab_index(ActivePanel::Right) == 0
+            && saved.active == usize::from(stage >= 2)
+            && saved
+                .entries
+                .iter()
+                .map(|entry| &entry.path)
+                .eq(paths.iter())
+            && ws.left.current_path
+                == if stage >= 2 {
+                    self.fixture.left.clone()
+                } else {
+                    design.clone()
+                }
+            && ws.bookmarks.items.len() == 3
+            && ws.bookmarks.items[2].name == "Проект UI"
+            && ws
+                .bookmarks
+                .by_slot(3)
+                .is_some_and(|bookmark| bookmark.path == design)
+            && crate::bookmarks::load_with(self.inner.persistence.as_ref()).store == ws.bookmarks
+            && std::fs::read(design.join("keep.txt"))
+                .is_ok_and(|bytes| bytes == b"favorite fixture\n");
+        if valid && stage >= 4 {
+            let state = serde_json::json!({"active":"Left", "left":saved,
+                "right":ws.tab_snapshot(ActivePanel::Right), "bookmarks":ws.bookmarks});
+            return serde_json::to_vec_pretty(&state).ok().is_some_and(|bytes| {
+                std::fs::write(self.scenario_dir.join("navigation-state.json"), bytes).is_ok()
+            });
+        }
+        valid
+    }
+
+    fn favorite_import_text(&self) -> String {
+        let uri = |path: PathBuf| {
+            crate::clipboard::format(&[path], crate::clipboard::PathStyle::FileUrl, None)
+        };
+        format!(
+            "{} Ignored rename\n{} Проект GTK\n{} Offline\nsmb://server/share Remote\n{} Duplicate\nfile:///bad%GG Invalid\n{} Other imported\n",
+            uri(self.fixture.left.clone()),
+            uri(self.fixture.left.join("Design")),
+            uri(self.fixture.left.join("missing")),
+            uri(self.fixture.left.join("Design")),
+            uri(self.fixture.right.clone())
+        )
+    }
+    fn favorite_import_ready(&self, added: bool) -> bool {
+        use crate::bookmark_exchange::Status;
+        let Some(preview) = self.inner.bookmark_import_preview() else {
+            return false;
+        };
+        let store = &self.inner.ws.bookmarks;
+        let expected = if added {
+            vec![
+                Status::Existing,
+                Status::Existing,
+                Status::Ready,
+                Status::Unsupported,
+                Status::Duplicate,
+                Status::Invalid("Malformed percent escape".into()),
+                Status::Existing,
+            ]
+        } else {
+            vec![
+                Status::Existing,
+                Status::Ready,
+                Status::Ready,
+                Status::Unsupported,
+                Status::Duplicate,
+                Status::Invalid("Malformed percent escape".into()),
+                Status::Ready,
+            ]
+        };
+        preview
+            .rows
+            .iter()
+            .map(|row| &row.status)
+            .eq(expected.iter())
+            && preview.selected() == if added { 0 } else { 3 }
+            && store.items.len() == if added { 3 } else { 1 }
+            && store.items[0].name == "Existing Workspace"
+            && store.items[0].path == self.fixture.left
+            && store.items[0].slot == Some(3)
+            && (!added
+                || (store.items[1].name == "Проект GTK"
+                    && store.items[1].path == self.fixture.left.join("Design")
+                    && store.items[1].slot.is_none()
+                    && store.items[2].name == "Other imported"
+                    && store.items[2].path == self.fixture.right
+                    && store.items[2].slot.is_none()
+                    && crate::bookmarks::load_with(self.inner.persistence.as_ref()).store
+                        == *store))
+            && self.inner.ws.left.current_path == self.fixture.left
+            && self.inner.ws.right.current_path == self.fixture.right
+            && !self.fixture.left.join("missing").exists()
+            && std::fs::read(self.fixture.left.join("Design/keep.txt"))
+                .is_ok_and(|bytes| bytes == b"favorite fixture\n")
+    }
+    fn favorite_import_export_ready(&self) -> bool {
+        if !self.favorite_import_ready(true) || self.counters.clipboard.load(Ordering::Relaxed) != 1
+        {
+            return false;
+        }
+        let uri = |path: PathBuf| {
+            crate::clipboard::format(&[path], crate::clipboard::PathStyle::FileUrl, None)
+        };
+        let expected = format!(
+            "{} Existing Workspace\n{} Проект GTK\n{} Other imported\n",
+            uri(self.fixture.left.clone()),
+            uri(self.fixture.left.join("Design")),
+            uri(self.fixture.right.clone())
+        );
+        let matches = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+            .is_some_and(|text| text == expected);
+        matches
+            && self.recorded_clipboard_dump("gtk-export.txt")
+            && serde_json::to_vec_pretty(&self.inner.ws.bookmarks)
+                .ok()
+                .is_some_and(|bytes| {
+                    std::fs::write(self.scenario_dir.join("imported-bookmarks.json"), bytes).is_ok()
+                })
+    }
+
+    fn favorite_picker_ready(&self, stage: u8) -> bool {
+        use crate::workspace::ActivePanel;
+        let ws = &self.inner.ws;
+        let design = self.fixture.left.join("Design");
+        let saved = ws.tab_snapshot(ActivePanel::Left);
+        let paths = if stage >= 3 {
+            vec![self.fixture.left.clone(), design.clone(), design.clone()]
+        } else {
+            vec![self.fixture.left.clone(), design.clone()]
+        };
+        ws.active == ActivePanel::Left
+            && ws.tab_count(ActivePanel::Right) == 1
+            && ws.active_tab_index(ActivePanel::Right) == 0
+            && ws.right.current_path
+                == if stage >= 2 {
+                    self.fixture.left.clone()
+                } else {
+                    self.fixture.right.clone()
+                }
+            && saved.active == usize::from(stage >= 3)
+            && saved
+                .entries
+                .iter()
+                .map(|entry| &entry.path)
+                .eq(paths.iter())
+            && ws.left.current_path
+                == if stage >= 3 {
+                    design.clone()
+                } else {
+                    self.fixture.left.clone()
+                }
+            && ws.bookmarks.items.len() == 152
+            && ws.bookmarks.items[150].name == "Проект GTK"
+            && ws
+                .bookmarks
+                .by_slot(7)
+                .is_some_and(|bookmark| bookmark.path == design)
+            && std::fs::read(design.join("keep.txt"))
+                .is_ok_and(|bytes| bytes == b"favorite fixture\n")
+    }
+    fn favorite_picker_final(&self) -> bool {
+        let Some(state) = self.inner.ui.modals.palette_input.as_ref() else {
+            return false;
+        };
+        if !self.favorite_picker_ready(3)
+            || state.probe.is_some()
+            || state.input != "@пркт"
+            || state.favorite_target != crate::workspace::FavoriteTarget::CurrentPanel
+            || state.favorite_cache.matches.total != 1
+            || state.favorite_cache.matches.indices != [150]
+            || state.favorites != self.inner.ws.bookmarks
+        {
+            return false;
+        }
+        let record = serde_json::json!({"left":self.inner.ws.tab_snapshot(crate::workspace::ActivePanel::Left),
+            "right":self.inner.ws.tab_snapshot(crate::workspace::ActivePanel::Right),"bookmarks":self.inner.ws.bookmarks,
+            "query":state.input,"matches":state.favorite_cache.matches.total,"indices":state.favorite_cache.matches.indices});
+        serde_json::to_vec_pretty(&record)
+            .ok()
+            .is_some_and(|bytes| {
+                std::fs::write(self.scenario_dir.join("picker-state.json"), bytes).is_ok()
+            })
+    }
+
+    fn duplicate_sizes_ready(&self, min: u64, max: Option<u64>, expected: &[u64]) -> bool {
+        use crate::dedup::{GroupSort, KeepPolicy};
+        let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+            return false;
+        };
+        let mut sizes: Vec<_> = state.groups.iter().map(|group| group.size).collect();
+        sizes.sort_unstable();
+        state.scan.is_none()
+            && !state.recursive
+            && state.scan_issues == 0
+            && state.root == self.fixture.left
+            && state.sizes == crate::dedup_scan::SizeRange { min, max }
+            && state.policy == KeepPolicy::ShortestPath
+            && state.sort == GroupSort::Scan
+            && sizes == expected
+            && state.keep == crate::dedup::keep_plan(&state.groups, KeepPolicy::ShortestPath)
+            && state.group_order == crate::dedup::group_order(&state.groups, GroupSort::Scan)
+            && state
+                .groups
+                .iter()
+                .all(|group| group.files.len() == if group.size == 64 { 2 } else { 3 })
+            && ["a1.bin", "a2.bin", "a3.bin"].iter().all(|name| {
+                std::fs::read(self.fixture.left.join(name)).is_ok_and(|data| data == [b's'; 10])
+            })
+            && ["z.bin", "z-long-copy.bin"].iter().all(|name| {
+                std::fs::read(self.fixture.left.join(name)).is_ok_and(|data| data == [b'L'; 64])
+            })
+    }
+
+    fn duplicate_sizes_copy_ready(
+        &self,
+        min: u64,
+        max: Option<u64>,
+        sizes: &[u64],
+        writes: usize,
+    ) -> bool {
+        if !self.duplicate_sizes_ready(min, max, sizes)
+            || self.counters.clipboard.load(Ordering::Relaxed) != writes
+        {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+        else {
+            return false;
+        };
+        let Ok(rows) = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(text.as_bytes())
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        let expected = [
+            ("a1.bin", 10, "keep"),
+            ("a2.bin", 10, "trash"),
+            ("a3.bin", 10, "trash"),
+            ("z.bin", 64, "keep"),
+            ("z-long-copy.bin", 64, "trash"),
+        ];
+        let selected: Vec<_> = expected
+            .iter()
+            .filter(|(_, size, _)| sizes.contains(size))
+            .collect();
+        rows.len() == selected.len() + 1
+            && rows[0].iter().eq(["group", "action", "path", "size_bytes"])
+            && selected.iter().all(|(name, size, action)| {
+                let path = self.fixture.left.join(name);
+                rows[1..]
+                    .iter()
+                    .filter(|row| {
+                        row.len() == 4
+                            && row[0]
+                                .parse::<usize>()
+                                .is_ok_and(|group| group > 0 && group <= sizes.len())
+                            && &row[1] == *action
+                            && Some(&row[2]) == path.to_str()
+                            && row[3].parse::<u64>() == Ok(*size)
+                    })
+                    .count()
+                    == 1
+            })
+    }
+
+    fn duplicate_recursive_ready(&self, recursive: bool, configured: bool) -> bool {
+        use crate::dedup::{GroupSort, KeepPolicy};
+        let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+            return false;
+        };
+        if state.scan.is_some()
+            || state.root != self.fixture.left
+            || state.scan_issues != 0
+            || state.recursive != recursive
+            || state.policy
+                != if configured {
+                    KeepPolicy::Newest
+                } else {
+                    KeepPolicy::ShortestPath
+                }
+            || state.sort
+                != if configured {
+                    GroupSort::Savings
+                } else {
+                    GroupSort::Scan
+                }
+        {
+            return false;
+        }
+        if !recursive {
+            return state.groups.is_empty()
+                && state.keep.is_empty()
+                && state.group_order.is_empty();
+        }
+        if state.groups.len() != 1 || state.keep.len() != 1 || state.group_order != [0] {
+            return false;
+        }
+        let group = &state.groups[0];
+        let names = ["original.bin", "nested/copy.bin", ".hidden/deep/copy.bin"];
+        if group.size != 20
+            || group.files.len() != 3
+            || !names.iter().all(|name| {
+                group
+                    .files
+                    .iter()
+                    .any(|file| file.path == self.fixture.left.join(name))
+            })
+        {
+            return false;
+        }
+        let Some(keep) = state.keep[0].and_then(|index| group.files.get(index)) else {
+            return false;
+        };
+        keep.path
+            == self.fixture.left.join(if configured {
+                ".hidden/deep/copy.bin"
+            } else {
+                "original.bin"
+            })
+            && crate::dedup::bytes_reclaimed(&state.groups, &state.keep) == 40
+            && names.iter().all(|name| {
+                std::fs::read(self.fixture.left.join(name))
+                    .is_ok_and(|bytes| bytes == b"recursive duplicate\n")
+            })
+    }
+
+    fn duplicate_recursive_copy_ready(&self, writes: usize) -> bool {
+        if !self.duplicate_recursive_ready(true, true)
+            || self.counters.clipboard.load(Ordering::Relaxed) != writes
+        {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+        else {
+            return false;
+        };
+        let Ok(rows) = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(text.as_bytes())
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        if rows.len() != 4 || !rows[0].iter().eq(["group", "action", "path", "size_bytes"]) {
+            return false;
+        }
+        let names = ["original.bin", "nested/copy.bin", ".hidden/deep/copy.bin"];
+        names.iter().all(|name| {
+            let path = self.fixture.left.join(name);
+            rows[1..]
+                .iter()
+                .filter(|row| {
+                    row.len() == 4
+                        && &row[0] == "1"
+                        && Some(&row[2]) == path.to_str()
+                        && &row[3] == "20"
+                        && &row[1]
+                            == if *name == ".hidden/deep/copy.bin" {
+                                "keep"
+                            } else {
+                                "trash"
+                            }
+                })
+                .count()
+                == 1
+        })
+    }
+
+    fn duplicate_sort_ready(&self, sort: crate::dedup::GroupSort, stage: u8) -> bool {
+        use crate::dedup::{GroupSort, KeepPolicy};
+        self.inner
+            .ui
+            .tools
+            .duplicates
+            .as_ref()
+            .is_some_and(|state| {
+                if state.scan.is_some()
+                    || state.groups.len() != 2
+                    || state.keep.len() != 2
+                    || state.sort != sort
+                    || state.group_order != crate::dedup::group_order(&state.groups, sort)
+                {
+                    return false;
+                }
+                let Some(large) = state
+                    .groups
+                    .iter()
+                    .position(|group| group.size == 64 && group.files.len() == 2)
+                else {
+                    return false;
+                };
+                let Some(small) = state
+                    .groups
+                    .iter()
+                    .position(|group| group.size == 10 && group.files.len() == 3)
+                else {
+                    return false;
+                };
+                let order_ok = match sort {
+                    GroupSort::Savings | GroupSort::Size => state.group_order[0] == large,
+                    GroupSort::Copies => state.group_order[0] == small,
+                    GroupSort::Scan => state.group_order == [0, 1],
+                };
+                if stage == 0 {
+                    return order_ok
+                        && state.keep
+                            == crate::dedup::keep_plan(&state.groups, KeepPolicy::ShortestPath);
+                }
+                let keeper = state.keep[large]
+                    .and_then(|index| state.groups[large].files.get(index))
+                    .is_some_and(|file| file.path == self.fixture.left.join("z-long-copy.bin"));
+                let small_ok = if stage == 1 {
+                    state.keep[small]
+                        == Some(crate::dedup::default_keep(
+                            &state.groups[small],
+                            KeepPolicy::ShortestPath,
+                        ))
+                } else {
+                    state.keep[small].is_none()
+                };
+                order_ok
+                    && keeper
+                    && small_ok
+                    && (stage == 1
+                        || crate::dedup::bytes_reclaimed(&state.groups, &state.keep) == 64)
+            })
+    }
+
+    fn duplicate_sort_copy_ready(&self, sort: crate::dedup::GroupSort, writes: usize) -> bool {
+        if !self.duplicate_sort_ready(sort, 2)
+            || self.counters.clipboard.load(Ordering::Relaxed) != writes
+        {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+        else {
+            return false;
+        };
+        let Ok(rows) = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(text.as_bytes())
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        if rows.len() != 6 || !rows[0].iter().eq(["group", "action", "path", "size_bytes"]) {
+            return false;
+        }
+        let state = self.inner.ui.tools.duplicates.as_ref().unwrap();
+        let mut position = 1;
+        for (group_number, &index) in state.group_order.iter().enumerate() {
+            let group = &state.groups[index];
+            for file in &group.files {
+                let row = &rows[position];
+                position += 1;
+                let action = if group.size == 10 {
+                    "skip"
+                } else if file.path == self.fixture.left.join("z-long-copy.bin") {
+                    "keep"
+                } else {
+                    "trash"
+                };
+                if row.len() != 4
+                    || row[0].parse::<usize>() != Ok(group_number + 1)
+                    || &row[1] != action
+                    || Some(&row[2]) != file.path.to_str()
+                    || row[3].parse::<u64>() != Ok(group.size)
+                {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn duplicate_plan_copy_ready(&self, kept_name: Option<&str>, writes: usize) -> bool {
+        if self.counters.clipboard.load(Ordering::Relaxed) != writes {
+            return false;
+        }
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+        else {
+            return false;
+        };
+        let Ok(rows) = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(text.as_bytes())
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        let Some(group) = self
+            .inner
+            .ui
+            .tools
+            .duplicates
+            .as_ref()
+            .and_then(|state| state.groups.first())
+        else {
+            return false;
+        };
+        rows.len() == 4
+            && rows[0].iter().eq(["group", "action", "path", "size_bytes"])
+            && rows.iter().skip(1).zip(&group.files).all(|(row, file)| {
+                let action = match kept_name {
+                    None => "skip",
+                    Some(name) if file.path == self.fixture.left.join(name) => "keep",
+                    Some(_) => "trash",
+                };
+                row.len() == 4
+                    && &row[0] == "1"
+                    && &row[1] == action
+                    && Some(&row[2]) == file.path.to_str()
+                    && &row[3] == "25"
+            })
+    }
+
+    fn duplicate_plan_ready(&self, policy: crate::dedup::KeepPolicy, name: Option<&str>) -> bool {
+        self.inner
+            .ui
+            .tools
+            .duplicates
+            .as_ref()
+            .is_some_and(|state| {
+                if state.scan.is_some()
+                    || state.groups.len() != 1
+                    || state.keep.len() != 1
+                    || state.policy != policy
+                {
+                    return false;
+                }
+                let group = &state.groups[0];
+                if group.files.len() != 3
+                    || group.size != b"duplicate policy fixture\n".len() as u64
+                {
+                    return false;
+                }
+                let time = |name: &str| {
+                    group
+                        .files
+                        .iter()
+                        .find(|file| file.path == self.fixture.left.join(name))
+                        .and_then(|file| file.modified)
+                };
+                let times = time("a.bin")
+                    .zip(time("middle.bin"))
+                    .zip(time("newest-copy.bin"))
+                    .is_some_and(|((old, middle), new)| old < middle && middle < new);
+                times
+                    && match (name, state.keep[0]) {
+                        (None, None) => crate::dedup::delete_count(&state.groups, &state.keep) == 0,
+                        (Some(name), Some(index)) => {
+                            group
+                                .files
+                                .get(index)
+                                .is_some_and(|file| file.path == self.fixture.left.join(name))
+                                && crate::dedup::delete_count(&state.groups, &state.keep) == 2
+                        }
+                        _ => false,
+                    }
+            })
+    }
+
+    fn search_csv_clipboard_ready(&self) -> bool {
+        let Some(text) = self
+            .counters
+            .clipboard_text
+            .lock()
+            .ok()
+            .and_then(|text| text.clone())
+        else {
+            return false;
+        };
+        let Some(state) = self.inner.ui.modals.find.as_ref() else {
+            return false;
+        };
+        let rows: Vec<_> = text.lines().collect();
+        if rows.len() != 3 || rows[0] != "Path,Name,Kind,Size (bytes),Modified" {
+            return false;
+        }
+        for (row, name, directory) in [(rows[1], "notes.md", false), (rows[2], "Design", true)] {
+            let Some(hit) = state.results.iter().find(|hit| hit.entry.name == name) else {
+                return false;
+            };
+            let prefix = format!(
+                "{},{},{},{},",
+                self.fixture.left.join(name).display(),
+                name,
+                if directory { "folder" } else { "file" },
+                if directory {
+                    String::new()
+                } else {
+                    hit.entry.size.to_string()
+                }
+            );
+            let Some(date) = row.strip_prefix(&prefix) else {
+                return false;
+            };
+            if !date.ends_with('Z') || chrono::DateTime::parse_from_rfc3339(date).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn seed_search_results(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        self.inner.open_find(ctx);
+        let mut hits = Vec::new();
+        for name in ["README.txt", "notes.md", "Design"] {
+            let path = self.fixture.left.join(name);
+            let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+            let entry = crate::panel::FileEntry::from_meta(path.clone(), &metadata)
+                .ok_or_else(|| format!("missing search fixture {name}"))?;
+            hits.push(crate::search::SearchHit {
+                entry,
+                identity: crate::search::FileIdentity::Path(path.clone()),
+                accessed: None,
+                explanation: crate::search::MatchExplanation::default(),
+                location: crate::search::SearchLocation::Native(path),
+            });
+        }
+        if let Some(state) = self.inner.ui.modals.find.as_mut() {
+            state.results = hits;
+            state.ran = true;
+            state.scanned = 3;
+            state.matched = 3;
+            state.search_source = "Visual QA fixture".to_string();
+            state.generation = 1;
+            state.last_query = Some((String::new(), state.mode, state.root.clone()));
+            state.result_complete = true;
+        }
+        Ok(())
     }
 
     fn finish(&self, ctx: &egui::Context, result: Result<(), String>) {
@@ -1166,6 +4467,9 @@ impl VisualQaApp {
 
 impl eframe::App for VisualQaApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        // Script waits and capture deadlines must advance even when the app
+        // has no background work or user events requesting another frame.
+        ctx.request_repaint_after(Duration::from_millis(16));
         if self.pending_screenshot.is_none() {
             match Self::screenshot_event(&input.events, self.scenario) {
                 Ok(screenshot) => self.pending_screenshot = screenshot,
@@ -1174,13 +4478,134 @@ impl eframe::App for VisualQaApp {
         }
         if self.scenario.modal_owner().is_none()
             && !(self.scenario == Scenario::PdfPreview && self.pdf_click_phase < 9)
+            && !(self.scenario == Scenario::PdfSearch && self.pdf_click_phase < 13)
+            && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
-            && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 81)
+            && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
+            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 65)
+            && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
+            && !(self.scenario == Scenario::Favorites && self.favorite_phase < 41)
+            && !(self.scenario == Scenario::FavoriteImport && self.favorite_import_phase < 17)
+            && !(self.scenario == Scenario::CustomShortcuts && self.json_mode_phase < 17)
+            && !(self.scenario == Scenario::CustomNavigation && self.json_mode_phase < 20)
+            && !(self.scenario == Scenario::ShortcutHints && self.json_mode_phase < 10)
+            && !(matches!(
+                self.scenario,
+                Scenario::NameListActions | Scenario::MaskActions
+            ) && self.json_mode_phase < 28)
+            && !(self.scenario == Scenario::ProfileExchange && self.json_mode_phase < 34)
+            && !(self.scenario == Scenario::ProfileNames && self.json_mode_phase < 30)
+            && !(self.scenario == Scenario::ProfileTabs && self.json_mode_phase < 14)
+            && !(self.scenario == Scenario::WorkspaceProfiles && self.json_mode_phase < 18)
+            && !(self.scenario == Scenario::ThemeExchange && self.json_mode_phase < 30)
+            && !(self.scenario == Scenario::CustomTheme
+                && (self.json_mode_phase < 3 || self.inner.custom_theme.colors().is_none()))
+            && !(self.scenario == Scenario::TabSelectionSession && self.json_mode_phase < 24)
+            && !(self.scenario == Scenario::ShortcutExchange && self.json_mode_phase < 16)
+            && !(matches!(self.scenario, Scenario::GpxPreview | Scenario::KmlPreview)
+                && self.json_mode_phase < 12)
             && !(self.scenario == Scenario::JsonPreview && self.json_mode_phase < 9)
+            && !(self.scenario == Scenario::TablePreview && self.table_phase < 100)
+            && !(matches!(
+                self.scenario,
+                Scenario::DocxPreview
+                    | Scenario::OdtPreview
+                    | Scenario::XlsxPreview
+                    | Scenario::OdsPreview
+                    | Scenario::PptxPreview
+                    | Scenario::OdpPreview
+                    | Scenario::EpubPreview
+                    | Scenario::FictionbookPreview
+                    | Scenario::RtfPreview
+            ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
-            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 12)
-            && !(self.scenario == Scenario::HexPreview && self.hex_click_phase < 17)
-            && !(self.scenario == Scenario::HexSearch && self.hex_search_phase < 13)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 103)
+            && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
+            && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
+            && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
+            && !(self.scenario == Scenario::DiffIntraline && self.diff_intraline_phase < 9)
+            && !(self.scenario == Scenario::DiffSwap && self.diff_swap_phase < 29)
+            && !(self.scenario == Scenario::BrokenLinkSearch && self.broken_link_phase < 10)
+            && !(self.scenario == Scenario::IdentityFind && self.symlink_phase < 12)
+            && !(self.scenario == Scenario::LinksSearch && self.owner_search_phase < 22)
+            && !(self.scenario == Scenario::OwnerSearch && self.owner_search_phase < 13)
+            && !(matches!(
+                self.scenario,
+                Scenario::AllocationSearch
+                    | Scenario::ParentSearch
+                    | Scenario::AccessedSearch
+                    | Scenario::CreatedSearch
+                    | Scenario::ChangedSearch
+            ) && self.allocation_search_phase < 10)
+            && !(self.scenario == Scenario::SearchJson && self.search_json_phase < 45)
+            && !(self.scenario == Scenario::Timestamps && self.timestamp_phase < 27)
+            && !(self.scenario == Scenario::SymlinkWorkflow && self.symlink_phase < 48)
+            && !(self.scenario == Scenario::AllocatedSort && self.symlink_phase < 24)
+            && !(matches!(
+                self.scenario,
+                Scenario::TimeSort
+                    | Scenario::InodeSort
+                    | Scenario::ChangedSort
+                    | Scenario::HardLinksSort
+            ) && self.symlink_phase < 36)
+            && !(self.scenario == Scenario::ListingJson && self.symlink_phase < 18)
+            && !(self.scenario == Scenario::HardlinkSelection && self.symlink_phase < 12)
+            && !(self.scenario == Scenario::AllocatedSelection && self.symlink_phase < 24)
+            && !(matches!(
+                self.scenario,
+                Scenario::SymlinkInfo
+                    | Scenario::AllocatedInfo
+                    | Scenario::FileIdentityInfo
+                    | Scenario::ExifInfo
+                    | Scenario::ExifDetailsInfo
+                    | Scenario::ImageMetadataJson
+                    | Scenario::ExifPngInfo
+                    | Scenario::ExifTiffInfo
+                    | Scenario::ExifWebpInfo
+                    | Scenario::ImageHeaderInfo
+            ) && self.symlink_info_phase < 6)
+            && !(self.scenario == Scenario::ImageMetadataJson && self.symlink_info_phase < 10)
+            && !(self.scenario == Scenario::SyncReview && self.sync_review_phase < 114)
+            && !(self.scenario == Scenario::SyncContents && self.sync_contents_phase < 27)
+            && !(self.scenario == Scenario::DiskTreeFilter && self.disk_tree_phase < 37)
+            && !(self.scenario == Scenario::DiskUsageExport && self.disk_export_phase < 48)
+            && !(self.scenario == Scenario::TimeGroups && self.disk_export_phase < 29)
+            && !(self.scenario == Scenario::FindSort && self.disk_export_phase < 62)
+            && !(matches!(
+                self.scenario,
+                Scenario::DiskAllocation | Scenario::DiskCount
+            ) && self.disk_export_phase < 24)
+            && !(self.scenario == Scenario::DuplicateRanking && self.duplicate_phase < 33)
+            && !(self.scenario == Scenario::DuplicatePolicy && self.duplicate_phase < 30)
+            && !(self.scenario == Scenario::DuplicateSort && self.duplicate_sort_phase < 27)
+            && !(self.scenario == Scenario::DuplicateSizes && self.duplicate_sizes_phase < 46)
+            && !(self.scenario == Scenario::DuplicateRelative && self.duplicate_names_phase < 42)
+            && !(self.scenario == Scenario::DuplicateComponents && self.duplicate_names_phase < 48)
+            && !(self.scenario == Scenario::DuplicateExtensions && self.duplicate_names_phase < 18)
+            && !(self.scenario == Scenario::DuplicateNames && self.duplicate_names_phase < 32)
+            && !(self.scenario == Scenario::DuplicateDepth && self.duplicate_depth_phase < 31)
+            && !(self.scenario == Scenario::DuplicateCopies && self.duplicate_copies_phase < 32)
+            && !(self.scenario == Scenario::DuplicateReport && self.duplicate_report_phase < 18)
+            && !(self.scenario == Scenario::DuplicateRoots && self.duplicate_roots_phase < 21)
+            && !(self.scenario == Scenario::DuplicateCross && self.duplicate_cross_phase < 51)
+            && !(self.scenario == Scenario::DuplicateRecursive
+                && self.duplicate_recursive_phase < 21)
+            && !(self.scenario == Scenario::HexPreview && self.hex_click_phase < 68)
+            && !(self.scenario == Scenario::HexSearch && self.hex_search_phase < 159)
+            && !(self.scenario == Scenario::HexAlignment && self.hex_search_phase < 27)
+            && !(self.scenario == Scenario::HexMatchCopy && self.hex_search_phase < 25)
+            && !(self.scenario == Scenario::HexRepeatSearch && self.hex_search_phase < 19)
+            && !(self.scenario == Scenario::HexCharacterKeys && self.hex_search_phase < 9)
+            && !(self.scenario == Scenario::HexBomEncoding && self.hex_search_phase < 12)
+            && !(matches!(
+                self.scenario,
+                Scenario::HexCharacterEncoding
+                    | Scenario::HexUtf8Encoding
+                    | Scenario::HexUtf16Encoding
+            ) && self.hex_search_phase < 6)
+            && !(self.scenario == Scenario::ArchiveExport && self.archive_copy_phase < 43)
+            && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
+            && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -1188,6 +4613,3675 @@ impl eframe::App for VisualQaApp {
             input
                 .events
                 .push(egui::Event::PointerMoved(row.rect.center()));
+        }
+        if matches!(
+            self.scenario,
+            Scenario::SymlinkInfo
+                | Scenario::AllocatedInfo
+                | Scenario::FileIdentityInfo
+                | Scenario::ExifInfo
+                | Scenario::ExifDetailsInfo
+                | Scenario::ImageMetadataJson
+                | Scenario::ExifPngInfo
+                | Scenario::ExifTiffInfo
+                | Scenario::ExifWebpInfo
+                | Scenario::ImageHeaderInfo
+        ) && self.symlink_info_phase < 6
+        {
+            let phase = self.symlink_info_phase;
+            let target = match self.scenario {
+                Scenario::AllocatedInfo => "sparse.bin",
+                Scenario::FileIdentityInfo => "alias.bin",
+                _ => self
+                    .scenario
+                    .image_info_fixture()
+                    .map_or("link.txt", |(name, _, _)| name),
+            };
+            if phase == 0 {
+                self.inner.ws.left.focus_child(target.into());
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == target)
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if phase < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match phase {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: phase == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(">Get Info".into()));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|state| state.input == ">Get Info" && state.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    if !matches!(&self.inner.ws.right.preview,Some(crate::panel::PreviewContent::Info(card)) if if self.scenario==Scenario::AllocatedInfo {card.name=="sparse.bin" && card.allocated_size=="0 B (0 bytes)"}else if self.scenario==Scenario::FileIdentityInfo {card.name=="alias.bin" && card.hard_links=="2" && card.filesystem_id!="Unavailable"}else if self.scenario.image_info_fixture().is_some() {self.scenario.image_info_fixture().is_some_and(|(name,_,_)|card.name==name)}else{card.link_status.as_deref()==Some("Target exists") && card.path.ends_with("-> ../right/portable.txt")})
+                    {
+                        return;
+                    }
+                }
+            }
+            self.symlink_info_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ImageMetadataJson
+            && (6..10).contains(&self.symlink_info_phase)
+        {
+            let phase = self.symlink_info_phase;
+            if self.inner.image_metadata.report("right").is_none() {
+                return;
+            }
+            if phase < 9 {
+                let id = egui::Id::new(("image-metadata-copy-json", "right"));
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                let Some(clip) = ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new(("image-metadata-clip", "right")))
+                }) else {
+                    return;
+                };
+                if !clip.contains_rect(rect) {
+                    input.events.push(egui::Event::PointerMoved(clip.center()));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(
+                            0.0,
+                            if rect.min.y < clip.min.y {
+                                200.0
+                            } else {
+                                -200.0
+                            },
+                        ),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                if phase == 6 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase > 6 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 7,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else {
+                if self.counters.clipboard.load(Ordering::Relaxed) != 1
+                    || !self.recorded_clipboard_dump("metadata.json")
+                {
+                    return;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    let Ok(meta) =
+                        std::fs::symlink_metadata(self.fixture.left.join("photo-exif.jpg"))
+                    else {
+                        return;
+                    };
+                    let facts = serde_json::json!({"device_id":meta.dev(),"file_id":meta.ino(),"size_bytes":meta.len(),"modified_unix_ns":(i128::from(meta.mtime())*1_000_000_000+i128::from(meta.mtime_nsec())).to_string(),"changed_unix_ns":(i128::from(meta.ctime())*1_000_000_000+i128::from(meta.ctime_nsec())).to_string()});
+                    if !serde_json::to_vec_pretty(&facts).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join("source-facts.json"), b).is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_info_phase += 1;
+            return;
+        }
+        if self.scenario.image_info_fixture().is_some() && (6..9).contains(&self.symlink_info_phase)
+        {
+            let label = if self.scenario == Scenario::ExifDetailsInfo {
+                "Taken UTC offset"
+            } else if self
+                .scenario
+                .image_info_fixture()
+                .is_some_and(|(_, _, has_exif)| has_exif)
+            {
+                "GPS altitude"
+            } else {
+                "Header dimensions"
+            };
+            if self.inner.image_metadata.report("right").is_none() {
+                return;
+            }
+            if self.symlink_info_phase == 6 {
+                let Some(rect) = ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new(("image-metadata-clip", "right")))
+                }) else {
+                    return;
+                };
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, -500.0),
+                    modifiers: Default::default(),
+                });
+            }
+            if self.symlink_info_phase >= 7 {
+                let Some(clip) = ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new(("image-metadata-clip", "right")))
+                }) else {
+                    return;
+                };
+                let Some(row) = ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new(("image-metadata-row", "right", label)))
+                }) else {
+                    return;
+                };
+                if !clip.contains_rect(row) {
+                    input.events.push(egui::Event::PointerMoved(clip.center()));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0.0, -300.0),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                if self.symlink_info_phase == 8 {
+                    let value = serde_json::json!({"clip":RectArtifact::from(clip),"target":label,"row":RectArtifact::from(row)});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join("exif-visibility.json"), b).is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_info_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::AllocatedSelection && self.symlink_phase < 24 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let label = match stage {
+                0 => "Select 10 largest allocated files",
+                2 => "Select 10 largest files",
+                _ => "Copy listing as JSON",
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner
+                    .ws
+                    .left
+                    .replace_selection([self.fixture.left.join("notes.md")]);
+                self.inner.ws.left.set_search_query(".bin");
+                self.inner.ws.left.focus_child("sparse.bin".into());
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "sparse.bin")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || self.inner.ws.left.selected_count() != if stage < 2 { 11 } else { 13 }
+                    {
+                        return;
+                    }
+                    if stage == 1 || stage == 3 {
+                        if self.counters.clipboard.load(Ordering::Relaxed)
+                            != usize::from(stage.div_ceil(2))
+                        {
+                            return;
+                        }
+                        let Some(text) = self
+                            .counters
+                            .clipboard_text
+                            .lock()
+                            .ok()
+                            .and_then(|v| v.clone())
+                        else {
+                            return;
+                        };
+                        if crate::listing_report::json(&self.inner.ws.left).as_ref() != Ok(&text) {
+                            return;
+                        }
+                        if std::fs::write(
+                            self.scenario_dir.join(if stage == 1 {
+                                "allocated-selection.json"
+                            } else {
+                                "logical-selection.json"
+                            }),
+                            text,
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"entries":self.inner.ws.left.entries().iter().map(|e|serde_json::json!({"name":e.name,"logical":e.size,"allocated":e.allocated_bytes(),"folder":e.is_dir,"symlink":e.is_symlink(),"selected":self.inner.ws.left.is_selected(&e.path)})).collect::<Vec<_>>()});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ListingJson && self.symlink_phase < 18 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let label = if stage == 0 {
+                "Sort by allocated size"
+            } else {
+                "Copy listing as JSON"
+            };
+            if stage == 2 && local == 0 {
+                self.inner.ws.left.replace_selection([
+                    self.fixture.left.join("sparse.bin"),
+                    self.fixture.left.join("dense.bin"),
+                    self.fixture.left.join("notes.md"),
+                ]);
+                self.inner.ws.left.set_search_query(".bin");
+            }
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.focus_child("sparse.bin".into());
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "sparse.bin")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || config.sort_column() != crate::panel::SortColumn::Allocated
+                    {
+                        return;
+                    }
+                    if stage > 0 {
+                        if self.counters.clipboard.load(Ordering::Relaxed) != usize::from(stage) {
+                            return;
+                        }
+                        let Some(text) = self
+                            .counters
+                            .clipboard_text
+                            .lock()
+                            .ok()
+                            .and_then(|v| v.clone())
+                        else {
+                            return;
+                        };
+                        if crate::listing_report::json(&self.inner.ws.left).as_ref() != Ok(&text) {
+                            return;
+                        }
+                        if std::fs::write(
+                            self.scenario_dir.join(if stage == 1 {
+                                "listing-full.json"
+                            } else {
+                                "listing-selected.json"
+                            }),
+                            text,
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"entries":self.inner.ws.left.entries().iter().map(|e|serde_json::json!({"name":e.name,"logical":e.size,"allocated":e.allocated_bytes(),"folder":e.is_dir,"symlink":e.is_symlink()})).collect::<Vec<_>>()});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::InodeSort && self.symlink_phase < 36 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let (label, column, order) = match stage {
+                0 => (
+                    "Sort by inode",
+                    crate::panel::SortColumn::Inode,
+                    crate::panel::SortOrder::Asc,
+                ),
+                1 => (
+                    "Sort by inode",
+                    crate::panel::SortColumn::Inode,
+                    crate::panel::SortOrder::Desc,
+                ),
+                2 => (
+                    "Sort by name",
+                    crate::panel::SortColumn::Name,
+                    crate::panel::SortOrder::Asc,
+                ),
+                3 => (
+                    "Sort by name",
+                    crate::panel::SortColumn::Name,
+                    crate::panel::SortOrder::Desc,
+                ),
+                4 => (
+                    "Sort by inode",
+                    crate::panel::SortColumn::Inode,
+                    crate::panel::SortOrder::Asc,
+                ),
+                _ => (
+                    "Sort by inode",
+                    crate::panel::SortColumn::Inode,
+                    crate::panel::SortOrder::Desc,
+                ),
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.set_search_query("inode-");
+                self.inner.ws.left.focus_child("inode-middle.txt".into());
+                self.inner.ws.left.replace_selection([
+                    self.fixture.left.join("inode-old.txt"),
+                    self.fixture.left.join("notes.md"),
+                ]);
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "inode-middle.txt")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || config.sort_column() != column
+                        || config.sort_order() != order
+                        || self.inner.ws.left.selected_count() != 2
+                        || !self
+                            .inner
+                            .ws
+                            .left
+                            .cursor_entry()
+                            .is_some_and(|e| e.name == "inode-middle.txt")
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"selected":self.inner.ws.left.selected_count(),"entries":self.inner.ws.left.filtered_entries().iter().map(|e|serde_json::json!({"name":e.name,"identity":e.filesystem_id(),"size":e.size,"selected":self.inner.ws.left.is_selected(&e.path)})).collect::<Vec<_>>(),"report":crate::listing_report::json(&self.inner.ws.left).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::HardLinksSort && self.symlink_phase < 36 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let (label, column, order) = match stage {
+                0 => (
+                    "Sort by hard-link count",
+                    crate::panel::SortColumn::HardLinks,
+                    crate::panel::SortOrder::Asc,
+                ),
+                1 => (
+                    "Sort by hard-link count",
+                    crate::panel::SortColumn::HardLinks,
+                    crate::panel::SortOrder::Desc,
+                ),
+                2 => (
+                    "Sort by name",
+                    crate::panel::SortColumn::Name,
+                    crate::panel::SortOrder::Asc,
+                ),
+                3 => (
+                    "Sort by name",
+                    crate::panel::SortColumn::Name,
+                    crate::panel::SortOrder::Desc,
+                ),
+                4 => (
+                    "Sort by hard-link count",
+                    crate::panel::SortColumn::HardLinks,
+                    crate::panel::SortOrder::Asc,
+                ),
+                _ => (
+                    "Sort by hard-link count",
+                    crate::panel::SortColumn::HardLinks,
+                    crate::panel::SortOrder::Desc,
+                ),
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.set_search_query("links-");
+                self.inner.ws.left.focus_child("links-middle.txt".into());
+                self.inner.ws.left.replace_selection([
+                    self.fixture.left.join("links-old.txt"),
+                    self.fixture.left.join("notes.md"),
+                ]);
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "links-middle.txt")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || config.sort_column() != column
+                        || config.sort_order() != order
+                        || self.inner.ws.left.selected_count() != 2
+                        || !self
+                            .inner
+                            .ws
+                            .left
+                            .cursor_entry()
+                            .is_some_and(|e| e.name == "links-middle.txt")
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"selected":self.inner.ws.left.selected_count(),"entries":self.inner.ws.left.filtered_entries().iter().map(|e|serde_json::json!({"name":e.name,"hard_links":e.hard_link_count(),"size":e.size,"selected":self.inner.ws.left.is_selected(&e.path)})).collect::<Vec<_>>(),"report":crate::listing_report::json(&self.inner.ws.left).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ChangedSort && self.symlink_phase < 36 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let (label, column, order) = match stage {
+                0 => (
+                    "Sort by metadata changed",
+                    crate::panel::SortColumn::Changed,
+                    crate::panel::SortOrder::Asc,
+                ),
+                1 => (
+                    "Sort by metadata changed",
+                    crate::panel::SortColumn::Changed,
+                    crate::panel::SortOrder::Desc,
+                ),
+                2 => (
+                    "Sort by modified",
+                    crate::panel::SortColumn::Modified,
+                    crate::panel::SortOrder::Asc,
+                ),
+                3 => (
+                    "Sort by modified",
+                    crate::panel::SortColumn::Modified,
+                    crate::panel::SortOrder::Desc,
+                ),
+                4 => (
+                    "Sort by metadata changed",
+                    crate::panel::SortColumn::Changed,
+                    crate::panel::SortOrder::Asc,
+                ),
+                _ => (
+                    "Sort by metadata changed",
+                    crate::panel::SortColumn::Changed,
+                    crate::panel::SortOrder::Desc,
+                ),
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.set_search_query("change-");
+                self.inner.ws.left.focus_child("change-middle.txt".into());
+                self.inner.ws.left.replace_selection([
+                    self.fixture.left.join("change-old.txt"),
+                    self.fixture.left.join("notes.md"),
+                ]);
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "change-middle.txt")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || config.sort_column() != column
+                        || config.sort_order() != order
+                        || self.inner.ws.left.selected_count() != 2
+                        || !self
+                            .inner
+                            .ws
+                            .left
+                            .cursor_entry()
+                            .is_some_and(|e| e.name == "change-middle.txt")
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"selected":self.inner.ws.left.selected_count(),"entries":self.inner.ws.left.filtered_entries().iter().map(|e|serde_json::json!({"name":e.name,"changed":e.changed,"modified":e.modified,"folder":e.is_dir,"symlink":e.is_symlink(),"selected":self.inner.ws.left.is_selected(&e.path)})).collect::<Vec<_>>(),"report":crate::listing_report::json(&self.inner.ws.left).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::HardlinkSelection && self.symlink_phase < 12 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let label = if stage == 0 {
+                "Select hard-link aliases of cursor"
+            } else {
+                "Copy listing as JSON"
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.set_search_query("hard-");
+                self.inner.ws.left.focus_child("hard-original.txt".into());
+                self.inner
+                    .ws
+                    .left
+                    .replace_selection([self.fixture.left.join("notes.md")]);
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "hard-original.txt")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if stage == 1 {
+                        if self.counters.clipboard.load(Ordering::Relaxed) != 1 {
+                            return;
+                        }
+                        let Some(text) = self
+                            .counters
+                            .clipboard_text
+                            .lock()
+                            .ok()
+                            .and_then(|v| v.clone())
+                        else {
+                            return;
+                        };
+                        if crate::listing_report::json(&self.inner.ws.left).as_ref() != Ok(&text)
+                            || std::fs::write(
+                                self.scenario_dir.join("hardlink-selection.json"),
+                                text,
+                            )
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || self.inner.ws.left.selected_count() != 3
+                        || !self
+                            .inner
+                            .ws
+                            .left
+                            .cursor_entry()
+                            .is_some_and(|e| e.name == "hard-original.txt")
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"selected":self.inner.ws.left.selected_count(),"entries":self.inner.ws.left.filtered_entries().iter().map(|e|serde_json::json!({"name":e.name,"identity":e.filesystem_id(),"regular_identity":e.regular_file_id(),"symlink":e.is_symlink(),"selected":self.inner.ws.left.is_selected(&e.path)})).collect::<Vec<_>>(),"report":crate::listing_report::json(&self.inner.ws.left).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::TimeSort && self.symlink_phase < 36 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let (label, column, order) = match stage {
+                0 => (
+                    "Sort by accessed",
+                    crate::panel::SortColumn::Accessed,
+                    crate::panel::SortOrder::Asc,
+                ),
+                1 => (
+                    "Sort by accessed",
+                    crate::panel::SortColumn::Accessed,
+                    crate::panel::SortOrder::Desc,
+                ),
+                2 => (
+                    "Sort by created",
+                    crate::panel::SortColumn::Created,
+                    crate::panel::SortOrder::Asc,
+                ),
+                3 => (
+                    "Sort by created",
+                    crate::panel::SortColumn::Created,
+                    crate::panel::SortOrder::Desc,
+                ),
+                4 => (
+                    "Sort by modified",
+                    crate::panel::SortColumn::Modified,
+                    crate::panel::SortOrder::Asc,
+                ),
+                _ => (
+                    "Sort by accessed",
+                    crate::panel::SortColumn::Accessed,
+                    crate::panel::SortOrder::Asc,
+                ),
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.set_search_query("clock-");
+                self.inner.ws.left.focus_child("clock-middle.txt".into());
+                self.inner.ws.left.replace_selection([
+                    self.fixture.left.join("clock-old.txt"),
+                    self.fixture.left.join("notes.md"),
+                ]);
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "clock-middle.txt")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || config.sort_column() != column
+                        || config.sort_order() != order
+                        || self.inner.ws.left.selected_count() != 2
+                        || !self
+                            .inner
+                            .ws
+                            .left
+                            .cursor_entry()
+                            .is_some_and(|e| e.name == "clock-middle.txt")
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"selected":self.inner.ws.left.selected_count(),"entries":self.inner.ws.left.filtered_entries().iter().map(|e|serde_json::json!({"name":e.name,"accessed":e.accessed,"created":e.created,"modified":e.modified,"selected":self.inner.ws.left.is_selected(&e.path)})).collect::<Vec<_>>(),"report":crate::listing_report::json(&self.inner.ws.left).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::AllocatedSort && self.symlink_phase < 24 {
+            let phase = self.symlink_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let label = if stage == 2 {
+                "Sort by size"
+            } else {
+                "Sort by allocated size"
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.focus_child("sparse.bin".into());
+                if !self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == "sparse.bin")
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    let config = self.inner.ws.left.view_config();
+                    if self.inner.ui.modals.palette_input.is_some()
+                        || config.sort_column()
+                            != if stage == 2 {
+                                crate::panel::SortColumn::Size
+                            } else {
+                                crate::panel::SortColumn::Allocated
+                            }
+                        || config.sort_order()
+                            != if stage == 1 {
+                                crate::panel::SortOrder::Desc
+                            } else {
+                                crate::panel::SortOrder::Asc
+                            }
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"phase":phase,"config":config,"cursor":self.inner.ws.left.cursor_entry().map(|e|&e.name),"entries":self.inner.ws.left.entries().iter().map(|e|serde_json::json!({"name":e.name,"logical":e.size,"allocated":e.allocated_bytes(),"folder":e.is_dir,"symlink":e.is_symlink()})).collect::<Vec<_>>()});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join(format!("sort-{stage}.json")), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::SymlinkWorkflow && self.symlink_phase < 48 {
+            use crate::command::Command;
+            let phase = self.symlink_phase;
+            let _=std::fs::write(self.scenario_dir.join("progress.json"),serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"active":format!("{:?}",self.inner.ws.active),"cursor":self.inner.ws.active_panel_ref().cursor_entry().map(|e|&e.name),"palette":self.inner.ui.modals.palette_input.as_ref().map(|s|&s.input),"clipboard":self.counters.clipboard.load(Ordering::Relaxed)})).unwrap());
+            let stage = phase / 6;
+            let local = phase % 6;
+            let (command, label) = match stage {
+                0 => (
+                    Command::CreateRelativeSymlink,
+                    "Create relative symlink in other panel",
+                ),
+                1 => (Command::CopySymlinkTarget, "Copy symbolic-link target"),
+                2 => (
+                    Command::CopyResolvedSymlinkTarget,
+                    "Copy resolved symbolic-link target",
+                ),
+                3 | 5 => (
+                    Command::SelectVisibleSymlinks,
+                    "Add visible symbolic links to selection",
+                ),
+                4 => (
+                    Command::InvertVisibleSymlinks,
+                    "Invert visible symbolic-link selection",
+                ),
+                6 => (
+                    Command::DeselectVisibleSymlinks,
+                    "Remove visible symbolic links from selection",
+                ),
+                _ => (Command::FollowSymlink, "Follow symbolic link"),
+            };
+            if phase == 0 {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.focus_child("portable.txt".into());
+            }
+            if local == 0 {
+                let name = if stage == 0 {
+                    "portable.txt"
+                } else {
+                    "portable link 2.txt"
+                };
+                if !self
+                    .inner
+                    .ws
+                    .active_panel_ref()
+                    .cursor_entry()
+                    .is_some_and(|e| e.name == name)
+                {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(if local <= 1 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                }));
+            match local {
+                0 | 1 => input.events.push(egui::Event::Key {
+                    key: egui::Key::K,
+                    physical_key: None,
+                    pressed: local == 0,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }),
+                2 => {
+                    if self.inner.ui.modals.palette_input.is_none() {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text(format!(">{label}")));
+                }
+                3 => {
+                    let Some(state) = self.inner.ui.modals.palette_input.as_ref() else {
+                        return;
+                    };
+                    if state.input != format!(">{label}")
+                        || state.selected != 0
+                        || crate::command::rank(
+                            label,
+                            &self.inner.palette_usage,
+                            self.inner.palette_tick,
+                        )
+                        .first()
+                        .is_none_or(|entry| entry.command != command)
+                        || !crate::command::availability(command, &self.inner.ws.command_context())
+                            .enabled
+                    {
+                        return;
+                    }
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                4 => input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                _ => {
+                    if self.inner.ui.modals.palette_input.is_some() {
+                        return;
+                    }
+                    if stage == 0 {
+                        if std::fs::read_link(self.fixture.right.join("portable link 2.txt")).ok()
+                            != Some(PathBuf::from("../left/portable.txt"))
+                        {
+                            return;
+                        }
+                        self.inner.ws.active = crate::workspace::ActivePanel::Right;
+                        self.inner
+                            .ws
+                            .right
+                            .focus_child("portable link 2.txt".into());
+                    } else if stage == 1 || stage == 2 {
+                        let expected = if stage == 1 {
+                            "../left/portable.txt".into()
+                        } else {
+                            std::fs::canonicalize(self.fixture.left.join("portable.txt"))
+                                .unwrap()
+                                .to_string_lossy()
+                                .into_owned()
+                        };
+                        if self.counters.clipboard.load(Ordering::Relaxed) != usize::from(stage)
+                            || self
+                                .counters
+                                .clipboard_text
+                                .lock()
+                                .ok()
+                                .and_then(|v| v.clone())
+                                .as_ref()
+                                != Some(&expected)
+                        {
+                            return;
+                        }
+                        if std::fs::write(
+                            self.scenario_dir.join(if stage == 1 {
+                                "raw-target.txt"
+                            } else {
+                                "resolved-target.txt"
+                            }),
+                            expected,
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
+                    } else if (3..=6).contains(&stage) {
+                        let selected = stage == 3 || stage == 5;
+                        let link = self.fixture.right.join("portable link 2.txt");
+                        if self.inner.ws.right.is_selected(&link) != selected
+                            || self.inner.ws.right.selected_count() != usize::from(selected)
+                        {
+                            return;
+                        }
+                        if !serde_json::to_vec_pretty(&serde_json::json!({"stage":stage,"selected":selected,"count":self.inner.ws.right.selected_count(),"link":link})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("selection-{stage}.json")),bytes).is_ok()) {return;}
+                    } else {
+                        if !self
+                            .inner
+                            .ws
+                            .right
+                            .cursor_entry()
+                            .is_some_and(|e| e.name == "portable.txt")
+                            || self.inner.ws.right.current_path
+                                != std::fs::canonicalize(&self.fixture.left).unwrap()
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::Timestamps {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+        if self.scenario == Scenario::Timestamps && self.timestamp_phase < 27 {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(80) {
+                return;
+            }
+            let Some(state) = self.inner.ui.modals.permissions.as_ref() else {
+                return;
+            };
+            let view = state.timestamp_qa();
+            let phase = self.timestamp_phase;
+            if view["busy"] != false
+                || view["timestamps"] != true
+                || view["error"] != serde_json::Value::Null
+                || state.plan.is_none()
+            {
+                return;
+            }
+            if matches!(phase, 4 | 15 | 18 | 21 | 24) {
+                if phase == 4
+                    && (view["modified"] != "not a date"
+                        || ctx
+                            .data(|d| d.get_temp::<bool>(egui::Id::new("timestamp-apply-enabled")))
+                            != Some(false))
+                {
+                    return;
+                }
+                if phase == 15
+                    && (view["modified"] != "2026-10-31T10:30:00+04:00"
+                        || view["accessed"] != "2025-01-02"
+                        || ctx
+                            .data(|d| d.get_temp::<bool>(egui::Id::new("timestamp-apply-enabled")))
+                            != Some(true))
+                {
+                    return;
+                }
+                if phase == 18
+                    && (view["needs_reload"] != true
+                        || view["report"]["changed"] != 2
+                        || view["report"]["errors"] != serde_json::json!([]))
+                {
+                    return;
+                }
+                if phase == 21
+                    && (!state.plan.as_ref().is_some_and(crate::timestamps::ready)
+                        || view["needs_reload"] != false
+                        || view["modified"] != ""
+                        || view["accessed"] != "")
+                {
+                    return;
+                }
+                if phase == 24 && (view["modified"] == "" || view["modified"] != view["accessed"]) {
+                    return;
+                }
+                let facts=["times-a.txt","times-b.txt","times-untouched.txt"].into_iter().map(|name| {let path=self.fixture.left.join(name);let metadata=std::fs::metadata(&path).ok()?;let times=crate::timestamps::Snapshot::from_metadata(&metadata)?;Some(serde_json::json!({"path":path,"modified":crate::timestamps::format(times.modified),"accessed":crate::timestamps::format(times.accessed),"size":metadata.len()}))}).collect::<Option<Vec<_>>>();
+                let Some(facts) = facts else {
+                    return;
+                };
+                if !serde_json::to_vec_pretty(
+                    &serde_json::json!({"phase":phase,"view":view,"files":facts}),
+                )
+                .is_ok_and(|b| {
+                    std::fs::write(self.scenario_dir.join(format!("times-{phase}.json")), b).is_ok()
+                }) {
+                    return;
+                }
+            }
+            if phase == 3 || phase == 10 || phase == 14 {
+                input.events.push(egui::Event::Text(
+                    match phase {
+                        3 => "not a date",
+                        10 => "2026-10-31T10:30:00+04:00",
+                        _ => "2025-01-02",
+                    }
+                    .into(),
+                ));
+            } else {
+                let (id, local) = match phase {
+                    0..=2 => (egui::Id::new("timestamp-modified").with("rect"), phase),
+                    4..=6 => (egui::Id::new("timestamp-reset"), phase - 4),
+                    7..=9 => (egui::Id::new("timestamp-modified").with("rect"), phase - 7),
+                    11..=13 => (egui::Id::new("timestamp-accessed").with("rect"), phase - 11),
+                    15..=17 => (egui::Id::new("timestamp-apply"), phase - 15),
+                    18..=20 => (egui::Id::new("timestamp-reload"), phase - 18),
+                    21..=23 => (egui::Id::new("timestamp-now"), phase - 21),
+                    _ => (egui::Id::new("timestamp-reset"), phase - 24),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            log::info!("Timestamp QA phase {phase}");
+            self.timestamp_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::SearchJson && self.search_json_phase < 45 {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.search_json_phase;
+            if phase == 4
+                && (state.run.is_some()
+                    || state.pending_rerun
+                    || !state.result_complete
+                    || state.results.len() != 5
+                    || state.error.is_some())
+            {
+                return;
+            }
+            for (at, clips, name) in [
+                (13, 1, "all"),
+                (25, 2, "selected"),
+                (28, 3, "visible"),
+                (36, 4, "draft"),
+            ] {
+                if phase == at {
+                    if self.counters.clipboard.load(Ordering::Relaxed) != clips {
+                        return;
+                    }
+                    let Some(text) = self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                    else {
+                        return;
+                    };
+                    if serde_json::from_str::<serde_json::Value>(&text).is_err()
+                        || std::fs::write(
+                            self.scenario_dir.join(format!("report-{name}.json")),
+                            text,
+                        )
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            if phase == 16 && state.hidden_results.len() != 1 {
+                return;
+            }
+            if phase == 22 && state.selected_results.len() != 2 {
+                return;
+            }
+            if phase == 33 && (state.error.is_none() || state.pending_rerun || state.run.is_some())
+            {
+                return;
+            }
+            if phase == 42
+                && (state.run.is_some()
+                    || state.pending_rerun
+                    || !state.result_complete
+                    || !state.results.is_empty()
+                    || state.error.is_some())
+            {
+                return;
+            }
+            if matches!(phase, 3 | 32 | 41) {
+                let text = match phase {
+                    3 => "name:report-",
+                    32 => "type:invalid-kind",
+                    _ => "name:does-not-exist",
+                };
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(text.into()));
+            } else if matches!(phase, 29 | 30 | 39 | 40) {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 29 | 39),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if phase == 31 {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            } else {
+                let (id, local) = match phase {
+                    0..=2 => (egui::Id::new("find-query-input"), phase),
+                    4..=6 => (egui::Id::new("find-copy-format"), phase - 4),
+                    7..=9 => (
+                        egui::Id::new(("find-copy-format-choice", "Report (JSON)")),
+                        phase - 7,
+                    ),
+                    10..=12 => (egui::Id::new("find-copy-result-paths"), phase - 10),
+                    13..=15 => (
+                        egui::Id::new(("find-hide-result", "report-hidden.txt")),
+                        phase - 13,
+                    ),
+                    16..=18 => (
+                        egui::Id::new(("find-select-result", "report-a.txt")),
+                        phase - 16,
+                    ),
+                    19..=21 => (
+                        egui::Id::new(("find-select-result", "search.zip!/report-archive.txt")),
+                        phase - 19,
+                    ),
+                    22..=24 => (egui::Id::new("find-copy-selected-paths"), phase - 22),
+                    25..=27 => (egui::Id::new("find-copy-result-paths"), phase - 25),
+                    28 => (egui::Id::new("find-query-input"), 0),
+                    33..=35 => (egui::Id::new("find-copy-result-paths"), phase - 33),
+                    36..=38 => (egui::Id::new("find-query-input"), phase - 36),
+                    _ => (egui::Id::new("find-copy-result-paths"), phase - 42),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            log::info!("Search JSON QA phase {phase}");
+            self.search_json_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::LinksSearch && self.owner_search_phase < 22 {
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.owner_search_phase;
+            if matches!(phase, 4 | 7 | 10 | 13) {
+                let (expression, count, skipped) = match phase {
+                    4 => ("links:>1 name:link-", 3, 1),
+                    7 => ("links:1 name:link-", 1, 1),
+                    10 => ("links:>3 name:link-", 0, 1),
+                    _ => ("links:3 archives:off name:link-", 3, 0),
+                };
+                if state.expression != expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != count
+                    || state.content_skipped != skipped
+                    || state.error.is_some()
+                    || state.truncated
+                {
+                    return;
+                }
+                if !links_search_snapshot(
+                    state,
+                    &self.scenario_dir.join(format!("links-{phase}.json")),
+                ) {
+                    return;
+                }
+            }
+            if matches!(phase, 3 | 6 | 9 | 12) {
+                let text = match phase {
+                    3 => "links:>1 name:link-",
+                    6 => "links:1 name:link-",
+                    9 => "links:>3 name:link-",
+                    _ => "links:3 archives:off name:link-",
+                };
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(text.into()));
+            } else if matches!(phase, 4 | 5 | 7 | 8 | 10 | 11) {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7 | 10),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else {
+                let (id, local) = match phase {
+                    0..=2 => (egui::Id::new("find-query-input"), phase),
+                    13..=15 => (egui::Id::new("find-copy-format"), phase - 13),
+                    16..=18 => (
+                        egui::Id::new(("find-copy-format-choice", "Report (JSON)")),
+                        phase - 16,
+                    ),
+                    _ => (egui::Id::new("find-copy-result-paths"), phase - 19),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            self.timestamp_input_at = Instant::now();
+            self.owner_search_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ParentSearch && self.allocation_search_phase < 10 {
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.allocation_search_phase;
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let expressions = self.parent_search_expressions();
+            if matches!(phase, 4 | 7) {
+                let (expression, count) = if phase == 4 {
+                    (&expressions[0], 2)
+                } else {
+                    (&expressions[1], 1)
+                };
+                if state.expression != *expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != count
+                    || state.content_skipped != 0
+                    || state.error.is_some()
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"path":h.entry.path,"name":h.entry.name,"size":h.entry.size,"allocated":h.entry.allocated_bytes(),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(format!("parent-{phase}.json")),b).is_ok()){return;}
+            }
+            if phase <= 2 {
+                let id = egui::Id::new("find-query-input");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if matches!(phase, 3 | 6 | 9) {
+                let expression = expressions[usize::from((phase - 3) / 3)].clone();
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(expression));
+            } else {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            log::info!("Parent search QA phase {phase}");
+            self.allocation_search_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::AllocationSearch && self.allocation_search_phase < 10 {
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.allocation_search_phase;
+            if matches!(phase, 4 | 7) {
+                let (expression, count) = if phase == 4 {
+                    ("allocated:=0 name:disk-", 2)
+                } else {
+                    ("allocated:>0 name:disk-", 1)
+                };
+                if state.expression != expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != count
+                    || state.content_skipped != 1
+                    || state.error.is_some()
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"name":h.entry.name,"size":h.entry.size,"allocated":h.entry.allocated_bytes(),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(format!("allocated-{phase}.json")),b).is_ok()){return;}
+            }
+            if phase <= 2 {
+                let id = egui::Id::new("find-query-input");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if matches!(phase, 3 | 6 | 9) {
+                let expression = match phase {
+                    3 => "allocated:=0 name:disk-",
+                    6 => "allocated:>0 name:disk-",
+                    _ => "allocated:=0 size:>1MB name:disk-",
+                };
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(expression.into()));
+            } else {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            log::info!("Allocation search QA phase {phase}");
+            self.allocation_search_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::AccessedSearch && self.allocation_search_phase < 10 {
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.allocation_search_phase;
+            if matches!(phase, 4 | 7) {
+                let (expression, count) = if phase == 4 {
+                    (ACCESS_EXPRESSIONS[0], 1)
+                } else {
+                    (ACCESS_EXPRESSIONS[1], 1)
+                };
+                if state.expression != expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != count
+                    || state.content_skipped != 1
+                    || state.error.is_some()
+                {
+                    return;
+                }
+                if !accessed_search_snapshot(
+                    state,
+                    &self.scenario_dir.join(format!("accessed-{phase}.json")),
+                ) {
+                    return;
+                }
+            }
+            if phase <= 2 {
+                let id = egui::Id::new("find-query-input");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if matches!(phase, 3 | 6 | 9) {
+                let expression = match phase {
+                    3 => ACCESS_EXPRESSIONS[0],
+                    6 => ACCESS_EXPRESSIONS[1],
+                    _ => ACCESS_EXPRESSIONS[2],
+                };
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(expression.into()));
+            } else {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            log::info!("Allocation search QA phase {phase}");
+            self.allocation_search_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::CreatedSearch && self.allocation_search_phase < 10 {
+            let expressions = self.created_search_expressions();
+            if expressions.len() != 3 {
+                return;
+            }
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.allocation_search_phase;
+            if matches!(phase, 4 | 7) {
+                let (expression, count) = if phase == 4 {
+                    (expressions[0].as_str(), 1)
+                } else {
+                    (expressions[1].as_str(), 0)
+                };
+                if state.expression != expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != count
+                    || state.content_skipped != 1
+                    || state.error.is_some()
+                {
+                    return;
+                }
+                if !created_search_snapshot(
+                    state,
+                    &self.scenario_dir.join(format!("created-{phase}.json")),
+                ) {
+                    return;
+                }
+            }
+            if phase <= 2 {
+                let id = egui::Id::new("find-query-input");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if matches!(phase, 3 | 6 | 9) {
+                let expression = match phase {
+                    3 => expressions[0].as_str(),
+                    6 => expressions[1].as_str(),
+                    _ => expressions[2].as_str(),
+                };
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(expression.into()));
+            } else {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            log::info!("Allocation search QA phase {phase}");
+            self.allocation_search_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 30 {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.disk_export_phase;
+            input.events.push(egui::Event::ModifiersChanged(
+                if (12..15).contains(&phase) {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                },
+            ));
+            let panel = &self.inner.ws.left;
+            let a = self.fixture.left.join("column-A");
+            let inner = a.join("inner");
+            let file = a.join("a.txt");
+            let expected = match phase {
+                6 => Some(&a),
+                9 => Some(&inner),
+                12 | 15 | 18 | 21 | 24 | 26 | 29 => Some(&a),
+                _ => None,
+            };
+            if let Some(path) = expected {
+                if panel.current_path != *path
+                    || matches!(panel.dir_status(), crate::panel::DirStatus::Loading)
+                {
+                    return;
+                }
+                if matches!(phase, 12 | 15 | 18 | 21 | 24 | 26 | 29)
+                    && panel.cursor_entry().is_none_or(|e| e.path != file)
+                {
+                    return;
+                }
+                if matches!(phase, 15 | 18 | 21 | 24 | 26 | 29) && !panel.is_selected(&file) {
+                    return;
+                }
+                if phase == 18
+                    && (panel.browser_mode() != crate::panel::BrowserMode::List
+                        || !panel.miller.columns.is_empty())
+                {
+                    return;
+                }
+                if matches!(phase, 21 | 24 | 29)
+                    && panel.browser_mode() != crate::panel::BrowserMode::Miller
+                {
+                    return;
+                }
+                let value = serde_json::json!({"phase":phase,"path":panel.current_path,"mode":panel.browser_mode(),"cursor":panel.cursor_entry().map(|e|&e.path),"selected":panel.selected_entries().into_iter().map(|e|e.path).collect::<Vec<_>>(),"columns":panel.miller.columns.iter().map(|c|serde_json::json!({"path":c.current_path,"status":format!("{:?}",c.dir_status()),"mode":c.browser_mode(),"entries":c.entries().iter().filter(|e|e.path.starts_with(&self.fixture.left)).map(|e|&e.path).collect::<Vec<_>>() })).collect::<Vec<_>>()});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|bytes| {
+                    std::fs::write(self.scenario_dir.join(format!("step-{phase}.json")), bytes)
+                        .is_ok()
+                }) {
+                    return;
+                }
+            }
+            if phase == 26 {
+                let Some(crate::panel::PreviewContent::Text { content, .. }) =
+                    &self.inner.ws.right.preview
+                else {
+                    return;
+                };
+                if content.as_ref() != "Miller A owner\n"
+                    || std::fs::write(self.scenario_dir.join("preview.txt"), content.as_bytes())
+                        .is_err()
+                {
+                    return;
+                }
+            }
+            if phase == 29 && self.inner.ws.right.preview.is_some() {
+                return;
+            }
+            if matches!(phase, 24 | 25 | 27 | 28) {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::F3,
+                    physical_key: None,
+                    pressed: matches!(phase, 24 | 27),
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            } else if !matches!(phase, 26 | 29) {
+                let step = phase / 3;
+                let local = phase % 3;
+                let id = match step {
+                    0 | 6 => egui::Id::new(("browser-mode", "left", "Columns")),
+                    1 => egui::Id::new(("miller-active", "left", "column-A")),
+                    2 => egui::Id::new(("miller-active", "left", "inner")),
+                    3 => egui::Id::new(("miller-context", "left", &a, &file)),
+                    5 => egui::Id::new(("browser-mode", "left", "List")),
+                    _ => egui::Id::new(("miller-active", "left", "a.txt")),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: if step == 4 {
+                            egui::Modifiers::COMMAND
+                        } else {
+                            egui::Modifiers::NONE
+                        },
+                    });
+                }
+            }
+            log::info!("Miller QA phase {phase}");
+            self.disk_export_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && (30..58).contains(&self.disk_export_phase) {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.disk_export_phase;
+            let a = self.fixture.left.join("column-A");
+            let parent = &self.fixture.left;
+            let p = &self.inner.ws.left;
+            if p.current_path != a
+                || p.cursor_entry().is_none_or(|e| e.path != a.join("a.txt"))
+                || !p.is_selected(&a.join("a.txt"))
+            {
+                return;
+            }
+            if matches!(phase, 30 | 34 | 39 | 43 | 46 | 52 | 57) {
+                let (parent_width, current_width) = match phase {
+                    30 => (220.0, 360.0),
+                    34 | 52 => (280.0, 360.0),
+                    _ => (280.0, 300.0),
+                };
+                if p.miller_column_width(parent, 220.0) != parent_width
+                    || p.miller_column_width(&a, 360.0) != current_width
+                {
+                    return;
+                }
+                if p.browser_mode()
+                    != if phase == 43 {
+                        crate::panel::BrowserMode::List
+                    } else {
+                        crate::panel::BrowserMode::Miller
+                    }
+                {
+                    return;
+                }
+                let geometry = |path: &Path| {
+                    ctx.data(|d| {
+                        d.get_temp::<egui::Rect>(egui::Id::new((
+                            "miller-column-rect",
+                            "left",
+                            path,
+                        )))
+                    })
+                };
+                let rects = if phase == 43 {
+                    None
+                } else {
+                    let (Some(x), Some(y)) = (geometry(parent), geometry(&a)) else {
+                        return;
+                    };
+                    if (x.width() - parent_width).abs() > 0.51
+                        || (y.width() - current_width).abs() > 0.51
+                    {
+                        return;
+                    }
+                    Some([RectArtifact::from(x), RectArtifact::from(y)])
+                };
+                let value = serde_json::json!({"phase":phase,"path":p.current_path,"mode":p.browser_mode(),"revision":p.entries_gen(),"selected":p.selected_entries().into_iter().map(|e|e.path).collect::<Vec<_>>(),"parent_width":parent_width,"current_width":current_width,"rects":rects,"columns":p.miller.columns.iter().map(|c|&c.current_path).collect::<Vec<_>>()});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                    std::fs::write(self.scenario_dir.join(format!("resize-{phase}.json")), b)
+                        .is_ok()
+                }) {
+                    return;
+                }
+            }
+            input
+                .events
+                .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            if (40..46).contains(&phase) {
+                let local = (phase - 40) % 3;
+                let label = if phase < 43 { "List" } else { "Columns" };
+                let id = egui::Id::new(("browser-mode", "left", label));
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            } else if (47..52).contains(&phase) {
+                let id = egui::Id::new(("miller-divider", "left", &a));
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                let pos = rect.center();
+                log::info!(
+                    "Miller reset pointer phase={phase} time={} pos={pos:?}",
+                    ctx.input(|i| i.time)
+                );
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 47 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: matches!(phase, 48 | 50),
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            } else if (30..34).contains(&phase)
+                || (35..39).contains(&phase)
+                || (53..57).contains(&phase)
+            {
+                let (local, path, delta) = if phase < 34 {
+                    (phase - 30, parent, 60.0)
+                } else if phase < 39 {
+                    (phase - 35, &a, -60.0)
+                } else {
+                    (phase - 53, &a, -60.0)
+                };
+                let id = egui::Id::new(("miller-divider", "left", path));
+                if local == 0 {
+                    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                        return;
+                    };
+                    if !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                }
+                let Some((target, rect, _)) = self.hex_pointer_target else {
+                    return;
+                };
+                if target != id {
+                    return;
+                }
+                let pos = rect.center() + egui::vec2(if local >= 2 { delta } else { 0.0 }, 0.0);
+                input.events.push(egui::Event::PointerMoved(pos));
+                if matches!(local, 1 | 3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            log::info!("Miller resize QA phase {phase}");
+            self.disk_export_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && (58..65).contains(&self.disk_export_phase) {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.disk_export_phase;
+            let a = self.fixture.left.join("column-A");
+            let panel = &self.inner.ws.left;
+            if matches!(phase, 58 | 60 | 62 | 64) {
+                let (folder, cursor) = if phase == 62 {
+                    (&self.fixture.left, a.clone())
+                } else {
+                    (&a, a.join("a.txt"))
+                };
+                if panel.current_path != *folder
+                    || panel.browser_mode() != crate::panel::BrowserMode::Miller
+                    || panel.cursor_entry().is_none_or(|e| e.path != cursor)
+                    || matches!(panel.dir_status(), crate::panel::DirStatus::Loading)
+                    || panel
+                        .miller
+                        .columns
+                        .iter()
+                        .any(|c| matches!(c.dir_status(), crate::panel::DirStatus::Loading))
+                {
+                    return;
+                }
+                if phase == 58 && panel.selected_count() != 1 {
+                    return;
+                }
+                let value = serde_json::json!({"phase":phase,"path":panel.current_path,"mode":panel.browser_mode(),"cursor":cursor,"revision":panel.entries_gen(),"selected":panel.selected_entries().iter().map(|e| &e.path).collect::<Vec<_>>(),"columns":panel.miller.columns.iter().map(|c| &c.current_path).collect::<Vec<_>>(),"parent_width":panel.miller_column_width(&self.fixture.left,220.0),"current_width":panel.miller_column_width(&a,360.0),"right_path":self.inner.ws.right.current_path});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                    std::fs::write(self.scenario_dir.join(format!("keyboard-{phase}.json")), b)
+                        .is_ok()
+                }) {
+                    return;
+                }
+            }
+            if phase != 64 {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Key {
+                    key: if matches!(phase, 60 | 61) {
+                        egui::Key::ArrowLeft
+                    } else {
+                        egui::Key::ArrowRight
+                    },
+                    physical_key: None,
+                    pressed: phase.is_multiple_of(2),
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            log::info!("Miller keyboard QA phase {phase}");
+            self.disk_export_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::FindSort && self.disk_export_phase < 62 {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.disk_export_phase;
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            if phase >= 4
+                && (state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != 6
+                    || state.error.is_some())
+            {
+                let _ = std::fs::write(
+                    self.scenario_dir.join("sort-worker-stalled.json"),
+                    format!(
+                        "phase={phase}, pending={}, running={}, complete={}, results={}, error={:?}, expression={:?}, sort={:?}, pivot={:?}",
+                        state.pending_rerun,
+                        state.run.is_some(),
+                        state.result_complete,
+                        state.results.len(),
+                        state.error,
+                        state.expression,
+                        state.result_sort,
+                        state.time_pivot
+                    ),
+                );
+                return;
+            }
+            if phase == 8 {
+                if state.highlighted_result != Some(1) {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"generation":state.generation,"original_names":state.results.iter().map(|h|&h.entry.name).collect::<Vec<_>>(),"highlighted_name":state.results[1].entry.name})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("sort-initial.json"),b).is_ok()){return;}
+            }
+            if let Some(index) = [17, 23, 32, 41, 47].iter().position(|&p| p == phase)
+                && (self.counters.clipboard.load(Ordering::Relaxed) != index + 1
+                    || !self.recorded_clipboard_dump(&format!("sort-{}.json", index + 1)))
+            {
+                return;
+            }
+            if phase == 3 {
+                input.events.push(egui::Event::Text("name:sort-".into()));
+            } else if matches!(phase, 4..=7) {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 6),
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+            } else {
+                let (id, local) = if phase < 3 {
+                    (egui::Id::new("find-query-input"), phase)
+                } else {
+                    let step = (phase - 8) / 3;
+                    let local = (phase - 8) % 3;
+                    if local == 0 && matches!(step, 2 | 4 | 7 | 10 | 12 | 17) {
+                        use crate::search_order::{Field, Sort};
+                        let (number, field, descending, pivot) = match step {
+                            2 => (1, Field::Name, false, crate::search::TimePivot::None),
+                            4 => (2, Field::Name, true, crate::search::TimePivot::None),
+                            7 => (3, Field::Size, true, crate::search::TimePivot::None),
+                            10 => (4, Field::Allocated, true, crate::search::TimePivot::None),
+                            12 => (
+                                5,
+                                Field::Allocated,
+                                true,
+                                crate::search::TimePivot::Modified,
+                            ),
+                            _ => (6, Field::Rank, false, crate::search::TimePivot::None),
+                        };
+                        if state.result_sort != (Sort { field, descending })
+                            || state.time_pivot != pivot
+                        {
+                            let _ = std::fs::write(
+                                self.scenario_dir.join("sort-stalled.json"),
+                                format!(
+                                    "phase={phase}, sort={:?}, pivot={:?}",
+                                    state.result_sort, state.time_pivot
+                                ),
+                            );
+                            return;
+                        }
+                        let Some(indices) = ctx.data(|d| {
+                            d.get_temp::<Vec<usize>>(egui::Id::new("find-rendered-order"))
+                        }) else {
+                            return;
+                        };
+                        if !serde_json::to_vec_pretty(&serde_json::json!({"highlighted_row":state.highlighted_result,"highlighted_name":state.highlighted_result.and_then(|row|indices.get(row)).map(|&i|&state.results[i].entry.name)})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(format!("highlight-{number}.json")),b).is_ok()){return;}
+                    }
+                    let id = match step {
+                        0 | 5 | 8 | 14 => egui::Id::new("find-result-sort-picker"),
+                        1 => egui::Id::new(("find-result-sort-choice", "Name")),
+                        3 | 16 => egui::Id::new("find-result-sort-descending"),
+                        6 => egui::Id::new(("find-result-sort-choice", "Listed size")),
+                        9 => egui::Id::new(("find-result-sort-choice", "Allocated size")),
+                        11 => egui::Id::new(("find-time-pivot", "Modified")),
+                        13 => egui::Id::new(("find-time-pivot", "List")),
+                        15 => egui::Id::new(("find-result-sort-choice", "Original rank")),
+                        _ => egui::Id::new("find-copy-result-paths"),
+                    };
+                    (id, local)
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 {
+                    let settled = self.hex_pointer_target.is_some_and(|(target, old, since)| {
+                        target == id
+                            && old.center().distance(rect.center()) <= 8.0
+                            && since.elapsed() >= Duration::from_millis(60)
+                    });
+                    if !settled {
+                        if !self.hex_pointer_target.is_some_and(|(target, old, _)| {
+                            target == id && old.center().distance(rect.center()) <= 8.0
+                        }) {
+                            self.hex_pointer_target = Some((id, rect, Instant::now()));
+                        }
+                        return;
+                    }
+                    self.hex_pointer_target = Some((id, rect, Instant::now()));
+                }
+                // Keep one pointer location through press/release. Following a
+                // moving layout while held can accidentally drag the window.
+                let pos = self
+                    .hex_pointer_target
+                    .filter(|(target, _, _)| *target == id)
+                    .map_or(rect.center(), |(_, settled, _)| settled.center());
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            log::info!("Find sort QA phase {phase}");
+            self.disk_export_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::TimeGroups && self.disk_export_phase < 29 {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.disk_export_phase;
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            if phase >= 4
+                && (state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != 3
+                    || state.error.is_some())
+            {
+                return;
+            }
+            if phase == 7 {
+                if state.highlighted_result != Some(1) {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"generation":state.generation,"original_names":state.results.iter().map(|h|&h.entry.name).collect::<Vec<_>>(),"highlighted_name":state.results[1].entry.name})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("group-initial.json"),b).is_ok()){return;}
+            }
+            if matches!(phase, 14 | 20 | 26) {
+                let (count, name) = match phase {
+                    14 => (1, "created.json"),
+                    20 => (2, "changed.json"),
+                    _ => (3, "modified.json"),
+                };
+                let Some(indices) =
+                    ctx.data(|d| d.get_temp::<Vec<usize>>(egui::Id::new("find-rendered-order")))
+                else {
+                    return;
+                };
+                if !serde_json::to_vec_pretty(&serde_json::json!({"pivot":state.time_pivot,"highlighted_row":state.highlighted_result,"highlighted_name":state.highlighted_result.and_then(|row|indices.get(row)).map(|&i|&state.results[i].entry.name)})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(format!("highlight-{phase}.json")),b).is_ok()){return;}
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || !self.recorded_clipboard_dump(name)
+                {
+                    return;
+                }
+            }
+            if matches!(phase, 11 | 17 | 23) {
+                let expected = match phase {
+                    11 => crate::search::TimePivot::Created,
+                    17 => crate::search::TimePivot::Changed,
+                    _ => crate::search::TimePivot::Modified,
+                };
+                if state.time_pivot != expected {
+                    return;
+                }
+            }
+            if phase == 3 {
+                input.events.push(egui::Event::Text("name:group-".into()));
+            } else if matches!(phase, 4..=7) {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 6),
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+            } else {
+                let (id, local) = match phase {
+                    0..=2 => (egui::Id::new("find-query-input"), phase),
+                    8..=10 => (egui::Id::new(("find-time-pivot", "Created")), phase - 8),
+                    11..=13 => (egui::Id::new("find-copy-result-paths"), phase - 11),
+                    14..=16 => (
+                        egui::Id::new(("find-time-pivot", "Metadata changed")),
+                        phase - 14,
+                    ),
+                    17..=19 => (egui::Id::new("find-copy-result-paths"), phase - 17),
+                    20..=22 => (egui::Id::new(("find-time-pivot", "Modified")), phase - 20),
+                    23..=25 => (egui::Id::new("find-copy-result-paths"), phase - 23),
+                    _ => (egui::Id::new(("find-time-pivot", "Created")), phase - 26),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            self.disk_export_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::ChangedSearch && self.allocation_search_phase < 10 {
+            let expressions = self.changed_search_expressions();
+            if expressions.len() != 3 {
+                return;
+            }
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.allocation_search_phase;
+            if matches!(phase, 4 | 7) {
+                let (expression, count) = if phase == 4 {
+                    (expressions[0].as_str(), 1)
+                } else {
+                    (expressions[1].as_str(), 0)
+                };
+                if state.expression != expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.result_complete
+                    || state.results.len() != count
+                    || state.content_skipped != 1
+                    || state.error.is_some()
+                {
+                    return;
+                }
+                if !changed_search_snapshot(
+                    state,
+                    &self.scenario_dir.join(format!("changed-{phase}.json")),
+                ) {
+                    return;
+                }
+            }
+            if phase <= 2 {
+                let id = egui::Id::new("find-query-input");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if matches!(phase, 3 | 6 | 9) {
+                let expression = match phase {
+                    3 => expressions[0].as_str(),
+                    6 => expressions[1].as_str(),
+                    _ => expressions[2].as_str(),
+                };
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(expression.into()));
+            } else {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            log::info!("Allocation search QA phase {phase}");
+            self.allocation_search_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::IdentityFind && self.symlink_phase < 12 {
+            let phase = self.symlink_phase;
+            if phase < 6 {
+                let label = "Find hard-link aliases of cursor";
+                if phase == 0 {
+                    self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                    self.inner
+                        .ws
+                        .left
+                        .focus_child("identity-original.txt".into());
+                    if !self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "identity-original.txt")
+                    {
+                        return;
+                    }
+                }
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(if phase < 2 {
+                        egui::Modifiers::COMMAND
+                    } else {
+                        egui::Modifiers::NONE
+                    }));
+                match phase {
+                    0 | 1 => input.events.push(egui::Event::Key {
+                        key: egui::Key::K,
+                        physical_key: None,
+                        pressed: phase == 0,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    }),
+                    2 => {
+                        if self.inner.ui.modals.palette_input.is_none() {
+                            return;
+                        }
+                        input.events.push(egui::Event::Text(format!(">{label}")));
+                    }
+                    3 => {
+                        if !self
+                            .inner
+                            .ui
+                            .modals
+                            .palette_input
+                            .as_ref()
+                            .is_some_and(|s| s.input == format!(">{label}") && s.selected == 0)
+                        {
+                            return;
+                        }
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    4 => input.events.push(egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }),
+                    _ => {
+                        if self.inner.ui.modals.palette_input.is_some()
+                            || self.inner.ui.modals.find.is_none()
+                        {
+                            return;
+                        }
+                    }
+                }
+            } else {
+                let Some((device, inode)) = self
+                    .inner
+                    .ws
+                    .left
+                    .entries()
+                    .iter()
+                    .find(|e| e.name == "identity-original.txt")
+                    .and_then(crate::panel::FileEntry::regular_file_id)
+                else {
+                    return;
+                };
+                if phase == 6 {
+                    let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                        return;
+                    };
+                    if !state.result_complete
+                        || state.run.is_some()
+                        || state.pending_rerun
+                        || state.error.is_some()
+                        || state.results.len() != 2
+                        || state.content_skipped != 0
+                        || state.expression
+                            != format!("device:{device} inode:{inode} type:regular archives:off")
+                    {
+                        return;
+                    }
+                    if !serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"path":h.entry.path,"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("identity-command.json"),b).is_ok()){return;}
+                }
+                if phase <= 8 {
+                    let id = egui::Id::new("find-query-input");
+                    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                        return;
+                    };
+                    if phase == 6 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if phase != 6 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 7,
+                            modifiers: Default::default(),
+                        });
+                    }
+                } else if phase <= 10 {
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: phase == 9,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    });
+                } else {
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    input.events.push(egui::Event::Text(format!(
+                        "device:{device} inode:{inode} type:regular archives:on"
+                    )));
+                }
+            }
+            self.symlink_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::OwnerSearch && self.owner_search_phase < 13 {
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.owner_search_phase;
+            if matches!(phase, 4 | 7 | 10) {
+                let (expression, count) = match phase {
+                    4 => ("uid:424242 gid:606060 name:owned-", 2),
+                    7 => ("uid:!424242 gid:606061 name:owned-", 1),
+                    _ => ("uid:424242 gid:!606060 name:owned-", 0),
+                };
+                if state.expression != expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.ran
+                    || state.error.is_some()
+                    || state.results.len() != count
+                    || state.content_skipped != 1
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"paths":state.results.iter().map(|h|&h.entry.path).collect::<Vec<_>>(),"explanations":state.results.iter().map(|h|h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(format!("owner-{phase}.json")),b).is_ok()){return;}
+            }
+            if phase <= 2 {
+                let id = egui::Id::new("find-query-input");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if matches!(phase, 3 | 6 | 9 | 12) {
+                let expression = match phase {
+                    3 => "uid:424242 gid:606060 name:owned-".into(),
+                    6 => "uid:!424242 gid:606061 name:owned-".into(),
+                    9 => "uid:424242 gid:!606060 name:owned-".into(),
+                    _ => {
+                        let Ok(bytes) = std::fs::read(self.fixture.root.join("owner-facts.json"))
+                        else {
+                            return;
+                        };
+                        let Ok(facts) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                            return;
+                        };
+                        format!(
+                            "uid:{} gid:{} archives:off name:owned-",
+                            facts["uid"], facts["gid"]
+                        )
+                    }
+                };
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(expression));
+            } else {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7 | 10),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            log::info!("Owner search QA phase {phase}");
+            self.owner_search_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::BrokenLinkSearch && self.broken_link_phase < 10 {
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            let phase = self.broken_link_phase;
+            if phase == 4 || phase == 7 {
+                let (expression, count, skipped) = if phase == 4 {
+                    ("type:broken-link archives:off", 3, 1)
+                } else {
+                    ("types:broken-link,symlink archives:off", 6, 0)
+                };
+                if state.expression != expression
+                    || state.pending_rerun
+                    || state.run.is_some()
+                    || !state.ran
+                    || state.error.is_some()
+                    || state.results.len() != count
+                    || state.content_skipped != skipped
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"truncated":state.truncated,"paths":state.results.iter().map(|h|&h.entry.path).collect::<Vec<_>>(),"explanations":state.results.iter().map(|h|h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(format!("links-{phase}.json")),b).is_ok()){return;}
+                if phase == 7
+                    && std::fs::write(
+                        self.fixture.left.join("missing-target"),
+                        "repaired target\n",
+                    )
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if phase <= 2 {
+                let id = egui::Id::new("find-query-input");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if matches!(phase, 3 | 6 | 9) {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::Text(
+                    if phase == 6 {
+                        "types:broken-link,symlink archives:off"
+                    } else {
+                        "type:broken-link archives:off"
+                    }
+                    .into(),
+                ));
+            } else {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: matches!(phase, 4 | 7),
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            }
+            log::info!("Broken-link search QA phase {phase}");
+            self.broken_link_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::SearchResults && self.search_results_phase < 12 {
+            let phase = self.search_results_phase;
+            if matches!(phase, 0 | 3 | 6 | 9) && self.search_results_wait < 20 {
+                self.search_results_wait += 1;
+                return;
+            }
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            if phase == 3 && state.hidden_results.len() != 1 {
+                return;
+            }
+            if phase == 6 && !state.hidden_results.is_empty() {
+                if self.search_restore_retries < 2 {
+                    self.search_restore_retries += 1;
+                    self.search_results_phase = 3;
+                    self.search_results_wait = 0;
+                    log::info!("retrying native restore click after unchanged state");
+                }
+                return;
+            }
+            let key = match phase {
+                0..=2 => egui::Id::new(("find-hide-result", "notes.md")),
+                3..=5 => egui::Id::new("find-show-all-results"),
+                6..=8 => egui::Id::new(("find-hide-result", "README.txt")),
+                _ => egui::Id::new(("find-background-tab", "notes.md")),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = phase % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!(
+                    "search QA phase {phase}, target {rect:?}, hidden {}",
+                    state.hidden_results.len()
+                );
+                self.search_results_phase += 1;
+                if self.search_results_phase.is_multiple_of(3) {
+                    self.search_results_wait = 0;
+                }
+            }
+        }
+        if self.scenario == Scenario::SearchResults && (14..21).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 14 && self.search_results_wait == 0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+
+            if phase == 14 && !input.focused {
+                return;
+            }
+            if phase == 14 && self.search_results_wait < 20 {
+                self.search_results_wait += 1;
+                return;
+            }
+            if phase <= 16 {
+                if let Some(rect) =
+                    ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new("find-query-input")))
+                {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if phase > 14 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 15,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.search_results_phase += 1;
+                }
+            } else {
+                let command = phase >= 19;
+                let modifiers = if command {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: if command {
+                        egui::Key::Enter
+                    } else {
+                        egui::Key::ArrowDown
+                    },
+                    physical_key: None,
+                    pressed: phase == 17 || phase == 19,
+                    repeat: false,
+                    modifiers,
+                });
+                log::info!(
+                    "search QA keyboard phase {phase}, native_focus={}, query_focus={:?}, row={:?}, focused_id={:?}",
+                    input.focused,
+                    ctx.data(|data| data.get_temp::<bool>(egui::Id::new("find-query-focused"))),
+                    self.inner
+                        .ui
+                        .modals
+                        .find
+                        .as_ref()
+                        .and_then(|state| state.highlighted_result),
+                    ctx.memory(|memory| memory.focused())
+                );
+                self.search_results_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::SearchResults && (21..24).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if let Some(rect) = ctx
+                .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("find-copy-result-paths")))
+            {
+                let pos = rect.center();
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase != 21 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 22,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                // Keep this release separate from the next selection pointer move.
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults && (24..33).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            let key = match phase {
+                24..=26 => egui::Id::new(("find-select-result", "notes.md")),
+                27..=29 => egui::Id::new(("find-result-row", "Design")),
+                _ => egui::Id::new("find-copy-selected-paths"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                let modifiers = if (27..30).contains(&phase) {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 24) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults && (33..54).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 36
+                && !self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.selected_results.is_empty() && state.hidden_results.len() == 1
+                })
+            {
+                return;
+            }
+            if phase == 39
+                && !self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.selected_results.len() == 2
+                        && !state
+                            .selected_results
+                            .contains(&crate::search::SearchLocation::Native(
+                                self.fixture.left.join("README.txt"),
+                            ))
+                })
+            {
+                return;
+            }
+            if phase == 42
+                && !self
+                    .inner
+                    .ui
+                    .modals
+                    .find
+                    .as_ref()
+                    .is_some_and(|state| state.remembered_result_selection.is_some())
+            {
+                return;
+            }
+            if phase == 45 && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left) != 5 {
+                return;
+            }
+            if phase == 48
+                && !self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.hidden_results.len() == 3 && state.selected_results.is_empty()
+                })
+            {
+                return;
+            }
+            if phase == 51
+                && !self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.hidden_results.is_empty() && state.selected_results.is_empty()
+                })
+            {
+                return;
+            }
+            let key = match phase {
+                33..=35 => egui::Id::new("find-invert-selection"),
+                36..=38 => egui::Id::new("find-select-all-visible"),
+                39..=41 => egui::Id::new("find-remember-selection"),
+                42..=44 => egui::Id::new("find-open-selected-tabs"),
+                45..=47 => egui::Id::new("find-hide-selected-results"),
+                48..=50 => egui::Id::new("find-show-all-results"),
+                _ => egui::Id::new("find-restore-selection"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 33) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults && (54..72).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 63
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 3
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        .as_deref()
+                        != Some("notes.md\nDesign"))
+            {
+                return;
+            }
+            let key = match phase {
+                54..=56 | 63..=65 => egui::Id::new("find-copy-format"),
+                57..=59 => egui::Id::new(("find-copy-format-choice", "Names")),
+                66..=68 => egui::Id::new(("find-copy-format-choice", "Shell arguments")),
+                _ => egui::Id::new("find-copy-selected-paths"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 54) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults && (72..81).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 72
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 4
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        != Some(format!(
+                            "'{}' '{}'",
+                            self.fixture.left.join("notes.md").display(),
+                            self.fixture.left.join("Design").display()
+                        )))
+            {
+                return;
+            }
+            let key = match phase {
+                72..=74 => egui::Id::new("find-copy-format"),
+                75..=77 => egui::Id::new(("find-copy-format-choice", "Details (CSV)")),
+                _ => egui::Id::new("find-copy-selected-paths"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 72) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults && (81..93).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 81
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 5
+                    || !self.search_csv_clipboard_ready())
+            {
+                return;
+            }
+            if phase == 84
+                && !self
+                    .inner
+                    .ui
+                    .modals
+                    .find
+                    .as_ref()
+                    .is_some_and(|state| state.selected_results.len() == 2)
+            {
+                return;
+            }
+            if phase == 87
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 6
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        .as_deref()
+                        != Some("notes.md"))
+            {
+                return;
+            }
+            if phase == 90
+                && !self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.selected_results.len() == 1
+                        && state
+                            .selected_results
+                            .contains(&crate::search::SearchLocation::Native(
+                                self.fixture.left.join("README.txt"),
+                            ))
+                })
+            {
+                return;
+            }
+            let key = match phase {
+                81..=83 => egui::Id::new(("find-result-row", "notes.md")),
+                84..=86 => egui::Id::new(("find-context-copy-name", "notes.md")),
+                87..=89 => egui::Id::new(("find-result-row", "README.txt")),
+                _ => egui::Id::new(("find-context-copy-path", "README.txt")),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 81) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if matches!(phase, 81..=83 | 87..=89) {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults
+            && (93..102).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 93
+                && (!self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.result_copy_format == crate::app::FindCopyFormat::DetailsCsv
+                }) || self.counters.clipboard.load(Ordering::Relaxed) != 7
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        != Some(self.fixture.left.join("README.txt").display().to_string()))
+            {
+                return;
+            }
+            let key = match phase {
+                93..=95 => egui::Id::new("find-copy-format"),
+                96..=98 => egui::Id::new(("find-copy-format-choice", "File URLs")),
+                _ => egui::Id::new("find-copy-selected-paths"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 93) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults
+            && (102..111).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 102
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 8
+                    || !self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                        state.result_copy_format == crate::app::FindCopyFormat::FileUrls
+                    })
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        != Some(crate::clipboard::format(
+                            &[self.fixture.left.join("README.txt")],
+                            crate::clipboard::PathStyle::FileUrl,
+                            None,
+                        )))
+            {
+                return;
+            }
+            let key = match phase {
+                102..=104 => egui::Id::new("find-copy-format"),
+                105..=107 => egui::Id::new(("find-copy-format-choice", "Names (no extension)")),
+                _ => egui::Id::new("find-copy-selected-paths"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 102) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults
+            && (111..114).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 111
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 9
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        .as_deref()
+                        != Some("README"))
+            {
+                return;
+            }
+            if let Some(rect) = ctx
+                .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("find-copy-result-paths")))
+            {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = phase - 111;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults
+            && (114..126).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 123
+                && self.counters.clipboard.load(Ordering::Relaxed) == 11
+                && !self.scenario_dir.join("parent-copy-proof.json").exists()
+            {
+                let parent_rect = ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new((
+                        "find-copy-format-choice",
+                        "Parent folders",
+                    )))
+                });
+                let visible_rect = ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new((
+                        "find-copy-format-choice-visible",
+                        "Parent folders",
+                    )))
+                });
+                let value = serde_json::json!({"parent_selected":self.inner.ui.modals.find.as_ref().is_some_and(|s|s.result_copy_format==crate::app::FindCopyFormat::ParentFolders),"clipboard_calls":11,"text":self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()),"choice_rect":parent_rect.map(RectArtifact::from),"visible_rect":visible_rect.map(RectArtifact::from)});
+                let _ = std::fs::write(
+                    self.scenario_dir.join("parent-copy-proof.json"),
+                    serde_json::to_vec_pretty(&value).unwrap(),
+                );
+            }
+            let expected = if phase == 114 {
+                Some("README\nnotes\nDesign".to_string())
+            } else if phase == 123 {
+                Some(self.fixture.left.to_string_lossy().into_owned())
+            } else {
+                None
+            };
+            if let Some(expected) = expected {
+                let count = if phase == 114 { 10 } else { 11 };
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        != Some(expected)
+                {
+                    return;
+                }
+            }
+            let (key, local) = match phase {
+                114..=116 => (egui::Id::new("find-copy-format"), phase - 114),
+                117..=119 => (
+                    egui::Id::new(("find-copy-format-choice", "Parent folders")),
+                    phase - 117,
+                ),
+                120..=122 => (egui::Id::new("find-copy-selected-paths"), phase - 120),
+                _ => (egui::Id::new("find-copy-result-paths"), phase - 123),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                if local == 0 && !self.hex_target_settled(key, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.search_results_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::SearchResults
+            && (126..138).contains(&self.search_results_phase)
+        {
+            let phase = self.search_results_phase;
+            if phase == 126 {
+                if self.counters.clipboard.load(Ordering::Relaxed) != 12
+                    || !self.recorded_clipboard_dump("parents-all.txt")
+                {
+                    return;
+                }
+                if let Some(state) = self.inner.ui.modals.find.as_ref() {
+                    let _ = std::fs::write(
+                        self.scenario_dir.join("relative-initial.json"),
+                        serde_json::to_vec_pretty(
+                            &serde_json::json!({"root":state.root,"generation":state.generation}),
+                        )
+                        .unwrap(),
+                    );
+                }
+            }
+            if phase == 135
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 13
+                    || !self.recorded_clipboard_dump("relative-selected.txt"))
+            {
+                return;
+            }
+            let (key, local) = match phase {
+                126..=128 => (egui::Id::new("find-copy-format"), phase - 126),
+                129..=131 => (
+                    egui::Id::new(("find-copy-format-choice", "Relative paths")),
+                    phase - 129,
+                ),
+                132..=134 => (egui::Id::new("find-copy-selected-paths"), phase - 132),
+                _ => (egui::Id::new("find-copy-result-paths"), phase - 135),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(key, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.search_results_phase += 1;
+            return;
+        }
+        if matches!(
+            self.scenario,
+            Scenario::NameListActions | Scenario::MaskActions
+        ) && self.json_mode_phase < 28
+        {
+            ctx.request_repaint();
+            let _=std::fs::write(self.scenario_dir.join("action-progress.json"),serde_json::json!({"phase":self.json_mode_phase,"selected":self.inner.ws.left.selected_entries().iter().map(|e|&e.name).collect::<Vec<_>>(),"modal":self.inner.ui.modals.mask_input,"preview":ctx.data(|d|d.get_temp::<Option<usize>>(egui::Id::new("mask-action-preview"))),"action":ctx.data(|d|d.get_temp::<crate::name_list::Action>(egui::Id::new("mask-names-action"))).map(|a|a.label())}).to_string());
+            let phase = self.json_mode_phase;
+            let stage = phase / 7;
+            let local = phase % 7;
+            let action = match stage {
+                0 => "Remove",
+                1 | 2 => "Invert",
+                _ => "Add",
+            };
+            if local == 6 {
+                let expected = if stage == 0 || stage == 2 {
+                    1
+                } else if stage == 3 && self.scenario == Scenario::MaskActions {
+                    2
+                } else {
+                    3
+                };
+                if self.inner.ui.modals.mask_input.is_some()
+                    || self.inner.ws.left.selected_count() != expected
+                {
+                    return;
+                }
+                let p = &self.inner.ws.left;
+                let value = serde_json::json!({"stage":stage,"action":action,"selected":p.selected_entries().iter().map(|e|&e.name).collect::<Vec<_>>(),"root":p.current_path});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                    std::fs::write(
+                        self.scenario_dir.join(format!("names-action-{stage}.json")),
+                        b,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+            } else {
+                if self.inner.ui.modals.mask_input.is_none() {
+                    return;
+                }
+                if local == 3
+                    && ctx
+                        .data(|d| d.get_temp::<Option<usize>>(egui::Id::new("mask-action-preview")))
+                        .flatten()
+                        != Some(if stage == 0 {
+                            1
+                        } else if stage == 3 && self.scenario == Scenario::MaskActions {
+                            3
+                        } else {
+                            2
+                        })
+                {
+                    return;
+                }
+                let key = if local < 3 {
+                    egui::Id::new(("names-selection-action", action))
+                } else {
+                    egui::Id::new("names-selection-apply")
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                    return;
+                };
+                if local.is_multiple_of(3) && !self.hex_target_settled(key, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !local.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            self.json_mode_phase += 1;
+            return;
         }
         if self.scenario == Scenario::NameList && self.name_list_phase < 13 {
             let phase = self.name_list_phase;
@@ -1222,6 +8316,124 @@ impl eframe::App for VisualQaApp {
                     });
                 }
                 self.name_list_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18 {
+            use crate::workspace::ActivePanel;
+            let phase = self.tab_group_phase;
+            if phase == 6 || phase == 12 {
+                let snapshot = self.inner.ws.tab_snapshot(ActivePanel::Left);
+                if snapshot.entries[1].full_path_label != (phase == 6)
+                    || snapshot.entries[1].title.as_deref() != Some("Work")
+                {
+                    return;
+                }
+            }
+            let local = phase % 6;
+            let key = if local < 3 {
+                egui::Id::new(("folder-tab-anchor", ActivePanel::Left, 1usize))
+            } else {
+                egui::Id::new(("folder-tab-full-path", ActivePanel::Left))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !local.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if local < 3 {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::FolderTabs && (87..100).contains(&self.tab_group_phase) {
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Left;
+            if matches!(phase, 87 | 93 | 99) {
+                let expected = if phase == 87 {
+                    4
+                } else if phase == 93 {
+                    3
+                } else {
+                    0
+                };
+                if self.inner.ws.closed_tab_count(side) != expected {
+                    return;
+                }
+                let value = serde_json::json!({"phase":phase,"left":self.inner.ws.tab_snapshot(side),"right":self.inner.ws.tab_snapshot(side.other()),"active":format!("{:?}",self.inner.ws.active),"left_path":self.inner.ws.left.current_path,"right_path":self.inner.ws.right.current_path,"revision":self.inner.ws.left.entries_gen()});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                    std::fs::write(self.scenario_dir.join(format!("history-{phase}.json")), b)
+                        .is_ok()
+                }) {
+                    return;
+                }
+            }
+            if phase != 99 {
+                let (id, local) = match phase {
+                    87..=89 => (egui::Id::new(("closed-tab-menu", side)), phase - 87),
+                    90..=92 => (
+                        egui::Id::new(("closed-tab-forget", side, 3usize)),
+                        phase - 90,
+                    ),
+                    93..=95 => (egui::Id::new(("closed-tab-menu", side)), phase - 93),
+                    _ => (egui::Id::new(("closed-tab-clear", side)), phase - 96),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            self.tab_group_phase += 1;
+            self.timestamp_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::FolderTabs && (81..87).contains(&self.tab_group_phase) {
+            let phase = self.tab_group_phase;
+            let side = crate::workspace::ActivePanel::Left;
+            let key = if phase < 84 {
+                egui::Id::new(("folder-tab-anchor", side, 0usize))
+            } else {
+                egui::Id::new(("folder-tab-full-path", side))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                let local = if phase < 84 { phase - 81 } else { phase - 84 };
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if phase < 84 {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.tab_group_phase += 1;
             }
         }
         if self.scenario == Scenario::FolderTabs && (75..81).contains(&self.tab_group_phase) {
@@ -1555,6 +8767,1359 @@ impl eframe::App for VisualQaApp {
                 self.tab_group_phase += 1;
             }
         }
+        if matches!(
+            self.scenario,
+            Scenario::DocxPreview
+                | Scenario::OdtPreview
+                | Scenario::XlsxPreview
+                | Scenario::OdsPreview
+                | Scenario::PptxPreview
+                | Scenario::OdpPreview
+                | Scenario::EpubPreview
+                | Scenario::FictionbookPreview
+                | Scenario::RtfPreview
+        ) && self.json_mode_phase < 3
+            && matches!(&self.inner.ws.right.preview, Some(crate::panel::PreviewContent::Text { content, .. })
+                if Some(content.as_ref()) == self.scenario.office_text())
+            && let Some(rect) = ctx.data(|data| {
+                data.get_temp::<egui::Rect>(egui::Id::new(("copy-preview-text", "right")))
+            })
+        {
+            let phase = self.json_mode_phase;
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if phase != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: phase == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.json_mode_phase += 1;
+        }
+        if self.scenario == Scenario::TablePreview && self.table_phase < 15 {
+            let phase = self.table_phase;
+            let expected = match phase {
+                0 => Some((false, vec![0, 1, 2, 3, 4])),
+                3 => Some((true, vec![1, 2, 3, 4])),
+                6 => Some((true, vec![2, 3, 1, 4])),
+                9 => Some((true, vec![4, 1, 2, 3])),
+                12 => Some((true, vec![1, 2, 3, 4])),
+                _ => None,
+            };
+            if expected.is_some_and(|expected| {
+                crate::table_preview::shown_order(ctx, "right") != Some(expected)
+            }) {
+                return;
+            }
+            let id = egui::Id::new(("table_preview", "right"));
+            let key = if phase < 3 {
+                id.with("heading")
+            } else {
+                id.with(("column", 0usize))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = phase % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.table_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::TablePreview && (15..29).contains(&self.table_phase) {
+            let phase = self.table_phase;
+            let (query, fuzzy, rows) = match phase {
+                15 => ("", false, Some(vec![2, 3, 1, 4])),
+                19 => ("fl2", false, Some(vec![])),
+                22 => ("fl2", true, Some(vec![2, 3])),
+                25 => ("", true, Some(vec![2, 3, 1, 4])),
+                _ => ("", false, None),
+            };
+            if let Some(rows) = rows
+                && (crate::table_preview::shown_order(ctx, "right") != Some((true, rows))
+                    || !crate::table_preview::filter_is(ctx, "right", query, fuzzy))
+            {
+                return;
+            }
+            let id = egui::Id::new(("table_preview", "right"));
+            if phase == 18 || phase == 28 {
+                if ctx.memory(|memory| memory.focused()) != Some(id.with("filter-input")) {
+                    return;
+                }
+                input.events.push(egui::Event::Text("fl2".into()));
+                self.table_phase += 1;
+                return;
+            }
+            let (key, local) = match phase {
+                15..=17 => (id.with("filter"), phase - 15),
+                19..=21 => (id.with("fuzzy"), phase - 19),
+                22..=24 => (id.with("clear-filter"), phase - 22),
+                _ => (id.with("filter"), phase - 25),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.table_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::TablePreview && (29..32).contains(&self.table_phase) {
+            if crate::table_preview::shown_order(ctx, "right") != Some((true, vec![2, 3]))
+                || !crate::table_preview::filter_is(ctx, "right", "fl2", true)
+            {
+                return;
+            }
+            let id = egui::Id::new(("table_preview", "right")).with("copy-records");
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = self.table_phase - 29;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.table_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::TablePreview && (32..100).contains(&self.table_phase) {
+            let stage = (self.table_phase - 32) / 4;
+            let local = (self.table_phase - 32) % 4;
+            let expected = match stage {
+                1 | 7 | 8 | 12 | 13 => vec![],
+                2 | 6 | 11 | 14 => vec![2, 3, 1, 4],
+                4 | 5 | 15 => vec![1, 4],
+                _ => vec![2, 3],
+            };
+            let Some(snapshot) = crate::table_preview::filter_snapshot(ctx, "right") else {
+                return;
+            };
+            if local == 0
+                && (snapshot["rows"] != serde_json::json!(expected)
+                    || snapshot["error"].is_string() != matches!(stage, 12 | 13))
+            {
+                return;
+            }
+            if local == 0
+                && serde_json::to_vec_pretty(&snapshot).is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir.join(format!("filter-stage-{stage}.json")),
+                        bytes,
+                    )
+                    .is_err()
+                })
+            {
+                return;
+            }
+            let id = egui::Id::new(("table_preview", "right"));
+            if matches!(stage, 2 | 11 | 14) {
+                if ctx.memory(|memory| memory.focused()) != Some(id.with("filter-input")) {
+                    return;
+                }
+                let text = match stage {
+                    2 => "^file2$",
+                    11 => "[",
+                    _ => "file2",
+                };
+                input.events.push(egui::Event::Text(text.into()));
+                self.table_phase += 4;
+                return;
+            }
+            let key = match stage {
+                0 => id.with("regex"),
+                1 | 10 | 13 => id.with("clear-filter"),
+                3 | 6 | 12 | 15 => id.with("exclude-filter"),
+                4 | 7 => id.with("filter-scope"),
+                5 => id.with(("filter-column-option", 1usize)),
+                8 => id.with("filter-all"),
+                9 => id.with("whole-words"),
+                _ => id.with("copy-records"),
+            };
+            if local == 3 {
+                self.table_phase += 1;
+                return;
+            }
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.table_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::TabSelectionSession && self.json_mode_phase < 24 {
+            if !self.pane_tool_opened {
+                return;
+            }
+            let phase = self.json_mode_phase;
+            let stage = phase / 6;
+            let local = phase % 6;
+            let label = match stage {
+                0 => "Save selection for this tab",
+                1 => "Clear selection in this folder",
+                2 => "Restore tab selection",
+                _ => "Forget tab selection",
+            };
+            if local == 5 {
+                let p = &self.inner.ws.left;
+                if self.inner.ui.modals.palette_input.is_some()
+                    || p.selected_count() != if stage == 1 { 0 } else { 2 }
+                    || p.tab_selection.is_none() != (stage == 3)
+                {
+                    return;
+                }
+                let value = serde_json::json!({"stage":stage,"root":p.current_path,"selected":p.selected_entries().iter().map(|e|&e.name).collect::<Vec<_>>(),"snapshot":p.tab_selection});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                    std::fs::write(self.scenario_dir.join(format!("selection-{stage}.json")), b)
+                        .is_ok()
+                }) {
+                    return;
+                }
+            } else if local == 2 {
+                if self.inner.ui.modals.palette_input.is_none() {
+                    return;
+                }
+                input.events.push(egui::Event::Text(format!(">{label}")));
+            } else {
+                if local == 3
+                    && !self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .is_some_and(|p| p.input == format!(">{label}"))
+                {
+                    return;
+                }
+                let modifiers = if local < 2 {
+                    egui::Modifiers::COMMAND
+                } else {
+                    egui::Modifiers::NONE
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: if local < 2 {
+                        egui::Key::K
+                    } else {
+                        egui::Key::Enter
+                    },
+                    physical_key: None,
+                    pressed: local == 0 || local == 3,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if matches!(
+            self.scenario,
+            Scenario::WorkspaceProfiles | Scenario::ProfileTabs
+        ) && self.json_mode_phase
+            < if self.scenario == Scenario::ProfileTabs {
+                14
+            } else {
+                18
+            }
+        {
+            ctx.request_repaint();
+            if !self.pane_tool_opened {
+                return;
+            }
+            let phase = self.json_mode_phase;
+            if self.scenario == Scenario::ProfileTabs && (phase == 9 || phase == 13) {
+                if phase == 9 {
+                    let Some(state) = self.inner.ui.modals.workspace_profiles.as_ref() else {
+                        return;
+                    };
+                    if state.book.get("Full").is_none() {
+                        if state.error.is_none() {
+                            self.json_mode_phase = 6;
+                        }
+                        return;
+                    }
+                    if !std::fs::read(crate::fs_util::config_dir().join("workspace_profiles.json"))
+                        .is_ok_and(|b| {
+                            std::fs::write(self.scenario_dir.join("tab-profile-store.json"), b)
+                                .is_ok()
+                        })
+                    {
+                        return;
+                    }
+                    for side in [
+                        crate::workspace::ActivePanel::Left,
+                        crate::workspace::ActivePanel::Right,
+                    ] {
+                        while self.inner.ws.tab_count(side) > 1 {
+                            if !self.inner.ws.close_tab(side) {
+                                return;
+                            }
+                        }
+                    }
+                    self.inner.ws.left.navigate_to(self.fixture.left.clone());
+                    self.inner.ws.right.navigate_to(self.fixture.right.clone());
+                    self.inner
+                        .ws
+                        .left
+                        .set_browser_mode(crate::panel::BrowserMode::List);
+                    self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                } else {
+                    if self.inner.ui.modals.workspace_profiles.is_some()
+                        || self.inner.ws.tab_count(crate::workspace::ActivePanel::Left) != 2
+                        || self
+                            .inner
+                            .ws
+                            .tab_count(crate::workspace::ActivePanel::Right)
+                            != 2
+                        || self.inner.ws.active != crate::workspace::ActivePanel::Right
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"left":self.inner.ws.tab_snapshot(crate::workspace::ActivePanel::Left),"right":self.inner.ws.tab_snapshot(crate::workspace::ActivePanel::Right),"active":format!("{:?}",self.inner.ws.active),"phase":phase});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join("tab-profile-applied.json"), b)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+                self.json_mode_phase += 1;
+                return;
+            }
+            if phase == 9 || phase == 13 || phase == 17 {
+                if phase < 17 {
+                    let Some(state) = self.inner.ui.modals.workspace_profiles.as_ref() else {
+                        return;
+                    };
+                    let Some(profile) = state.book.get("Work") else {
+                        return;
+                    };
+                    if profile.left_root
+                        != if phase == 9 {
+                            self.fixture.left.clone()
+                        } else {
+                            self.fixture.left.join("Design")
+                        }
+                    {
+                        return;
+                    }
+                    let bytes =
+                        std::fs::read(crate::fs_util::config_dir().join("workspace_profiles.json"));
+                    if !bytes.is_ok_and(|b| {
+                        std::fs::write(
+                            self.scenario_dir
+                                .join(format!("profile-store-{phase}.json")),
+                            b,
+                        )
+                        .is_ok()
+                    }) {
+                        return;
+                    }
+                    self.inner.ws.left.navigate_to(if phase == 9 {
+                        self.fixture.left.join("Design")
+                    } else {
+                        self.fixture.left.clone()
+                    });
+                    self.inner.ws.right.navigate_to(if phase == 9 {
+                        self.fixture.right.join("Archive")
+                    } else {
+                        self.fixture.right.clone()
+                    });
+                } else {
+                    if self.inner.ui.modals.workspace_profiles.is_some()
+                        || self.inner.ws.left.current_path != self.fixture.left.join("Design")
+                        || self.inner.ws.right.current_path != self.fixture.right.join("Archive")
+                    {
+                        return;
+                    }
+                    let value = serde_json::json!({"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path,"tabs":self.inner.ws.tab_snapshot(crate::workspace::ActivePanel::Left),"phase":phase});
+                    if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join("profile-applied.json"), b).is_ok()
+                    }) {
+                        return;
+                    }
+                }
+            } else if phase == 3 || phase == 4 {
+                let modifiers = egui::Modifiers::COMMAND;
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: phase == 3,
+                    repeat: false,
+                    modifiers,
+                });
+            } else if phase == 5 {
+                input.events.push(egui::Event::Text(
+                    if self.scenario == Scenario::ProfileTabs {
+                        "Full"
+                    } else {
+                        "Work"
+                    }
+                    .into(),
+                ));
+            } else {
+                let (key, local) = if phase < 3 {
+                    ("profile-name-input", phase)
+                } else if phase < 9 {
+                    ("profile-save", phase - 6)
+                } else if phase < 13 {
+                    (
+                        if self.scenario == Scenario::ProfileTabs {
+                            "profile-apply"
+                        } else {
+                            "profile-replace"
+                        },
+                        phase - 10,
+                    )
+                } else {
+                    ("profile-apply", phase - 14)
+                };
+                let key = egui::Id::new(key);
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(key, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ProfileExchange && self.json_mode_phase < 34 {
+            ctx.request_repaint();
+            if !self.pane_tool_opened {
+                return;
+            }
+            let phase = self.json_mode_phase;
+            if [3, 10, 14, 18, 22, 29, 33].contains(&phase) {
+                let Some(state) = self.inner.ui.modals.workspace_profiles.as_ref() else {
+                    return;
+                };
+                if phase == 3
+                    && (self.counters.clipboard.load(Ordering::Relaxed) != 1
+                        || !self.recorded_clipboard_dump("profile-export-before.json"))
+                {
+                    return;
+                }
+                if phase == 10
+                    && state.exchange_text
+                        != std::fs::read_to_string(self.scenario_dir.join("profile-import.json"))
+                            .expect("fixture")
+                {
+                    return;
+                }
+                if phase == 14
+                    && (state.book.profiles.len() != 1
+                        || state.import_preview.as_ref().map(|p| p.name.as_str())
+                            != Some("Imported"))
+                {
+                    return;
+                }
+                if phase == 18
+                    && (state.book.profiles.len() != 2
+                        || state.selected.as_deref() != Some("Imported")
+                        || state.import_preview.is_some())
+                {
+                    return;
+                }
+                if phase == 22
+                    && (self.counters.clipboard.load(Ordering::Relaxed) != 2
+                        || !self.recorded_clipboard_dump("profile-export-after.json"))
+                {
+                    return;
+                }
+                if phase == 29 && state.exchange_text != "broken profile" {
+                    return;
+                }
+                if phase == 33
+                    && (state.import_preview.is_some()
+                        || state.error.is_none()
+                        || state.book.profiles.len() != 2)
+                {
+                    return;
+                }
+                if !std::fs::read(crate::fs_util::config_dir().join("workspace_profiles.json"))
+                    .is_ok_and(|b| {
+                        std::fs::write(
+                            self.scenario_dir
+                                .join(format!("exchange-store-{phase}.json")),
+                            b,
+                        )
+                        .is_ok()
+                    })
+                {
+                    return;
+                }
+                let value = serde_json::json!({"phase":phase,"book":state.book,"preview":state.import_preview,"error":state.error,"selected":state.selected,"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                    std::fs::write(
+                        self.scenario_dir
+                            .join(format!("exchange-state-{phase}.json")),
+                        b,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+            } else if (4..10).contains(&phase) || (23..29).contains(&phase) {
+                let local = if phase < 10 { phase - 4 } else { phase - 23 };
+                if local == 5 {
+                    input.events.push(egui::Event::Paste(if phase < 10 {
+                        std::fs::read_to_string(self.scenario_dir.join("profile-import.json"))
+                            .expect("fixture")
+                    } else {
+                        "broken profile".into()
+                    }));
+                } else if local == 3 || local == 4 {
+                    let modifiers = egui::Modifiers::COMMAND;
+                    input.events.push(egui::Event::ModifiersChanged(modifiers));
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: local == 3,
+                        repeat: false,
+                        modifiers,
+                    });
+                } else {
+                    let key = egui::Id::new("profile-json-input");
+                    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                        return;
+                    };
+                    if local == 0 && !self.hex_target_settled(key, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                }
+            } else {
+                let (key, local) = if phase < 3 {
+                    ("profile-json-copy", phase)
+                } else if phase < 14 {
+                    ("profile-json-review", phase - 11)
+                } else if phase < 18 {
+                    ("profile-json-add", phase - 15)
+                } else if phase < 22 {
+                    ("profile-json-copy", phase - 19)
+                } else {
+                    ("profile-json-review", phase - 30)
+                };
+                let key = egui::Id::new(key);
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(key, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ProfileNames && self.json_mode_phase < 30 {
+            ctx.request_repaint();
+            if !self.pane_tool_opened {
+                return;
+            }
+            let phase = self.json_mode_phase;
+            let stage = phase / 10;
+            let local = phase % 10;
+            let name = if stage == 1 { "Copy" } else { "Project" };
+            if local == 9 {
+                let Some(state) = self.inner.ui.modals.workspace_profiles.as_ref() else {
+                    return;
+                };
+                if state.selected.as_deref() != Some(if stage == 0 { "Project" } else { "Copy" })
+                    || state.book.profiles.len() != if stage == 0 { 1 } else { 2 }
+                    || (stage == 2 && state.error.is_none())
+                {
+                    return;
+                }
+                if !std::fs::read(crate::fs_util::config_dir().join("workspace_profiles.json"))
+                    .is_ok_and(|b| {
+                        std::fs::write(
+                            self.scenario_dir
+                                .join(format!("profile-names-{stage}.json")),
+                            b,
+                        )
+                        .is_ok()
+                    })
+                {
+                    return;
+                }
+                let value = serde_json::json!({"stage":stage,"selected":state.selected,"error":state.error,"book":state.book,"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path});
+                if !serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                    std::fs::write(
+                        self.scenario_dir
+                            .join(format!("profile-names-state-{stage}.json")),
+                        b,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+            } else if local == 3 || local == 4 {
+                let modifiers = egui::Modifiers::COMMAND;
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: local == 3,
+                    repeat: false,
+                    modifiers,
+                });
+            } else if local == 5 {
+                input.events.push(egui::Event::Text(name.into()));
+            } else {
+                let (key, local) = if local < 3 {
+                    ("profile-name-input", local)
+                } else {
+                    (
+                        if stage == 1 {
+                            "profile-duplicate"
+                        } else {
+                            "profile-rename"
+                        },
+                        local - 6,
+                    )
+                };
+                let key = egui::Id::new(key);
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(key, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ThemeExchange && self.json_mode_phase < 30 {
+            ctx.request_repaint();
+            if !self.pane_tool_opened {
+                return;
+            }
+            let phase = self.json_mode_phase;
+            let input_phase = phase < 7 || (11..18).contains(&phase);
+            if input_phase {
+                let local = if phase < 7 { phase } else { phase - 11 };
+                let text = if phase < 7 {
+                    std::fs::read_to_string(self.scenario_dir.join("theme-import.json"))
+                        .expect("fixture")
+                } else {
+                    "invalid theme draft".into()
+                };
+                if local == 6 {
+                    if self.inner.custom_theme.draft != text {
+                        return;
+                    }
+                    if phase < 7 && self.inner.custom_theme.colors().is_some() {
+                        return;
+                    }
+                } else if local == 5 {
+                    input.events.push(egui::Event::Paste(text));
+                } else if local == 3 || local == 4 {
+                    let modifiers = egui::Modifiers::COMMAND;
+                    input.events.push(egui::Event::ModifiersChanged(modifiers));
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: local == 3,
+                        repeat: false,
+                        modifiers,
+                    });
+                } else {
+                    let key = egui::Id::new("custom-theme-json-input");
+                    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                        return;
+                    };
+                    if local == 0 && !self.hex_target_settled(key, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                }
+            } else {
+                let (local, key, file) = if phase < 11 {
+                    (phase - 7, "apply-custom-theme", "applied.json")
+                } else if phase < 22 {
+                    (phase - 18, "apply-custom-theme", "rejected.json")
+                } else if phase < 26 {
+                    (phase - 22, "copy-custom-theme", "copied.json")
+                } else {
+                    (phase - 26, "reset-custom-theme", "reset.json")
+                };
+                if local == 3 {
+                    let saved = self.inner.custom_theme.saved();
+                    if phase == 10
+                        && (saved["colors"]["bg_panel"] != "#182838"
+                            || self.inner.colors.bg_panel != egui::Color32::from_rgb(24, 40, 56))
+                    {
+                        return;
+                    }
+                    if phase == 21
+                        && (self.inner.custom_theme.error.is_none()
+                            || saved["colors"]["bg_panel"] != "#182838"
+                            || self.inner.custom_theme.draft != "invalid theme draft")
+                    {
+                        return;
+                    }
+                    if phase == 25
+                        && (self.counters.clipboard.load(Ordering::Relaxed) != 1
+                            || !self.recorded_clipboard_dump("theme-export.json"))
+                    {
+                        return;
+                    }
+                    if phase == 29
+                        && (!saved.is_null()
+                            || self.inner.custom_theme.colors().is_some()
+                            || self.inner.colors.bg_panel
+                                != crate::theme::ThemeColors::dark().bg_panel
+                            || self.inner.custom_theme.draft != "invalid theme draft")
+                    {
+                        return;
+                    }
+                    let actual = self.inner.colors.bg_panel;
+                    let value = serde_json::json!({"phase":phase,"saved":saved,"draft":self.inner.custom_theme.draft,"error":self.inner.custom_theme.error,"panel":[actual.r(),actual.g(),actual.b()]});
+                    if !serde_json::to_vec_pretty(&value)
+                        .is_ok_and(|b| std::fs::write(self.scenario_dir.join(file), b).is_ok())
+                    {
+                        return;
+                    }
+                } else {
+                    let key = egui::Id::new(key);
+                    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                        return;
+                    };
+                    if local == 0 && !self.hex_target_settled(key, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                }
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::CustomTheme
+            && (self.json_mode_phase < 3 || self.inner.custom_theme.colors().is_none())
+        {
+            ctx.request_repaint();
+            if !self.pane_tool_opened {
+                return;
+            }
+            if self.json_mode_phase == 3 {
+                self.json_mode_phase = 0;
+                return;
+            }
+            let key = egui::Id::new("apply-custom-theme");
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(key)) else {
+                return;
+            };
+            if self.json_mode_phase == 0 && !self.hex_target_settled(key, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if self.json_mode_phase > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: self.json_mode_phase == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ShortcutExchange && self.json_mode_phase < 16 {
+            let phase = self.json_mode_phase;
+            let progress = serde_json::json!({"apply_response":ctx.data(|d|d.get_temp::<serde_json::Value>(egui::Id::new("apply-shortcuts-response"))),"phase":phase,"applied":self.inner.custom_shortcuts.saved(),"apply_rect":ctx.data(|d|d.get_temp::<egui::Rect>(egui::Id::new("apply-custom-shortcuts"))).map(|r|[r.min.x,r.min.y,r.max.x,r.max.y]),"clip":ctx.data(|d|d.get_temp::<egui::Rect>(egui::Id::new("custom-shortcut-clip"))).map(|r|[r.min.x,r.min.y,r.max.x,r.max.y])});
+            let _ = std::fs::write(
+                self.scenario_dir
+                    .join(format!("exchange-phase-{phase}.json")),
+                progress.to_string(),
+            );
+            let _ = std::fs::write(
+                self.scenario_dir.join("exchange-progress.json"),
+                progress.to_string(),
+            );
+
+            if phase < 12 {
+                if phase == 6
+                    && (self.counters.clipboard.load(Ordering::Relaxed) != 1
+                        || !self.recorded_clipboard_dump("shortcuts-export.json"))
+                {
+                    return;
+                }
+                if phase == 9 {
+                    let saved = self.inner.custom_shortcuts.saved();
+                    let draft = &self.inner.custom_shortcuts.draft;
+                    if saved[0]["keys"] != "F5" || draft.len() != 1 || draft[0].keys != "N" {
+                        return;
+                    }
+                    if !serde_json::to_vec_pretty(
+                        &serde_json::json!({"applied":saved,"draft":draft}),
+                    )
+                    .is_ok_and(|b| {
+                        std::fs::write(self.scenario_dir.join("before-apply.json"), b).is_ok()
+                    }) {
+                        return;
+                    }
+                }
+                let id = egui::Id::new(match phase / 3 {
+                    0 => "shortcut-exchange-header",
+                    1 => "export-custom-shortcuts",
+                    2 => "import-custom-shortcuts",
+                    _ => "apply-custom-shortcuts",
+                });
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                let clip_id = if matches!(phase / 3, 1 | 2) {
+                    "shortcut-exchange-clip"
+                } else {
+                    "custom-shortcut-clip"
+                };
+                if let Some(clip) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(clip_id)))
+                    && !clip.contains_rect(rect)
+                {
+                    input.events.push(egui::Event::PointerMoved(egui::pos2(
+                        clip.left() + 2.,
+                        clip.bottom() - 2.,
+                    )));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0., if rect.min.y < clip.min.y { 200. } else { -200. }),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                if phase.is_multiple_of(3) && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else {
+                if phase == 12 && self.inner.custom_shortcuts.saved()[0]["keys"] != "N" {
+                    return;
+                }
+                input.events.push(egui::Event::Key {
+                    key: if phase < 14 {
+                        egui::Key::Escape
+                    } else {
+                        egui::Key::N
+                    },
+                    physical_key: None,
+                    pressed: phase.is_multiple_of(2),
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ShortcutHints && self.json_mode_phase < 10 {
+            let phase = self.json_mode_phase;
+            if phase == 3 || phase == 6 || phase == 9 {
+                let (query, label, hint, file) = match phase {
+                    3 => (
+                        ">Alt+G H",
+                        "Toggle hidden files",
+                        "Alt+G H / Cmd+H",
+                        "hint-custom.json",
+                    ),
+                    6 => (
+                        ">Copy to other panel",
+                        "Copy to other panel",
+                        "",
+                        "hint-shadowed.json",
+                    ),
+                    _ => (">F5", "Reverse sort order", "F5", "hint-key-search.json"),
+                };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .palette_input
+                    .as_ref()
+                    .is_some_and(|s| s.input == query)
+                {
+                    return;
+                }
+                let shown = ctx.data(|d| {
+                    d.get_temp::<String>(egui::Id::new(("palette-effective-shortcut", label)))
+                });
+                let visible = ctx.data(|d| {
+                    d.get_temp::<Vec<String>>(egui::Id::new("palette-visible-command-labels"))
+                });
+                let bar = ctx.data(|d| {
+                    d.get_temp::<String>(egui::Id::new(("keybar-effective-shortcut", "F5")))
+                });
+                if shown.as_deref() != Some(hint)
+                    || !visible
+                        .as_ref()
+                        .is_some_and(|v| v.first().map(String::as_str) == Some(label))
+                    || bar.as_deref() != Some("")
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"query":query,"label":label,"hint":shown,"visible":visible,"copy_keybar_hint":bar,"bindings":self.inner.custom_shortcuts.saved()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(file),b).is_ok()){return;}
+                if phase == 9 {
+                    self.json_mode_phase += 1;
+                    return;
+                }
+            }
+            let modifiers = if matches!(phase, 0 | 1 | 3 | 4 | 6 | 7) {
+                egui::Modifiers::COMMAND
+            } else {
+                egui::Modifiers::NONE
+            };
+            input.events.push(egui::Event::ModifiersChanged(modifiers));
+            if matches!(phase, 2 | 5 | 8) {
+                if self.inner.ui.modals.palette_input.is_none() {
+                    return;
+                }
+                input.events.push(egui::Event::Text(
+                    match phase {
+                        2 => ">Alt+G H",
+                        5 => ">Copy to other panel",
+                        _ => ">F5",
+                    }
+                    .into(),
+                ));
+            } else {
+                input.events.push(egui::Event::Key {
+                    key: if phase < 2 {
+                        egui::Key::K
+                    } else {
+                        egui::Key::A
+                    },
+                    physical_key: None,
+                    pressed: matches!(phase, 0 | 3 | 6),
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::CustomNavigation && self.json_mode_phase < 20 {
+            let phase = self.json_mode_phase;
+            if phase < 3 {
+                let id = egui::Id::new("apply-custom-shortcuts");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if let Some(clip) =
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("custom-shortcut-clip")))
+                    && !clip.contains_rect(rect)
+                {
+                    input.events.push(egui::Event::PointerMoved(clip.center()));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0., if rect.min.y < clip.min.y { 200. } else { -200. }),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if phase == 12 {
+                let p = &self.inner.ws.left;
+                if p.cursor() != 5 || p.selected_count() != 3 {
+                    return;
+                }
+                let snapshot = serde_json::json!({"cursor":p.cursor(),"names":p.entries().iter().map(|e|&e.name).collect::<Vec<_>>(),"selected":p.selected_entries().iter().map(|e|&e.name).collect::<Vec<_>>()});
+                if !serde_json::to_vec_pretty(&snapshot).is_ok_and(|b| {
+                    std::fs::write(self.scenario_dir.join("list-navigation.json"), b).is_ok()
+                }) {
+                    return;
+                }
+                self.inner
+                    .ws
+                    .execute(crate::command::Command::ShowIconsView);
+            } else {
+                if phase == 3
+                    && self
+                        .inner
+                        .custom_shortcuts
+                        .saved()
+                        .as_array()
+                        .is_none_or(|r| r.len() != 3)
+                {
+                    return;
+                }
+                if phase >= 13
+                    && self.inner.ws.left.browser_mode() != crate::panel::BrowserMode::Icons
+                {
+                    return;
+                }
+                let modifiers = if matches!(phase,9..=11|18..=19) {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                };
+                let key = if phase == 3 || phase == 4 {
+                    egui::Key::Escape
+                } else if phase == 13 || phase == 14 {
+                    egui::Key::B
+                } else {
+                    egui::Key::N
+                };
+                let pressed = !matches!(phase, 4 | 8 | 11 | 14 | 17 | 19);
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: matches!(phase, 6 | 7 | 10 | 16),
+                    modifiers,
+                });
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::CustomShortcuts && self.json_mode_phase < 17 {
+            let phase = self.json_mode_phase;
+            if phase < 3 {
+                let id = egui::Id::new("apply-custom-shortcuts");
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if let Some(clip) =
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("custom-shortcut-clip")))
+                    && !clip.contains_rect(rect)
+                {
+                    input.events.push(egui::Event::PointerMoved(clip.center()));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0., if rect.min.y < clip.min.y { 200. } else { -200. }),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                if phase == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            } else if phase == 7 || phase == 8 {
+                if self.inner.ws.left.show_hidden() {
+                    return;
+                }
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: phase == 7,
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+            } else {
+                if phase == 3
+                    && (!self.inner.ui.modals.keyboard_help
+                        || self
+                            .inner
+                            .custom_shortcuts
+                            .saved()
+                            .as_array()
+                            .is_none_or(|r| r.len() != 2))
+                {
+                    return;
+                }
+                if phase == 9 && self.inner.ui.modals.keyboard_help {
+                    return;
+                }
+                if phase == 13 && !self.inner.ws.left.show_hidden() {
+                    return;
+                }
+                let local = if phase < 7 {
+                    phase - 3
+                } else if phase < 13 {
+                    phase - 9
+                } else {
+                    phase - 13
+                };
+                let modifiers = if local < 2 {
+                    egui::Modifiers::ALT
+                } else {
+                    egui::Modifiers::NONE
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: if local < 2 {
+                        egui::Key::G
+                    } else if phase >= 13 {
+                        egui::Key::S
+                    } else {
+                        egui::Key::H
+                    },
+                    physical_key: None,
+                    pressed: local % 2 == 0,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            self.json_mode_phase += 1;
+            return;
+        }
+        if matches!(self.scenario, Scenario::GpxPreview | Scenario::KmlPreview)
+            && self.json_mode_phase < 12
+        {
+            let phase = self.json_mode_phase;
+            if phase >= 9 {
+                let id = egui::Id::new(("route-report-copy", "right"));
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let local = phase - 9;
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.json_mode_phase += 1;
+                }
+                return;
+            }
+            if phase >= 6 {
+                let index = if self.scenario == Scenario::KmlPreview {
+                    4usize
+                } else {
+                    1usize
+                };
+                let Some(points) = ctx.data(|data| {
+                    data.get_temp::<Vec<egui::Pos2>>(egui::Id::new((
+                        "route-point-positions",
+                        "right",
+                    )))
+                }) else {
+                    return;
+                };
+                let Some(&point) = points.get(index) else {
+                    return;
+                };
+                let id = egui::Id::new("route-point-inspector-target");
+                if phase == 6
+                    && !self.hex_target_settled(
+                        id,
+                        egui::Rect::from_center_size(point, egui::vec2(4., 4.)),
+                    )
+                {
+                    return;
+                }
+                if phase == 6 {
+                    // egui suppresses tooltips for moves within 100 ms of a click.
+                    let since_click = ctx.input(|input| input.pointer.time_since_last_click());
+                    if since_click < 0.15 {
+                        return;
+                    }
+                    log::info!("Route point QA: hover move {since_click:.3}s after click");
+                    input.events.push(egui::Event::PointerMoved(point));
+                }
+                if phase == 7 {
+                    let Some((actual, lines)) = ctx.data(|data| {
+                        data.get_temp::<(usize, Vec<String>)>(egui::Id::new((
+                            "route-point-tooltip",
+                            "right",
+                        )))
+                    }) else {
+                        return;
+                    };
+                    if actual != index || lines.len() != 6 {
+                        return;
+                    }
+                    if std::fs::write(self.scenario_dir.join("point-inspector.json"),serde_json::to_vec_pretty(&serde_json::json!({"index":index,"lines":lines,"position":[point.x,point.y]})).unwrap()).is_err(){return;}
+                }
+                self.json_mode_phase += 1;
+                return;
+            }
+            if phase == 0
+                && ctx
+                    .data(|d| {
+                        d.get_temp::<std::sync::Arc<crate::route_preview::Route>>(egui::Id::new((
+                            "gpx-route-ready",
+                            "right",
+                        )))
+                    })
+                    .is_none()
+            {
+                return;
+            }
+            if phase == 3
+                && ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("document_source", "right"))))
+                    != Some(true)
+            {
+                return;
+            }
+            if phase == 3
+                && !ctx
+                    .data(|d| d.get_temp::<String>(egui::Id::new(("gpx-source-shown", "right"))))
+                    .is_some_and(|text| {
+                        text == if self.scenario == Scenario::KmlPreview {
+                            crate::route_preview::kml_fixture()
+                        } else {
+                            crate::route_preview::fixture()
+                        }
+                    })
+            {
+                return;
+            }
+            let id = egui::Id::new(("json-preview-mode", "right", phase < 3));
+            if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                if phase.is_multiple_of(3) && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !phase.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.json_mode_phase += 1;
+            }
+            return;
+        }
         if self.scenario == Scenario::JsonPreview && self.json_mode_phase < 9 {
             let phase = self.json_mode_phase;
             if phase == 3
@@ -1729,6 +10294,3764 @@ impl eframe::App for VisualQaApp {
                 self.text_size_click_phase += 1;
             }
         }
+        if self.scenario == Scenario::DuplicateCross && self.duplicate_cross_phase < 51 {
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() {
+                return;
+            }
+            let phase = self.duplicate_cross_phase;
+            if phase >= 42 {
+                if phase == 45 || phase == 48 {
+                    let preferred = usize::from(phase == 48);
+                    if (phase == 48 && !state.history.can_undo())
+                        || state.history.can_redo() != (phase == 45)
+                        || !state.groups.iter().zip(&state.keep).all(|(group, keeper)| {
+                            keeper.and_then(|i| group.files.get(i)).is_some_and(|file| {
+                                crate::dedup_scan::root_owner(
+                                    &file.path,
+                                    [state.root.as_path(), state.other_root.as_path()],
+                                ) == Some(preferred)
+                            })
+                        })
+                    {
+                        return;
+                    }
+                    let snapshot = serde_json::json!({"phase":phase,"can_undo":state.history.can_undo(),"can_redo":state.history.can_redo(),"report":crate::duplicate_report::json(state).ok().and_then(|text|serde_json::from_str::<serde_json::Value>(&text).ok())});
+                    if std::fs::write(
+                        self.scenario_dir.join(format!("history-{phase}.json")),
+                        serde_json::to_vec_pretty(&snapshot).unwrap(),
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                let (group, label, local) = if phase < 45 {
+                    ("duplicate-history", "Undo plan edit", phase - 42)
+                } else if phase < 48 {
+                    ("duplicate-history", "Redo plan edit", phase - 45)
+                } else {
+                    ("duplicate-policy", "Copy JSON report", phase - 48)
+                };
+                let id = egui::Id::new((group, label));
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.duplicate_cross_phase += 1;
+                }
+                return;
+            }
+            if phase >= 33 {
+                if phase == 36 || phase == 39 {
+                    let expected = if phase == 36 { 3 } else { 4 };
+                    if self.counters.clipboard.load(Ordering::Relaxed) != expected {
+                        return;
+                    }
+                    let Some(text) = self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                    else {
+                        return;
+                    };
+                    if std::fs::write(
+                        self.scenario_dir.join(if phase == 36 {
+                            "keepers.txt"
+                        } else {
+                            "trash-candidates.txt"
+                        }),
+                        text,
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                let (label, local) = if phase < 36 {
+                    ("Copy keeper paths", phase - 33)
+                } else if phase < 39 {
+                    ("Copy proposed Trash paths", phase - 36)
+                } else {
+                    ("Copy JSON report", phase - 39)
+                };
+                let id = egui::Id::new(("duplicate-policy", label));
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.duplicate_cross_phase += 1;
+                }
+                return;
+            }
+            if phase >= 24 {
+                if matches!(phase, 24 | 27 | 30) {
+                    if state.groups.len() != 2
+                        || !state.include_other
+                        || !state.cross_only
+                        || state.scan_issues != 0
+                    {
+                        return;
+                    }
+                    if phase != 24 {
+                        let preferred = usize::from(phase == 30);
+                        if !state.groups.iter().zip(&state.keep).all(|(group, keeper)| {
+                            keeper.and_then(|i| group.files.get(i)).is_some_and(|file| {
+                                crate::dedup_scan::root_owner(
+                                    &file.path,
+                                    [state.root.as_path(), state.other_root.as_path()],
+                                ) == Some(preferred)
+                            })
+                        }) {
+                            return;
+                        }
+                    }
+                    if !crate::duplicate_report::json(state).is_ok_and(|text| {
+                        std::fs::write(self.scenario_dir.join(format!("keeper-{phase}.json")), text)
+                            .is_ok()
+                    }) {
+                        return;
+                    }
+                }
+                let id = match phase {
+                    24..=26 => egui::Id::new(("duplicate-prefer-root", 0usize)),
+                    27..=29 => egui::Id::new(("duplicate-prefer-root", 1usize)),
+                    _ => egui::Id::new(("duplicate-policy", "Copy JSON report")),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let local = phase % 3;
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.duplicate_cross_phase += 1;
+                }
+                return;
+            }
+            if phase.is_multiple_of(3) {
+                let groups = match phase {
+                    0 | 6 | 18 => 1,
+                    3 => 3,
+                    12 => 4,
+                    _ => 2,
+                };
+                let both = phase != 0 && phase != 18;
+                if state.groups.len() != groups
+                    || state.include_other != both
+                    || state.recursive != (phase >= 9)
+                    || state.cross_only != (phase >= 6 && phase != 12)
+                    || state.root != self.fixture.left
+                    || state.other_root != self.fixture.right
+                    || state.scan_issues != 0
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"current_left":self.inner.ws.left.current_path,"current_right":self.inner.ws.right.current_path,"root":state.root,"other_root":state.other_root,"both":state.include_other,"recursive":state.recursive,"cross":state.cross_only,"fresh":state.fresh_enumeration,"issues":state.scan_issues,"groups":state.groups.iter().map(|g|serde_json::json!({"size":g.size,"files":g.files.iter().map(|f|f.path.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("cross-{phase}.json")),bytes).is_ok()){return;}
+            }
+            let id = match phase / 3 {
+                2 => egui::Id::new("duplicate-recursive"),
+                1 | 3 | 4 => egui::Id::new("duplicate-cross-only"),
+                7 => egui::Id::new(("duplicate-policy", "Copy JSON report")),
+                _ => egui::Id::new("duplicate-other-root"),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let local = phase % 3;
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local == 1 || local == 2 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Duplicate cross QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.duplicate_cross_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateRoots && self.duplicate_roots_phase < 21 {
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() {
+                return;
+            }
+            let phase = self.duplicate_roots_phase;
+            if phase.is_multiple_of(3) {
+                let groups = match phase {
+                    0 | 9 | 12 => 1,
+                    3 | 15 => 3,
+                    _ => 4,
+                };
+                let both = matches!(phase, 3 | 6 | 15 | 18);
+                if state.groups.len() != groups
+                    || state.include_other != both
+                    || state.recursive != matches!(phase, 6 | 9 | 18)
+                    || state.root != self.fixture.left
+                    || state.other_root != self.fixture.right
+                    || state.scan_issues != 0
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"current_left":self.inner.ws.left.current_path,"current_right":self.inner.ws.right.current_path,"root":state.root,"other_root":state.other_root,"both":state.include_other,"recursive":state.recursive,"fresh":state.fresh_enumeration,"issues":state.scan_issues,"groups":state.groups.iter().map(|g|serde_json::json!({"size":g.size,"files":g.files.iter().map(|f|f.path.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("roots-{phase}.json")),bytes).is_ok()){return;}
+            }
+            // Seed a background panel-context change, then exercise actual scope
+            // buttons against the captured roots, including fresh single-root mode.
+            if phase == 6 && self.inner.ws.left.current_path == self.fixture.left {
+                self.inner
+                    .ws
+                    .left
+                    .navigate_to(self.fixture.left.join("nested"));
+                self.inner
+                    .ws
+                    .right
+                    .navigate_to(self.fixture.right.join("nested"));
+                return;
+            }
+            let id = match phase / 3 {
+                1 | 3 | 5 => egui::Id::new("duplicate-recursive"),
+                6 => egui::Id::new(("duplicate-policy", "Copy JSON report")),
+                _ => egui::Id::new("duplicate-other-root"),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let local = phase % 3;
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local == 1 || local == 2 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Duplicate roots QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.duplicate_roots_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateReport && self.duplicate_report_phase < 18 {
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() || state.groups.len() != 2 {
+                return;
+            }
+            let phase = self.duplicate_report_phase;
+            if matches!(phase, 6 | 12) {
+                let expected = if phase == 6 { 1 } else { 2 };
+                let text = self
+                    .counters
+                    .clipboard_text
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.clone());
+                if self.counters.clipboard.load(Ordering::Relaxed) != expected
+                    || !text.as_ref().is_some_and(|text| {
+                        crate::duplicate_report::json(state).as_ref() == Ok(text)
+                            && std::fs::write(
+                                self.scenario_dir.join(if phase == 6 {
+                                    "proposal-before.json"
+                                } else {
+                                    "proposal-skipped.json"
+                                }),
+                                text,
+                            )
+                            .is_ok()
+                    })
+                {
+                    return;
+                }
+            }
+            let (id, local) = match phase {
+                0..=2 => (
+                    egui::Id::new(("duplicate-sort", crate::dedup::GroupSort::Savings.label())),
+                    phase,
+                ),
+                3..=5 => (
+                    egui::Id::new(("duplicate-policy", "Copy JSON report")),
+                    phase - 3,
+                ),
+                6..=8 => (
+                    egui::Id::new(("duplicate-policy", "Keep all groups")),
+                    phase - 6,
+                ),
+                9..=11 => (
+                    egui::Id::new(("duplicate-policy", "Copy JSON report")),
+                    phase - 9,
+                ),
+                12..=14 => (
+                    egui::Id::new(("duplicate-policy", "Apply policy")),
+                    phase - 12,
+                ),
+                _ => (
+                    egui::Id::new(("duplicate-policy", "Copy JSON report")),
+                    phase - 15,
+                ),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local == 1 || local == 2 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Duplicate report QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.duplicate_report_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateCopies && self.duplicate_copies_phase < 32 {
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() {
+                return;
+            }
+            let phase = self.duplicate_copies_phase;
+            if matches!(phase, 0 | 3 | 7 | 10 | 13 | 19 | 22 | 25 | 29) {
+                let minimum = if matches!(phase, 10 | 13 | 19) { 3 } else { 2 };
+                let recursive = matches!(phase, 13 | 19 | 22);
+                let sizes: Vec<_> = state.groups.iter().map(|g| g.size).collect();
+                let mut sorted = sizes.clone();
+                sorted.sort_unstable();
+                let expected = if phase == 10 { vec![10] } else { vec![10, 64] };
+                if state.min_copies.get() != minimum
+                    || state.recursive != recursive
+                    || sorted != expected
+                {
+                    return;
+                }
+                if phase == 19
+                    && (state.copies_draft != "1"
+                        || ctx.data(|d| {
+                            d.get_temp::<bool>(egui::Id::new("duplicate-copies-apply-enabled"))
+                        }) != Some(false))
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"minimum":state.min_copies.get(),"draft":state.copies_draft,"recursive":state.recursive,"issues":state.scan_issues,"groups":state.groups.iter().map(|g|serde_json::json!({"size":g.size,"files":g.files.iter().map(|f|f.path.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("copies-{phase}.json")),bytes).is_ok()){return;}
+            }
+            let (id, local) = match phase {
+                0..=2 => (egui::Id::new("duplicate-copies-toggle"), phase),
+                3..=6 => (egui::Id::new(("duplicate-copies", "input")), phase - 3),
+                7..=9 => (egui::Id::new(("duplicate-copies", "apply")), phase - 7),
+                10..=12 => (egui::Id::new("duplicate-recursive"), phase - 10),
+                13..=18 => (egui::Id::new(("duplicate-copies", "input")), phase - 13),
+                19..=21 => (egui::Id::new(("duplicate-copies", "reset")), phase - 19),
+                22..=24 => (egui::Id::new("duplicate-recursive"), phase - 22),
+                25..=28 => (egui::Id::new(("duplicate-copies", "input")), phase - 25),
+                _ => (egui::Id::new(("duplicate-copies", "apply")), phase - 29),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if matches!(phase, 6 | 18 | 28) {
+                input.events.push(egui::Event::Text(
+                    if phase == 18 { "1" } else { "3" }.into(),
+                ));
+            } else if phase == 16 || phase == 17 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: phase == 16,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if local == 1 || local == 2 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Duplicate copies QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.duplicate_copies_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateDepth && self.duplicate_depth_phase < 31 {
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() {
+                return;
+            }
+            let phase = self.duplicate_depth_phase;
+            if matches!(phase, 0 | 3 | 7 | 10 | 16 | 19 | 25 | 28) {
+                let count = match phase {
+                    0 | 10 | 16 => 2,
+                    19 | 25 => 3,
+                    _ => 4,
+                };
+                let depth = match phase {
+                    10 | 16 => Some(0),
+                    19 | 25 => Some(1),
+                    _ => None,
+                };
+                if state.groups.len() != 1
+                    || state.groups[0].files.len() != count
+                    || state.max_depth != depth
+                    || state.recursive != (phase != 0)
+                {
+                    return;
+                }
+                if phase == 25
+                    && (state.depth_draft != "bad"
+                        || ctx.data(|d| {
+                            d.get_temp::<bool>(egui::Id::new("duplicate-depth-apply-enabled"))
+                        }) != Some(false))
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"depth":state.max_depth,"draft":state.depth_draft,"recursive":state.recursive,"files":state.groups[0].files.iter().map(|f|f.path.clone()).collect::<Vec<_>>(),"issues":state.scan_issues})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("depth-{phase}.json")),bytes).is_ok()) {return;}
+            }
+            let (id, local) = match phase {
+                0..=2 => (egui::Id::new("duplicate-recursive"), phase),
+                3..=6 => (egui::Id::new(("duplicate-depth", "input")), phase - 3),
+                7..=9 => (egui::Id::new(("duplicate-depth", "apply")), phase - 7),
+                10..=15 => (egui::Id::new(("duplicate-depth", "input")), phase - 10),
+                16..=18 => (egui::Id::new(("duplicate-depth", "apply")), phase - 16),
+                19..=24 => (egui::Id::new(("duplicate-depth", "input")), phase - 19),
+                25..=27 => (egui::Id::new(("duplicate-depth", "reset")), phase - 25),
+                _ => (egui::Id::new("duplicate-recursive"), phase - 28),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if matches!(phase, 6 | 15 | 24) {
+                input.events.push(egui::Event::Text(
+                    match phase {
+                        6 => "0",
+                        15 => "1",
+                        _ => "bad",
+                    }
+                    .into(),
+                ));
+            } else if matches!(phase, 13 | 14 | 22 | 23) {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: phase == 13 || phase == 22,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if local == 1 || local == 2 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Duplicate depth QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.duplicate_depth_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateRelative && self.duplicate_names_phase < 42 {
+            use crate::duplicate_name_group::Component;
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() || self.timestamp_input_at.elapsed() < Duration::from_millis(60)
+            {
+                return;
+            }
+            let phase = self.duplicate_names_phase;
+            let step = phase / 3;
+            let local = phase % 3;
+            if step >= 2 {
+                let (groups, members) = match step {
+                    5 | 6 => (1, 2),
+                    7 | 8 => (2, 4),
+                    10 | 11 | 13 => (1, 3),
+                    12 => (0, 0),
+                    _ => (1, 6),
+                };
+                if !state.recursive
+                    || state.scan_issues != 0
+                    || state.groups.len() != groups
+                    || state.groups.iter().map(|g| g.files.len()).sum::<usize>() != members
+                {
+                    return;
+                }
+                if local == 0
+                    && !duplicate_component_snapshot(
+                        state,
+                        &self.scenario_dir.join(format!("relative-{step}.json")),
+                    )
+                {
+                    return;
+                }
+            }
+            let id = match step {
+                0 | 9 | 13 => egui::Id::new("duplicate-other-root"),
+                1 => egui::Id::new("duplicate-recursive"),
+                2 => egui::Id::new("duplicate-name-toggle"),
+                3 | 10 => egui::Id::new(("duplicate-grouping", Component::RelativePath as u8)),
+                4 | 6 | 11 => egui::Id::new(("duplicate-name", "apply")),
+                5 => egui::Id::new("duplicate-grouping-case"),
+                7 => egui::Id::new("duplicate-cross-only"),
+                _ => egui::Id::new(("duplicate-name", "reset")),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.timestamp_input_at = Instant::now();
+            self.duplicate_names_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateComponents && self.duplicate_names_phase < 48 {
+            use crate::duplicate_name_group::Component;
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() || self.timestamp_input_at.elapsed() < Duration::from_millis(60)
+            {
+                return;
+            }
+            let phase = self.duplicate_names_phase;
+            let step = phase / 3;
+            let local = phase % 3;
+            if step >= 1 && !state.recursive {
+                return;
+            }
+            if local == 0 && step >= 1 {
+                let (count, members) = match step {
+                    4 | 5 | 10 => (1, 2),
+                    6 | 7 => (1, 3),
+                    8 | 9 => (1, 4),
+                    13 | 14 => (2, 4),
+                    15 => (2, 5),
+                    _ => (1, 5),
+                };
+                if state.scan_issues != 0
+                    || state.groups.len() != count
+                    || state.groups.iter().map(|g| g.files.len()).sum::<usize>() != members
+                {
+                    return;
+                }
+                if !duplicate_component_snapshot(
+                    state,
+                    &self.scenario_dir.join(format!("components-{step}.json")),
+                ) {
+                    return;
+                }
+            }
+            let id = match step {
+                0 => egui::Id::new("duplicate-recursive"),
+                1 => egui::Id::new("duplicate-name-toggle"),
+                2 => egui::Id::new(("duplicate-grouping", Component::Basename as u8)),
+                4 | 13 => egui::Id::new("duplicate-grouping-case"),
+                6 => egui::Id::new(("duplicate-grouping", Component::Stem as u8)),
+                8 => egui::Id::new(("duplicate-name", "extension")),
+                10 | 15 => egui::Id::new(("duplicate-name", "reset")),
+                11 => egui::Id::new(("duplicate-grouping", Component::ParentName as u8)),
+                _ => egui::Id::new(("duplicate-name", "apply")),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.timestamp_input_at = Instant::now();
+            self.duplicate_names_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateExtensions && self.duplicate_names_phase < 18 {
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() {
+                return;
+            }
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.duplicate_names_phase;
+            let (id, local) = match phase {
+                0..=2 => (egui::Id::new("duplicate-name-toggle"), phase),
+                3..=5 => (egui::Id::new(("duplicate-name", "extension")), phase - 3),
+                6..=8 | 12..=14 => (
+                    egui::Id::new(("duplicate-name", "apply")),
+                    if phase < 9 { phase - 6 } else { phase - 12 },
+                ),
+                9..=11 => (
+                    egui::Id::new(("duplicate-name", "extension-case")),
+                    phase - 9,
+                ),
+                _ => (egui::Id::new(("duplicate-name", "reset")), phase - 15),
+            };
+            if matches!(phase, 6 | 9 | 12 | 15) {
+                use crate::duplicate_extension::Mode;
+                let (applied, draft, groups, members, label) = match phase {
+                    6 => (Mode::Any, Mode::CaseSensitive, 1, 7, "draft"),
+                    9 => (Mode::CaseSensitive, Mode::CaseSensitive, 3, 6, "sensitive"),
+                    12 => (
+                        Mode::CaseSensitive,
+                        Mode::IgnoreAsciiCase,
+                        3,
+                        6,
+                        "draft-ignore",
+                    ),
+                    _ => (
+                        Mode::IgnoreAsciiCase,
+                        Mode::IgnoreAsciiCase,
+                        3,
+                        7,
+                        "insensitive",
+                    ),
+                };
+                if state.names.rules.extension != applied
+                    || state.name_draft.extension != draft
+                    || state.groups.len() != groups
+                    || state.groups.iter().map(|g| g.files.len()).sum::<usize>() != members
+                    || state.scan_issues != 0
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"applied":state.names.rules,"draft":state.name_draft,"groups":state.groups.iter().map(|g|g.files.iter().map(|f|&f.path).collect::<Vec<_>>()).collect::<Vec<_>>(),"keep":state.keep,"report":crate::duplicate_report::json(state).ok().and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok())})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("extensions-{label}.json")),bytes).is_ok()){return;}
+            }
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.timestamp_input_at = Instant::now();
+            self.duplicate_names_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateNames && self.duplicate_names_phase < 32 {
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() {
+                return;
+            }
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.duplicate_names_phase;
+            let step = phase.saturating_sub(3);
+            if phase >= 3 && matches!(step, 0 | 8 | 11 | 14 | 17 | 20 | 26) {
+                let count = match step {
+                    0 | 8 => 4,
+                    11 => 2,
+                    14 | 17 => 3,
+                    _ => 2,
+                };
+                if state.groups.len() != 1 || state.groups[0].files.len() != count {
+                    return;
+                }
+                if step == 26
+                    && (state.name_draft.include != "["
+                        || ctx.data(|d| {
+                            d.get_temp::<bool>(egui::Id::new("duplicate-name-apply-enabled"))
+                        }) != Some(false)
+                        || state.names.rules.include != "*.jpg"
+                        || !state.names.rules.case)
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"step":step,"recursive":state.recursive,"draft":state.name_draft,"applied":state.names.rules,"files":state.groups[0].files.iter().map(|f|f.path.clone()).collect::<Vec<_>>(),"issues":state.scan_issues})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("names-{step}.json")),bytes).is_ok()) {return;}
+            }
+            let (id, local) = if phase < 3 {
+                (egui::Id::new("duplicate-name-toggle"), phase)
+            } else {
+                match step {
+                    0..=3 => (egui::Id::new(("duplicate-name", "include")), step),
+                    4..=7 => (egui::Id::new(("duplicate-name", "exclude")), step - 4),
+                    8..=10 => (egui::Id::new(("duplicate-name", "apply")), step - 8),
+                    11..=13 => (egui::Id::new("duplicate-recursive"), step - 11),
+                    14..=16 => (egui::Id::new(("duplicate-name", "case")), step - 14),
+                    17..=19 => (egui::Id::new(("duplicate-name", "apply")), step - 17),
+                    20..=25 => (egui::Id::new(("duplicate-name", "include")), step - 20),
+                    _ => (egui::Id::new(("duplicate-name", "reset")), step - 26),
+                }
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if phase >= 3 && matches!(step, 3 | 7 | 25) {
+                input.events.push(egui::Event::Text(
+                    match step {
+                        3 => "*.jpg",
+                        7 => "skip*",
+                        _ => "[",
+                    }
+                    .into(),
+                ));
+            } else if phase >= 3 && matches!(step, 23 | 24) {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: step == 23,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if local == 1 || local == 2 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Duplicate names QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.timestamp_input_at = Instant::now();
+            self.duplicate_names_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicateSizes && self.duplicate_sizes_phase < 46 {
+            let phase = self.duplicate_sizes_phase;
+            if phase == 0 && !self.duplicate_sizes_ready(0, None, &[10, 64]) {
+                return;
+            }
+            if phase == 13 && !self.duplicate_sizes_ready(64, Some(64), &[64]) {
+                return;
+            }
+            if phase == 16 && !self.duplicate_sizes_copy_ready(64, Some(64), &[64], 1) {
+                return;
+            }
+            if (phase == 21 || phase == 24)
+                && (!self.duplicate_sizes_ready(64, Some(64), &[64])
+                    || ctx.data(|data| {
+                        data.get_temp::<bool>(egui::Id::new("duplicate-size-apply-enabled"))
+                    }) != Some(false))
+            {
+                return;
+            }
+            if phase == 37 && !self.duplicate_sizes_ready(0, Some(10), &[10]) {
+                return;
+            }
+            if phase == 40 && !self.duplicate_sizes_copy_ready(0, Some(10), &[10], 2) {
+                return;
+            }
+            if phase == 43 && !self.duplicate_sizes_ready(0, None, &[10, 64]) {
+                return;
+            }
+            let (key, local, edit) = match phase {
+                0..=4 => ("min", phase, Some("64")),
+                5..=9 => ("max", phase - 5, Some("64")),
+                10..=12 => ("apply", phase - 10, None),
+                13..=15 => ("copy", phase - 13, None),
+                16..=20 => ("min", phase - 16, Some("65")),
+                21..=23 => ("apply", phase - 21, None),
+                24..=28 => ("min", phase - 24, Some("")),
+                29..=33 => ("max", phase - 29, Some("10")),
+                34..=36 => ("apply", phase - 34, None),
+                37..=39 => ("copy", phase - 37, None),
+                40..=42 => ("reset", phase - 40, None),
+                _ => ("copy", phase - 43, None),
+            };
+            let id = if key == "copy" {
+                egui::Id::new(("duplicate-policy", "Copy CSV plan"))
+            } else {
+                egui::Id::new(("duplicate-size", key))
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if edit.is_some() && local == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if let Some(text) = edit.filter(|_| local == 4) {
+                    if text.is_empty() {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Backspace,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Default::default(),
+                        });
+                    } else {
+                        input.events.push(egui::Event::Text(text.into()));
+                    }
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.duplicate_sizes_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::DuplicateRecursive && self.duplicate_recursive_phase < 21 {
+            let phase = self.duplicate_recursive_phase;
+            if phase == 0 && !self.duplicate_recursive_ready(false, false) {
+                return;
+            }
+            if phase == 3 && !self.duplicate_recursive_ready(true, false) {
+                return;
+            }
+            if phase == 9 && !self.duplicate_recursive_ready(true, true) {
+                return;
+            }
+            if phase == 12 && !self.duplicate_recursive_copy_ready(1) {
+                return;
+            }
+            if phase == 15 && !self.duplicate_recursive_ready(false, true) {
+                return;
+            }
+            if phase == 18 && !self.duplicate_recursive_ready(true, true) {
+                return;
+            }
+            let id = match phase {
+                3..=5 => egui::Id::new(("duplicate-policy", "newest")),
+                6..=8 => egui::Id::new(("duplicate-sort", "Potential savings")),
+                9..=11 | 18..=20 => egui::Id::new(("duplicate-policy", "Copy CSV plan")),
+                _ => egui::Id::new("duplicate-recursive"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                let local = phase % 3;
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.duplicate_recursive_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::DuplicateSort && self.duplicate_sort_phase < 27 {
+            use crate::dedup::GroupSort;
+            let phase = self.duplicate_sort_phase;
+            let expected = match phase {
+                0 => Some((GroupSort::Scan, 0)),
+                3 => Some((GroupSort::Scan, 1)),
+                6 => Some((GroupSort::Scan, 2)),
+                9 => Some((GroupSort::Savings, 2)),
+                12 | 15 => Some((GroupSort::Copies, 2)),
+                18 => Some((GroupSort::Size, 2)),
+                21 => Some((GroupSort::Scan, 2)),
+                24 => Some((GroupSort::Savings, 2)),
+                _ => None,
+            };
+            if expected.is_some_and(|(sort, stage)| !self.duplicate_sort_ready(sort, stage)) {
+                return;
+            }
+            if phase == 15 && !self.duplicate_sort_copy_ready(GroupSort::Copies, 1) {
+                return;
+            }
+            let key = match phase {
+                0..=2 => egui::Id::new((
+                    "duplicate-keep",
+                    self.fixture
+                        .left
+                        .join("z-long-copy.bin")
+                        .to_string_lossy()
+                        .as_ref(),
+                )),
+                3..=5 => {
+                    let path = self
+                        .inner
+                        .ui
+                        .tools
+                        .duplicates
+                        .as_ref()
+                        .and_then(|state| state.groups.iter().find(|group| group.size == 10))
+                        .and_then(|group| group.files.first())
+                        .map(|file| file.path.to_string_lossy().into_owned());
+                    let Some(path) = path else {
+                        return;
+                    };
+                    egui::Id::new(("duplicate-skip", path.as_str()))
+                }
+                6..=8 | 21..=23 => egui::Id::new(("duplicate-sort", "Potential savings")),
+                9..=11 => egui::Id::new(("duplicate-sort", "Copies")),
+                12..=14 | 24..=26 => egui::Id::new(("duplicate-policy", "Copy CSV plan")),
+                15..=17 => egui::Id::new(("duplicate-sort", "File size")),
+                _ => egui::Id::new(("duplicate-sort", "Scan order")),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = phase % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.duplicate_sort_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::DuplicateRanking && self.duplicate_phase < 33 {
+            use crate::dedup::{GroupSort, KeepPolicy as P};
+            let Some(state) = self.inner.ui.tools.duplicates.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() || self.timestamp_input_at.elapsed() < Duration::from_millis(60)
+            {
+                return;
+            }
+            let phase = self.duplicate_phase;
+            let step = phase / 3;
+            let local = phase % 3;
+            if step > 0 {
+                let (policy, kept) = match step {
+                    1 => (P::ShortestPath, Some("root-copy.bin")),
+                    2 => (P::FirstName, Some("first/alpha.bin")),
+                    3 => (P::LastName, Some("middle/nested/zulu.bin")),
+                    4 => (P::ShortestName, Some("wide-folder/x")),
+                    5 => (
+                        P::LongestName,
+                        Some("long-copy/the-very-very-longest-basename-copy.bin"),
+                    ),
+                    6 => (P::ShallowestPath, Some("root-copy.bin")),
+                    8 => (P::DeepestPath, None),
+                    _ => (P::DeepestPath, Some("deep/a/b/mid.bin")),
+                };
+                if !state.recursive
+                    || state.scan_issues != 0
+                    || state.policy != policy
+                    || state.groups.len() != 1
+                    || state.groups[0].files.len() != 6
+                    || state.keep.len() != 1
+                    || state.keep[0]
+                        .and_then(|k| state.groups[0].files.get(k))
+                        .and_then(|f| f.path.strip_prefix(&self.fixture.left).ok())
+                        != kept.map(std::path::Path::new)
+                    || (step == 10 && state.sort != GroupSort::Savings)
+                {
+                    return;
+                }
+                if local == 0
+                    && !duplicate_component_snapshot(
+                        state,
+                        &self.scenario_dir.join(format!("ranking-{step}.json")),
+                    )
+                {
+                    return;
+                }
+            }
+            let id = match step {
+                0 => egui::Id::new("duplicate-recursive"),
+                1 => egui::Id::new(("duplicate-policy", P::FirstName.label())),
+                2 => egui::Id::new(("duplicate-policy", P::LastName.label())),
+                3 => egui::Id::new(("duplicate-policy", P::ShortestName.label())),
+                4 => egui::Id::new(("duplicate-policy", P::LongestName.label())),
+                5 => egui::Id::new(("duplicate-policy", P::ShallowestPath.label())),
+                6 => egui::Id::new(("duplicate-policy", P::DeepestPath.label())),
+                7 => egui::Id::new(("duplicate-policy", "Keep all groups")),
+                8 => egui::Id::new(("duplicate-policy", "Apply policy")),
+                9 => egui::Id::new(("duplicate-sort", GroupSort::Savings.label())),
+                _ => egui::Id::new(("duplicate-policy", P::ShortestPath.label())),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.timestamp_input_at = Instant::now();
+            self.duplicate_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DuplicatePolicy && self.duplicate_phase < 15 {
+            use crate::dedup::KeepPolicy;
+            let phase = self.duplicate_phase;
+            let expected = match phase {
+                0 => Some((KeepPolicy::ShortestPath, Some("a.bin"))),
+                3 => Some((KeepPolicy::Newest, Some("newest-copy.bin"))),
+                6 => Some((KeepPolicy::Newest, None)),
+                9 => Some((KeepPolicy::Newest, Some("newest-copy.bin"))),
+                12 => Some((KeepPolicy::Oldest, Some("a.bin"))),
+                _ => None,
+            };
+            if expected.is_some_and(|(policy, name)| !self.duplicate_plan_ready(policy, name)) {
+                return;
+            }
+            let label = match phase {
+                0..=2 | 12..=14 => "newest",
+                3..=5 => "Keep all groups",
+                6..=8 => "Apply policy",
+                _ => "oldest",
+            };
+            let id = egui::Id::new(("duplicate-policy", label));
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = phase % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.duplicate_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::DuplicatePolicy && (15..30).contains(&self.duplicate_phase) {
+            use crate::dedup::KeepPolicy;
+            let phase = self.duplicate_phase;
+            if matches!(phase, 15 | 18 | 21 | 24 | 27) {
+                let kept = if phase == 21 || phase == 24 {
+                    None
+                } else {
+                    Some("newest-copy.bin")
+                };
+                if !self.duplicate_plan_ready(KeepPolicy::Newest, kept) {
+                    return;
+                }
+                if phase == 18 && !self.duplicate_plan_copy_ready(Some("newest-copy.bin"), 1) {
+                    return;
+                }
+                if phase == 24 && !self.duplicate_plan_copy_ready(None, 2) {
+                    return;
+                }
+            }
+            let label = match phase {
+                18..=20 => "Keep all groups",
+                24..=26 => "Apply policy",
+                _ => "Copy CSV plan",
+            };
+            let id = egui::Id::new(("duplicate-policy", label));
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = (phase - 15) % 3;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.duplicate_phase += 1;
+                return;
+            }
+        }
+        if matches!(
+            self.scenario,
+            Scenario::DiskAllocation | Scenario::DiskCount
+        ) && self.disk_export_phase < 24
+        {
+            let primary_metric = if self.scenario == Scenario::DiskCount {
+                crate::disk_usage_metric::Metric::FileCount
+            } else {
+                crate::disk_usage_metric::Metric::FileAllocation
+            };
+            if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
+                return;
+            }
+            let phase = self.disk_export_phase;
+            let Some(state) = self.inner.ui.tools.treemap.as_ref() else {
+                return;
+            };
+            if state.run.is_some() {
+                return;
+            }
+            let Some(snapshot) = state.overview.as_ref() else {
+                return;
+            };
+            let allocation = matches!(phase,3..=14|21..=23);
+            if snapshot.metric
+                != if allocation {
+                    primary_metric
+                } else {
+                    crate::disk_usage_metric::Metric::Logical
+                }
+            {
+                return;
+            }
+            if !snapshot.measurement_complete() || snapshot.root != self.fixture.left {
+                return;
+            }
+            if phase == 0
+                && !crate::disk_usage_export::snapshot_json(snapshot).is_ok_and(|j| {
+                    std::fs::write(self.scenario_dir.join("logical-initial.json"), j).is_ok()
+                })
+            {
+                return;
+            }
+            if matches!(phase, 6 | 12 | 18) {
+                let (count, name) = match phase {
+                    6 => (1, "allocated-map.json"),
+                    12 => (2, "allocated-tree.csv"),
+                    _ => (3, "logical-restored.json"),
+                };
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || !self.recorded_clipboard_dump(name)
+                {
+                    return;
+                }
+            }
+            if phase == 12 && self.inner.ws.left.current_path == self.fixture.left {
+                self.inner
+                    .ws
+                    .left
+                    .navigate_to(self.fixture.left.join("sparse"));
+            }
+            let id = match phase / 3 {
+                0 | 6 => egui::Id::new(("disk-usage-metric", primary_metric.key())),
+                1 | 5 => egui::Id::new("disk-usage-copy-json"),
+                2 => egui::Id::new(("disk-usage-mode", "Tree")),
+                3 => egui::Id::new("disk-usage-copy-csv"),
+                4 => egui::Id::new(("disk-usage-metric", "logical")),
+                _ => egui::Id::new(("disk-usage-mode", "Map")),
+            };
+            if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                let local = phase % 3;
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!("Disk allocation QA phase {phase}");
+                self.disk_export_phase += 1;
+                self.timestamp_input_at = Instant::now();
+            }
+            return;
+        }
+        if self.scenario == Scenario::DiskUsageExport && self.disk_export_phase < 48 {
+            let phase = self.disk_export_phase;
+            if phase == 0
+                && !self.inner.ui.tools.treemap.as_ref().is_some_and(|state| {
+                    state.run.is_none()
+                        && state
+                            .overview
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.progress.bytes == 246)
+                })
+            {
+                return;
+            }
+            if phase == 3 {
+                if !self.disk_usage_export_json_ready(false, 1)
+                    || !self.recorded_clipboard_dump("scan-before.json")
+                {
+                    return;
+                }
+                self.disk_export_first_json = self
+                    .counters
+                    .clipboard_text
+                    .lock()
+                    .ok()
+                    .and_then(|value| value.clone());
+            }
+            if phase == 6
+                && !self.disk_tree_filter_ready(
+                    ("", false, false),
+                    None,
+                    false,
+                    crate::app::DiskUsageMode::Tree,
+                )
+            {
+                return;
+            }
+            if phase == 11
+                && !self.disk_tree_filter_ready(
+                    ("target", false, false),
+                    Some((
+                        2,
+                        &[
+                            "alpha",
+                            "alpha/shared/target-one",
+                            "beta",
+                            "beta/shared/target-two",
+                        ],
+                    )),
+                    false,
+                    crate::app::DiskUsageMode::Tree,
+                )
+            {
+                return;
+            }
+            if phase == 14
+                && (!self.disk_usage_export_csv_ready(false, 2)
+                    || !self.recorded_clipboard_dump("visible-before.csv"))
+            {
+                return;
+            }
+            if phase == 17
+                && (!self.disk_usage_export_json_ready(false, 3)
+                    || self.disk_export_first_json
+                        != self
+                            .counters
+                            .clipboard_text
+                            .lock()
+                            .ok()
+                            .and_then(|value| value.clone())
+                    || !self.recorded_clipboard_dump("scan-filtered.json"))
+            {
+                return;
+            }
+            if phase == 20
+                && !self.inner.ui.tools.treemap.as_ref().is_some_and(|state| {
+                    state.run.is_none()
+                        && state
+                            .overview
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.progress.bytes == 306)
+                })
+            {
+                return;
+            }
+            if phase == 23
+                && (!self.disk_usage_export_json_ready(true, 4)
+                    || !self.recorded_clipboard_dump("scan-after.json"))
+            {
+                return;
+            }
+            if phase == 26 {
+                if self.disk_usage_export_csv_ready(true, 5)
+                    && self.recorded_clipboard_dump("visible-after.csv")
+                {
+                    self.disk_export_phase = 27;
+                }
+                return;
+            }
+            if phase == 27
+                && ctx.data(|data| {
+                    data.get_temp::<(u64, Option<u128>)>(egui::Id::new((
+                        "disk-tree-share-value",
+                        self.fixture.left.join("alpha/shared/target-one"),
+                    )))
+                }) != Some((306, Some(32)))
+            {
+                return;
+            }
+            if phase == 30
+                && (!self.disk_usage_export_csv_ready(true, 5)
+                    || ctx.data(|data| {
+                        data.get_temp::<(u64, Option<u128>)>(egui::Id::new((
+                            "disk-tree-share-value",
+                            self.fixture.left.join("alpha/shared/target-one"),
+                        )))
+                    }) != Some((30, Some(333))))
+            {
+                return;
+            }
+            if phase == 33 && !self.disk_tree_collapse_ready(9, 0) {
+                return;
+            }
+            if phase == 36 && !self.disk_tree_collapse_ready(7, 1) {
+                return;
+            }
+            if phase == 39
+                && (!self.disk_tree_collapsed_csv_ready()
+                    || !self.recorded_clipboard_dump("visible-collapsed.csv"))
+            {
+                return;
+            }
+            if phase == 42 && !self.disk_tree_collapse_ready(5, 2) {
+                return;
+            }
+            if phase == 45 && !self.disk_tree_collapse_ready(9, 0) {
+                return;
+            }
+            let (id, local, edit) = match phase {
+                30..=32 => (
+                    egui::Id::new(("disk-tree-filter", "Clear")),
+                    phase - 30,
+                    None,
+                ),
+                33..=35 => (
+                    egui::Id::new(("disk-tree-collapse", self.fixture.left.join("alpha"))),
+                    phase - 33,
+                    None,
+                ),
+                36..=38 => (egui::Id::new("disk-usage-copy-csv"), phase - 36, None),
+                39..=41 => (
+                    egui::Id::new(("disk-tree-collapse", "all")),
+                    phase - 39,
+                    None,
+                ),
+                42..=44 => (egui::Id::new(("disk-tree-expand", "all")), phase - 42, None),
+                45..=47 => (
+                    egui::Id::new(("disk-tree-collapse", self.fixture.left.join("alpha"))),
+                    phase - 45,
+                    None,
+                ),
+                27..=29 => (
+                    egui::Id::new(("disk-tree-share", "Parent")),
+                    phase - 27,
+                    None,
+                ),
+                0..=2 => (egui::Id::new("disk-usage-copy-json"), phase, None),
+                3..=5 => (egui::Id::new(("disk-usage-mode", "Tree")), phase - 3, None),
+                6..=10 => (
+                    egui::Id::new(("disk-tree-filter", "query")),
+                    phase - 6,
+                    Some("target"),
+                ),
+                11..=13 => (egui::Id::new("disk-usage-copy-csv"), phase - 11, None),
+                14..=16 => (egui::Id::new("disk-usage-copy-json"), phase - 14, None),
+                17..=19 => (egui::Id::new("disk-usage-rescan"), phase - 17, None),
+                20..=22 => (egui::Id::new("disk-usage-copy-json"), phase - 20, None),
+                _ => (egui::Id::new("disk-usage-copy-csv"), phase - 23, None),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                if phase == 17 {
+                    let path = self.fixture.left.join("delta/shared/target-three/f.bin");
+                    if std::fs::create_dir_all(path.parent().unwrap())
+                        .and_then(|()| std::fs::write(path, [b'd'; 60]))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if edit.is_some() && local == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if let Some(text) = edit.filter(|_| local == 4) {
+                    input.events.push(egui::Event::Text(text.into()));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!("Disk usage export QA phase {phase}, target {id:?}");
+                self.disk_export_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::DiffSwap && self.diff_swap_phase < 29 {
+            let Some(state) = self.inner.ui.tools.diff.as_ref() else {
+                return;
+            };
+            let phase = self.diff_swap_phase;
+            if matches!(phase, 0 | 3 | 6 | 9 | 12 | 15 | 17 | 20 | 21 | 23 | 26) {
+                let reversed = matches!(phase, 15 | 26);
+                let paths = if reversed {
+                    (
+                        self.fixture.left.join("diff.txt"),
+                        self.fixture.right.join("diff.txt"),
+                    )
+                } else {
+                    (
+                        self.fixture.right.join("diff.txt"),
+                        self.fixture.left.join("diff.txt"),
+                    )
+                };
+                if state.paths != paths
+                    || state.message.is_some()
+                    || state.options.space_changes != (phase >= 3)
+                    || state.options.ignore_case != (phase >= 6)
+                    || state.intraline.enabled != (phase >= 9)
+                    || state.navigation.show_numbers != (phase >= 12)
+                {
+                    return;
+                }
+                if (20..=23).contains(&phase)
+                    && !ctx.memory(|m| m.has_focus(crate::diff_find::query_id()))
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"paths":state.paths,"names":[state.name_a,state.name_b],"source":state.source,"options":state.options,"intraline":state.intraline.enabled,"numbers":state.navigation.show_numbers,"source_numbers":state.navigation.source_numbers,"find_query":state.find.query,"query_focused":ctx.memory(|m|m.has_focus(crate::diff_find::query_id())),"current_left":self.inner.ws.left.current_path,"current_right":self.inner.ws.right.current_path,"rows":state.lines.iter().map(|l|serde_json::json!({"kind":format!("{:?}",l.kind),"text":l.text})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("swap-{phase}.json")),bytes).is_ok()) {return;}
+            }
+            if phase == 12
+                && std::fs::write(
+                    self.fixture.left.join("diff.txt"),
+                    "HEAD  a\r\nsame\nleft UPDATED\nend",
+                )
+                .and_then(|_| {
+                    std::fs::write(
+                        self.fixture.right.join("diff.txt"),
+                        "head a\r\nsame\nright UPDATED\nend\n",
+                    )
+                })
+                .is_err()
+            {
+                return;
+            }
+            if matches!(phase, 15 | 16 | 21 | 22) {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::U,
+                    physical_key: None,
+                    pressed: matches!(phase, 15 | 21),
+                    repeat: false,
+                    modifiers: egui::Modifiers::CTRL,
+                });
+            } else if phase == 20 {
+                input.events.push(egui::Event::Text("left".into()));
+            } else {
+                let (id, local) = match phase {
+                    0..=2 => (egui::Id::new("diff-ignore-spaces"), phase),
+                    3..=5 => (egui::Id::new("diff-ignore-case"), phase - 3),
+                    6..=8 => (egui::Id::new("diff-intraline"), phase - 6),
+                    9..=11 => (egui::Id::new("diff-line-numbers"), phase - 9),
+                    12..=14 => (egui::Id::new("diff-swap"), phase - 12),
+                    17..=19 => (egui::Id::new("diff-find-query"), phase - 17),
+                    23..=25 => (egui::Id::new("diff-swap"), phase - 23),
+                    _ => (egui::Id::new("diff-reload"), phase - 26),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            log::info!("Diff swap QA phase {phase}");
+            self.diff_swap_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DiffIntraline && self.diff_intraline_phase < 9 {
+            let Some(state) = self.inner.ui.tools.diff.as_ref() else {
+                return;
+            };
+            let phase = self.diff_intraline_phase;
+            if phase.is_multiple_of(3) {
+                let enabled = phase == 3;
+                if state.message.is_some()
+                    || state.intraline.enabled != enabled
+                    || crate::textdiff::change_counts(&state.lines) != (2, 1)
+                    || state.navigation.hunks.len() != 2
+                {
+                    return;
+                }
+                if enabled
+                    && (state.intraline.rows.len() != 2 || state.intraline.simplified_pairs != 0)
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"enabled":state.intraline.enabled,"ranges":state.intraline.rows,"simplified_pairs":state.intraline.simplified_pairs,"counts":crate::textdiff::change_counts(&state.lines)})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(format!("intraline-{phase}.json")),bytes).is_ok()) {return;}
+            }
+            let id = egui::Id::new("diff-intraline");
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let local = phase % 3;
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Diff intraline QA phase {phase}, rect {rect:?}");
+            self.diff_intraline_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57 {
+            if self.diff_options_input_at.elapsed() < Duration::from_millis(80) {
+                return;
+            }
+            let Some(state) = self.inner.ui.tools.diff.as_ref() else {
+                return;
+            };
+            let phase = self.diff_options_phase;
+            let counts = [5, 4, 5, 4, 3, 2, 3, 4, 3, 2, 2, 2, 2, 1, 2, 1, 1, 1, 2];
+            let spaces = [
+                false, false, false, false, true, true, false, false, true, true, true, true, true,
+                true, true, true, true, true, true,
+            ];
+            let case = [
+                false, false, false, false, false, true, true, false, false, true, true, true,
+                true, true, true, true, true, true, true,
+            ];
+            let all = [
+                false, false, false, false, false, false, false, false, false, false, true, false,
+                true, true, true, true, true, true, false,
+            ];
+            let endings = [
+                false, false, false, false, false, false, false, false, false, false, false, false,
+                false, true, false, true, true, true, true,
+            ];
+            let tabs = [
+                false, true, false, true, true, true, true, true, true, true, true, true, true,
+                true, true, true, true, true, true,
+            ];
+            if phase.is_multiple_of(3) {
+                let index = usize::from(phase / 3);
+                if state.message.is_some()
+                    || crate::textdiff::change_counts(&state.lines)
+                        != (counts[index], counts[index])
+                    || state.options.space_changes != spaces[index]
+                    || state.options.ignore_case != case[index]
+                    || state.options.all_spaces != all[index]
+                    || state.options.ignore_crlf != endings[index]
+                    || state.options.expand_tabs != tabs[index]
+                {
+                    let snapshot = serde_json::json!({"phase":phase,"options":state.options,"counts":crate::textdiff::change_counts(&state.lines)});
+                    let _ = serde_json::to_vec_pretty(&snapshot).is_ok_and(|bytes| {
+                        std::fs::write(self.scenario_dir.join("options-waiting.json"), bytes)
+                            .is_ok()
+                    });
+                    return;
+                }
+                let snapshot = serde_json::json!({"phase":phase,"options":state.options,"counts":crate::textdiff::change_counts(&state.lines),"source_numbers":state.navigation.source_numbers,"rows":state.lines.iter().map(|line|serde_json::json!({"kind":format!("{:?}",line.kind),"text":line.text})).collect::<Vec<_>>()});
+                if !serde_json::to_vec_pretty(&snapshot).is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir.join(format!("options-{phase}.json")),
+                        bytes,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+            }
+            let id = egui::Id::new(match phase / 3 {
+                0..=2 => "diff-expand-tabs",
+                3 | 5 | 7 => "diff-ignore-spaces",
+                4 | 6 | 8 => "diff-ignore-case",
+                9..=11 => "diff-ignore-all-spaces",
+                12..=14 => "diff-ignore-crlf",
+                15 => "diff-reload",
+                16 => "diff-swap",
+                17 => "diff-ignore-all-spaces",
+                _ => "diff-ignore-trailing-spaces",
+            });
+            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let local = phase % 3;
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Diff options QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.diff_options_input_at = Instant::now();
+            self.diff_options_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83 {
+            let Some(state) = self.inner.ui.tools.diff.as_ref() else {
+                return;
+            };
+            if self.diff_navigation_phase < 75
+                && (state.message.is_some() || state.navigation.hunks.len() != 3)
+            {
+                return;
+            }
+            let phase = self.diff_navigation_phase;
+            if phase >= 75 {
+                if phase == 75 {
+                    let visible =
+                        ctx.data(|d| d.get_temp::<Vec<usize>>(egui::Id::new("diff-visible-rows")));
+                    if state.jump.selected != Some(11)
+                        || !visible.as_ref().is_some_and(|rows| rows.contains(&11))
+                    {
+                        return;
+                    }
+
+                    if !serde_json::to_vec_pretty(&serde_json::json!({"goto_query":state.jump.query,"goto_plus":state.jump.plus,"goto_selected":state.jump.selected,"find_query":state.find.query,"find_rows":state.find.rows,"find_focused":state.find.focused,"show_numbers":state.navigation.show_numbers,"source_numbers":state.navigation.source_numbers,"compact":state.context_view.compact,"context_lines":state.context_view.context,"display_rows":state.context_view.row_count(),"hidden":state.context_view.hidden,"minus_name":state.name_a,"plus_name":state.name_b,"current":state.navigation.current,"offset":[state.scroll_offset.x,state.scroll_offset.y],"visible":visible,"left_text":diff_fixture_text(false),"right_text":diff_fixture_text(true),"hunks":state.navigation.hunks.iter().map(|h|serde_json::json!({"rows":[h.rows.start,h.rows.end],"left_start":h.left_start,"left_len":h.left_len,"right_start":h.right_start,"right_len":h.right_len})).collect::<Vec<_>>(),"rows":state.lines.iter().map(|line|serde_json::json!({"kind":format!("{:?}",line.kind),"text":line.text})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("diff-state.json"),bytes).is_ok()) {return;}
+                    if std::fs::write(
+                        self.fixture.right.join("diff.txt"),
+                        diff_fixture_text(false),
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                if phase == 76 || phase == 77 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::R,
+                        physical_key: None,
+                        pressed: phase == 76,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    });
+                }
+                if phase == 78 {
+                    if state.message.is_some()
+                        || !state.navigation.hunks.is_empty()
+                        || state.lines.len() != 180
+                        || state.find.rows != [50]
+                        || state.jump.selected.is_some()
+                    {
+                        return;
+                    }
+                    if !serde_json::to_vec_pretty(&serde_json::json!({"lines":state.lines.len(),"hunks":state.navigation.hunks.len(),"find_rows":state.find.rows,"paths":[state.paths.0,state.paths.1]})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("reload-identical.json"),b).is_ok()) {return;}
+                    if std::fs::write(
+                        self.fixture.right.join("diff.txt"),
+                        diff_fixture_text(true).replace("context 40\n", "reload change 40\n"),
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                if phase >= 80 {
+                    let id = egui::Id::new("diff-reload");
+                    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                        return;
+                    };
+                    let local = phase - 80;
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                }
+                self.diff_navigation_phase += 1;
+                return;
+            }
+            if phase >= 56 {
+                if phase == 62 {
+                    let visible =
+                        ctx.data(|d| d.get_temp::<Vec<usize>>(egui::Id::new("diff-visible-rows")));
+                    if state.jump.selected != Some(51)
+                        || state.jump.plus
+                        || state.jump.query != "51"
+                        || state.jump.error.is_some()
+                        || state.context_view.hidden != 86
+                        || !visible.as_ref().is_some_and(|r| r.contains(&51))
+                    {
+                        return;
+                    }
+                    if !serde_json::to_vec_pretty(&serde_json::json!({"query":state.jump.query,"plus":state.jump.plus,"selected":state.jump.selected,"visible":visible,"hidden":state.context_view.hidden})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("goto-minus.json"),b).is_ok()) {return;}
+                }
+                match phase {
+                    56 | 57 | 66 | 67 | 69 | 70 | 60 | 61 => {
+                        let (key, modifiers, pressed) = match phase {
+                            60 | 61 => (egui::Key::Enter, egui::Modifiers::NONE, phase == 60),
+                            69 | 70 => (egui::Key::A, egui::Modifiers::COMMAND, phase == 69),
+                            _ => (
+                                egui::Key::G,
+                                egui::Modifiers::COMMAND,
+                                phase == 56 || phase == 66,
+                            ),
+                        };
+                        input.events.push(egui::Event::Key {
+                            key,
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                            modifiers,
+                        });
+                    }
+                    58 | 68 => {
+                        if !ctx.memory(|m| m.has_focus(crate::diff_goto::input_id())) {
+                            return;
+                        }
+                    }
+                    59 | 71 => input.events.push(egui::Event::Text(
+                        if phase == 59 { "51" } else { "11" }.into(),
+                    )),
+                    63..=65 | 72..=74 => {
+                        let (id, local) = if phase <= 65 {
+                            (egui::Id::new(("diff-goto-side", true)), phase - 63)
+                        } else {
+                            (egui::Id::new("diff-goto-go"), phase - 72)
+                        };
+                        let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                            return;
+                        };
+                        if local == 0 && !self.hex_target_settled(id, rect) {
+                            return;
+                        }
+                        let pos = rect.center();
+                        input.events.push(egui::Event::PointerMoved(pos));
+                        if local > 0 {
+                            input.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: local == 1,
+                                modifiers: Default::default(),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                self.diff_navigation_phase += 1;
+                return;
+            }
+            if phase == 37 {
+                input.events.push(egui::Event::Text("context 50".into()));
+                self.diff_navigation_phase += 1;
+                return;
+            }
+            if phase == 38 || phase == 41 || phase == 44 {
+                let visible = ctx
+                    .data(|data| data.get_temp::<Vec<usize>>(egui::Id::new("diff-visible-rows")));
+                if state.find.rows != [51]
+                    || state.find.selected() != Some(51)
+                    || !state.find.focused
+                    || !visible.as_ref().is_some_and(|rows| rows.contains(&51))
+                    || state.context_view.hidden != 86
+                {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"query":state.find.query,"rows":state.find.rows,"selected":state.find.selected(),"visible":visible,"hidden":state.context_view.hidden})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(if phase==38 {"find-hidden.json"}else if phase==41 {"find-wrap.json"}else{"find-previous.json"}),bytes).is_ok()) {return;}
+            }
+            if matches!(phase,34..=36 | 38..=43 | 53..=55) {
+                let (key, modifiers, local) = match phase {
+                    34..=36 => (egui::Key::F, egui::Modifiers::COMMAND, phase - 34),
+                    38..=40 => (egui::Key::F3, egui::Modifiers::NONE, phase - 38),
+                    41..=43 => (egui::Key::F3, egui::Modifiers::SHIFT, phase - 41),
+                    _ => (egui::Key::F7, egui::Modifiers::NONE, phase - 53),
+                };
+                if local == 2
+                    && matches!(phase, 36 | 55)
+                    && !ctx.memory(|m| m.has_focus(crate::diff_find::query_id()))
+                {
+                    return;
+                }
+                if local < 2 {
+                    input.events.push(egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: local == 0,
+                        repeat: false,
+                        modifiers,
+                    });
+                }
+                self.diff_navigation_phase += 1;
+                return;
+            }
+            if phase >= 16 {
+                let (id, local) = match phase {
+                    16..=18 => (egui::Id::new("diff-compact"), phase - 16),
+                    19..=21 => (egui::Id::new(("diff-gap", 15usize, 88usize)), phase - 19),
+                    22..=24 => (egui::Id::new(("diff-hunk", "next")), phase - 22),
+                    25..=27 => (egui::Id::new("diff-compact"), phase - 25),
+                    28..=30 => (egui::Id::new("diff-compact"), phase - 28),
+                    31..=33 => (egui::Id::new("diff-line-numbers"), phase - 31),
+                    34..=36 => (egui::Id::new("diff-find-query"), phase - 34),
+                    38..=40 => (egui::Id::new(("diff-find", "next")), phase - 38),
+                    44..=46 => (egui::Id::new(("diff-hunk", "last")), phase - 44),
+                    47..=49 => (egui::Id::new("diff-compact"), phase - 47),
+                    _ => (egui::Id::new("diff-compact"), phase - 50),
+                };
+                if phase == 19 || phase == 22 || phase == 25 || phase == 28 {
+                    let expected = if phase == 19 {
+                        (true, 28, 159)
+                    } else if phase == 28 {
+                        (false, 183, 0)
+                    } else {
+                        (true, 100, 86)
+                    };
+                    if (
+                        state.context_view.compact,
+                        state.context_view.row_count(),
+                        state.context_view.hidden,
+                    ) != expected
+                    {
+                        return;
+                    }
+                    if (phase == 25 || phase == 28) && state.navigation.current != Some(2) {
+                        return;
+                    }
+                    let file = match phase {
+                        19 => "compact.json",
+                        22 => "expanded.json",
+                        25 => "compact-last.json",
+                        _ => "full.json",
+                    };
+                    let rows: Vec<_> = (0..state.context_view.row_count())
+                        .map(|i| match state.context_view.row(i).unwrap() {
+                            crate::diff_context::Row::Line(original) => {
+                                serde_json::json!({"line":original})
+                            }
+                            crate::diff_context::Row::Gap(range) => {
+                                serde_json::json!({"gap":[range.start,range.end]})
+                            }
+                        })
+                        .collect();
+                    if !serde_json::to_vec_pretty(&serde_json::json!({"current":state.navigation.current,"hidden":state.context_view.hidden,"rows":rows})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join(file),bytes).is_ok()) {return;}
+                }
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.diff_navigation_phase += 1;
+                }
+                return;
+            }
+            let expected = match phase {
+                0..=2 => 0,
+                3..=5 => 2,
+                6..=8 => 1,
+                9..=11 => 0,
+                12 | 15 => 1,
+                _ => 2,
+            };
+            if state.navigation.current != Some(expected) {
+                return;
+            }
+            if !ctx
+                .data(|data| data.get_temp::<Vec<usize>>(egui::Id::new("diff-visible-rows")))
+                .is_some_and(|range| range.contains(&state.navigation.hunks[expected].rows.start))
+            {
+                return;
+            }
+            if phase >= 12 {
+                input.events.push(egui::Event::Key {
+                    key: if phase >= 14 {
+                        egui::Key::ArrowUp
+                    } else {
+                        egui::Key::ArrowDown
+                    },
+                    physical_key: None,
+                    pressed: phase == 12 || phase == 14,
+                    repeat: false,
+                    modifiers: egui::Modifiers::ALT,
+                });
+                self.diff_navigation_phase += 1;
+                return;
+            }
+            let (key, local) = match phase {
+                0..=2 => ("last", phase),
+                3..=5 => ("prev", phase - 3),
+                6..=8 => ("first", phase - 6),
+                _ => ("next", phase - 9),
+            };
+            let id = egui::Id::new(("diff-hunk", key));
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local == 1 || local == 2 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.diff_navigation_phase += 1;
+            }
+            return;
+        }
+        if self.scenario == Scenario::SyncContents && self.sync_contents_phase < 27 {
+            if self.sync_contents_input_at.elapsed() < Duration::from_millis(80) {
+                return;
+            }
+            let Some(state) = self.inner.ui.tools.sync.as_ref() else {
+                return;
+            };
+            if state.scan.is_some()
+                || state.error.is_some()
+                || !state
+                    .stamp
+                    .as_ref()
+                    .is_some_and(|stamp| stamp.compare_contents == state.compare_contents)
+            {
+                return;
+            }
+            let phase = self.sync_contents_phase;
+            // A window activation can consume the first checkbox click. Retry
+            // only that unacknowledged, idempotent input; keep the deadline and
+            // every resulting content/report assertion unchanged.
+            if phase == 3
+                && !state.compare_contents
+                && self.sync_contents_input_at.elapsed() >= Duration::from_millis(300)
+            {
+                self.sync_contents_phase = 0;
+                ctx.request_repaint();
+                return;
+            }
+
+            if phase.is_multiple_of(3) {
+                let contents = phase != 0 && phase != 12;
+                let scope = match phase {
+                    6 | 9 | 18 => crate::sync_review::Scope::SameContents,
+                    21 => crate::sync_review::Scope::UnverifiedContents,
+                    _ => crate::sync_review::Scope::All,
+                };
+                if state.compare_contents != contents
+                    || state.review.scope != scope
+                    || state.actions.len() != 14
+                {
+                    return;
+                }
+                let same = state.actions.iter().find(|a| a.name == "same-stat.bin");
+                let expected = if !contents {
+                    "unchecked"
+                } else if phase < 15 {
+                    "different"
+                } else {
+                    "equal"
+                };
+                if !same.is_some_and(|a| a.content.key() == expected) {
+                    return;
+                }
+                if !serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"contents":state.compare_contents,"stamp_contents":state.stamp.as_ref().map(|s|s.compare_contents),"scope":state.review.scope.label(),"shown":state.review.indices.iter().map(|i|&state.actions[*i].name).collect::<Vec<_>>(),"actions":state.actions.iter().map(|a|serde_json::json!({"name":a.name,"status":format!("{:?}",a.status),"direction":format!("{:?}",a.direction),"content":a.content.key(),"error":a.content.error()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join(format!("contents-{phase}.json")),b).is_ok()){return;}
+                if phase == 9 {
+                    let text = self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone());
+                    if self.counters.clipboard.load(Ordering::Relaxed) != 1
+                        || !text.is_some_and(|v| {
+                            std::fs::write(self.scenario_dir.join("initial-report.json"), v).is_ok()
+                        })
+                    {
+                        return;
+                    }
+                }
+                if phase == 12 {
+                    let path = self.fixture.right.join("same-stat.bin");
+                    if std::fs::write(&path, "aaaa")
+                        .and_then(|_| std::fs::File::open(&path))
+                        .and_then(|f| {
+                            f.set_times(std::fs::FileTimes::new().set_modified(
+                                crate::query::parse_absolute_time("2020-01-01").unwrap(),
+                            ))
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            let id = match phase / 3 {
+                0 | 3 | 4 => egui::Id::new("sync-compare-contents"),
+                1 | 5 => egui::Id::new(("sync-review", "Same contents")),
+                2 | 8 => egui::Id::new(("sync-export", "json")),
+                6 => egui::Id::new(("sync-review", "Unverified contents")),
+                _ => egui::Id::new(("sync-review", "All rows")),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let local = phase % 3;
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Sync contents QA phase {phase}");
+            self.sync_contents_phase += 1;
+            self.sync_contents_input_at = Instant::now();
+            return;
+        }
+        if self.scenario == Scenario::SyncReview && self.sync_review_phase < 114 {
+            let Some(state) = self.inner.ui.tools.sync.as_ref() else {
+                return;
+            };
+            if state.scan.is_some() || state.stamp.is_none() || state.error.is_some() {
+                return;
+            }
+            if self.sync_review_baseline.is_none() {
+                self.sync_review_baseline = Some(state.actions.clone());
+            }
+            let phase = self.sync_review_phase;
+            if phase >= 80 {
+                if matches!(phase, 91 | 105 | 108) {
+                    let profiles = &self.inner.sync_profiles;
+                    let expected = if phase == 91 {
+                        Some("Work")
+                    } else if phase == 105 {
+                        Some("Renamed")
+                    } else {
+                        None
+                    };
+                    if profiles.error.is_some()
+                        || profiles.entries.len() != usize::from(expected.is_some())
+                        || profiles.selected.as_deref() != expected
+                    {
+                        return;
+                    }
+                    if let Some(name) = expected
+                        && profiles.entries[0].name != name
+                    {
+                        return;
+                    }
+                    let snapshot = serde_json::json!({"phase":phase,"selected":profiles.selected,"saved":profiles.saved()});
+                    if std::fs::write(
+                        self.scenario_dir
+                            .join(format!("profile-phase-{phase}.json")),
+                        serde_json::to_vec_pretty(&snapshot).unwrap(),
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                if matches!(phase, 94 | 97) {
+                    let swapped = phase == 94;
+                    let (left, right) = if swapped {
+                        (&self.fixture.right, &self.fixture.left)
+                    } else {
+                        (&self.fixture.left, &self.fixture.right)
+                    };
+                    let direction = if swapped {
+                        crate::sync::SyncDirection::ToLeft
+                    } else {
+                        crate::sync::SyncDirection::ToRight
+                    };
+                    if &state.left_dir != left
+                        || &state.right_dir != right
+                        || state.allow_large_plan
+                        || !state.review.query.is_empty()
+                        || !state
+                            .actions
+                            .iter()
+                            .any(|r| r.name == "notes.md" && r.direction == direction)
+                        || !state.stamp.as_ref().is_some_and(|stamp| {
+                            &stamp.left_root == left && &stamp.right_root == right
+                        })
+                    {
+                        return;
+                    }
+                    let snapshot = serde_json::json!({"phase":phase,"left":state.left_dir,"right":state.right_dir,"stamp":state.stamp,"allow_large_plan":state.allow_large_plan,"query":state.review.query,"sort":state.review.sort.key(),"directions":state.actions.iter().map(|r|serde_json::json!({"name":r.name,"direction":format!("{:?}",r.direction)})).collect::<Vec<_>>()});
+                    if std::fs::write(
+                        self.scenario_dir
+                            .join(format!("comparison-phase-{phase}.json")),
+                        serde_json::to_vec_pretty(&snapshot).unwrap(),
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                let (key, local) = match phase {
+                    80..=82 => ("header", phase - 80),
+                    83..=87 => ("name", phase - 83),
+                    88..=90 => ("save", phase - 88),
+                    91..=93 => ("swap", phase - 91),
+                    94..=96 => ("load", phase - 94),
+                    97..=101 => ("name", phase - 97),
+                    102..=104 => ("rename", phase - 102),
+                    105..=107 => ("delete", phase - 105),
+                    108..=110 => ("header", phase - 108),
+                    _ => ("export", phase - 111),
+                };
+                let id = match key {
+                    "swap" => egui::Id::new("sync-swap-comparison"),
+                    "export" => egui::Id::new(("sync-export", "json")),
+                    _ => egui::Id::new(("sync-profiles", key)),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    match local {
+                        1 | 2 => input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        }),
+                        3 => input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers {
+                                command: true,
+                                mac_cmd: true,
+                                ..Default::default()
+                            },
+                        }),
+                        4 => input.events.push(egui::Event::Text(
+                            if phase == 87 { "Work" } else { "Renamed" }.into(),
+                        )),
+                        _ => {}
+                    }
+                    self.sync_review_phase += 1;
+                }
+                return;
+            }
+            if phase >= 55 {
+                if matches!(phase, 63 | 66 | 69) {
+                    let expected = if phase == 66 {
+                        crate::sync::SyncDirection::ToRight
+                    } else {
+                        crate::sync::SyncDirection::Skip
+                    };
+                    if !state.review.masks
+                        || state.review.query != "*.MD;!read*"
+                        || state.review.indices.len() != 1
+                        || state.actions[state.review.indices[0]].name != "notes.md"
+                        || state.actions[state.review.indices[0]].direction != expected
+                    {
+                        return;
+                    }
+                    if !crate::sync_report::export(
+                        state,
+                        crate::sync_report::Scope::Shown,
+                        crate::sync_report::Format::Json,
+                    )
+                    .is_ok_and(|text| {
+                        std::fs::write(
+                            self.scenario_dir.join(format!("mask-report-{phase}.json")),
+                            text,
+                        )
+                        .is_ok()
+                    }) {
+                        return;
+                    }
+                    let snapshot = serde_json::json!({"phase":phase,"masks":state.review.masks,"query":state.review.query,"indices":state.review.indices,"hidden_planned":state.review.hidden_planned,"rows":state.actions.iter().map(|r|serde_json::json!({"name":r.name,"direction":format!("{:?}",r.direction)})).collect::<Vec<_>>()});
+                    if std::fs::write(
+                        self.scenario_dir.join(format!("mask-phase-{phase}.json")),
+                        serde_json::to_vec_pretty(&snapshot).unwrap(),
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                let (id, local) = match phase {
+                    55..=57 => (egui::Id::new(("sync-review", "masks")), phase - 55),
+                    58..=62 => (egui::Id::new(("sync-review", "query")), phase - 58),
+                    63..=65 => (
+                        egui::Id::new(("sync-shown-edit", "Restore shown defaults")),
+                        phase - 63,
+                    ),
+                    66..=68 => (egui::Id::new(("sync-shown-edit", "Skip shown")), phase - 66),
+                    69..=73 => (egui::Id::new(("sync-review", "query")), phase - 69),
+                    74..=76 => (egui::Id::new(("sync-review", "masks")), phase - 74),
+                    _ => (egui::Id::new(("sync-export", "json")), phase - 77),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    match local {
+                        1 | 2 => input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        }),
+                        3 => input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers {
+                                command: true,
+                                mac_cmd: true,
+                                ..Default::default()
+                            },
+                        }),
+                        4 => {
+                            if phase == 62 {
+                                input.events.push(egui::Event::Text("*.MD;!read*".into()));
+                            } else {
+                                input.events.push(egui::Event::Key {
+                                    key: egui::Key::Backspace,
+                                    physical_key: None,
+                                    pressed: true,
+                                    repeat: false,
+                                    modifiers: Default::default(),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.sync_review_phase += 1;
+                }
+                return;
+            }
+            if phase >= 43 {
+                let (id, local) = match phase {
+                    43..=45 => (egui::Id::new(("sync-review", "reset")), phase - 43),
+                    46..=48 => (egui::Id::new(("sync-sort", "name")), phase - 46),
+                    49..=51 => (egui::Id::new(("sync-sort", "descending")), phase - 49),
+                    _ => (egui::Id::new(("sync-export", "json")), phase - 52),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.sync_review_phase += 1;
+                }
+                return;
+            }
+            if phase == 34
+                && !self
+                    .counters
+                    .clipboard_text
+                    .lock()
+                    .ok()
+                    .and_then(|v| v.clone())
+                    .is_some_and(|text| {
+                        std::fs::write(self.scenario_dir.join("plan-filtered.json"), text).is_ok()
+                    })
+            {
+                return;
+            }
+            if phase >= 34 {
+                if phase == 37 || phase == 40 {
+                    if !state.actions.iter().any(|row| {
+                        row.name == "notes.md"
+                            && row.direction == crate::sync::SyncDirection::ToRight
+                    }) {
+                        return;
+                    }
+                    let file = if phase == 37 {
+                        "restored.json"
+                    } else {
+                        "reverse-unavailable.json"
+                    };
+                    if !crate::sync_report::export(
+                        state,
+                        crate::sync_report::Scope::Full,
+                        crate::sync_report::Format::Json,
+                    )
+                    .is_ok_and(|text| std::fs::write(self.scenario_dir.join(file), text).is_ok())
+                    {
+                        return;
+                    }
+                }
+                let (label, local) = match phase {
+                    34..=36 => ("Restore shown defaults", phase - 34),
+                    37..=39 => ("Reverse shown copies", phase - 37),
+                    _ => ("Skip shown", phase - 40),
+                };
+                let id = egui::Id::new(("sync-shown-edit", label));
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.sync_review_phase += 1;
+                }
+                return;
+            }
+            if phase >= 17 {
+                if phase == 25 || phase == 28 {
+                    let Some(text) = self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|value| value.clone())
+                    else {
+                        return;
+                    };
+                    let (count, file, valid) = if phase == 25 {
+                        (1, "plan-full.csv", text.starts_with("Scope,Full rows,"))
+                    } else {
+                        (
+                            2,
+                            "plan-full.json",
+                            serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| {
+                                v["scope"] == "full_plan" && v["exported_rows"] == 9
+                            }),
+                        )
+                    };
+                    if self.counters.clipboard.load(Ordering::Relaxed) != count
+                        || !valid
+                        || std::fs::write(self.scenario_dir.join(file), text).is_err()
+                    {
+                        return;
+                    }
+                }
+                let (id, local) = match phase {
+                    17..=21 => (egui::Id::new(("sync-review", "query")), phase - 17),
+                    22..=24 => (egui::Id::new(("sync-export", "csv")), phase - 22),
+                    25..=27 => (egui::Id::new(("sync-export", "json")), phase - 25),
+                    28..=30 => (egui::Id::new(("sync-export", "shown_rows")), phase - 28),
+                    _ => (egui::Id::new(("sync-export", "json")), phase - 31),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    match local {
+                        1 | 2 => input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        }),
+                        3 => input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers {
+                                command: true,
+                                mac_cmd: true,
+                                ..Default::default()
+                            },
+                        }),
+                        4 => input.events.push(egui::Event::Text("NOTES".into())),
+                        _ => {}
+                    }
+                    self.sync_review_phase += 1;
+                }
+                return;
+            }
+            let Some(index) = state.actions.iter().position(|row| row.name == "notes.md") else {
+                return;
+            };
+            if phase == 5 && (state.review.indices != [index] || state.review.query != "NOTES") {
+                return;
+            }
+            if phase == 11
+                && (!state.review.indices.is_empty()
+                    || state.actions[index].direction != crate::sync::SyncDirection::Skip)
+            {
+                return;
+            }
+            if phase == 14
+                && (state.review.indices != [index]
+                    || state.review.scope != crate::sync_review::Scope::Skipped)
+            {
+                return;
+            }
+            let (id, local) = match phase {
+                0..=4 => (egui::Id::new(("sync-review", "query")), phase),
+                5..=7 => (egui::Id::new(("sync-review", "Planned")), phase - 5),
+                8..=10 => (
+                    egui::Id::new(("sync-direction", index, "Skip".to_string())),
+                    phase - 8,
+                ),
+                11..=13 => (egui::Id::new(("sync-review", "Skipped")), phase - 11),
+                _ => (egui::Id::new(("sync-review", "reset")), phase - 14),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                match local {
+                    1 | 2 => input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    }),
+                    3 => input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    }),
+                    4 => input.events.push(egui::Event::Text("NOTES".into())),
+                    _ => {}
+                }
+                log::info!("Sync review QA phase {phase}, rect {rect:?}");
+                self.sync_review_phase += 1;
+            }
+            return;
+        }
+        if self.scenario == Scenario::DiskTreeFilter && self.disk_tree_phase < 37 {
+            use crate::app::DiskUsageMode;
+            let phase = self.disk_tree_phase;
+            let targets = [
+                "alpha",
+                "alpha/shared/target-one",
+                "beta",
+                "beta/shared/target-two",
+            ];
+            let added_targets = [
+                "alpha",
+                "alpha/shared/target-one",
+                "beta",
+                "beta/shared/target-two",
+                "delta/shared/target-three",
+            ];
+            if phase == 0
+                && !self
+                    .inner
+                    .ui
+                    .tools
+                    .treemap
+                    .as_ref()
+                    .is_some_and(|state| state.run.is_none() && state.overview.is_some())
+            {
+                return;
+            }
+            let expected = match phase {
+                3 => Some((("", false, false), None, false, DiskUsageMode::Tree)),
+                8 => Some((
+                    ("TGT", false, false),
+                    Some((0, &[][..])),
+                    false,
+                    DiskUsageMode::Tree,
+                )),
+                11 | 17 => Some((
+                    ("TGT", true, false),
+                    Some((2, targets.as_slice())),
+                    false,
+                    DiskUsageMode::Tree,
+                )),
+                14 => Some((
+                    ("TGT", true, true),
+                    Some((0, &[][..])),
+                    false,
+                    DiskUsageMode::Tree,
+                )),
+                20 => Some((("", true, false), None, false, DiskUsageMode::Tree)),
+                25 => Some((
+                    ("target", true, false),
+                    Some((2, targets.as_slice())),
+                    false,
+                    DiskUsageMode::Tree,
+                )),
+                28 => Some((
+                    ("target", false, false),
+                    Some((2, targets.as_slice())),
+                    false,
+                    DiskUsageMode::Tree,
+                )),
+                31 => Some((
+                    ("target", false, false),
+                    Some((3, added_targets.as_slice())),
+                    true,
+                    DiskUsageMode::Tree,
+                )),
+                34 => Some((
+                    ("target", false, false),
+                    Some((3, added_targets.as_slice())),
+                    true,
+                    DiskUsageMode::Map,
+                )),
+                _ => None,
+            };
+            if expected.is_some_and(|(options, expected, added, mode)| {
+                !self.disk_tree_filter_ready(options, expected, added, mode)
+            }) {
+                return;
+            }
+            let (id, local, edit) = match phase {
+                0..=2 => (egui::Id::new(("disk-usage-mode", "Tree")), phase, None),
+                3..=7 => (
+                    egui::Id::new(("disk-tree-filter", "query")),
+                    phase - 3,
+                    Some("TGT"),
+                ),
+                8..=10 => (
+                    egui::Id::new(("disk-tree-filter", "Fuzzy")),
+                    phase - 8,
+                    None,
+                ),
+                11..=13 => (
+                    egui::Id::new(("disk-tree-filter", "Match case")),
+                    phase - 11,
+                    None,
+                ),
+                14..=16 => (
+                    egui::Id::new(("disk-tree-filter", "Match case")),
+                    phase - 14,
+                    None,
+                ),
+                17..=19 => (
+                    egui::Id::new(("disk-tree-filter", "Clear")),
+                    phase - 17,
+                    None,
+                ),
+                20..=24 => (
+                    egui::Id::new(("disk-tree-filter", "query")),
+                    phase - 20,
+                    Some("target"),
+                ),
+                25..=27 => (
+                    egui::Id::new(("disk-tree-filter", "Fuzzy")),
+                    phase - 25,
+                    None,
+                ),
+                28..=30 => (egui::Id::new("disk-usage-rescan"), phase - 28, None),
+                31..=33 => (egui::Id::new(("disk-usage-mode", "Map")), phase - 31, None),
+                _ => (egui::Id::new(("disk-usage-mode", "Tree")), phase - 34, None),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                if phase == 28 {
+                    let path = self.fixture.left.join("delta/shared/target-three/f.bin");
+                    if std::fs::create_dir_all(path.parent().unwrap())
+                        .and_then(|()| std::fs::write(path, [b'd'; 60]))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if edit.is_some() && local == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if let Some(text) = edit.filter(|_| local == 4) {
+                    input.events.push(egui::Event::Text(text.into()));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!("Disk tree filter QA phase {phase}, target {id:?}");
+                self.disk_tree_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::PerItemStop && self.per_item_stop_phase < 6 {
+            if !self.pane_tool_opened {
+                self.inner.ui.modals.run_command = Some(crate::app::RunCommandState {
+                    output_view: Default::default(),
+                    template_browser: Default::default(),
+                    exchange: Default::default(),
+                    template_name: "Stop qualification".into(),
+                    template_extensions: String::new(),
+                    template_require_all: false,
+                    template_working_dir: Default::default(),
+                    template_execution: crate::cmdtemplate::ExecutionMode::PerItemContinue,
+                    template_kind: Default::default(),
+                    template_limits: Default::default(),
+                    line: "printf started > {paths}.started; printf 'ready\\n'; sleep 30; printf done > {paths}".into(),
+                    scroll_nonce: 1,
+                    opening: crate::app::RunCommandOpeningContext {
+                        active_panel: crate::workspace::ActivePanel::Left,
+                        selection: ["first.txt", "later.txt"].into_iter().map(|name| {
+                            crate::panel::FileEntry::observe_lexical(self.fixture.left.join(name))
+                                .expect("owned Stop fixture file")
+                        }).collect(),
+                        left_dir: self.fixture.left.clone(),
+                        right_dir: self.fixture.right.clone(),
+                        stale_cursor: false,
+                    },
+                    run: None,
+                    output: None,
+                });
+                self.pane_tool_opened = true;
+                return;
+            }
+            let phase = self.per_item_stop_phase;
+            if phase >= 3
+                && !std::fs::read(self.fixture.left.join("first.txt.started"))
+                    .is_ok_and(|bytes| bytes == b"started")
+            {
+                return;
+            }
+            let id = egui::Id::new(if phase < 3 {
+                "run-command-button"
+            } else {
+                "run-command-stop"
+            });
+            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let local = phase % 3;
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            log::info!("Per-item Stop QA phase {phase}, target {id:?}, rect {rect:?}");
+            self.per_item_stop_phase += 1;
+            return;
+        }
+        if matches!(
+            self.scenario,
+            Scenario::TemplateBrowser | Scenario::PerItemCommand
+        ) && self.template_browser_phase
+            <= if self.scenario == Scenario::PerItemCommand {
+                70
+            } else {
+                18
+            }
+        {
+            if !self.pane_tool_opened {
+                let Some(entry) =
+                    crate::panel::FileEntry::observe_lexical(self.fixture.left.join("notes.md"))
+                else {
+                    return;
+                };
+                self.inner.ui.modals.run_command = Some(crate::app::RunCommandState {
+                    output_view: Default::default(),
+                    template_browser: Default::default(),
+                    exchange: Default::default(),
+                    template_name: String::new(),
+                    template_extensions: String::new(),
+                    template_require_all: false,
+                    template_working_dir: Default::default(),
+                    template_execution: Default::default(),
+                    template_kind: Default::default(),
+                    template_limits: Default::default(),
+                    line: "printf 'QA draft'".into(),
+                    scroll_nonce: 1,
+                    opening: crate::app::RunCommandOpeningContext {
+                        active_panel: crate::workspace::ActivePanel::Left,
+                        selection: vec![
+                            entry,
+                            crate::panel::FileEntry::observe_lexical(
+                                self.fixture.left.join("Design"),
+                            )
+                            .expect("QA fixture directory"),
+                        ],
+                        left_dir: self.fixture.left.clone(),
+                        right_dir: self.fixture.right.clone(),
+                        stale_cursor: false,
+                    },
+                    run: None,
+                    output: None,
+                });
+                self.pane_tool_opened = true;
+                return;
+            }
+            let phase = self.template_browser_phase;
+            if phase >= 18 {
+                if self.scenario != Scenario::PerItemCommand || phase == 70 {
+                    return;
+                }
+                if phase == 18 {
+                    let Some(state) = self.inner.ui.modals.run_command.as_mut() else {
+                        return;
+                    };
+                    if state.run.is_some()
+                        || !state.output.as_ref().is_some_and(|output| {
+                            output.context.is_some()
+                                && output
+                                    .batch
+                                    .as_ref()
+                                    .is_some_and(|batch| batch.completed == 2)
+                        })
+                    {
+                        return;
+                    }
+                    state.line = "edited after finish".into();
+                    state.template_name = "Edited name".into();
+                    state.template_working_dir = crate::cmdtemplate::WorkingDirectory::Opening;
+                    self.template_browser_phase += 1;
+                    return;
+                }
+                if phase == 22 || phase == 26 {
+                    let Some(text) = self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|value| value.clone())
+                    else {
+                        return;
+                    };
+                    let (count, file, valid) = if phase == 22 {
+                        (
+                            1,
+                            "copied-stdout.txt",
+                            self.inner
+                                .ui
+                                .modals
+                                .run_command
+                                .as_ref()
+                                .and_then(|state| state.output.as_ref())
+                                .is_some_and(|output| output.stdout == text),
+                        )
+                    } else {
+                        (
+                            2,
+                            "copied-report.txt",
+                            text.starts_with("Commander command report (v1)\n"),
+                        )
+                    };
+                    if self.counters.clipboard.load(Ordering::Relaxed) != count
+                        || !valid
+                        || std::fs::write(self.scenario_dir.join(file), text).is_err()
+                    {
+                        return;
+                    }
+                    self.template_browser_phase += 1;
+                    return;
+                }
+                if phase >= 52 {
+                    let id = egui::Id::new(("command-output-find", 1u64));
+                    let (key, local, expected) = match phase {
+                        52..=54 => (id.with("typography").with("A+"), phase - 52, 100),
+                        55..=57 => (id.with("typography").with("A+"), phase - 55, 125),
+                        58..=60 => (id.with("typography").with("A−"), phase - 58, 150),
+                        61..=63 => (id.with("typography").with("100%"), phase - 61, 125),
+                        64..=66 => (id.with("typography").with("A+"), phase - 64, 100),
+                        _ => (id.with("lines").with("go-control"), phase - 67, 125),
+                    };
+                    if local == 0
+                        && !self
+                            .inner
+                            .ui
+                            .modals
+                            .run_command
+                            .as_ref()
+                            .is_some_and(|state| {
+                                state.run.is_none() && state.output_view.text_percent() == expected
+                            })
+                    {
+                        return;
+                    }
+                    if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                        if let Some(window) = ProbeSnapshot::read(ctx).confirmation {
+                            let delta = if rect.bottom() > window.rect.bottom() - 12.0 {
+                                -120.0
+                            } else if rect.top() < window.rect.top() + 12.0 {
+                                120.0
+                            } else {
+                                0.0
+                            };
+                            if delta != 0.0 {
+                                input.events.push(egui::Event::PointerMoved(egui::pos2(
+                                    window.rect.right() - 30.0,
+                                    window.rect.bottom() - 40.0,
+                                )));
+                                input.events.push(egui::Event::MouseWheel {
+                                    unit: egui::MouseWheelUnit::Point,
+                                    phase: egui::TouchPhase::Move,
+                                    delta: egui::vec2(0.0, delta),
+                                    modifiers: Default::default(),
+                                });
+                                return;
+                            }
+                        }
+                        if local == 0 && !self.hex_target_settled(key, rect) {
+                            return;
+                        }
+                        let pos = rect.center();
+                        input.events.push(egui::Event::PointerMoved(pos));
+                        if local == 1 || local == 2 {
+                            input.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: local == 1,
+                                modifiers: Default::default(),
+                            });
+                        }
+                        self.template_browser_phase += 1;
+                    }
+                    return;
+                }
+                if phase >= 42 {
+                    let id = egui::Id::new(("command-output-find", 1u64));
+                    if !self
+                        .inner
+                        .ui
+                        .modals
+                        .run_command
+                        .as_ref()
+                        .is_some_and(|state| state.output_view.regex_ready() && state.run.is_none())
+                    {
+                        return;
+                    }
+                    if phase == 50 || phase == 51 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: phase == 50,
+                            repeat: false,
+                            modifiers: Default::default(),
+                        });
+                        self.template_browser_phase += 1;
+                        return;
+                    }
+                    let key = if phase <= 44 {
+                        id.with("line-numbers")
+                    } else {
+                        id.with("lines").with("input-control")
+                    };
+                    if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                        if let Some(window) = ProbeSnapshot::read(ctx).confirmation
+                            && rect.bottom() > window.rect.bottom() - 12.0
+                        {
+                            input.events.push(egui::Event::PointerMoved(egui::pos2(
+                                window.rect.right() - 30.0,
+                                window.rect.bottom() - 40.0,
+                            )));
+                            input.events.push(egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                phase: egui::TouchPhase::Move,
+                                delta: egui::vec2(0.0, -120.0),
+                                modifiers: Default::default(),
+                            });
+                            return;
+                        }
+                        if (phase == 42 || phase == 45) && !self.hex_target_settled(key, rect) {
+                            return;
+                        }
+                        let pos = rect.center();
+                        input.events.push(egui::Event::PointerMoved(pos));
+                        match phase {
+                            43 | 44 | 46 | 47 => input.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: phase == 43 || phase == 46,
+                                modifiers: Default::default(),
+                            }),
+                            48 => input.events.push(egui::Event::Key {
+                                key: egui::Key::A,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers {
+                                    command: true,
+                                    mac_cmd: true,
+                                    ..Default::default()
+                                },
+                            }),
+                            49 => input.events.push(egui::Event::Text("9".into())),
+                            _ => {}
+                        }
+                        self.template_browser_phase += 1;
+                    }
+                    return;
+                }
+                if phase >= 30 {
+                    let id = egui::Id::new(("command-output-find", 1u64));
+                    if (35..=38).contains(&phase) {
+                        let expected = if phase == 35 || phase == 38 {
+                            (2, Some(0))
+                        } else {
+                            (2, Some(1))
+                        };
+                        // A press is observed by the following release frame.
+                        if !self
+                            .inner
+                            .ui
+                            .modals
+                            .run_command
+                            .as_ref()
+                            .is_some_and(|state| {
+                                state.output_view.search_state() == expected && state.run.is_none()
+                            })
+                        {
+                            return;
+                        }
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: phase == 35 || phase == 37,
+                            repeat: false,
+                            modifiers: if phase >= 37 {
+                                egui::Modifiers::SHIFT
+                            } else {
+                                Default::default()
+                            },
+                        });
+                        self.template_browser_phase += 1;
+                        return;
+                    }
+                    if let Some(rect) = ctx.data(|data| {
+                        data.get_temp::<egui::Rect>(id.with(if phase >= 39 {
+                            "regex-toggle"
+                        } else {
+                            "query-control"
+                        }))
+                    }) {
+                        if let Some(window) = ProbeSnapshot::read(ctx).confirmation
+                            && rect.bottom() > window.rect.bottom() - 12.0
+                        {
+                            input.events.push(egui::Event::PointerMoved(egui::pos2(
+                                window.rect.right() - 30.0,
+                                window.rect.bottom() - 40.0,
+                            )));
+                            input.events.push(egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                phase: egui::TouchPhase::Move,
+                                delta: egui::vec2(0.0, -120.0),
+                                modifiers: Default::default(),
+                            });
+                            return;
+                        }
+                        if (phase == 30 || phase == 39) && !self.hex_target_settled(id, rect) {
+                            return;
+                        }
+                        let pos = rect.center();
+                        input.events.push(egui::Event::PointerMoved(pos));
+                        match phase {
+                            31 | 32 | 40 | 41 => input.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: phase == 31 || phase == 40,
+                                modifiers: Default::default(),
+                            }),
+                            33 => input.events.push(egui::Event::Key {
+                                key: egui::Key::A,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers {
+                                    command: true,
+                                    mac_cmd: true,
+                                    ..Default::default()
+                                },
+                            }),
+                            34 => input.events.push(egui::Event::Text("right".into())),
+                            _ => {}
+                        }
+                        self.template_browser_phase += 1;
+                    }
+                    return;
+                }
+                let (key, local) = match phase {
+                    19..=21 => ("stdout", phase - 19),
+                    23..=25 => ("text", phase - 23),
+                    _ => ("json", phase - 27),
+                };
+                let id = egui::Id::new(("run-copy", key));
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    if let Some(window) = ProbeSnapshot::read(ctx).confirmation {
+                        let delta = if rect.bottom() > window.rect.bottom() - 12.0 {
+                            -120.0
+                        } else if rect.top() < window.rect.top() + 12.0 {
+                            120.0
+                        } else {
+                            0.0
+                        };
+                        if delta != 0.0 {
+                            input.events.push(egui::Event::PointerMoved(egui::pos2(
+                                window.rect.right() - 30.0,
+                                window.rect.bottom() - 40.0,
+                            )));
+                            input.events.push(egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                phase: egui::TouchPhase::Move,
+                                delta: egui::vec2(0.0, delta),
+                                modifiers: Default::default(),
+                            });
+                            return;
+                        }
+                    }
+                    if local == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if local == 1 || local == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: local == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    log::info!("Command report QA phase {phase}, target {key}");
+                    self.template_browser_phase += 1;
+                }
+                return;
+            }
+
+            if phase == 0
+                && !self
+                    .inner
+                    .ui
+                    .modals
+                    .run_command
+                    .as_ref()
+                    .is_some_and(|state| state.template_browser.indices == [1, 2])
+            {
+                return;
+            }
+            if phase == 5 {
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .run_command
+                    .as_ref()
+                    .is_some_and(|state| {
+                        state.template_browser.indices.is_empty()
+                            && state.run.is_none()
+                            && state.output.is_none()
+                    })
+                {
+                    return;
+                }
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+                self.template_browser_phase += 1;
+                return;
+            }
+            if phase == 9
+                && !self
+                    .inner
+                    .ui
+                    .modals
+                    .run_command
+                    .as_ref()
+                    .is_some_and(|state| state.template_browser.indices == [0])
+            {
+                return;
+            }
+            if phase == 15
+                && ctx.data(|data| data.get_temp::<bool>(egui::Id::new("run-command-enabled")))
+                    != Some(self.scenario == Scenario::PerItemCommand)
+            {
+                return;
+            }
+            let (id, local) = match phase {
+                0..=4 => (egui::Id::new(("template-browser", "query")), phase),
+                6..=8 => (egui::Id::new(("template-browser", "all")), phase - 6),
+                9..=11 => (egui::Id::new(("run-template-row", 0usize)), phase - 9),
+                12..=14 => (egui::Id::new(("template-browser", "clear")), phase - 12),
+                _ => (egui::Id::new("run-command-button"), phase - 15),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if phase == 15
+                    && let Some(window) = ProbeSnapshot::read(ctx).confirmation
+                    && rect.bottom() > window.rect.bottom() - 12.0
+                {
+                    input.events.push(egui::Event::PointerMoved(egui::pos2(
+                        window.rect.right() - 30.0,
+                        window.rect.bottom() - 40.0,
+                    )));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0.0, -100.0),
+                        modifiers: Default::default(),
+                    });
+                    log::info!("Template policy QA scrolling Run into view: {rect:?}");
+                    return;
+                }
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                match local {
+                    3 => input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    }),
+                    4 => {
+                        input.events.push(egui::Event::Text("АРХИВ".into()));
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    1 | 2 => input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    }),
+                    _ => {}
+                }
+                log::info!("Template browser QA phase {phase}, target {id:?}, rect {rect:?}");
+                self.template_browser_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::FavoritePicker && self.favorite_picker_phase < 38 {
+            let phase = self.favorite_picker_phase;
+            if !self.pane_tool_opened {
+                self.inner
+                    .ws
+                    .execute(crate::command::Command::OpenFavorites);
+                self.pane_tool_opened = true;
+                return;
+            }
+            if phase == 0
+                && !self
+                    .inner
+                    .ui
+                    .modals
+                    .palette_input
+                    .as_ref()
+                    .is_some_and(|state| {
+                        state.input == "@"
+                            && state.favorite_cache.matches.total == 152
+                            && state.favorite_cache.matches.indices.len() == 100
+                    })
+            {
+                return;
+            }
+            if phase == 8 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+                self.favorite_picker_phase += 1;
+                return;
+            }
+            if phase == 9 || phase == 21 || phase == 32 {
+                let stage = if phase == 9 {
+                    1
+                } else if phase == 21 {
+                    2
+                } else {
+                    3
+                };
+                if self.inner.ui.modals.palette_input.is_some()
+                    || !self.favorite_picker_ready(stage)
+                {
+                    return;
+                }
+                self.inner
+                    .ws
+                    .execute(crate::command::Command::OpenFavorites);
+                self.favorite_picker_phase += 1;
+                return;
+            }
+            if phase == 30 || phase == 31 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: phase == 30,
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+                self.favorite_picker_phase += 1;
+                return;
+            }
+            let (id, local, query) = match phase {
+                0..=2 => (
+                    egui::Id::new(("favorite-picker-target", "Background")),
+                    phase,
+                    None,
+                ),
+                3..=7 => (egui::Id::new("omnibar-input"), phase - 3, Some("@пркт")),
+                10..=14 => (
+                    egui::Id::new("omnibar-input"),
+                    phase - 10,
+                    Some("@RootHere"),
+                ),
+                15..=17 => (
+                    egui::Id::new(("favorite-picker-target", "Other panel")),
+                    phase - 15,
+                    None,
+                ),
+                18..=20 => (
+                    egui::Id::new(("favorite-picker-row", &self.fixture.left)),
+                    phase - 18,
+                    None,
+                ),
+                22..=26 => (egui::Id::new("omnibar-input"), phase - 22, Some("@пркт")),
+                27..=29 => (
+                    egui::Id::new(("favorite-picker-target", "New tab")),
+                    phase - 27,
+                    None,
+                ),
+                _ => (egui::Id::new("omnibar-input"), phase - 33, Some("@пркт")),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if query.is_some() && local == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if let Some(query) = query.filter(|_| local == 4) {
+                    input.events.push(egui::Event::Text(query.into()));
+                    if phase == 7 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Default::default(),
+                        });
+                    }
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!("Favorite picker QA phase {phase}, target {id:?}, rect {rect:?}");
+                self.favorite_picker_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::FavoriteImport && self.favorite_import_phase < 17 {
+            let phase = self.favorite_import_phase;
+            if !self.pane_tool_opened {
+                self.inner
+                    .ws
+                    .execute(crate::command::Command::ImportFavoritesGtk);
+                self.pane_tool_opened = true;
+                return;
+            }
+            if phase == 8 && !self.favorite_import_ready(false) {
+                return;
+            }
+            if phase == 11
+                && !self.inner.bookmark_import_preview().is_some_and(|preview| {
+                    preview.rows.len() == 7 && !preview.rows[2].selected && preview.selected() == 2
+                })
+            {
+                return;
+            }
+            if phase == 14 && !self.favorite_import_ready(true) {
+                return;
+            }
+            let (id, local) = match phase {
+                0..=4 => (egui::Id::new("bookmark-import-input"), phase),
+                5..=7 => (egui::Id::new("bookmark-import-preview"), phase - 5),
+                8..=10 => (egui::Id::new(("bookmark-import-row", 3usize)), phase - 8),
+                11..=13 => (egui::Id::new("bookmark-import-apply"), phase - 11),
+                _ => (egui::Id::new("bookmark-import-export"), phase - 14),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if phase == 4 {
+                    input
+                        .events
+                        .push(egui::Event::Text(self.favorite_import_text()));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!("Favorite import QA phase {phase}, target {id:?}, rect {rect:?}");
+                self.favorite_import_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::Favorites && self.favorite_phase < 41 {
+            let phase = self.favorite_phase;
+            let path = self.fixture.left.join("Design");
+            if phase == 11 && !self.favorite_ready(false, false) {
+                return;
+            }
+            if phase == 17 && !self.favorite_ready(true, false) {
+                return;
+            }
+            if phase == 20 && !self.favorite_ready(true, true) {
+                return;
+            }
+            if phase == 26 && !self.favorite_navigation_ready(1) {
+                return;
+            }
+            if phase == 32 && !self.favorite_navigation_ready(2) {
+                return;
+            }
+            if phase == 35 && !self.favorite_navigation_ready(3) {
+                return;
+            }
+            let (id, local) = match phase {
+                20..=22 => (
+                    egui::Id::new(("favorite-row", &self.fixture.left)),
+                    phase - 20,
+                ),
+                23..=25 => (
+                    egui::Id::new(("favorite-open", &self.fixture.left, "Open in other panel")),
+                    phase - 23,
+                ),
+                26..=28 => (
+                    egui::Id::new(("favorite-row", &self.fixture.left)),
+                    phase - 26,
+                ),
+                29..=31 => (
+                    egui::Id::new(("favorite-open", &self.fixture.left, "Open in new tab")),
+                    phase - 29,
+                ),
+                32..=34 => (egui::Id::new(("favorite-row", &path)), phase - 32),
+                35..=37 => (
+                    egui::Id::new(("favorite-row", &self.fixture.right)),
+                    phase - 35,
+                ),
+                38..=40 => (
+                    egui::Id::new((
+                        "favorite-open",
+                        &self.fixture.right,
+                        "Open in background tab",
+                    )),
+                    phase - 38,
+                ),
+                0..=2 => (egui::Id::new(("favorite-row", &path)), phase),
+                3..=7 => (egui::Id::new(("favorite-name-input", &path)), phase - 3),
+                8..=10 => (egui::Id::new(("favorite-name-save", &path)), phase - 8),
+                11..=13 => (egui::Id::new(("favorite-row", &path)), phase - 11),
+                14..=16 => (egui::Id::new(("favorite-slot", &path, 3u8)), phase - 14),
+                _ => (egui::Id::new(("favorite-row", &path)), phase - 17),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                // The filesystem tree can reveal a deep active folder and scroll Favorites away.
+                // Scroll its real container back before targeting a retained offscreen row rect.
+                if local == 0
+                    && (phase < 3
+                        || (11..14).contains(&phase)
+                        || (17..23).contains(&phase)
+                        || (26..29).contains(&phase)
+                        || (32..38).contains(&phase))
+                    && (rect.top() < 40.0
+                        || rect.bottom() > ctx.input(|input| input.viewport_rect().bottom()))
+                {
+                    log::info!("Favorites QA scrolling to visible row at phase {phase}: {rect:?}");
+                    input
+                        .events
+                        .push(egui::Event::PointerMoved(egui::pos2(100.0, 200.0)));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0.0, 1200.0),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                if local == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 6 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if phase == 7 {
+                    input.events.push(egui::Event::Text("Проект UI".into()));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: if (32..35).contains(&phase) {
+                            egui::PointerButton::Middle
+                        } else if phase < 3
+                            || (11..14).contains(&phase)
+                            || (20..23).contains(&phase)
+                            || (26..29).contains(&phase)
+                            || (35..38).contains(&phase)
+                        {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                log::info!("Favorites QA phase {phase}, target {id:?}, rect {rect:?}");
+                self.favorite_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50 {
+            let phase = self.checksum_list_phase;
+            if phase == 3 && !self.checksum_list_ready(false, 0) {
+                return;
+            }
+            if phase == 6 && !self.checksum_list_ready(false, 1) {
+                return;
+            }
+            if phase == 9 && !self.checksum_list_ready(true, 0) {
+                return;
+            }
+            if phase == 12 {
+                if !self.checksum_list_ready(true, 2) {
+                    return;
+                }
+                let list = [
+                    "verify-good.txt",
+                    "nested/verify-good.txt",
+                    "verify-bad.txt",
+                    "verify-missing.txt",
+                ]
+                .iter()
+                .map(|name| format!("MD5 (./{name}) = 900150983cd24fb0d6963f7d28e17f72\n"))
+                .collect::<String>();
+                if std::fs::write(self.fixture.left.join("verify.checksums"), list).is_err() {
+                    return;
+                }
+            }
+            if phase == 15
+                && !self.checksum_list_algorithm_ready(true, 0, crate::checksum::Algorithm::Md5)
+            {
+                return;
+            }
+            if phase == 18
+                && !self.checksum_list_algorithm_ready(true, 3, crate::checksum::Algorithm::Md5)
+            {
+                return;
+            }
+            if phase == 24
+                && !self.inner.checksum_list_report().is_some_and(|report| {
+                    report.error.is_some()
+                        && report.rows.is_empty()
+                        && report.total == 0
+                        && report.algorithm == Some(crate::checksum::Algorithm::Sha256)
+                })
+            {
+                return;
+            }
+            if phase == 30
+                && !self.checksum_list_algorithm_ready(true, 0, crate::checksum::Algorithm::Md5)
+            {
+                return;
+            }
+            if phase == 33
+                && !self.checksum_list_algorithm_ready(true, 4, crate::checksum::Algorithm::Md5)
+            {
+                return;
+            }
+            if phase == 36
+                && !self.inner.checksum_list_view_is(
+                    crate::checksum_list_view::Filter::Problems,
+                    "",
+                    &["./verify-missing.txt"],
+                )
+            {
+                return;
+            }
+            if phase == 39
+                && (!self.checksum_list_filtered_copy_ready(true, 5)
+                    || !self.recorded_clipboard_dump("problems-report.txt"))
+            {
+                return;
+            }
+            if phase == 47
+                && !self.inner.checksum_list_view_is(
+                    crate::checksum_list_view::Filter::Matches,
+                    "nested",
+                    &["./nested/verify-good.txt"],
+                )
+            {
+                return;
+            }
+            let id = match phase {
+                33..=35 => egui::Id::new(("checksum-list-filter", "Problems")),
+                36..=38 | 47..=49 => egui::Id::new("checksum-list-copy-visible"),
+                39..=41 => egui::Id::new(("checksum-list-filter", "Matches")),
+                42..=46 => egui::Id::new(("checksum-list-filter", "query")),
+                18..=20 => egui::Id::new(("checksum-list-algorithm", "SHA-256")),
+                24..=26 => egui::Id::new(("checksum-list-algorithm", "Auto")),
+                0..=2 | 6..=8 | 12..=14 | 21..=23 | 27..=29 => egui::Id::new("checksum-list-run"),
+                _ => egui::Id::new("checksum-list-copy"),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                if (phase.is_multiple_of(3) || phase == 47) && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                log::info!("Checksum-list QA phase {phase}, target {id:?}, rect {rect:?}");
+                if phase == 6
+                    && std::fs::write(self.fixture.left.join("verify-bad.txt"), b"abc").is_err()
+                {
+                    return;
+                }
+                let pos = rect.center();
+                let local = if phase >= 47 {
+                    phase - 47
+                } else if phase >= 42 {
+                    phase - 42
+                } else {
+                    phase % 3
+                };
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 45 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if phase == 46 {
+                    input.events.push(egui::Event::Text("nested".into()));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_list_phase += 1;
+                return;
+            }
+        }
         if self.scenario == Scenario::Checksums && self.checksum_click_phase < 12 {
             let phase = self.checksum_click_phase;
             if phase == 4
@@ -1784,6 +14107,410 @@ impl eframe::App for VisualQaApp {
                 self.checksum_click_phase += 1;
             }
         }
+        if self.scenario == Scenario::Checksums && (12..40).contains(&self.checksum_click_phase) {
+            use crate::checksum::{Algorithm, ExpectedMatch};
+            let phase = self.checksum_click_phase;
+            if phase == 12
+                && !self
+                    .inner
+                    .checksum_comparison_is(Algorithm::Blake3, ExpectedMatch::Match)
+            {
+                return;
+            }
+            if phase == 15 || phase == 29 {
+                let algorithm = if phase == 15 {
+                    Algorithm::Sha384
+                } else {
+                    Algorithm::Sha512
+                };
+                if !self
+                    .inner
+                    .checksum_comparison_is(algorithm, ExpectedMatch::Invalid)
+                {
+                    return;
+                }
+            }
+            if phase == 20 || phase == 34 {
+                let algorithm = if phase == 20 {
+                    Algorithm::Sha384
+                } else {
+                    Algorithm::Sha512
+                };
+                if !self
+                    .inner
+                    .checksum_comparison_is(algorithm, ExpectedMatch::Match)
+                {
+                    return;
+                }
+            }
+            if phase == 23 || phase == 26 || phase == 37 {
+                let (count, expected) = match phase {
+                    23 => (1, ABC_SHA384.to_owned()),
+                    26 => (
+                        2,
+                        format!(
+                            "{ABC_SHA384} *{}\n",
+                            self.fixture.left.join("checksum.txt").display()
+                        ),
+                    ),
+                    _ => (3, ABC_SHA512.to_owned()),
+                };
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|value| value.clone())
+                        .as_deref()
+                        != Some(expected.as_str())
+                {
+                    return;
+                }
+            }
+            let (key, local) = match phase {
+                12..=14 => (egui::Id::new(("checksum-algorithm", "SHA-384")), phase - 12),
+                15..=19 => (egui::Id::new("checksum-expected"), phase - 15),
+                20..=22 => (egui::Id::new("checksum-copy-digest"), phase - 20),
+                23..=25 => (egui::Id::new("checksum-copy-list"), phase - 23),
+                26..=28 => (egui::Id::new(("checksum-algorithm", "SHA-512")), phase - 26),
+                29..=33 => (egui::Id::new("checksum-expected"), phase - 29),
+                34..=36 => (egui::Id::new("checksum-copy-digest"), phase - 34),
+                _ => (egui::Id::new("checksum-copy-list"), phase - 37),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if matches!(phase, 18 | 32) {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if matches!(phase, 19 | 33) {
+                    input.events.push(egui::Event::Text(
+                        if phase == 19 { ABC_SHA384 } else { ABC_SHA512 }.into(),
+                    ));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_click_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::Checksums && (40..51).contains(&self.checksum_click_phase) {
+            let phase = self.checksum_click_phase;
+            if phase == 40 {
+                let expected = format!(
+                    "{ABC_SHA512} *{}\n",
+                    self.fixture.left.join("checksum.txt").display()
+                );
+                if self.counters.clipboard.load(Ordering::Relaxed) != 4
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                        .as_deref()
+                        != Some(expected.as_str())
+                {
+                    return;
+                }
+            }
+            if phase == 48
+                && !self.inner.checksum_comparison_is(
+                    crate::checksum::Algorithm::Blake3,
+                    crate::checksum::ExpectedMatch::Match,
+                )
+            {
+                return;
+            }
+            let (key, local) = match phase {
+                40..=42 => (egui::Id::new(("checksum-algorithm", "BLAKE3")), phase - 40),
+                43..=47 => (egui::Id::new("checksum-expected"), phase - 43),
+                _ => (egui::Id::new("checksum-copy-list"), phase - 48),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 46 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if phase == 47 {
+                    input.events.push(egui::Event::Text(
+                        "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85".into(),
+                    ));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_click_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::Checksums && (51..65).contains(&self.checksum_click_phase) {
+            use crate::checksum::{Algorithm, ExpectedMatch};
+            let phase = self.checksum_click_phase;
+            if phase == 51 {
+                let expected = format!(
+                    "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85  {}\n",
+                    self.fixture.left.join("checksum.txt").display()
+                );
+                if self.counters.clipboard.load(Ordering::Relaxed) != 5
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                        .as_deref()
+                        != Some(expected.as_str())
+                {
+                    return;
+                }
+            }
+            if phase == 54
+                && !self
+                    .inner
+                    .checksum_comparison_is(Algorithm::Crc32, ExpectedMatch::Invalid)
+            {
+                return;
+            }
+            if phase == 59
+                && !self
+                    .inner
+                    .checksum_comparison_is(Algorithm::Crc32, ExpectedMatch::Match)
+            {
+                return;
+            }
+            if phase == 62
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 6
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                        .as_deref()
+                        != Some("352441c2"))
+            {
+                return;
+            }
+            let (key, local) = match phase {
+                51..=53 => (egui::Id::new(("checksum-algorithm", "CRC32")), phase - 51),
+                54..=58 => (egui::Id::new("checksum-expected"), phase - 54),
+                59..=61 => (egui::Id::new("checksum-copy-digest"), phase - 59),
+                _ => (egui::Id::new("checksum-copy-list"), phase - 62),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 57 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if phase == 58 {
+                    input.events.push(egui::Event::Text("352441c2".into()));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_click_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::Checksums && (65..83).contains(&self.checksum_click_phase) {
+            let phase = self.checksum_click_phase;
+            if phase == 65 || phase == 71 || phase == 77 {
+                let relative = phase == 71;
+                let expected = if relative {
+                    "./checksum.txt 352441C2\n".to_owned()
+                } else {
+                    format!(
+                        "{} 352441C2\n",
+                        self.fixture.left.join("checksum.txt").display()
+                    )
+                };
+                let count = match phase {
+                    65 => 7,
+                    71 => 8,
+                    _ => 9,
+                };
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|value| value.clone())
+                        .as_deref()
+                        != Some(expected.as_str())
+                    || !self.inner.checksum_relative_mode_is(relative)
+                {
+                    return;
+                }
+            }
+            let local = (phase - 65) % 6;
+            let key = if local < 3 {
+                "checksum-relative-paths"
+            } else {
+                "checksum-copy-list"
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key))) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if !local.is_multiple_of(3) {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local % 3 == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_click_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::Checksums && (83..103).contains(&self.checksum_click_phase) {
+            use crate::checksum::{Algorithm, ExpectedMatch};
+            let phase = self.checksum_click_phase;
+            let md5 = "900150983cd24fb0d6963f7d28e17f72";
+            let relative_list = format!("{md5} *./checksum.txt\n");
+            if phase == 83
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 10
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                        .as_deref()
+                        != Some("./checksum.txt 352441C2\n")
+                    || !self.inner.checksum_relative_base_is(&self.fixture.left)
+                    || !self
+                        .inner
+                        .checksum_comparison_is(Algorithm::Crc32, ExpectedMatch::Match))
+            {
+                return;
+            }
+            if phase == 86
+                && !self
+                    .inner
+                    .checksum_comparison_is(Algorithm::Md5, ExpectedMatch::Invalid)
+            {
+                return;
+            }
+            if phase == 91
+                && !self
+                    .inner
+                    .checksum_comparison_is(Algorithm::Md5, ExpectedMatch::Match)
+            {
+                return;
+            }
+            if phase == 94
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 11
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                        .as_deref()
+                        != Some(md5))
+            {
+                return;
+            }
+            if phase == 97
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 12
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                        .as_deref()
+                        != Some(relative_list.as_str())
+                    || !self.inner.checksum_relative_base_is(&self.fixture.left))
+            {
+                return;
+            }
+            if phase == 100 && self.inner.checksum_relative_mode_is(true) {
+                return;
+            }
+            let (id, local) = match phase {
+                83..=85 => (egui::Id::new(("checksum-algorithm", "MD5")), phase - 83),
+                86..=90 => (egui::Id::new("checksum-expected"), phase - 86),
+                91..=93 => (egui::Id::new("checksum-copy-digest"), phase - 91),
+                94..=96 => (egui::Id::new("checksum-copy-list"), phase - 94),
+                97..=99 => (egui::Id::new("checksum-relative-paths"), phase - 97),
+                _ => (egui::Id::new("checksum-copy-list"), phase - 100),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if phase == 89 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            mac_cmd: true,
+                            ..Default::default()
+                        },
+                    });
+                } else if phase == 90 {
+                    input.events.push(egui::Event::Text(md5.to_uppercase()));
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_click_phase += 1;
+                return;
+            }
+        }
         if self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6 {
             let find_id = egui::Id::new(("text_preview", "right")).with("find");
             if self.regex_click_phase == 3
@@ -1812,7 +14539,406 @@ impl eframe::App for VisualQaApp {
                 self.regex_click_phase += 1;
             }
         }
-        if self.scenario == Scenario::HexSearch && self.hex_search_phase < 13 {
+        // One input stage per frame: a release must reach its control before
+        // the following stage moves the pointer elsewhere.
+        if self.scenario == Scenario::HexBomEncoding
+            && self.hex_search_phase < 12
+            && self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .and_then(crate::hex_preview::HexViewer::shown_offset)
+                == Some(0)
+        {
+            let phase = self.hex_search_phase;
+            let step = phase % 3;
+            if phase == 0
+                && !self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                    v.character_encoding_is_auto()
+                        && v.character_encoding_label() == "UTF-16 BE"
+                        && v.first_displayed_row()
+                            .is_some_and(|r| r.ends_with(" | .›П›р›и›в›е›т›"))
+                })
+            {
+                return;
+            }
+            if phase == 6
+                && !self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                    !v.character_encoding_is_auto() && v.character_encoding_label() == "ASCII"
+                })
+            {
+                return;
+            }
+            if phase == 0 {
+                self.hex_verified_before_close = true;
+            }
+            if phase == 6 {
+                self.hex_clear_verified = true;
+            }
+            let id = if phase < 3 || (6..9).contains(&phase) {
+                egui::Id::new("hex-character-menu")
+            } else {
+                egui::Id::new((
+                    "hex-character-encoding",
+                    if phase < 6 {
+                        "ASCII"
+                    } else {
+                        "Auto (Unicode BOM)"
+                    },
+                ))
+            };
+            if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if step == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                if step != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: step == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexCharacterKeys && self.hex_search_phase < 9 {
+            let phase = self.hex_search_phase;
+            if phase < 6 {
+                let step = phase % 3;
+                let ready = step != 0
+                    || self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                        v.shown_offset() == Some(0)
+                            && (phase < 3
+                                || v.character_encoding_label() == "Windows-1251"
+                                    && v.first_displayed_row()
+                                        .is_some_and(|r| r.ends_with(" | Привет")))
+                    });
+                if ready {
+                    if phase == 3 {
+                        self.hex_verified_before_close = true;
+                    }
+                    let modifiers = if phase < 3 {
+                        egui::Modifiers::NONE
+                    } else {
+                        egui::Modifiers::SHIFT
+                    };
+                    input.events.push(egui::Event::ModifiersChanged(modifiers));
+                    if step != 0 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::F8,
+                            physical_key: None,
+                            pressed: step == 1,
+                            repeat: false,
+                            modifiers,
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            } else if egui::Popup::is_any_open(ctx) {
+                let id = egui::Id::new(("hex-character-encoding", "ASCII"));
+                if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                    let step = phase - 6;
+                    let pos = rect.center();
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if matches!(
+            self.scenario,
+            Scenario::HexCharacterEncoding | Scenario::HexUtf8Encoding | Scenario::HexUtf16Encoding
+        ) && self.hex_search_phase < 6
+            && self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .and_then(crate::hex_preview::HexViewer::shown_offset)
+                == Some(0)
+        {
+            let phase = self.hex_search_phase;
+            let step = phase % 3;
+            let id = if phase < 3 {
+                egui::Id::new("hex-character-menu")
+            } else {
+                egui::Id::new((
+                    "hex-character-encoding",
+                    if self.scenario == Scenario::HexUtf16Encoding {
+                        "UTF-16 LE"
+                    } else if self.scenario == Scenario::HexUtf8Encoding {
+                        "UTF-8"
+                    } else {
+                        "Windows-1251"
+                    },
+                ))
+            };
+            if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if step == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                if step != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: step == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if matches!(
+            self.scenario,
+            Scenario::HexMatchCopy | Scenario::HexRepeatSearch
+        ) && self.hex_search_phase < 19
+        {
+            let phase = self.hex_search_phase;
+            let offset = self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .and_then(crate::hex_preview::HexViewer::shown_offset);
+            if phase < 7 && (offset == Some(0) || phase == 6) {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                if phase == 3 {
+                    if !ctx.memory(|m| m.has_focus(egui::Id::new("hex-search-query"))) {
+                        return;
+                    }
+                    input.events.push(egui::Event::Text("DE AD BE EF".into()));
+                } else {
+                    let step = if phase < 3 { phase } else { phase - 4 };
+                    if step != 0 {
+                        input.events.push(egui::Event::Key {
+                            key: if phase < 3 {
+                                egui::Key::F7
+                            } else {
+                                egui::Key::F3
+                            },
+                            physical_key: None,
+                            pressed: step == 1,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                self.hex_search_phase += 1;
+            } else if self.scenario == Scenario::HexMatchCopy
+                && phase >= 7
+                && self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::matched_offset)
+                    == Some(1)
+            {
+                if phase >= 13 && !self.hex_verified_before_close {
+                    return;
+                }
+                let id = if phase < 10 || (13..16).contains(&phase) {
+                    egui::Id::new("hex-copy-match-menu")
+                } else {
+                    egui::Id::new((
+                        "hex-copy-match",
+                        if phase < 13 {
+                            "HEX bytes"
+                        } else {
+                            "Clear match"
+                        },
+                    ))
+                };
+                let step = (phase - 7) % 3;
+                if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexMatchCopy
+            && (19..25).contains(&self.hex_search_phase)
+            && self.hex_clear_verified
+        {
+            let phase = self.hex_search_phase;
+            if phase < 22 {
+                let id = egui::Id::new(("hex-boundary-search", "Find first"));
+                if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                    let step = phase - 19;
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            } else if self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .is_some_and(crate::hex_preview::HexViewer::match_is_selected)
+            {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::CTRL));
+                let step = phase - 22;
+                if step != 0 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Insert,
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers: egui::Modifiers::CTRL,
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexRepeatSearch && (7..19).contains(&self.hex_search_phase) {
+            let phase = self.hex_search_phase;
+            if phase < 10 {
+                if self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::matched_offset)
+                    != Some(1)
+                {
+                    return;
+                }
+
+                let id = egui::Id::new("hex-path-label");
+                if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) {
+                    let pos = rect.center();
+                    let step = phase - 7;
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            } else {
+                let group = (phase - 10) / 3;
+                let step = (phase - 10) % 3;
+                if step != 0
+                    || !ctx.egui_wants_keyboard_input()
+                        && self
+                            .inner
+                            .hex_viewer
+                            .as_ref()
+                            .and_then(crate::hex_preview::HexViewer::matched_offset)
+                            == Some(if group == 1 { 6 } else { 1 })
+                {
+                    let modifiers = [
+                        egui::Modifiers::SHIFT,
+                        egui::Modifiers::ALT,
+                        egui::Modifiers::NONE,
+                    ][usize::from(group)];
+                    input.events.push(egui::Event::ModifiersChanged(modifiers));
+                    if step != 0 {
+                        input.events.push(egui::Event::Key {
+                            key: if group == 2 {
+                                egui::Key::Space
+                            } else {
+                                egui::Key::F7
+                            },
+                            physical_key: None,
+                            pressed: step == 1,
+                            repeat: false,
+                            modifiers,
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexAlignment && self.hex_search_phase < 27 {
+            let group = usize::from(self.hex_search_phase / 3);
+            let step = self.hex_search_phase % 3;
+            let expected = [0, 1, 2, 1, 0, 0, 4096, 4097, 4097][group];
+            if step != 0
+                || self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::shown_offset)
+                    == Some(expected)
+            {
+                let modifiers = if group == 5 {
+                    egui::Modifiers::NONE
+                } else {
+                    egui::Modifiers::CTRL
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                if step != 0 {
+                    input.events.push(egui::Event::Key {
+                        key: [
+                            egui::Key::ArrowRight,
+                            egui::Key::ArrowRight,
+                            egui::Key::ArrowLeft,
+                            egui::Key::ArrowLeft,
+                            egui::Key::ArrowLeft,
+                            egui::Key::End,
+                            egui::Key::ArrowRight,
+                            egui::Key::ArrowRight,
+                            egui::Key::ArrowLeft,
+                        ][group],
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers,
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        let hex_phase_at_start = self.hex_search_phase;
+        if self.scenario == Scenario::HexSearch && hex_phase_at_start < 13 {
             let viewer = self.inner.hex_viewer.as_ref();
             let ready = if self.hex_search_phase < 7 {
                 viewer.and_then(crate::hex_preview::HexViewer::shown_offset) == Some(0)
@@ -1835,6 +14961,9 @@ impl eframe::App for VisualQaApp {
                 {
                     let pos = rect.center();
                     input.events.push(egui::Event::PointerMoved(pos));
+                    if phase == 0 && !self.hex_target_settled(egui::Id::new(key), rect) {
+                        return;
+                    }
                     if self.hex_search_phase == 3 {
                         input.events.push(egui::Event::Text("de ad be ef".into()));
                     } else if !phase.is_multiple_of(3) {
@@ -1848,6 +14977,706 @@ impl eframe::App for VisualQaApp {
                     self.hex_search_phase += 1;
                 }
             }
+        }
+        if self.scenario == Scenario::HexSearch && (13..30).contains(&hex_phase_at_start) {
+            let step = self.hex_search_phase;
+            let viewer = self.inner.hex_viewer.as_ref();
+            let expected = if step < 24 {
+                4094
+            } else if step < 27 {
+                8190
+            } else {
+                70000
+            };
+            if viewer.and_then(crate::hex_preview::HexViewer::shown_offset) == Some(expected) {
+                let (id, phase) = if step < 16 {
+                    (egui::Id::new(("hex-search-mode", "UTF-8 text")), step - 13)
+                } else if step < 21 {
+                    (egui::Id::new("hex-query"), step - 16)
+                } else if step < 24 {
+                    (egui::Id::new("hex-find-next"), step - 21)
+                } else if step < 27 {
+                    (egui::Id::new("hex-find-next"), step - 24)
+                } else {
+                    (egui::Id::new("hex-find-previous"), step - 27)
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if phase == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step == 19 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers {
+                                command: true,
+                                mac_cmd: true,
+                                ..Default::default()
+                            },
+                        });
+                    } else if step == 20 {
+                        input.events.push(egui::Event::Text("Привет🌍".into()));
+                    } else if phase == 1 || phase == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (30..54).contains(&hex_phase_at_start) {
+            let step = self.hex_search_phase - 30;
+            let round = usize::from(step / 12);
+            let action = usize::from(step % 12 / 3);
+            let phase = step % 3;
+            let expected =
+                [[8190, 8190, 90001, 100001], [90001, 90001, 110001, 120001]][round][action];
+            if self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .and_then(crate::hex_preview::HexViewer::shown_offset)
+                == Some(expected)
+            {
+                let id = if action == 0 {
+                    egui::Id::new(("hex-search-mode", ["UTF-16 LE", "UTF-16 BE"][round]))
+                } else {
+                    egui::Id::new(if action == 3 {
+                        "hex-find-previous"
+                    } else {
+                        "hex-find-next"
+                    })
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if phase == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if phase != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (54..63).contains(&hex_phase_at_start) {
+            let step = self.hex_search_phase - 54;
+            let expected = if step < 6 { 110001 } else { 120001 };
+            if self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .and_then(crate::hex_preview::HexViewer::shown_offset)
+                == Some(expected)
+            {
+                let key = ["hex-wrap-search", "hex-find-previous", "hex-find-next"]
+                    [usize::from(step / 3)];
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
+                {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step.is_multiple_of(3) && !self.hex_target_settled(egui::Id::new(key), rect)
+                    {
+                        return;
+                    }
+                    if !step.is_multiple_of(3) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step % 3 == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (63..84).contains(&hex_phase_at_start) {
+            let phase = self.hex_search_phase;
+            if (66..72).contains(&phase) {
+                // Let a wide popup finish viewport placement before using its item rect.
+                self.hex_search_phase += 1;
+            } else {
+                let viewer = self.inner.hex_viewer.as_ref();
+                let expected = if phase >= 81 { 120001 } else { 110001 };
+                let ready = viewer.and_then(crate::hex_preview::HexViewer::shown_offset)
+                    == Some(expected)
+                    && (phase < 75
+                        || if phase < 78 {
+                            viewer
+                                .and_then(crate::hex_preview::HexViewer::matched_offset)
+                                .is_none()
+                        } else {
+                            viewer.and_then(crate::hex_preview::HexViewer::matched_offset)
+                                == Some(expected)
+                        });
+                let (id, step) = if phase < 66 {
+                    (egui::Id::new("hex-recent-searches-menu"), phase - 63)
+                } else if phase < 75 {
+                    (egui::Id::new(("hex-recent-search", 0usize)), phase - 72)
+                } else {
+                    (
+                        egui::Id::new(if phase < 81 {
+                            "hex-find-previous"
+                        } else {
+                            "hex-find-next"
+                        }),
+                        (phase - 75) % 3,
+                    )
+                };
+                if ready && let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (84..102).contains(&hex_phase_at_start) {
+            let phase = self.hex_search_phase;
+            let group = (phase - 84) / 3;
+            let step = (phase - 84) % 3;
+            let viewer = self.inner.hex_viewer.as_ref();
+            let expected = if matches!(group, 1 | 4) {
+                120001
+            } else {
+                110001
+            };
+            let ready = step != 0
+                || (viewer.and_then(crate::hex_preview::HexViewer::shown_offset) == Some(expected)
+                    && (group != 0
+                        || viewer.is_some_and(crate::hex_preview::HexViewer::wrapped_search))
+                    && (group < 3 || viewer.is_some_and(|v| v.bookmark_at(9) == Some(110001))));
+            if ready {
+                if matches!(group, 2 | 4) {
+                    let modifiers = if step == 2 {
+                        egui::Modifiers::NONE
+                    } else {
+                        egui::Modifiers {
+                            ctrl: true,
+                            shift: group == 2,
+                            ..Default::default()
+                        }
+                    };
+                    input.events.push(egui::Event::ModifiersChanged(modifiers));
+                    if step != 0 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Num0,
+                            physical_key: None,
+                            pressed: step == 1,
+                            repeat: false,
+                            modifiers,
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                } else {
+                    let id = if group == 5 {
+                        egui::Id::new(("hex-row-width-preset", 8u8))
+                    } else {
+                        egui::Id::new((
+                            "hex-boundary-search",
+                            if group == 1 {
+                                "Find first"
+                            } else {
+                                "Find last"
+                            },
+                        ))
+                    };
+                    if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                        input.events.push(egui::Event::PointerMoved(rect.center()));
+                        if step == 0 && !self.hex_target_settled(id, rect) {
+                            return;
+                        }
+                        if step != 0 {
+                            input.events.push(egui::Event::PointerButton {
+                                pos: rect.center(),
+                                button: egui::PointerButton::Primary,
+                                pressed: step == 1,
+                                modifiers: Default::default(),
+                            });
+                        }
+                        self.hex_search_phase += 1;
+                    }
+                }
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (102..117).contains(&hex_phase_at_start) {
+            let group = (self.hex_search_phase - 102) / 3;
+            let step = (self.hex_search_phase - 102) % 3;
+            let expected_width = [8, 9, 16, 32, 31][usize::from(group)];
+            if step != 0
+                || self.inner.hex_viewer.as_ref().is_some_and(|viewer| {
+                    viewer.shown_offset() == Some(110001)
+                        && viewer.row_width_bytes() == expected_width
+                })
+            {
+                let modifiers = if step == 2 {
+                    egui::Modifiers::NONE
+                } else {
+                    egui::Modifiers {
+                        alt: true,
+                        ctrl: matches!(group, 1 | 2 | 4),
+                        ..Default::default()
+                    }
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                if step != 0 {
+                    input.events.push(egui::Event::Key {
+                        key: if group >= 3 {
+                            egui::Key::ArrowLeft
+                        } else {
+                            egui::Key::ArrowRight
+                        },
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers,
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (117..123).contains(&hex_phase_at_start) {
+            let phase = self.hex_search_phase;
+            let step = (phase - 117) % 3;
+            let forward = phase >= 120;
+            if step != 0
+                || self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::shown_offset)
+                    == Some(if forward { 120001 } else { 110001 })
+            {
+                let modifiers = if step == 2 {
+                    egui::Modifiers::NONE
+                } else {
+                    egui::Modifiers {
+                        ctrl: true,
+                        shift: forward,
+                        ..Default::default()
+                    }
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                if step != 0 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Z,
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers,
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (123..135).contains(&hex_phase_at_start) {
+            let group = (self.hex_search_phase - 123) / 3;
+            let step = (self.hex_search_phase - 123) % 3;
+            if step != 0
+                || self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::shown_offset)
+                    == Some([110001, 0, 4096, 0][usize::from(group)])
+            {
+                let modifiers = if step == 2 || group != 3 {
+                    egui::Modifiers::NONE
+                } else {
+                    egui::Modifiers::CTRL
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                if step != 0 {
+                    input.events.push(egui::Event::Key {
+                        key: [
+                            egui::Key::Home,
+                            egui::Key::PageDown,
+                            egui::Key::PageUp,
+                            egui::Key::End,
+                        ][usize::from(group)],
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers,
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexSearch && (135..144).contains(&hex_phase_at_start) {
+            let group = (self.hex_search_phase - 135) / 3;
+            let step = (self.hex_search_phase - 135) % 3;
+            let ready = step != 0
+                || self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::shown_offset)
+                    == Some(131072)
+                    && match group {
+                        1 => {
+                            ctx.memory(|memory| memory.has_focus(egui::Id::new("hex-offset-input")))
+                        }
+                        2 => {
+                            ctx.memory(|memory| memory.has_focus(egui::Id::new("hex-search-query")))
+                        }
+                        _ => true,
+                    };
+            if ready {
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                if step != 0 {
+                    input.events.push(egui::Event::Key {
+                        key: [egui::Key::F5, egui::Key::F7, egui::Key::F3][usize::from(group)],
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexSearch
+            && (144..150).contains(&hex_phase_at_start)
+            && self.hex_verified_before_close
+        {
+            let phase = self.hex_search_phase;
+            let step = (phase - 144) % 3;
+            let expected = if phase < 147 { 110001 } else { 110002 };
+            if step != 0
+                || self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::shown_offset)
+                    == Some(expected)
+            {
+                if phase == 144 {
+                    ctx.memory_mut(|memory| {
+                        if let Some(id) = memory.focused() {
+                            memory.surrender_focus(id);
+                        }
+                    });
+                }
+                input
+                    .events
+                    .push(egui::Event::ModifiersChanged(egui::Modifiers::CTRL));
+                if step != 0 {
+                    input.events.push(egui::Event::Key {
+                        key: if phase < 147 {
+                            egui::Key::ArrowRight
+                        } else {
+                            egui::Key::ArrowLeft
+                        },
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers: egui::Modifiers::CTRL,
+                    });
+                }
+                self.hex_search_phase += 1;
+            }
+        }
+        if self.scenario == Scenario::HexSearch
+            && (150..159).contains(&hex_phase_at_start)
+            && self.hex_verified_before_close
+            && (self.hex_search_phase >= 158
+                || self
+                    .inner
+                    .hex_viewer
+                    .as_ref()
+                    .and_then(crate::hex_preview::HexViewer::shown_offset)
+                    == Some(110001))
+        {
+            let phase = self.hex_search_phase;
+            if phase < 153 {
+                let id = egui::Id::new("hex-recent-searches-menu");
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let step = phase - 150;
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            } else {
+                let step = (phase - 153) % 3;
+                let ready = step != 0
+                    || self.inner.hex_viewer.is_some()
+                        && (egui::Popup::is_any_open(ctx) == (phase < 156));
+                if ready {
+                    input
+                        .events
+                        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    if step != 0 {
+                        input.events.push(egui::Event::Key {
+                            key: if phase < 156 {
+                                egui::Key::Escape
+                            } else {
+                                egui::Key::F10
+                            },
+                            physical_key: None,
+                            pressed: step == 1,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                    self.hex_search_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::ArchiveFuzzy
+            && self.archive_copy_phase < 7
+            && self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+                state.listing.is_some()
+                    && state.member_filter.order.field == crate::archive_order::Field::Size
+            })
+        {
+            let phase = self.archive_copy_phase;
+            if phase == 3 {
+                if !ctx.memory(|m| m.has_focus(egui::Id::new("archive-filter"))) {
+                    return;
+                }
+                input.events.push(egui::Event::Text("frs".into()));
+                self.archive_copy_phase += 1;
+            } else {
+                if phase == 4 {
+                    let empty = self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+                        state.filter == "frs"
+                            && !state.member_filter.fuzzy_filter_applied()
+                            && state.listing.as_ref().is_some_and(|listing| {
+                                (0..listing.members.len())
+                                    .all(|id| state.member_filter.row_position(id).is_none())
+                            })
+                    });
+                    if !empty {
+                        return;
+                    }
+                    self.hex_verified_before_close = true;
+                }
+                let (id, step, rect) = if phase < 3 {
+                    let id = egui::Id::new("archive-filter");
+                    (id, phase, ctx.read_response(id).map(|r| r.rect))
+                } else {
+                    let id = egui::Id::new(("archive-match-mode", "Fuzzy"));
+                    (id, phase - 4, ctx.data(|d| d.get_temp::<egui::Rect>(id)))
+                };
+                if let Some(rect) = rect {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.archive_copy_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::ArchiveBrowser
+            && self.archive_copy_phase < 35
+            && self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+                state.listing.is_some()
+                    && state.member_filter.order.field == crate::archive_order::Field::Size
+            })
+        {
+            let phase = self.archive_copy_phase;
+            if phase == 3 && !self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+                let position = |path: &str| state.listing.as_ref()
+                    .and_then(|listing| listing.members.iter().position(|member| member.path == Path::new(path)))
+                    .and_then(|index| state.member_filter.row_position(index));
+                matches!((position("src/file2.rs"), position("src/file10.rs")), (Some(a), Some(b)) if a < b)
+            }) { return; }
+            if phase == 29
+                && !self
+                    .inner
+                    .ui
+                    .tools
+                    .archive
+                    .as_ref()
+                    .is_some_and(|state| state.member_filter.filters_are_clear(&state.filter))
+            {
+                return;
+            }
+            if phase >= 7 {
+                let fields = [
+                    ("Archive regular-file size constraints", "+1b"),
+                    ("Archive member depth constraints", "1..3"),
+                    ("Archive modification dates in UTC", "1970-01-01"),
+                    ("Archive member extensions", "rs"),
+                ];
+                let (id, step) = if phase < 23 {
+                    let (label, value) = fields[usize::from((phase - 7) / 4)];
+                    let step = (phase - 7) % 4;
+                    if step == 3 {
+                        input.events.push(egui::Event::Text(value.into()));
+                        self.archive_copy_phase += 1;
+                        return;
+                    }
+                    (egui::Id::new(("archive-filter-input", label)), step)
+                } else {
+                    let (key, start) = match phase {
+                        23..=25 => (egui::Id::new("archive-save-filter"), 23),
+                        26..=28 => (egui::Id::new("archive-reset-filters"), 26),
+                        29..=31 => (egui::Id::new("archive-saved-filters-menu"), 29),
+                        _ => (egui::Id::new(("archive-saved-filter", 0usize)), 32),
+                    };
+                    (key, phase - start)
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.archive_copy_phase += 1;
+                }
+            } else if phase == 6 {
+                input.events.push(egui::Event::Text("*2.rs".into()));
+                self.archive_copy_phase += 1;
+            } else {
+                let step = phase % 3;
+                let id = egui::Id::new(if phase < 3 {
+                    "archive-hide-dotfiles"
+                } else {
+                    "archive-exclusion-query-rect"
+                });
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.archive_copy_phase += 1;
+                }
+            }
+        }
+
+        if self.scenario == Scenario::ArchiveExport && self.archive_copy_phase < 21 {
+            self.archive_copy_settle = self.archive_copy_settle.saturating_add(1);
+            let step = self.archive_copy_phase;
+            let group = step / 3;
+            let expected_count = [0, 1, 2, 2, 3, 3, 4][usize::from(group)];
+            let expected = match expected_count {
+                1 => Some("src/main.rs\nsrc/file2.rs\nsrc/file10.rs".to_string()),
+                2 => Some("docs/notes.txt".to_string()),
+                3 => Some("notes.txt".to_string()),
+                4 => Some(self.archive_export_csv(false)),
+                _ => None,
+            };
+            let ready = self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+                state.member_filter.current_folder() == Some(Path::new("src"))
+                    && state
+                        .member_filter
+                        .first_visible_member()
+                        .and_then(|index| state.listing.as_ref()?.members.get(index))
+                        .is_some_and(|member| member.path == Path::new("src/main.rs"))
+            }) && self.counters.clipboard.load(Ordering::Relaxed) == expected_count
+                && expected.is_none_or(|expected| {
+                    self.counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.clone())
+                        .as_deref()
+                        == Some(expected.as_str())
+                });
+            if ready && self.archive_copy_settle > 6 {
+                let id = match group {
+                    0 | 5 => egui::Id::new(("archive-copy", false)),
+                    1 | 3 | 6 => egui::Id::new(("archive-copy", true)),
+                    2 => egui::Id::new(("archive-copy-format", "Names")),
+                    _ => egui::Id::new(("archive-copy-format", "CSV")),
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if !step.is_multiple_of(3) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step % 3 == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.archive_copy_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::ArchiveExport
+            && (21..43).contains(&self.archive_copy_phase)
+            && let Some(pane) = ProbeSnapshot::read(ctx).right_pane
+        {
+            let pos = egui::pos2(pane.rect.center().x, pane.rect.top() + 65.0);
+            input.events.push(egui::Event::PointerMoved(pos));
+            if self.archive_copy_phase == 22 {
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -1600.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_copy_phase += 1;
         }
         if self.scenario == Scenario::HexPreview && self.hex_click_phase < 17 {
             let shown = self
@@ -1903,6 +15732,111 @@ impl eframe::App for VisualQaApp {
                             pos,
                             button: egui::PointerButton::Primary,
                             pressed: phase % 3 == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_click_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexPreview && (17..41).contains(&self.hex_click_phase) {
+            let step = self.hex_click_phase - 17;
+            let round = usize::from(step / 8);
+            let phase = step % 8;
+            let shown = self
+                .inner
+                .hex_viewer
+                .as_ref()
+                .and_then(crate::hex_preview::HexViewer::shown_offset);
+            if shown == Some([8192, 4098, 8197][round]) {
+                let key = if phase < 5 { "hex-offset" } else { "hex-go" };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
+                {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if phase == 3 {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::A,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers {
+                                command: true,
+                                mac_cmd: true,
+                                ..Default::default()
+                            },
+                        });
+                    } else if phase == 4 {
+                        input
+                            .events
+                            .push(egui::Event::Text(["50%", "100%", "0%"][round].into()));
+                    } else if [1, 2, 6, 7].contains(&phase) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 1 || phase == 6,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_click_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexPreview && (41..53).contains(&self.hex_click_phase) {
+            let step = self.hex_click_phase - 41;
+            let action = usize::from(step / 3);
+            let phase = step % 3;
+            let viewer = self.inner.hex_viewer.as_ref();
+            let shown = viewer.and_then(crate::hex_preview::HexViewer::shown_offset);
+            let bookmark = viewer.and_then(|viewer| viewer.bookmark_at(0));
+            if shown == Some([0, 0, 4096, 0][action])
+                && bookmark == [None, Some(0), Some(0), Some(0)][action]
+            {
+                let key = [
+                    "hex-bookmark-set",
+                    "hex-next",
+                    "hex-bookmark-jump",
+                    "hex-bookmark-clear",
+                ][action];
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
+                {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if phase != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.hex_click_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::HexPreview && (53..68).contains(&self.hex_click_phase) {
+            let phase = self.hex_click_phase;
+            if (56..62).contains(&phase) {
+                self.hex_click_phase += 1;
+            } else {
+                let viewer = self.inner.hex_viewer.as_ref();
+                let ready = viewer.and_then(crate::hex_preview::HexViewer::shown_offset) == Some(0)
+                    && (phase < 65 || viewer.is_some_and(|v| v.recalled_offset_is("100%")));
+                let (id, step) = if phase < 56 {
+                    (egui::Id::new("hex-recent-offsets-menu"), phase - 53)
+                } else if phase < 65 {
+                    (egui::Id::new(("hex-recent-offset", 1usize)), phase - 62)
+                } else {
+                    (egui::Id::new("hex-go"), phase - 65)
+                };
+                if ready && let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step != 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
                             modifiers: Default::default(),
                         });
                     }
@@ -2022,7 +15956,522 @@ impl eframe::App for VisualQaApp {
                         });
                     }
                     self.rename_options_phase += 1;
+                    return;
                 }
+            }
+        }
+        if self.scenario == Scenario::RenameOptions && (40..62).contains(&self.rename_options_phase)
+        {
+            let phase = self.rename_options_phase;
+            if matches!(phase, 40 | 51) {
+                let expected = if phase == 40 { "TXT.txt" } else { "Doc.txt" };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| validation.options_preview(false, false, expected))
+                {
+                    return;
+                }
+            }
+            let (key, local, text) = match phase {
+                40..=42 => (egui::Id::new("rename-add-replacement"), phase - 40, None),
+                43..=46 => (
+                    egui::Id::new(("rename-extra-find", 0usize)),
+                    phase - 43,
+                    Some("TXT"),
+                ),
+                47..=50 => (
+                    egui::Id::new(("rename-extra-replace", 0usize)),
+                    phase - 47,
+                    Some("Doc"),
+                ),
+                51..=53 => (egui::Id::new("rename-add-replacement"), phase - 51, None),
+                54..=57 => (
+                    egui::Id::new(("rename-extra-find", 1usize)),
+                    phase - 54,
+                    Some("Doc"),
+                ),
+                _ => (
+                    egui::Id::new(("rename-extra-replace", 1usize)),
+                    phase - 58,
+                    Some("Final"),
+                ),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local == 3 {
+                    if let Some(text) = text {
+                        input.events.push(egui::Event::Text(text.into()));
+                    }
+                } else if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_options_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions && (62..68).contains(&self.rename_options_phase)
+        {
+            let phase = self.rename_options_phase;
+            if phase == 62 || phase == 65 {
+                let expected = if phase == 62 { "Final.txt" } else { "Doc.txt" };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| validation.options_preview(false, false, expected))
+                {
+                    return;
+                }
+            }
+            let (key, local) = if phase < 65 {
+                (egui::Id::new(("rename-extra-down", 0usize)), phase - 62)
+            } else {
+                (egui::Id::new(("rename-extra-up", 1usize)), phase - 65)
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_options_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions
+            && self.rename_options_phase == 68
+            && self.rename_range_phase < 12
+        {
+            let phase = self.rename_range_phase;
+            if phase < 3 {
+                self.rename_range_phase += 1;
+                return;
+            }
+            if phase == 6 || phase == 9 {
+                let expected = if phase == 6 { "inal.txt" } else { "Fina.txt" };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| validation.options_preview(false, false, expected))
+                {
+                    return;
+                }
+            }
+            let key = if !(6..9).contains(&phase) {
+                "rename-remove-range"
+            } else {
+                "rename-remove-range-end"
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key))) {
+                let local = (phase - 3) % 3;
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_range_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions
+            && self.rename_options_phase == 68
+            && self.rename_insert_phase < 19
+        {
+            let phase = self.rename_insert_phase;
+            if phase < 3 {
+                self.rename_insert_phase += 1;
+                return;
+            }
+            if phase == 9 {
+                input.events.push(egui::Event::Text("_".into()));
+                self.rename_insert_phase += 1;
+                return;
+            }
+            if phase == 10 || phase == 13 || phase == 16 {
+                let expected = match phase {
+                    10 => "_Final.txt",
+                    13 => "_inal.txt",
+                    _ => "Final_.txt",
+                };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| validation.options_preview(false, false, expected))
+                {
+                    return;
+                }
+            }
+            let (key, local) = match phase {
+                3..=5 => ("rename-insert-enabled", phase - 3),
+                6..=8 => ("rename-insert-text", phase - 6),
+                10..=12 => ("rename-insert-overwrite", phase - 10),
+                13..=15 => ("rename-insert-end", phase - 13),
+                _ => ("rename-insert-enabled", phase - 16),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key))) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_insert_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions
+            && self.rename_options_phase == 68
+            && self.rename_character_phase < 18
+        {
+            use crate::rename::CharacterTarget;
+            let phase = self.rename_character_phase;
+            if phase == 3 || phase == 6 || phase == 9 || phase == 12 || phase == 15 {
+                let (expected, target) = match phase {
+                    3 => ("Final_.txt", CharacterTarget::Stem),
+                    6 => ("_inal.txt", CharacterTarget::Stem),
+                    9 => ("Final._xt", CharacterTarget::Extension),
+                    12 => ("_inal.txt", CharacterTarget::WholeName),
+                    _ => ("_inal.txt", CharacterTarget::Stem),
+                };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .is_some_and(|state| {
+                        state.character_target == target
+                            && state.validation.as_ref().is_some_and(|validation| {
+                                validation.options_preview(false, false, expected)
+                            })
+                    })
+                {
+                    return;
+                }
+            }
+            let (key, local) = match phase {
+                0..=2 => (egui::Id::new("rename-insert-enabled"), phase),
+                3..=5 => (egui::Id::new("rename-insert-end"), phase - 3),
+                6..=8 => (
+                    egui::Id::new(("rename-character-target", "Extension")),
+                    phase - 6,
+                ),
+                9..=11 => (
+                    egui::Id::new(("rename-character-target", "Whole name")),
+                    phase - 9,
+                ),
+                12..=14 => (
+                    egui::Id::new(("rename-character-target", "Name stem")),
+                    phase - 12,
+                ),
+                _ => (egui::Id::new("rename-insert-enabled"), phase - 15),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_character_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions
+            && self.rename_options_phase == 68
+            && self.rename_keep_phase < 15
+        {
+            let phase = self.rename_keep_phase;
+            if phase == 3 || phase == 6 || phase == 9 || phase == 12 {
+                let expected = match phase {
+                    3 => "Fina.txt",
+                    6 => "l.txt",
+                    9 => "F.txt",
+                    _ => "inal.txt",
+                };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| validation.options_preview(false, false, expected))
+                {
+                    return;
+                }
+            }
+            let (key, local) = match phase {
+                0..=2 => (egui::Id::new("rename-remove-range"), phase),
+                3..=5 => (egui::Id::new(("rename-range-action", "Keep")), phase - 3),
+                6..=8 => (egui::Id::new("rename-remove-range-end"), phase - 6),
+                9..=11 => (egui::Id::new(("rename-range-action", "Remove")), phase - 9),
+                _ => (egui::Id::new("rename-remove-range"), phase - 12),
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_keep_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions
+            && self.rename_options_phase == 76
+            && self.rename_letter_phase < 9
+        {
+            let phase = self.rename_letter_phase;
+            if phase == 3 || phase == 6 {
+                let expected = if phase == 3 {
+                    [("TXT-TXT.txt", "a.txt"), ("notes.md", "b.md")]
+                } else {
+                    [("TXT-TXT.txt", "A.txt"), ("notes.md", "B.md")]
+                };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| validation.targets_preview(&expected))
+                {
+                    return;
+                }
+            }
+            let (format, local) = if phase < 3 {
+                (crate::rename::NumberFormat::LowerLetters, phase)
+            } else if phase < 6 {
+                (crate::rename::NumberFormat::UpperLetters, phase - 3)
+            } else {
+                (crate::rename::NumberFormat::Decimal, phase - 6)
+            };
+            if let Some(rect) = ctx.data(|data| {
+                data.get_temp::<egui::Rect>(egui::Id::new(("rename-number-format", format.label())))
+            }) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_letter_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions && (68..82).contains(&self.rename_options_phase)
+        {
+            let phase = self.rename_options_phase;
+            if phase == 68 {
+                let Some(state) = self.inner.ui.modals.batch_rename.as_mut() else {
+                    return;
+                };
+                if !state
+                    .validation
+                    .as_ref()
+                    .is_some_and(|validation| validation.options_preview(false, false, "Final.txt"))
+                {
+                    return;
+                }
+                // Seed a second existing fixture target after retaining all earlier
+                // single-row option/pair tests; subsequent ordering uses real buttons.
+                state.context.targets.push("notes.md".into());
+                state.numbering_on = true;
+                state.number_position = crate::rename::NumberPosition::CounterOnly;
+                state.validation = None;
+                self.rename_options_phase += 1;
+                return;
+            }
+            if phase == 69 {
+                if let Some(rect) = ctx
+                    .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("rename-remove-prefix")))
+                {
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -400.0),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: Default::default(),
+                    });
+                    self.rename_options_phase += 1;
+                }
+                return;
+            }
+            if phase < 76 {
+                self.rename_options_phase += 1;
+                return;
+            }
+            if phase == 76 || phase == 79 {
+                let expected = if phase == 76 {
+                    [("TXT-TXT.txt", "01.txt"), ("notes.md", "02.md")]
+                } else {
+                    [("notes.md", "01.md"), ("TXT-TXT.txt", "02.txt")]
+                };
+                if !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| validation.targets_preview(&expected))
+                {
+                    return;
+                }
+            }
+            let (key, local) = if phase < 79 {
+                (egui::Id::new(("rename-target-down", 0usize)), phase - 76)
+            } else {
+                (egui::Id::new(("rename-target-up", 1usize)), phase - 79)
+            };
+            if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_options_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions && (82..85).contains(&self.rename_options_phase)
+        {
+            let phase = self.rename_options_phase;
+            if phase == 82
+                && !self
+                    .inner
+                    .ui
+                    .modals
+                    .batch_rename
+                    .as_ref()
+                    .and_then(|state| state.validation.as_ref())
+                    .is_some_and(|validation| {
+                        validation
+                            .targets_preview(&[("TXT-TXT.txt", "01.txt"), ("notes.md", "02.md")])
+                    })
+            {
+                return;
+            }
+            if let Some(rect) = ctx.data(|data| {
+                data.get_temp::<egui::Rect>(egui::Id::new(("rename-target-exclude", 0usize)))
+            }) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                let local = phase - 82;
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_options_phase += 1;
+                return;
+            }
+        }
+        if self.scenario == Scenario::RenameOptions && (85..88).contains(&self.rename_options_phase)
+        {
+            self.rename_options_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::RenameOptions && (88..97).contains(&self.rename_options_phase)
+        {
+            let phase = self.rename_options_phase;
+            if phase == 91 || phase == 94 {
+                let expected = if phase == 91 { "notes.md" } else { "01.md" };
+                let count = if phase == 91 { 1 } else { 2 };
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        .as_deref()
+                        != Some(expected)
+                {
+                    return;
+                }
+            }
+            let (label, local) = if phase < 91 {
+                ("Copy original names", phase - 88)
+            } else if phase < 94 {
+                ("Copy proposed names", phase - 91)
+            } else {
+                ("Copy mapping (CSV)", phase - 94)
+            };
+            if let Some(rect) = ctx.data(|data| {
+                data.get_temp::<egui::Rect>(egui::Id::new(("rename-copy-plan", label)))
+            }) {
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: local == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.rename_options_phase += 1;
+                return;
             }
         }
         if self.scenario == Scenario::RenameTarget && self.rename_target_phase < 12 {
@@ -2096,6 +16545,103 @@ impl eframe::App for VisualQaApp {
                 self.preset_click_phase += 1;
             }
         }
+        if self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22 {
+            let step = self.pdf_click_phase;
+            let ready = self.inner.pdf_cache.shown_page("right") == Some(1)
+                && (step < 19 || self.inner.pdf_cache.search_pages("right") == Some(vec![2]));
+            if ready {
+                let (key, phase) = if step < 3 {
+                    (egui::Id::new(("pdf-document-search-toggle", "right")), step)
+                } else if step < 6 {
+                    (
+                        egui::Id::new(("pdf-document-search-regex", "right")),
+                        step - 3,
+                    )
+                } else if step < 9 {
+                    (
+                        egui::Id::new(("pdf-document-search-words", "right")),
+                        step - 6,
+                    )
+                } else if step < 12 {
+                    (
+                        egui::Id::new(("pdf-document-search-smart", "right")),
+                        step - 9,
+                    )
+                } else if step < 16 {
+                    (
+                        egui::Id::new(("pdf-document-search-query", "right")),
+                        step - 12,
+                    )
+                } else if step < 19 {
+                    (
+                        egui::Id::new(("pdf-document-search-start", "right")),
+                        step - 16,
+                    )
+                } else {
+                    (
+                        egui::Id::new(("pdf-document-search-hit", "right", 2_usize)),
+                        step - 19,
+                    )
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 15 {
+                        input
+                            .events
+                            .push(egui::Event::Text(r"second\s+page".into()));
+                    } else if phase == 1 || phase == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.pdf_click_phase += 1;
+                }
+            }
+        }
+        if self.scenario == Scenario::PdfSearch && self.pdf_click_phase < 13 {
+            let step = self.pdf_click_phase;
+            let ready = self.inner.pdf_cache.shown_page("right") == Some(1)
+                && (step < 10 || self.inner.pdf_cache.search_pages("right") == Some(vec![2]));
+            if ready {
+                let (key, phase) = if step < 3 {
+                    (egui::Id::new(("pdf-document-search-toggle", "right")), step)
+                } else if step < 7 {
+                    (
+                        egui::Id::new(("pdf-document-search-query", "right")),
+                        step - 3,
+                    )
+                } else if step < 10 {
+                    (
+                        egui::Id::new(("pdf-document-search-start", "right")),
+                        step - 7,
+                    )
+                } else {
+                    (
+                        egui::Id::new(("pdf-document-search-hit", "right", 2_usize)),
+                        step - 10,
+                    )
+                };
+                if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(key)) {
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if step == 6 {
+                        input.events.push(egui::Event::Text("Second page".into()));
+                    } else if phase == 1 || phase == 2 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.pdf_click_phase += 1;
+                }
+            }
+        }
         if self.scenario == Scenario::PdfPreview && self.pdf_click_phase < 9 {
             let forward = self.pdf_click_phase < 3;
             let expected_page = if self.pdf_click_phase < 3 || self.pdf_click_phase >= 6 {
@@ -2135,6 +16681,32 @@ impl eframe::App for VisualQaApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if matches!(self.scenario, Scenario::TimeGroups | Scenario::FindSort) {
+            ctx.request_repaint();
+        }
+        // Keep scripted native input and debounce waits progressing even when the
+        // macOS background-window timer defers delayed repaint requests.
+        if matches!(
+            self.scenario,
+            Scenario::SearchJson
+                | Scenario::AllocationSearch
+                | Scenario::AccessedSearch
+                | Scenario::CreatedSearch
+                | Scenario::ChangedSearch
+                | Scenario::ParentSearch
+                | Scenario::InodeSort
+                | Scenario::HardLinksSort
+                | Scenario::ChangedSort
+                | Scenario::HardlinkSelection
+                | Scenario::IdentityFind
+                | Scenario::LinksSearch
+                | Scenario::DuplicateExtensions
+                | Scenario::DuplicateComponents
+                | Scenario::DuplicateRelative
+                | Scenario::DuplicateRanking
+        ) {
+            ctx.request_repaint();
+        }
         if let Some(error) = self.pending_event_error.take() {
             self.fail(&ctx, "screenshot_event_failure", error);
             return;
@@ -2185,19 +16757,372 @@ impl eframe::App for VisualQaApp {
         }
 
         self.frames = self.frames.saturating_add(1);
-        if self.started.elapsed() > TIMEOUT {
+        let timeout = if self.scenario == Scenario::SearchResults {
+            Duration::from_secs(30)
+        } else {
+            TIMEOUT
+        };
+        if self.started.elapsed() > timeout {
             let message = format!(
-                "screenshot event timed out after {} frames and {:.1}s ({} attempts): {}",
+                "screenshot event timed out after {} frames and {:.1}s ({} attempts): {}; info_phase={}; metadata_button={:?}; metadata_clip={:?}",
                 self.frames,
                 self.started.elapsed().as_secs_f32(),
                 self.capture_attempts,
                 self.last_probe_summary,
+                self.symlink_info_phase,
+                ctx.data(|d| d
+                    .get_temp::<egui::Rect>(egui::Id::new(("image-metadata-copy-json", "right")))),
+                ctx.data(
+                    |d| d.get_temp::<egui::Rect>(egui::Id::new(("image-metadata-clip", "right")))
+                ),
             );
             self.fail(&ctx, "capture_timeout", message);
             return;
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
+        if self.scenario == Scenario::ProfileExchange
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.new_background_tab(
+                crate::workspace::ActivePanel::Left,
+                self.fixture.left.join("Design"),
+            );
+            self.inner
+                .ws
+                .set_tab_title(crate::workspace::ActivePanel::Left, 1, "Saved branch");
+            let original = self
+                .inner
+                .ws
+                .capture_named_profile("Work".into())
+                .expect("fixture");
+            let mut imported = original.clone();
+            imported.name = "Imported".into();
+            imported.left_filter = "*.rs".into();
+            let _ = std::fs::write(
+                self.scenario_dir.join("profile-import.json"),
+                crate::workspace_profile::encode_exchange(&imported).expect("fixture"),
+            );
+            let mut editor = crate::workspace_profile::Editor::open();
+            let mut book = editor.book.clone();
+            book.add_named(original).expect("fixture");
+            editor.commit(book).expect("fixture");
+            editor.selected = Some("Work".into());
+            editor.exchange_open = true;
+            self.inner
+                .ws
+                .left
+                .navigate_to(self.fixture.left.join("Design"));
+            self.inner
+                .ws
+                .right
+                .navigate_to(self.fixture.right.join("Archive"));
+            self.inner.ui.modals.workspace_profiles = Some(editor);
+            crate::app::App::mark_modal_opened(&ctx, crate::ui_request::UiModal::WorkspaceProfiles);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::ProfileNames
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.new_background_tab(
+                crate::workspace::ActivePanel::Left,
+                self.fixture.left.join("Design"),
+            );
+            self.inner
+                .ws
+                .set_tab_title(crate::workspace::ActivePanel::Left, 1, "Saved branch");
+            let mut profile = self
+                .inner
+                .ws
+                .capture_named_profile("Work".into())
+                .expect("profile fixture");
+            profile.left_filter = "*.rs".into();
+            let mut editor = crate::workspace_profile::Editor::open();
+            let mut book = editor.book.clone();
+            book.add_named(profile).expect("profile fixture");
+            editor.commit(book).expect("profile fixture");
+            editor.selected = Some("Work".into());
+            let _ = std::fs::copy(
+                crate::fs_util::config_dir().join("workspace_profiles.json"),
+                self.scenario_dir.join("profile-before.json"),
+            );
+            self.inner
+                .ws
+                .left
+                .navigate_to(self.fixture.left.join("Design"));
+            self.inner
+                .ws
+                .right
+                .navigate_to(self.fixture.right.join("Archive"));
+            self.inner.ui.modals.workspace_profiles = Some(editor);
+            crate::app::App::mark_modal_opened(&ctx, crate::ui_request::UiModal::WorkspaceProfiles);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::ProfileTabs
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner
+                .ws
+                .left
+                .set_browser_mode(crate::panel::BrowserMode::Icons);
+            self.inner.ws.new_tab(
+                crate::workspace::ActivePanel::Left,
+                Some(self.fixture.left.join("Design")),
+            );
+            self.inner
+                .ws
+                .left
+                .set_browser_mode(crate::panel::BrowserMode::List);
+            self.inner
+                .ws
+                .set_tab_title(crate::workspace::ActivePanel::Left, 1, "Project");
+            self.inner.ws.new_tab(
+                crate::workspace::ActivePanel::Right,
+                Some(self.fixture.right.join("Archive")),
+            );
+            self.inner.ws.active = crate::workspace::ActivePanel::Right;
+            self.inner
+                .ws
+                .execute(crate::command::Command::WorkspaceProfiles);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::WorkspaceProfiles
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.new_background_tab(
+                crate::workspace::ActivePanel::Left,
+                self.fixture.right.clone(),
+            );
+            self.inner
+                .ws
+                .execute(crate::command::Command::WorkspaceProfiles);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::ThemeExchange
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            let mut fixture = crate::custom_theme::State::default();
+            fixture.seed(crate::theme::ThemeColors::dark());
+            let mut doc: serde_json::Value =
+                serde_json::from_str(&fixture.draft).expect("theme fixture");
+            doc["colors"]["bg_panel"] = "#182838".into();
+            doc["colors"]["accent"] = "#389dcc".into();
+            let _ = std::fs::write(
+                self.scenario_dir.join("theme-import.json"),
+                serde_json::to_string_pretty(&doc).expect("theme fixture"),
+            );
+            self.inner.ui.modals.custom_theme_open = true;
+            crate::app::App::mark_modal_opened(&ctx, crate::ui_request::UiModal::CustomTheme);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::CustomTheme
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner
+                .custom_theme
+                .seed(crate::theme::ThemeColors::dark());
+            let mut draft: serde_json::Value =
+                serde_json::from_str(&self.inner.custom_theme.draft).expect("theme fixture");
+            draft["colors"]["bg_panel"] = "#182838".into();
+            draft["colors"]["accent"] = "#389dcc".into();
+            self.inner.custom_theme.draft =
+                serde_json::to_string_pretty(&draft).expect("theme fixture");
+            let _ = std::fs::write(
+                self.scenario_dir.join("theme-draft.json"),
+                &self.inner.custom_theme.draft,
+            );
+            self.inner.ui.modals.custom_theme_open = true;
+            crate::app::App::mark_modal_opened(&ctx, crate::ui_request::UiModal::CustomTheme);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if matches!(
+            self.scenario,
+            Scenario::NameListActions | Scenario::MaskActions
+        ) && self.json_mode_phase < 28
+            && self.json_mode_phase.is_multiple_of(7)
+            && self.inner.ui.modals.mask_input.is_none()
+            && self.inner.ws.left.can_save_selection()
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            if !self.pane_tool_opened {
+                self.inner.ws.left.extend_selection([
+                    self.fixture.left.join("notes.md"),
+                    self.fixture.left.join("photo.png"),
+                ]);
+                self.pane_tool_opened = true;
+            }
+            self.inner.open_mask(&ctx);
+            self.inner.ui.modals.mask_input = Some(
+                if self.scenario == Scenario::MaskActions {
+                    "notes.*;README.*;!photo.*"
+                } else {
+                    "notes.md\nREADME.txt\nmissing.txt"
+                }
+                .into(),
+            );
+            ctx.data_mut(|d| {
+                d.insert_temp(
+                    egui::Id::new("mask-names-mode"),
+                    self.scenario == Scenario::NameListActions,
+                )
+            });
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::TabSelectionSession
+            && !self.pane_tool_opened
+            && self.inner.ws.left.can_save_selection()
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.ws.left.extend_selection([
+                self.fixture.left.join("notes.md"),
+                self.fixture.left.join("README.txt"),
+            ]);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::ShortcutExchange
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.custom_shortcuts = crate::keybindings::State::from_saved(
+                serde_json::json!([{"keys":"F5","command":"Reverse sort order"}]),
+            );
+            self.inner.custom_shortcuts.exchange_text=serde_json::json!({"format":"commander.shortcuts","version":1,"bindings":[{"keys":"N","command":"Move cursor down"}]}).to_string();
+            let _ = std::fs::write(
+                self.scenario_dir.join("shortcut-import.json"),
+                &self.inner.custom_shortcuts.exchange_text,
+            );
+            self.inner.ws.execute(crate::command::Command::KeyboardHelp);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::ShortcutHints
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.ws.left.focus_child("README.txt".into());
+            self.inner.show_key_bar = true;
+            self.inner.custom_shortcuts = crate::keybindings::State::from_saved(
+                serde_json::json!([{"keys":"F5","command":"Reverse sort order"},{"keys":"Alt+G H","command":"Toggle hidden files"}]),
+            );
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::CustomNavigation
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.custom_shortcuts.draft = vec![
+                crate::keybindings::Binding {
+                    keys: "N".into(),
+                    command: "Move cursor down".into(),
+                },
+                crate::keybindings::Binding {
+                    keys: "Shift+N".into(),
+                    command: "Extend selection down".into(),
+                },
+                crate::keybindings::Binding {
+                    keys: "B".into(),
+                    command: "Move to first item".into(),
+                },
+            ];
+            self.inner.ws.execute(crate::command::Command::KeyboardHelp);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if self.scenario == Scenario::CustomShortcuts
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.custom_shortcuts.draft = vec![
+                crate::keybindings::Binding {
+                    keys: "Alt+G H".into(),
+                    command: "Toggle hidden files".into(),
+                },
+                crate::keybindings::Binding {
+                    keys: "Alt+G S".into(),
+                    command: "Reverse sort order".into(),
+                },
+            ];
+            self.inner.ws.execute(crate::command::Command::KeyboardHelp);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+
+        if matches!(
+            self.scenario,
+            Scenario::SyncContents | Scenario::DiffOptions
+        ) {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+        if self.scenario == Scenario::Timestamps {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+        if self.scenario == Scenario::Timestamps
+            && ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_released())
+        {
+            let value = serde_json::json!({"phase":self.timestamp_phase,"state":self.inner.ui.modals.permissions.as_ref().map(|s|s.timestamp_qa()),"reset":ctx.data(|d|d.get_temp::<serde_json::Value>(egui::Id::new(("timestamp-pointer","reset")))),"apply":ctx.data(|d|d.get_temp::<serde_json::Value>(egui::Id::new(("timestamp-pointer","apply"))))});
+            let _ = serde_json::to_vec_pretty(&value).is_ok_and(|b| {
+                std::fs::write(
+                    self.scenario_dir
+                        .join(format!("pointer-{}.json", self.timestamp_phase)),
+                    b,
+                )
+                .is_ok()
+            });
+        }
 
         if self.scenario.needs_confirmation() && !self.confirmation_requested {
             let first = self
@@ -2217,6 +17142,252 @@ impl eframe::App for VisualQaApp {
             }
         }
 
+        if matches!(
+            self.scenario,
+            Scenario::DuplicateRoots | Scenario::DuplicateCross
+        ) && !self.pane_tool_opened
+        {
+            if ["cross.bin", "own-1.bin", "own-2.bin"]
+                .iter()
+                .all(|name| self.inner.ws.left.entries().iter().any(|e| e.name == *name))
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateReport && !self.pane_tool_opened {
+            if ["a1.bin", "a2.bin", "a3.bin", "z.bin", "z-long-copy.bin"]
+                .iter()
+                .all(|name| self.inner.ws.left.entries().iter().any(|e| e.name == *name))
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateCopies && !self.pane_tool_opened {
+            if ["a1.bin", "a2.bin", "a3.bin", "z.bin", "z-long-copy.bin"]
+                .iter()
+                .all(|name| self.inner.ws.left.entries().iter().any(|e| e.name == *name))
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateDepth && !self.pane_tool_opened {
+            if ["a.dat", "b.dat"]
+                .iter()
+                .all(|name| self.inner.ws.left.entries().iter().any(|e| e.name == *name))
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateRelative && !self.pane_tool_opened {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "docs")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateComponents && !self.pane_tool_opened {
+            if self.inner.ws.left.entries().iter().any(|e| e.name == "A") {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateExtensions && !self.pane_tool_opened {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "unique.txt")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateNames && !self.pane_tool_opened {
+            if ["one.JPG", "two.jpg", "skip.jpg", "note.txt"]
+                .iter()
+                .all(|name| self.inner.ws.left.entries().iter().any(|e| e.name == *name))
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateRecursive && !self.pane_tool_opened {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "original.bin")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if matches!(
+            self.scenario,
+            Scenario::DuplicateSort | Scenario::DuplicateSizes
+        ) && !self.pane_tool_opened
+        {
+            if ["a1.bin", "a2.bin", "a3.bin", "z.bin", "z-long-copy.bin"]
+                .iter()
+                .all(|name| {
+                    self.inner
+                        .ws
+                        .left
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.name == *name)
+                })
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicateRanking && !self.pane_tool_opened {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "root-copy.bin")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::DuplicatePolicy && !self.pane_tool_opened {
+            let names = ["a.bin", "middle.bin", "newest-copy.bin"];
+            if names.iter().all(|name| {
+                self.inner
+                    .ws
+                    .left
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.name == *name && entry.modified.is_some())
+            }) {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_duplicates(&ctx);
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if matches!(
+            self.scenario,
+            Scenario::DiffNavigation
+                | Scenario::DiffOptions
+                | Scenario::DiffIntraline
+                | Scenario::DiffSwap
+        ) && !self.pane_tool_opened
+        {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "diff.txt")
+                && self
+                    .inner
+                    .ws
+                    .right
+                    .entries()
+                    .iter()
+                    .any(|e| e.name == "diff.txt")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.ws.left.focus_child("diff.txt".into());
+                let cursor_ready = self
+                    .inner
+                    .ws
+                    .left
+                    .cursor_entry()
+                    .is_some_and(|entry| entry.name == "diff.txt");
+                let targets_ready = self.inner.ws.diff_targets().is_some_and(|(a, b)| {
+                    a == self.fixture.right.join("diff.txt")
+                        && b == self.fixture.left.join("diff.txt")
+                });
+                if cursor_ready && targets_ready {
+                    self.inner.open_diff(&ctx);
+                }
+                self.pane_tool_opened = self.inner.ui.tools.diff.is_some();
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if matches!(self.scenario, Scenario::SyncReview | Scenario::SyncContents)
+            && !self.pane_tool_opened
+        {
+            if !self.inner.ws.left.entries().is_empty() && !self.inner.ws.right.entries().is_empty()
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_sync();
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
         if self.scenario.opens_pane_tool() && !self.pane_tool_opened {
             if !self.inner.ws.left.entries().is_empty() {
                 self.inner.open_treemap(&ctx);
@@ -2227,17 +17398,17 @@ impl eframe::App for VisualQaApp {
             return;
         }
 
-        if self.scenario == Scenario::ArchiveBrowser && !self.pane_tool_opened {
+        if self.scenario.archive_kind().is_some() && !self.pane_tool_opened {
             self.inner.ws.active = crate::workspace::ActivePanel::Left;
             self.inner
-                .open_archive(self.fixture.left.join("sample.tar"), &ctx);
+                .open_archive(self.fixture.left.join(self.scenario.archive_name()), &ctx);
             self.pane_tool_opened = true;
             self.stable_frames = 0;
             ctx.request_repaint();
             return;
         }
 
-        if self.scenario == Scenario::ArchiveBrowser
+        if self.scenario.archive_kind().is_some()
             && let Some(state) = self.inner.ui.tools.archive.as_mut()
             && state.listing.is_some()
             && state.member_filter.order.field != crate::archive_order::Field::Size
@@ -2246,6 +17417,16 @@ impl eframe::App for VisualQaApp {
             // sort only after publication, then wait for a rendered sorted frame.
             state.member_filter.navigate(Some(PathBuf::from("src")));
             state.selected.insert(0); // docs/notes.txt stays selected outside this folder.
+            if self.scenario == Scenario::ArchiveBrowser
+                && let Some(index) = state.listing.as_ref().and_then(|listing| {
+                    listing
+                        .members
+                        .iter()
+                        .position(|m| m.path == Path::new("src/.cache/secret.txt"))
+                })
+            {
+                state.selected.insert(index);
+            }
             state
                 .member_filter
                 .order
@@ -2255,8 +17436,19 @@ impl eframe::App for VisualQaApp {
             return;
         }
 
-        if matches!(self.scenario, Scenario::HexPreview | Scenario::HexSearch)
-            && !self.pane_tool_opened
+        if matches!(
+            self.scenario,
+            Scenario::HexPreview
+                | Scenario::HexSearch
+                | Scenario::HexAlignment
+                | Scenario::HexMatchCopy
+                | Scenario::HexCharacterEncoding
+                | Scenario::HexUtf8Encoding
+                | Scenario::HexUtf16Encoding
+                | Scenario::HexRepeatSearch
+                | Scenario::HexCharacterKeys
+                | Scenario::HexBomEncoding
+        ) && !self.pane_tool_opened
         {
             self.inner.ws.left.focus_child("bytes.bin".into());
             if self
@@ -2274,6 +17466,48 @@ impl eframe::App for VisualQaApp {
             return;
         }
 
+        if matches!(
+            self.scenario,
+            Scenario::DiskTreeFilter
+                | Scenario::DiskUsageExport
+                | Scenario::DiskAllocation
+                | Scenario::DiskCount
+        ) && !self.pane_tool_opened
+        {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "alpha")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_treemap(&ctx);
+                self.pane_tool_opened = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::ChecksumList && !self.pane_tool_opened {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.ws.left.focus_child("verify.checksums".into());
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.name == "verify.checksums")
+            {
+                self.inner
+                    .ws
+                    .execute(crate::command::Command::VerifyChecksumList);
+                self.pane_tool_opened = true;
+                log::info!("Checksum-list QA dispatched cursor-file command");
+            }
+            ctx.request_repaint();
+            return;
+        }
         if self.scenario == Scenario::Checksums && !self.pane_tool_opened {
             let path = self.fixture.left.join("checksum.txt");
             self.inner.ws.left.focus_child("checksum.txt".into());
@@ -2283,6 +17517,246 @@ impl eframe::App for VisualQaApp {
             return;
         }
 
+        if self.scenario == Scenario::SearchResults && self.search_results_phase == 12 {
+            if self.inner.ws.tab_count(crate::workspace::ActivePanel::Left) != 2
+                || self
+                    .inner
+                    .ws
+                    .active_tab_index(crate::workspace::ActivePanel::Left)
+                    != 0
+            {
+                ctx.request_repaint();
+                return;
+            }
+            self.inner
+                .ws
+                .select_tab(crate::workspace::ActivePanel::Left, 1);
+            self.search_results_phase = 13;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::SearchResults && self.search_results_phase == 13 {
+            if self
+                .inner
+                .ws
+                .left
+                .cursor_entry()
+                .is_some_and(|entry| entry.path == self.fixture.left.join("notes.md"))
+            {
+                self.inner
+                    .ws
+                    .select_tab(crate::workspace::ActivePanel::Left, 0);
+                self.search_results_phase = 14;
+                self.search_results_wait = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::SearchJson
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "search.zip")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::LinksSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "link-original.txt")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::ParentSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "bundle.zip")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::AllocationSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "disk-sparse")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::AccessedSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "access-middle.txt")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::CreatedSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "born-middle.txt")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::FindSort && !self.pane_tool_opened {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "sort-file2.bin")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_find(&ctx);
+                if let Some(state) = self.inner.ui.modals.find.as_mut() {
+                    state.result_copy_format = crate::app::FindCopyFormat::DetailsJson;
+                }
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::TimeGroups && !self.pane_tool_opened {
+            if self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "group-new.txt")
+            {
+                self.inner.ws.active = crate::workspace::ActivePanel::Left;
+                self.inner.open_find(&ctx);
+                if let Some(state) = self.inner.ui.modals.find.as_mut() {
+                    state.result_copy_format = crate::app::FindCopyFormat::DetailsJson;
+                }
+                self.pane_tool_opened = true;
+                self.stable_frames = 0;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::ChangedSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "status-middle.txt")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::OwnerSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "owners.zip")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::BrokenLinkSearch
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "broken.lnk")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
+        if self.scenario == Scenario::SearchResults
+            && !self.pane_tool_opened
+            && !self.inner.ws.left.entries().is_empty()
+        {
+            if let Err(error) = self.seed_search_results(&ctx) {
+                self.fail(&ctx, "fixture_error", error);
+                return;
+            }
+            self.pane_tool_opened = true;
+            ctx.request_repaint();
+            return;
+        }
         if self.scenario == Scenario::NameList && !self.pane_tool_opened {
             if !self.inner.ws.left.entries().is_empty() {
                 self.inner.ws.active = crate::workspace::ActivePanel::Left;
@@ -2383,6 +17857,25 @@ impl eframe::App for VisualQaApp {
             return;
         }
 
+        if self.scenario == Scenario::Timestamps
+            && !self.pane_tool_opened
+            && ["times-a.txt", "times-b.txt"]
+                .iter()
+                .all(|n| self.inner.ws.left.entries().iter().any(|e| e.name == *n))
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.ws.left.replace_selection([
+                self.fixture.left.join("times-a.txt"),
+                self.fixture.left.join("times-b.txt"),
+            ]);
+            self.inner
+                .ws
+                .execute(crate::command::Command::EditTimestamps);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
         if self.scenario == Scenario::Permissions && !self.pane_tool_opened {
             self.inner.ws.left.focus_child("permissions.txt".into());
             if let Some(entry) = self
@@ -2413,7 +17906,11 @@ impl eframe::App for VisualQaApp {
             state.change = crate::permissions::Change::exact(0o644);
         }
 
-        if self.scenario == Scenario::PdfPreview && !self.pane_tool_opened {
+        if matches!(
+            self.scenario,
+            Scenario::PdfPreview | Scenario::PdfSearch | Scenario::PdfRegex
+        ) && !self.pane_tool_opened
+        {
             self.inner.ws.left.focus_child("preview.pdf".into());
             if self
                 .inner
@@ -2461,14 +17958,50 @@ impl eframe::App for VisualQaApp {
             self.scenario,
             Scenario::CodePreview
                 | Scenario::UnicodePreview
+                | Scenario::DocxPreview
+                | Scenario::OdtPreview
+                | Scenario::XlsxPreview
+                | Scenario::OdsPreview
+                | Scenario::PptxPreview
+                | Scenario::OdpPreview
+                | Scenario::EpubPreview
+                | Scenario::FictionbookPreview
+                | Scenario::RtfPreview
                 | Scenario::RegexPreview
+                | Scenario::KmlPreview
+                | Scenario::GpxPreview
                 | Scenario::JsonPreview
+                | Scenario::TablePreview
         ) && !self.pane_tool_opened
         {
-            let filename = if self.scenario == Scenario::JsonPreview {
+            let filename = if self.scenario == Scenario::TablePreview {
+                "preview.csv"
+            } else if self.scenario == Scenario::KmlPreview {
+                "preview.kml"
+            } else if self.scenario == Scenario::GpxPreview {
+                "preview.gpx"
+            } else if self.scenario == Scenario::JsonPreview {
                 "preview.json"
             } else if self.scenario == Scenario::RegexPreview {
                 "regex.txt"
+            } else if self.scenario == Scenario::DocxPreview {
+                "preview.docx"
+            } else if self.scenario == Scenario::RtfPreview {
+                "preview.rtf"
+            } else if self.scenario == Scenario::FictionbookPreview {
+                "preview.fb2"
+            } else if self.scenario == Scenario::EpubPreview {
+                "preview.epub"
+            } else if self.scenario == Scenario::PptxPreview {
+                "preview.pptx"
+            } else if self.scenario == Scenario::OdpPreview {
+                "preview.odp"
+            } else if self.scenario == Scenario::XlsxPreview {
+                "preview.xlsx"
+            } else if self.scenario == Scenario::OdsPreview {
+                "preview.ods"
+            } else if self.scenario == Scenario::OdtPreview {
+                "preview.odt"
             } else if self.scenario == Scenario::UnicodePreview {
                 "unicode.txt"
             } else {
@@ -2534,6 +18067,17 @@ impl eframe::App for VisualQaApp {
                     self.pdf_click_phase,
                     self.inner.pdf_cache.diagnostic("right")
                 )
+            } else if self.scenario == Scenario::RenameOptions {
+                format!(
+                    "rename phase {}, range {}, insert {}, character {}, letters {}, keep {}, clipboard {}",
+                    self.rename_options_phase,
+                    self.rename_range_phase,
+                    self.rename_insert_phase,
+                    self.rename_character_phase,
+                    self.rename_letter_phase,
+                    self.rename_keep_phase,
+                    self.counters.clipboard.load(Ordering::Relaxed)
+                )
             } else {
                 String::new()
             },
@@ -2553,6 +18097,38 @@ impl eframe::App for VisualQaApp {
                 "PDF native QA: pointer round trip 1 -> 2 -> 1 and Page text/search validated"
             );
         }
+        if self.scenario == Scenario::Timestamps {
+            self.last_probe_summary.push_str(&format!(
+                "; timestamp_phase {}, state {:?}",
+                self.timestamp_phase,
+                self.inner
+                    .ui
+                    .modals
+                    .permissions
+                    .as_ref()
+                    .map(|s| s.timestamp_qa())
+            ));
+        }
+        if self.scenario == Scenario::SearchResults {
+            self.last_probe_summary.push_str(&format!(
+                "; search_phase={}, hidden={:?}, query_focus={:?}, row={:?}, tabs={}",
+                self.search_results_phase,
+                self.inner
+                    .ui
+                    .modals
+                    .find
+                    .as_ref()
+                    .map(|state| state.hidden_results.len()),
+                ctx.data(|data| data.get_temp::<bool>(egui::Id::new("find-query-focused"))),
+                self.inner
+                    .ui
+                    .modals
+                    .find
+                    .as_ref()
+                    .and_then(|state| state.highlighted_result),
+                self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)
+            ));
+        }
         let thumbnail_ready = self.scenario != Scenario::IconsGrid
             || self
                 .inner
@@ -2560,6 +18136,142 @@ impl eframe::App for VisualQaApp {
                 .get(&self.fixture.left.join("photo.png"))
                 .is_some();
         let scenario_state_ready = match self.scenario {
+            Scenario::SearchJson => {
+                std::fs::copy(self.fixture.root.join("path-capability.json"),self.scenario_dir.join("path-capability.json")).is_ok() && self.search_json_phase==45 && self.counters.clipboard.load(Ordering::Relaxed)==5 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && state.error.is_none() && state.results.is_empty() && state.expression=="name:does-not-exist" && state.result_copy_format==crate::app::FindCopyFormat::DetailsJson)
+                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|r|r["exported_rows"]==0 && r["context"]["completed"]==true) && std::fs::write(self.scenario_dir.join("report-empty.json"),text).is_ok())
+            }
+            Scenario::LinksSearch => {
+                self.owner_search_phase==22 && self.counters.clipboard.load(Ordering::Relaxed)==1 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression=="links:3 archives:off name:link-" && state.results.len()==3 && state.results.iter().all(|h|h.entry.hard_link_count()==Some(3)) && state.content_skipped==0 && !state.truncated && state.result_copy_format==crate::app::FindCopyFormat::DetailsJson && links_search_snapshot(state,&self.scenario_dir.join("links-final.json")))
+                    && ["links-facts.json","links-find-reference.bin"].into_iter().all(|name|std::fs::copy(self.fixture.root.join(name),self.scenario_dir.join(name)).is_ok())
+                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|std::fs::write(self.scenario_dir.join("links-report.json"),text).is_ok())
+            }
+            Scenario::ParentSearch => {
+                self.allocation_search_phase==10 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression==self.parent_search_expressions()[2] && state.results.len()==1 && state.results[0].entry.path==crate::archive::virtual_member_path(&self.fixture.left.join("bundle.zip"),Path::new("nested/child.txt")) && state.content_skipped==0 && !state.truncated
+                    && serde_json::to_vec_pretty(&serde_json::json!({"expression":state.expression,"root":self.fixture.left,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"path":h.entry.path,"name":h.entry.name,"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("parent-final.json"),b).is_ok()))
+            }
+            Scenario::AllocationSearch => {
+                self.allocation_search_phase==10 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression=="allocated:=0 size:>1MB name:disk-" && state.results.len()==1 && state.results[0].entry.name=="disk-sparse" && state.results[0].entry.allocated_bytes()==Some(0) && state.content_skipped==1 && !state.truncated
+                    && serde_json::to_vec_pretty(&serde_json::json!({"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"name":h.entry.name,"size":h.entry.size,"allocated":h.entry.allocated_bytes(),"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("allocated-final.json"),b).is_ok()))
+                    && std::fs::copy(self.fixture.root.join("allocation-facts.json"),self.scenario_dir.join("allocation-facts.json")).is_ok()
+            }
+            Scenario::AccessedSearch=> {
+                self.allocation_search_phase==10 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression==ACCESS_EXPRESSIONS[2] && state.results.len()==1 && state.results[0].entry.name=="access-late.txt" && state.content_skipped==1 && !state.truncated && accessed_search_snapshot(state,&self.scenario_dir.join("accessed-final.json")))
+                && std::fs::copy(self.fixture.root.join("accessed-facts.json"),self.scenario_dir.join("accessed-facts.json")).is_ok()
+            }
+            Scenario::CreatedSearch=> {
+                self.allocation_search_phase==10 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression==self.created_search_expressions().get(2).map(String::as_str).unwrap_or("") && state.results.len()==1 && state.results[0].entry.name=="born-last.txt" && state.content_skipped==1 && !state.truncated && created_search_snapshot(state,&self.scenario_dir.join("created-final.json")))
+                && std::fs::copy(self.fixture.root.join("created-facts.json"),self.scenario_dir.join("created-facts.json")).is_ok()
+            }
+            Scenario::FindSort=> {
+                self.disk_export_phase==62 && self.counters.clipboard.load(Ordering::Relaxed)==6 && self.recorded_clipboard_dump("sort-6.json") && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.results.len()==6 && state.time_pivot==crate::search::TimePivot::None && state.result_sort==crate::search_order::Sort::default() && ctx.data(|d|d.get_temp::<Vec<usize>>(egui::Id::new("find-rendered-order"))).is_some_and(|indices|serde_json::to_vec_pretty(&serde_json::json!({"generation":state.generation,"names":indices.iter().map(|&i|&state.results[i].entry.name).collect::<Vec<_>>(),"highlighted_name":state.highlighted_result.and_then(|row|indices.get(row)).map(|&i|&state.results[i].entry.name)})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("displayed-final.json"),b).is_ok())))
+                && std::fs::copy(self.fixture.root.join("sort-facts.json"),self.scenario_dir.join("sort-facts.json")).is_ok() && std::fs::copy(self.fixture.left.join("other.zip"),self.scenario_dir.join("source.zip")).is_ok()
+            }
+            Scenario::TimeGroups=> {
+                self.disk_export_phase==29 && self.counters.clipboard.load(Ordering::Relaxed)==3 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.results.len()==3 && state.time_pivot==crate::search::TimePivot::Created && ctx.data(|d|d.get_temp::<Vec<usize>>(egui::Id::new("find-rendered-order"))).is_some_and(|indices|serde_json::to_vec_pretty(&serde_json::json!({"generation":state.generation,"names":indices.iter().map(|&i|&state.results[i].entry.name).collect::<Vec<_>>(),"highlighted_name":state.highlighted_result.and_then(|row|indices.get(row)).map(|&i|&state.results[i].entry.name)})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("displayed-final.json"),b).is_ok())))
+                && std::fs::copy(self.fixture.root.join("group-facts.json"),self.scenario_dir.join("group-facts.json")).is_ok()
+                && std::fs::copy(self.fixture.left.join("other.zip"),self.scenario_dir.join("source.zip")).is_ok()
+            }
+            Scenario::ChangedSearch=> {
+                self.allocation_search_phase==10 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression==self.changed_search_expressions().get(2).map(String::as_str).unwrap_or("") && state.results.len()==1 && state.results[0].entry.name=="status-last.txt" && state.content_skipped==1 && !state.truncated && changed_search_snapshot(state,&self.scenario_dir.join("changed-final.json")))
+                && std::fs::copy(self.fixture.root.join("changed-facts.json"),self.scenario_dir.join("changed-facts.json")).is_ok()
+            }
+            Scenario::IdentityFind => {
+                self.symlink_phase==12 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && state.run.is_none() && !state.pending_rerun && state.error.is_none() && state.results.len()==2 && state.matched==2 && state.content_skipped==1 && !state.truncated && state.expression.ends_with(" type:regular archives:on")
+                    && serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"rows":state.results.iter().map(|h|serde_json::json!({"path":h.entry.path,"explanations":h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("identity-final.json"),b).is_ok()))
+                    && std::fs::copy(self.fixture.root.join("identity-facts.json"),self.scenario_dir.join("identity-facts.json")).is_ok()
+            }
+            Scenario::OwnerSearch => {
+                self.owner_search_phase==13 && self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.ran && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression.ends_with(" archives:off name:owned-") && state.results.len()==1 && state.results[0].entry.path==self.fixture.left.join("owned-native.txt") && state.matched==1 && state.content_skipped==0 && !state.truncated
+                    && std::fs::copy(self.fixture.root.join("owner-facts.json"),self.scenario_dir.join("owner-facts.json")).is_ok()
+                    && serde_json::to_vec_pretty(&serde_json::json!({"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"paths":state.results.iter().map(|h|&h.entry.path).collect::<Vec<_>>(),"explanations":state.results.iter().map(|h|h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("owner-final.json"),b).is_ok())
+                })
+            }
+            Scenario::BrokenLinkSearch => {
+                self.broken_link_phase==10 && self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                    state.ran && !state.pending_rerun && state.run.is_none() && state.error.is_none() && state.expression=="type:broken-link archives:off"
+                    && state.results.len()==1 && state.results[0].entry.path==self.fixture.left.join("notdir.lnk") && state.matched==1 && state.content_skipped==1 && !state.truncated
+                    && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.broken_link_phase,"root":state.root,"expression":state.expression,"source":state.search_source,"matched":state.matched,"skipped":state.content_skipped,"truncated":state.truncated,"paths":state.results.iter().map(|h|&h.entry.path).collect::<Vec<_>>(),"explanations":state.results.iter().map(|h|h.explanation.components.iter().map(|c|&c.detail).collect::<Vec<_>>()).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("links-final.json"),b).is_ok())
+                })
+            }
+            Scenario::SearchResults => {
+                self.search_results_phase == 138
+                    && self.recorded_clipboard_dump("relative-all.txt")
+                    && self.inner.ui.modals.find.as_ref().is_some_and(|state| serde_json::to_vec_pretty(&serde_json::json!({"root":state.root,"applied_root":state.last_query.as_ref().map(|(_,_,root)|root),"generation":state.generation,"error":state.result_action_error,"paths":ctx.data(|d|d.get_temp::<Vec<usize>>(egui::Id::new("find-rendered-order"))).unwrap_or_default().iter().map(|&i|&state.results[i].entry.path).collect::<Vec<_>>(),"selected_paths":state.results.iter().filter(|hit|state.selected_results.contains(&hit.location)).map(|hit|&hit.entry.path).collect::<Vec<_>>(),"names":ctx.data(|d|d.get_temp::<Vec<usize>>(egui::Id::new("find-rendered-order"))).unwrap_or_default().iter().map(|&i|&state.results[i].entry.name).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("relative-final.json"),bytes).is_ok()))
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 14
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        == Some("README.txt\nnotes.md\nDesign".to_string())
+                    && ctx.data(|data| data.get_temp::<bool>(egui::Id::new("find-query-focused")))
+                        == Some(true)
+                    && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left) == 5
+                    && self
+                        .inner
+                        .ws
+                        .active_tab_index(crate::workspace::ActivePanel::Left)
+                        == 0
+                    && self.inner.ui.modals.find.as_ref().is_some_and(|state| {
+                        state.result_copy_format == crate::app::FindCopyFormat::RelativePaths
+                            && state.highlighted_result == Some(0)
+                            && state.selected_results.len() == 1
+                            && state.selected_results.contains(
+                                &crate::search::SearchLocation::Native(
+                                    self.fixture.left.join("README.txt"),
+                                ),
+                            )
+                            && state.results.len() == 3
+                            && state.matched == 3
+                            && state.hidden_results.is_empty()
+                    })
+            }
+            Scenario::TablePreview => {
+                self.table_phase == 100
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 2
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|value| value.clone())
+                        .as_deref()
+                        == Some("Name,Count\nfile2,10\nfile2,1\n")
+                    && crate::table_preview::filter_is(&ctx, "right", "file2", false)
+                    && (0..17).all(|stage| self.scenario_dir.join(format!("filter-stage-{stage}.json")).is_file())
+                    && crate::table_preview::shown_order(&ctx, "right") == Some((true, vec![2, 3]))
+            }
+            Scenario::TabSelectionSession => self.json_mode_phase==24 && self.inner.ui.modals.palette_input.is_none()
+                && self.inner.ws.left.tab_selection.is_none() && self.inner.ws.left.selected_count()==2
+                && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
+                && self.scenario_dir.join("selection-3.json").is_file(),
+            Scenario::ShortcutExchange => self.json_mode_phase==16&&!self.inner.ui.modals.keyboard_help&&self.inner.ws.left.cursor()==1
+                &&self.inner.ws.left.current_path==self.fixture.left&&self.inner.ws.right.current_path==self.fixture.right
+                &&serde_json::to_vec_pretty(&serde_json::json!({"applied":self.inner.custom_shortcuts.saved(),"cursor":self.inner.ws.left.cursor(),"cursor_name":self.inner.ws.left.cursor_entry().map(|e|&e.name),"phase":self.json_mode_phase})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("after-apply.json"),b).is_ok()),
+            Scenario::ShortcutHints => self.json_mode_phase==10&&self.inner.ui.modals.palette_input.as_ref().is_some_and(|s|s.input==">F5")&&self.scenario_dir.join("hint-key-search.json").is_file(),
+            Scenario::CustomNavigation => {
+                let columns=ctx.data(|d|d.get_temp::<usize>(egui::Id::new(("icon_columns","left")))).unwrap_or(0);
+                let p=&self.inner.ws.left;
+                self.json_mode_phase==20&&columns>1&&p.cursor()==(1+2*columns).min(p.filtered_count())&&p.browser_mode()==crate::panel::BrowserMode::Icons
+                && self.inner.ws.left.current_path==self.fixture.left&&self.inner.ws.right.current_path==self.fixture.right
+                && serde_json::to_vec_pretty(&serde_json::json!({"bindings":self.inner.custom_shortcuts.saved(),"columns":columns,"cursor":p.cursor(),"names":p.entries().iter().map(|e|&e.name).collect::<Vec<_>>(),"selected":p.selected_entries().iter().map(|e|&e.name).collect::<Vec<_>>(),"mode":"icons","phase":self.json_mode_phase})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("icon-navigation.json"),b).is_ok())
+            }
+            Scenario::CustomShortcuts => {
+                self.json_mode_phase==17&&!self.inner.ui.modals.keyboard_help&&self.inner.ws.left.show_hidden()&&!self.inner.ws.right.show_hidden()
+                && self.inner.ws.left.current_path==self.fixture.left&&self.inner.ws.right.current_path==self.fixture.right
+                && self.inner.ws.left.view_config().sort_order()==crate::panel::SortOrder::Desc
+                && serde_json::to_vec_pretty(&serde_json::json!({"bindings":self.inner.custom_shortcuts.saved(),"left_hidden":self.inner.ws.left.show_hidden(),"right_hidden":self.inner.ws.right.show_hidden(),"left_sort":"descending","names":self.inner.ws.left.entries().iter().map(|e|&e.name).collect::<Vec<_>>(),"left_path":self.inner.ws.left.current_path,"right_path":self.inner.ws.right.current_path,"phase":self.json_mode_phase})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("shortcut-state.json"),b).is_ok())
+            }
+            Scenario::GpxPreview | Scenario::KmlPreview => {
+                self.json_mode_phase==12 && self.counters.clipboard.load(Ordering::Relaxed)==1 && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|std::fs::write(self.scenario_dir.join("route-report.json"),text).is_ok()) && ctx.data(|d|d.get_temp::<bool>(egui::Id::new(("document_source","right"))))==Some(false)
+                && ctx.data(|d|d.get_temp::<std::sync::Arc<crate::route_preview::Route>>(egui::Id::new(("gpx-route-ready","right")))).is_some_and(|r| {
+                    r.points.len()==6 && r.segments==2
+                    && serde_json::to_vec_pretty(&serde_json::json!({"distance_m":r.distance,"segments":r.segments,"timing":r.timing(),"elevation_stats":r.elevation_stats(),"points":r.points.iter().map(|p|serde_json::json!({"lat":p.lat,"lon":p.lon,"elevation":p.elevation,"time":p.time.map(|t|t.to_rfc3339()),"invalid_time":p.invalid_time,"start":p.start,"distance_m":p.distance})).collect::<Vec<_>>()})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("route-state.json"),b).is_ok())
+                    && std::fs::copy(self.fixture.left.join(if self.scenario==Scenario::KmlPreview {"preview.kml"}else{"preview.gpx"}),self.scenario_dir.join(if self.scenario==Scenario::KmlPreview {"source.kml"}else{"source.gpx"})).is_ok()
+                })
+            }
             Scenario::JsonPreview => {
                 self.json_mode_phase == 9
                     && ctx.data(|data| {
@@ -2587,6 +18299,14 @@ impl eframe::App for VisualQaApp {
                         .is_some_and(|find| find.match_count() == 2)
             }
 
+            Scenario::ProfileExchange => self.json_mode_phase==34 && self.inner.ui.modals.workspace_profiles.as_ref().is_some_and(|s|s.exchange_open && s.import_preview.is_none() && s.book.profiles.len()==2) && self.inner.ws.left.current_path==self.fixture.left.join("Design") && self.inner.ws.right.current_path==self.fixture.right.join("Archive") && self.scenario_dir.join("exchange-state-33.json").is_file(),
+            Scenario::ProfileNames => self.json_mode_phase==30 && self.inner.ui.modals.workspace_profiles.is_some() && self.inner.ws.left.current_path==self.fixture.left.join("Design") && self.inner.ws.right.current_path==self.fixture.right.join("Archive") && self.scenario_dir.join("profile-names-state-2.json").is_file(),
+            Scenario::ProfileTabs => self.json_mode_phase==14 && self.inner.ui.modals.workspace_profiles.is_none() && self.inner.ws.left.current_path==self.fixture.left.join("Design") && self.inner.ws.right.current_path==self.fixture.right.join("Archive") && self.inner.ws.active==crate::workspace::ActivePanel::Right && self.scenario_dir.join("tab-profile-applied.json").is_file(),
+            Scenario::WorkspaceProfiles => self.json_mode_phase==18 && self.inner.ui.modals.workspace_profiles.is_none() && self.inner.ws.left.current_path==self.fixture.left.join("Design") && self.inner.ws.right.current_path==self.fixture.right.join("Archive") && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)==2 && self.scenario_dir.join("profile-applied.json").is_file(),
+            Scenario::ThemeExchange => self.json_mode_phase==30 && self.inner.ui.modals.custom_theme_open && self.inner.custom_theme.colors().is_none() && self.inner.custom_theme.saved().is_null() && self.scenario_dir.join("reset.json").is_file(),
+            Scenario::CustomTheme => self.json_mode_phase==3 && self.inner.custom_theme.colors().is_some() && self.inner.colors.bg_panel==egui::Color32::from_rgb(24,40,56) && self.inner.colors.accent==egui::Color32::from_rgb(56,157,204) && self.inner.ui.modals.custom_theme_open && serde_json::to_vec_pretty(&self.inner.custom_theme.saved()).is_ok_and(|b|std::fs::write(self.scenario_dir.join("theme-applied.json"),b).is_ok()),
+            Scenario::MaskActions => self.json_mode_phase==28 && self.inner.ui.modals.mask_input.is_none() && self.inner.ws.left.selected_count()==2 && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right && self.scenario_dir.join("names-action-3.json").is_file(),
+            Scenario::NameListActions => self.json_mode_phase==28 && self.inner.ui.modals.mask_input.is_none() && self.inner.ws.left.selected_count()==3 && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right && self.scenario_dir.join("names-action-3.json").is_file(),
             Scenario::NameList => {
                 self.name_list_phase == 13
                     && self.inner.ui.modals.mask_input.as_deref()
@@ -2637,17 +18357,266 @@ impl eframe::App for VisualQaApp {
                     })
             }
 
-            Scenario::HexSearch => {
-                self.hex_search_phase == 13
+            Scenario::HexBomEncoding => {
+                self.hex_search_phase == 12
+                    && self.hex_verified_before_close
+                    && self.hex_clear_verified
+                    && !egui::Popup::is_any_open(&ctx)
+                    && self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                        v.shown_offset() == Some(0)
+                            && v.character_encoding_is_auto()
+                            && v.character_encoding_label() == "UTF-16 BE"
+                            && v.first_displayed_row()
+                                .is_some_and(|r| r.ends_with(" | .›П›р›и›в›е›т›"))
+                    })
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+            }
+            Scenario::HexCharacterKeys => {
+                self.hex_search_phase == 9
+                    && self.hex_verified_before_close
+                    && !egui::Popup::is_any_open(&ctx)
+                    && self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                        v.shown_offset() == Some(0)
+                            && v.character_encoding_label() == "ASCII"
+                            && v.first_displayed_row()
+                                .is_some_and(|r| r.ends_with(" | ......"))
+                    })
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && std::fs::read(self.fixture.left.join("bytes.bin"))
+                        .ok()
+                        .as_deref()
+                        == Some(&[0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2])
+            }
+            Scenario::HexRepeatSearch => {
+                self.hex_search_phase == 19
                     && self
                         .inner
                         .hex_viewer
                         .as_ref()
                         .and_then(crate::hex_preview::HexViewer::matched_offset)
-                        == Some(4094)
+                        == Some(6)
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "bytes.bin")
+                    && self.inner.ws.left.selected_count() == 0
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+            }
+            Scenario::HexUtf16Encoding => {
+                self.hex_search_phase == 6
+                    && self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                        v.shown_offset() == Some(0)
+                            && v.character_encoding_label() == "UTF-16 LE"
+                            && v.row_width_bytes() == 16
+                            && v.first_displayed_row()
+                                .is_some_and(|row| row.ends_with(" | A›П›р›и›в›е›т›🌍›"))
+                    })
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+            }
+            Scenario::HexUtf8Encoding => {
+                self.hex_search_phase == 6
+                    && self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                        v.shown_offset() == Some(0)
+                            && v.character_encoding_label() == "UTF-8"
+                            && v.row_width_bytes() == 16
+                            && v.first_displayed_row()
+                                .is_some_and(|row| row.ends_with(" | AП›р›и›в›е›т›🌍››"))
+                    })
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+            }
+            Scenario::HexCharacterEncoding => {
+                self.hex_search_phase == 6
+                    && self.inner.hex_viewer.as_ref().is_some_and(|v| {
+                        v.shown_offset() == Some(0)
+                            && v.character_encoding_label() == "Windows-1251"
+                            && v.row_width_bytes() == 16
+                            && v.first_displayed_row()
+                                .is_some_and(|row| row.ends_with(" | Привет"))
+                    })
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+            }
+            Scenario::HexMatchCopy => {
+                let copied = self.hex_search_phase == 13
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .and_then(crate::hex_preview::HexViewer::matched_offset)
+                        == Some(1)
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 1
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.clone())
+                        .as_deref()
+                        == Some("DE AD BE EF")
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|entry| entry.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists();
+                if copied {
+                    self.hex_verified_before_close = true;
+                }
+                let cleared = self.hex_search_phase == 19
+                    && self.hex_verified_before_close
+                    && self.inner.hex_viewer.as_ref().is_some_and(|viewer| {
+                        !viewer.match_is_selected() && viewer.matched_offset() == Some(1)
+                    })
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|entry| entry.name == "bytes.bin")
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 1
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open();
+                if cleared {
+                    self.hex_clear_verified = true;
+                }
+                self.hex_search_phase == 25
+                    && self.hex_clear_verified
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .is_some_and(|v| v.match_is_selected() && v.matched_offset() == Some(1))
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 2
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.clone())
+                        .as_deref()
+                        == Some("DE AD BE EF")
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|e| e.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+            }
+            Scenario::HexAlignment => {
+                self.hex_search_phase == 27
+                    && self.inner.hex_viewer.as_ref().is_some_and(|viewer| {
+                        viewer.shown_offset() == Some(4096) && viewer.row_width_bytes() == 16
+                    })
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|entry| entry.name == "bytes.bin")
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+            }
+            Scenario::HexSearch => {
+                let before_close = self.hex_search_phase == 144
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+                    && ctx.memory(|memory| memory.has_focus(egui::Id::new("hex-search-query")))
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|entry| entry.name == "bytes.bin")
+                    && self.inner.hex_viewer.as_ref().is_some_and(|viewer| {
+                        viewer.search_input_mode() == crate::hex_search::InputMode::Utf16Be
+                            && viewer.wrap_search_enabled()
+                            && viewer.bookmark_at(9) == Some(110001)
+                            && viewer.row_width_bytes() == 16
+                    })
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .and_then(crate::hex_preview::HexViewer::shown_offset)
+                        == Some(110001);
+                if before_close {
+                    self.hex_verified_before_close = true;
+                }
+                let pane_focus = ctx.data(|data| {
+                    data.get_temp::<egui::Id>(egui::Id::new(("file_list_focus", "left")))
+                });
+                self.hex_search_phase == 159
+                    && self.hex_verified_before_close
+                    && self.inner.hex_viewer.is_none()
+                    && !egui::Popup::is_any_open(&ctx)
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && !self.fixture.right.join("bytes.bin").exists()
+                    && pane_focus.is_some()
+                    && ctx.memory(|memory| memory.focused()) == pane_focus
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .cursor_entry()
+                        .is_some_and(|entry| entry.name == "bytes.bin")
             }
             Scenario::HexPreview => {
-                self.hex_click_phase == 17
+                self.hex_click_phase == 68
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .is_some_and(|viewer| viewer.bookmark_at(0).is_none())
                     && self
                         .inner
                         .hex_viewer
@@ -2658,17 +18627,376 @@ impl eframe::App for VisualQaApp {
                         .hex_viewer
                         .as_ref()
                         .and_then(crate::hex_preview::HexViewer::shown_offset)
-                        == Some(8192)
+                        == Some(8197)
+                    && self
+                        .inner
+                        .hex_viewer
+                        .as_ref()
+                        .is_some_and(|v| v.submitted_offset_is("100%"))
+            }
+            Scenario::DuplicateCross => {
+                self.duplicate_cross_phase==51 && self.counters.clipboard.load(Ordering::Relaxed)==6 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|s|s.scan.is_none() && s.include_other && s.cross_only && s.recursive && s.groups.len()==2 && s.scan_issues==0 && s.groups.iter().flat_map(|g|&g.files).all(|file|file.path.is_file()) && std::fs::read(self.fixture.left.join("cross.bin")).is_ok_and(|bytes|bytes==b"cross dupe\n") && std::fs::read(self.fixture.right.join("cross.bin")).is_ok_and(|bytes|bytes==b"cross dupe\n") && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|crate::duplicate_report::json(s).as_ref()==Ok(&text) && std::fs::write(self.scenario_dir.join("cross-report.json"),text).is_ok()))
+            }
+            Scenario::DuplicateRoots => {
+                self.duplicate_roots_phase==21 && self.counters.clipboard.load(Ordering::Relaxed)==1 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|s|s.scan.is_none() && s.include_other && s.recursive && s.fresh_enumeration && s.root==self.fixture.left && s.other_root==self.fixture.right && s.groups.len()==4 && s.scan_issues==0 && self.inner.ws.left.current_path==self.fixture.left.join("nested") && self.inner.ws.right.current_path==self.fixture.right.join("nested") && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|crate::duplicate_report::json(s).as_ref()==Ok(&text) && std::fs::write(self.scenario_dir.join("two-roots-report.json"),text).is_ok()))
+            }
+            Scenario::DuplicateReport => {
+                self.duplicate_report_phase==18 && self.counters.clipboard.load(Ordering::Relaxed)==3 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|s|s.scan.is_none() && s.groups.len()==2 && s.sort==crate::dedup::GroupSort::Savings && crate::dedup::delete_count(&s.groups,&s.keep)==3 && crate::dedup::bytes_reclaimed(&s.groups,&s.keep)==84 && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|crate::duplicate_report::json(s).as_ref()==Ok(&text) && std::fs::write(self.scenario_dir.join("proposal-restored.json"),text).is_ok()))
+            }
+            Scenario::DuplicateCopies => {
+                self.duplicate_copies_phase==32 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|s|s.scan.is_none() && !s.recursive && s.min_copies.get()==3 && s.copies_draft=="3" && s.scan_issues==0 && s.groups.len()==1 && s.groups[0].size==10 && s.groups[0].files.len()==3 && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.duplicate_copies_phase,"minimum":s.min_copies.get(),"draft":s.copies_draft,"recursive":s.recursive,"issues":s.scan_issues,"keep":s.keep,"groups":s.groups.iter().map(|g|serde_json::json!({"size":g.size,"files":g.files.iter().map(|f|f.path.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("copies-final.json"),bytes).is_ok()))
+            }
+            Scenario::DuplicateDepth => {
+                self.duplicate_depth_phase==31 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|s|s.scan.is_none() && !s.recursive && s.max_depth.is_none() && s.depth_draft.is_empty() && s.scan_issues==0 && s.groups.len()==1 && s.groups[0].files.len()==2 && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.duplicate_depth_phase,"depth":s.max_depth,"draft":s.depth_draft,"recursive":s.recursive,"files":s.groups[0].files.iter().map(|f|f.path.clone()).collect::<Vec<_>>(),"issues":s.scan_issues})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("depth-final.json"),bytes).is_ok()))
+            }
+            Scenario::DuplicateRelative => {
+                self.duplicate_names_phase==42 && ctx.data(|d|d.get_temp::<egui::Rect>(egui::Id::new("duplicate-results-viewport"))).is_some_and(|rect| {
+                    let saved=serde_json::to_vec_pretty(&serde_json::json!({"height":rect.height(),"min":[rect.min.x,rect.min.y],"max":[rect.max.x,rect.max.y]})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("results-viewport.json"),bytes).is_ok());
+                    rect.height()>=40.0 && saved
+                })
+                    && self.inner.ui.tools.duplicates.as_ref().is_some_and(|state|state.scan.is_none() && state.recursive && state.include_other && state.cross_only && state.root==self.fixture.left && state.other_root==self.fixture.right && state.names.rules==Default::default() && state.name_draft==Default::default() && state.groups.len()==1 && state.groups[0].files.len()==6 && state.scan_issues==0 && duplicate_component_snapshot(state,&self.scenario_dir.join("relative-final.json")))
+                    && RELATIVE_PATHS.into_iter().all(|(side,name)|{let base=if side=="left" {&self.fixture.left} else {&self.fixture.right};let target=self.scenario_dir.join("sources").join(side).join(name);std::fs::create_dir_all(target.parent().unwrap()).is_ok() && std::fs::copy(base.join(name),target).is_ok()})
+            }
+            Scenario::DuplicateComponents => {
+                self.duplicate_names_phase==48 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|state|state.scan.is_none() && state.recursive && state.names.rules==Default::default() && state.name_draft==Default::default() && state.groups.len()==1 && state.groups[0].files.len()==5 && state.scan_issues==0 && duplicate_component_snapshot(state,&self.scenario_dir.join("components-final.json")))
+                    && ["A/album/report.txt","B/album/report.txt","C/Album/REPORT.TXT","D/other/report.bin","E/other/another.bin","F/third/unique.txt"].into_iter().all(|name|{let target=self.scenario_dir.join("sources").join(name);std::fs::create_dir_all(target.parent().unwrap()).is_ok() && std::fs::copy(self.fixture.left.join(name),target).is_ok()})
+            }
+            Scenario::DuplicateExtensions => {
+                self.duplicate_names_phase==18 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|state|state.scan.is_none() && state.names.rules==Default::default() && state.name_draft==Default::default() && state.groups.len()==1 && state.groups[0].files.len()==7 && state.scan_issues==0
+                    && serde_json::to_vec_pretty(&serde_json::json!({"applied":state.names.rules,"draft":state.name_draft,"groups":state.groups.iter().map(|g|g.files.iter().map(|f|&f.path).collect::<Vec<_>>()).collect::<Vec<_>>(),"keep":state.keep,"report":crate::duplicate_report::json(state).ok().and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok())})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("extensions-final.json"),bytes).is_ok()))
+                    && std::fs::create_dir_all(self.scenario_dir.join("sources")).is_ok() && ["one.txt","two.txt","three.TXT","one.bin","two.bin","bare-a","bare-b","unique.txt"].into_iter().all(|name|std::fs::copy(self.fixture.left.join(name),self.scenario_dir.join("sources").join(name)).is_ok())
+            }
+            Scenario::DuplicateNames => {
+                self.duplicate_names_phase==32 && self.inner.ui.tools.duplicates.as_ref().is_some_and(|s|s.scan.is_none() && s.recursive && s.names.rules==Default::default() && s.name_draft==Default::default() && s.scan_issues==0 && s.groups.len()==1 && s.groups[0].files.len()==6 && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.duplicate_names_phase,"recursive":s.recursive,"draft":s.name_draft,"applied":s.names.rules,"files":s.groups[0].files.iter().map(|f|f.path.clone()).collect::<Vec<_>>(),"issues":s.scan_issues,"keep":s.keep})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("names-final.json"),bytes).is_ok()))
+            }
+            Scenario::DuplicateSizes => {
+                self.duplicate_sizes_phase == 46
+                    && self.duplicate_sizes_copy_ready(0, None, &[10, 64], 3)
+                    && self
+                        .inner
+                        .ui
+                        .tools
+                        .duplicates
+                        .as_ref()
+                        .is_some_and(|state| state.min_size.is_empty() && state.max_size.is_empty())
+            }
+            Scenario::DuplicateRecursive => {
+                self.duplicate_recursive_phase == 21 && self.duplicate_recursive_copy_ready(2)
+            }
+            Scenario::DuplicateSort => {
+                self.duplicate_sort_phase == 27
+                    && self.duplicate_sort_copy_ready(crate::dedup::GroupSort::Savings, 2)
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && ["a1.bin", "a2.bin", "a3.bin"].iter().all(|name| {
+                        std::fs::read(self.fixture.left.join(name))
+                            .is_ok_and(|bytes| bytes == [b's'; 10])
+                    })
+                    && ["z.bin", "z-long-copy.bin"].iter().all(|name| {
+                        std::fs::read(self.fixture.left.join(name))
+                            .is_ok_and(|bytes| bytes == [b'L'; 64])
+                    })
+            }
+            Scenario::DuplicateRanking => {
+                self.duplicate_phase==33 && self.inner.ws.pending_op.is_none() && !self.inner.ui.modals.any_open() && self.inner.ui.tools.duplicates.as_ref().is_some_and(|state|state.scan.is_none() && state.recursive && state.policy==crate::dedup::KeepPolicy::ShortestPath && state.sort==crate::dedup::GroupSort::Savings && state.scan_issues==0 && state.groups.len()==1 && state.groups[0].files.len()==6 && state.keep.len()==1 && state.keep[0].and_then(|k|state.groups[0].files.get(k)).is_some_and(|f|f.path==self.fixture.left.join("root-copy.bin")) && duplicate_component_snapshot(state,&self.scenario_dir.join("ranking-final.json")))
+                    && RANKING_PATHS.into_iter().all(|name|{let target=self.scenario_dir.join("sources").join(name);std::fs::create_dir_all(target.parent().unwrap()).is_ok() && std::fs::copy(self.fixture.left.join(name),target).is_ok()})
+            }
+            Scenario::DuplicatePolicy => {
+                self.duplicate_phase == 30
+                    && self.duplicate_plan_copy_ready(Some("newest-copy.bin"), 3)
+                    && self.duplicate_plan_ready(
+                        crate::dedup::KeepPolicy::Newest,
+                        Some("newest-copy.bin"),
+                    )
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+                    && ["a.bin", "middle.bin", "newest-copy.bin"]
+                        .iter()
+                        .all(|name| {
+                            std::fs::read(self.fixture.left.join(name))
+                                .is_ok_and(|bytes| bytes == b"duplicate policy fixture\n")
+                        })
+            }
+            Scenario::DiskAllocation | Scenario::DiskCount => {
+                let primary_metric=if self.scenario==Scenario::DiskCount {crate::disk_usage_metric::Metric::FileCount}else{crate::disk_usage_metric::Metric::FileAllocation};
+                self.disk_export_phase==24 && self.counters.clipboard.load(Ordering::Relaxed)==3
+                && self.inner.ws.left.current_path==self.fixture.left.join("sparse")
+                && self.inner.ui.tools.treemap.as_ref().is_some_and(|s|s.run.is_none() && matches!(s.mode,crate::app::DiskUsageMode::Map) && s.overview.as_ref().is_some_and(|o|o.root==self.fixture.left && o.metric==primary_metric && o.measurement_complete() && crate::disk_usage_export::snapshot_json(o).is_ok_and(|j|std::fs::write(self.scenario_dir.join("allocated-final.json"),j).is_ok())))
+                && capture_allocation_facts(&self.fixture.left,&self.scenario_dir.join("allocation-facts.json"))
+            }
+            Scenario::DiskUsageExport => {
+                self.disk_export_phase == 48
+                    && self.disk_tree_collapse_ready(7, 1)
+                    && self.disk_tree_collapsed_csv_ready()
+                    && self
+                        .inner
+                        .ui
+                        .tools
+                        .treemap
+                        .as_ref()
+                        .is_some_and(|state| state.tree_share_parent)
+                    && ctx.data(|data| {
+                        data.get_temp::<(u64, Option<u128>)>(egui::Id::new((
+                            "disk-tree-share-value",
+                            self.fixture.left.join("delta/shared/target-three"),
+                        )))
+                    }) == Some((306, Some(196)))
+            }
+            Scenario::AllocatedSelection => {
+                self.symlink_phase==24 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.modals.palette_input.is_none()
+                    && self.inner.ws.left.selected_count()==13 && self.inner.ws.left.search_query()==".bin"
+            }
+            Scenario::ListingJson => {
+                capture_owner_facts(&self.fixture.left,&self.scenario_dir.join("owner-facts.json"))
+                    && self.symlink_phase==18 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.modals.palette_input.is_none()
+                    && self.inner.ws.left.search_query()==".bin" && self.inner.ws.left.selected_count()==3
+                    && self.inner.ws.left.view_config().sort_column()==crate::panel::SortColumn::Allocated
+            }
+            Scenario::InodeSort => {
+                self.symlink_phase==36 && self.inner.ui.modals.palette_input.is_none() && self.inner.ws.left.view_config().sort_column()==crate::panel::SortColumn::Inode && self.inner.ws.left.view_config().sort_order()==crate::panel::SortOrder::Desc && self.inner.ws.left.selected_count()==2 && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="inode-middle.txt")
+                    && std::fs::copy(self.fixture.root.join("inode-facts.json"),self.scenario_dir.join("inode-facts.json")).is_ok()
+            }
+            Scenario::HardLinksSort => {
+                self.symlink_phase==36 && self.inner.ui.modals.palette_input.is_none() && self.inner.ws.left.view_config().sort_column()==crate::panel::SortColumn::HardLinks && self.inner.ws.left.view_config().sort_order()==crate::panel::SortOrder::Desc && self.inner.ws.left.selected_count()==2 && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="links-middle.txt")
+                    && std::fs::copy(self.fixture.root.join("links-facts.json"),self.scenario_dir.join("links-facts.json")).is_ok()
+            }
+            Scenario::ChangedSort => {
+                self.symlink_phase==36 && self.inner.ui.modals.palette_input.is_none() && self.inner.ws.left.view_config().sort_column()==crate::panel::SortColumn::Changed && self.inner.ws.left.view_config().sort_order()==crate::panel::SortOrder::Desc && self.inner.ws.left.selected_count()==2 && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="change-middle.txt")
+                    && std::fs::copy(self.fixture.root.join("changed-facts.json"),self.scenario_dir.join("changed-facts.json")).is_ok()
+            }
+            Scenario::HardlinkSelection => {
+                self.symlink_phase==12 && self.inner.ui.modals.palette_input.is_none() && self.inner.ws.left.selected_count()==3 && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="hard-original.txt") && self.counters.clipboard.load(Ordering::Relaxed)==1
+                    && std::fs::copy(self.fixture.root.join("hardlink-facts.json"),self.scenario_dir.join("hardlink-facts.json")).is_ok()
+            }
+            Scenario::TimeSort => {
+                self.symlink_phase==36 && self.inner.ui.modals.palette_input.is_none() && self.inner.ws.left.view_config().sort_column()==crate::panel::SortColumn::Accessed && self.inner.ws.left.view_config().sort_order()==crate::panel::SortOrder::Asc && self.inner.ws.left.selected_count()==2 && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="clock-middle.txt")
+                    && std::fs::copy(self.fixture.root.join("time-facts.json"),self.scenario_dir.join("time-facts.json")).is_ok()
+            }
+            Scenario::AllocatedSort => {
+                self.symlink_phase==24 && self.inner.ui.modals.palette_input.is_none()
+                    && self.inner.ws.left.view_config().sort_column()==crate::panel::SortColumn::Allocated
+                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="sparse.bin")
+            }
+            Scenario::ExifInfo | Scenario::ExifDetailsInfo | Scenario::ImageMetadataJson | Scenario::ExifPngInfo | Scenario::ExifTiffInfo | Scenario::ExifWebpInfo | Scenario::ImageHeaderInfo => {
+                let (name,format,has_exif)=self.scenario.image_info_fixture().unwrap();
+                let extension=if format=="jpeg" {"jpg"}else{format};
+                self.symlink_info_phase==(if self.scenario==Scenario::ImageMetadataJson {10}else{9}) && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name==name)
+                    && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
+                    && matches!(&self.inner.ws.right.preview,Some(crate::panel::PreviewContent::Info(card)) if card.name==name)
+                    && self.inner.image_metadata.report("right").is_some_and(|report|
+                        (if has_exif {report.rows.len()==23 && report.note.is_none()}else{report.rows.len()==2 && report.note.as_ref().is_some_and(|n|n.contains("EXIF"))})
+                        && serde_json::to_vec_pretty(&serde_json::json!({"rows":report.rows,"note":report.note,"container":format,"has_exif":has_exif,"left_path":self.inner.ws.left.current_path,"right_path":self.inner.ws.right.current_path})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("exif-state.json"),b).is_ok())
+                        && std::fs::copy(self.fixture.left.join(name),self.scenario_dir.join(format!("source.{extension}"))).is_ok())
+            }
+            Scenario::FileIdentityInfo => {
+                self.symlink_info_phase==6 && self.inner.ui.modals.palette_input.is_none()
+                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="alias.bin" && e.hard_link_count()==Some(2))
+                    && matches!(&self.inner.ws.right.preview,Some(crate::panel::PreviewContent::Info(card)) if card.name=="alias.bin" && card.hard_links=="2" && card.filesystem_id!="Unavailable" && serde_json::to_vec_pretty(&serde_json::json!({"name":card.name,"kind":card.kind,"path":card.path,"filesystem_id":card.filesystem_id,"hard_links":card.hard_links,"owner_uid":card.owner_uid,"owner_gid":card.owner_gid,"size":card.size})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("info-state.json"),bytes).is_ok()))
+                    && self.fixture.left.parent().is_some_and(|root|std::fs::copy(root.join("identity-facts.json"),self.scenario_dir.join("identity-facts.json")).is_ok())
+            }
+            Scenario::AllocatedInfo => {
+                self.symlink_info_phase==6 && self.inner.ui.modals.palette_input.is_none()
+                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="sparse.bin" && e.size==8*1024*1024 && e.allocated_size==Some(0))
+                    && matches!(&self.inner.ws.right.preview,Some(crate::panel::PreviewContent::Info(card)) if card.name=="sparse.bin" && card.allocated_size=="0 B (0 bytes)" && card.size==crate::panel::format_size(8*1024*1024) && serde_json::to_vec_pretty(&serde_json::json!({"kind":card.kind,"path":card.path,"size":card.size,"allocated_size":card.allocated_size,"logical_bytes":8*1024*1024,"allocated_bytes":0})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("info-state.json"),bytes).is_ok()))
+            }
+            Scenario::SymlinkInfo => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if let Ok(raw)=std::fs::symlink_metadata(self.fixture.left.join("link.txt")) {
+                        let _=std::fs::write(self.scenario_dir.join("owner-facts.json"),serde_json::to_vec_pretty(&serde_json::json!({"owner_uid":raw.uid(),"owner_gid":raw.gid()})).unwrap());
+                    }
+                }
+                self.symlink_info_phase==6 && self.inner.ui.modals.palette_input.is_none()
+                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="link.txt")
+                    && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
+                    && matches!(&self.inner.ws.right.preview,Some(crate::panel::PreviewContent::Info(card)) if card.link_status.as_deref()==Some("Target exists") && card.path.ends_with("-> ../right/portable.txt") && card.kind=="Symlink to TXT file" && serde_json::to_vec_pretty(&serde_json::json!({"kind":card.kind,"path":card.path,"link_status":card.link_status,"size":card.size,"permissions":card.permissions,"owner_uid":card.owner_uid,"owner_gid":card.owner_gid,"accessed":card.accessed,"created":card.created})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("info-state.json"),bytes).is_ok()))
+            }
+            Scenario::SymlinkWorkflow => {
+                self.symlink_phase==48 && self.inner.ui.modals.palette_input.is_none()
+                    && self.inner.ws.active==crate::workspace::ActivePanel::Right
+                    && self.inner.ws.left.current_path==self.fixture.left
+                    && self.inner.ws.right.current_path==std::fs::canonicalize(&self.fixture.left).unwrap()
+                    && self.inner.ws.right.cursor_entry().is_some_and(|e|e.name=="portable.txt")
+                    && std::fs::read_link(self.fixture.right.join("portable link 2.txt")).ok()==Some(PathBuf::from("../left/portable.txt"))
+                    && std::fs::read_to_string(self.fixture.right.join("portable link 2.txt")).is_ok_and(|text|text=="portable source\n")
+                    && std::fs::read_to_string(self.fixture.right.join("portable.txt")).is_ok_and(|text|text=="occupied destination\n")
+                    && self.counters.clipboard.load(Ordering::Relaxed)==2
+                    && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.symlink_phase,"active":"right","left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path,"cursor":self.inner.ws.right.cursor_entry().map(|e|&e.name),"relative_target":std::fs::read_link(self.fixture.right.join("portable link 2.txt")).ok(),"source":std::fs::read_to_string(self.fixture.left.join("portable.txt")).ok(),"occupied":std::fs::read_to_string(self.fixture.right.join("portable.txt")).ok(),"clipboard_writes":2})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("workflow-state.json"),bytes).is_ok())
+            }
+            Scenario::DiffSwap => {
+                self.diff_swap_phase==29 && self.inner.ui.tools.diff.as_ref().is_some_and(|state| {
+                    state.message.is_none() && state.paths==(self.fixture.left.join("diff.txt"),self.fixture.right.join("diff.txt"))
+                    && state.options.space_changes && state.options.ignore_case && state.intraline.enabled && state.navigation.show_numbers
+                    && state.source.as_ref().is_some_and(|(a,b)|a=="HEAD  a\r\nsame\nleft UPDATED\nend" && b=="head a\r\nsame\nright UPDATED\nend\n")
+                    && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
+                    && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.diff_swap_phase,"paths":state.paths,"names":[state.name_a,state.name_b],"source":state.source,"options":state.options,"intraline":state.intraline.enabled,"numbers":state.navigation.show_numbers,"source_numbers":state.navigation.source_numbers,"find_query":state.find.query,"rows":state.lines.iter().map(|l|serde_json::json!({"kind":format!("{:?}",l.kind),"text":l.text})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("swap-final.json"),bytes).is_ok())
+                })
+            }
+            Scenario::DiffIntraline => {
+                self.diff_intraline_phase==9 && self.inner.ui.tools.diff.as_ref().is_some_and(|state| {
+                    state.message.is_none() && state.intraline.enabled && state.intraline.simplified_pairs==0 && state.intraline.rows.len()==2
+                        && crate::textdiff::change_counts(&state.lines)==(2,1) && state.navigation.hunks.len()==2
+                        && state.intraline.rows.get(&1).is_some_and(|ranges|ranges.iter().map(|r|&state.lines[1].text[r.clone()]).collect::<String>()=="blu3")
+                        && state.intraline.rows.get(&2).is_some_and(|ranges|ranges.iter().map(|r|&state.lines[2].text[r.clone()]).collect::<String>()=="rd2")
+                        && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.diff_intraline_phase,"enabled":state.intraline.enabled,"ranges":state.intraline.rows,"simplified_pairs":state.intraline.simplified_pairs,"counts":crate::textdiff::change_counts(&state.lines),"source":state.source,"source_numbers":state.navigation.source_numbers,"rows":state.lines.iter().map(|line|serde_json::json!({"kind":format!("{:?}",line.kind),"text":line.text})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("intraline-final.json"),bytes).is_ok())
+                })
+            }
+            Scenario::DiffOptions => {
+                self.diff_options_phase==57 && self.inner.ui.tools.diff.as_ref().is_some_and(|state| {
+                    state.message.is_none() && state.options.space_changes && state.options.ignore_case && !state.options.all_spaces && state.options.trailing_spaces && state.options.ignore_crlf && state.options.expand_tabs
+                        && crate::textdiff::change_counts(&state.lines)==(2,2) && state.navigation.hunks.len()==2
+                        && state.lines[0].text=="alpha  beta" && state.lines[1].text=="SAME" && state.lines[2].text=="k e p t"
+                        && state.source.as_ref().is_some_and(|(a,b)|a=="alpha  beta\nSAME\nk e p t\r\nx\tz\nold\nend\n" && b=="alpha beta\nsame\nkept\nx       z\nnew\nend\n")
+                        && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.diff_options_phase,"options":state.options,"counts":crate::textdiff::change_counts(&state.lines),"source":state.source,"paths":state.paths,"source_numbers":state.navigation.source_numbers,"hunks":state.navigation.hunks.iter().map(|h|serde_json::json!({"left_start":h.left_start,"right_start":h.right_start})).collect::<Vec<_>>(),"rows":state.lines.iter().map(|line|serde_json::json!({"kind":format!("{:?}",line.kind),"text":line.text})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("options-final.json"),bytes).is_ok())
+                })
+            }
+            Scenario::DiffNavigation => {
+                self.diff_navigation_phase==83 && self.inner.ui.tools.diff.as_ref().is_some_and(|state| {
+                    if !state.navigation.show_numbers || state.jump.selected.is_some() || state.find.rows!=[52] || state.paths!=(self.fixture.right.join("diff.txt"),self.fixture.left.join("diff.txt")) {return false;}
+                    let visible=ctx.data(|data|data.get_temp::<Vec<usize>>(egui::Id::new("diff-visible-rows")));
+                    state.message.is_none() && state.keyboard_focused && state.navigation.hunks.len()==4 && state.navigation.current==Some(0) && state.context_view.compact && state.context_view.row_count()==37 && state.context_view.hidden==152
+                    && visible.as_ref().is_some_and(|range|range.contains(&10))
+                    && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.left.cursor_entry().is_some_and(|e|e.name=="diff.txt")
+                    && std::fs::read_to_string(self.fixture.left.join("diff.txt")).is_ok_and(|text|text==diff_fixture_text(false)) && std::fs::read_to_string(self.fixture.right.join("diff.txt")).is_ok_and(|text|text==diff_fixture_text(true).replace("context 40\n","reload change 40\n"))
+                    && serde_json::to_vec_pretty(&serde_json::json!({"goto_query":state.jump.query,"goto_plus":state.jump.plus,"goto_selected":state.jump.selected,"find_query":state.find.query,"find_rows":state.find.rows,"find_focused":state.find.focused,"show_numbers":state.navigation.show_numbers,"source_numbers":state.navigation.source_numbers,"compact":state.context_view.compact,"context_lines":state.context_view.context,"display_rows":state.context_view.row_count(),"hidden":state.context_view.hidden,"minus_name":state.name_a,"plus_name":state.name_b,"current":state.navigation.current,"offset":[state.scroll_offset.x,state.scroll_offset.y],"visible":visible,"left_text":diff_fixture_text(false),"right_text":diff_fixture_text(true).replace("context 40\n","reload change 40\n"),"hunks":state.navigation.hunks.iter().map(|h|serde_json::json!({"rows":[h.rows.start,h.rows.end],"left_start":h.left_start,"left_len":h.left_len,"right_start":h.right_start,"right_len":h.right_len})).collect::<Vec<_>>(),"rows":state.lines.iter().map(|line|serde_json::json!({"kind":format!("{:?}",line.kind),"text":line.text})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("reload-state.json"),bytes).is_ok())
+                })
+            }
+            Scenario::SyncContents => {
+                self.sync_contents_phase==27 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.tools.sync.as_ref().is_some_and(|state| {
+                    state.scan.is_none() && state.error.is_none() && state.compare_contents && state.stamp.as_ref().is_some_and(|s|s.compare_contents) && state.review.scope==crate::sync_review::Scope::All && state.actions.len()==14
+                    && state.actions.iter().filter(|a|a.content==crate::sync_content::Comparison::Equal).count()==2
+                    && state.actions.iter().filter(|a|a.content.error().is_some()).all(|a|a.direction==crate::sync::SyncDirection::Skip)
+                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|crate::sync_report::export(state,crate::sync_report::Scope::Full,crate::sync_report::Format::Json).as_ref()==Ok(&text) && std::fs::write(self.scenario_dir.join("final-report.json"),text).is_ok())
+                })
+            }
+            Scenario::SyncReview => {
+                self.sync_review_phase==114 && ctx.data(|data|data.get_temp::<bool>(egui::Id::new("sync-profile-section-closed")))==Some(true) && self.counters.clipboard.load(Ordering::Relaxed)==6 && self.inner.ui.tools.sync.as_ref().is_some_and(|state| {
+                    state.scan.is_none() && state.stamp.is_some() && state.error.is_none() && state.review.query.is_empty() && state.review.scope==crate::sync_review::Scope::All && state.review.sort==crate::sync_review::Sort::PlanOrder && !state.review.descending && state.review.indices.len()==9 && state.review.hidden_planned==0 && state.export_scope==crate::sync_report::Scope::Shown
+                    && self.sync_review_baseline.as_ref().is_some_and(|baseline|baseline.len()==state.actions.len() && baseline.iter().zip(&state.actions).all(|(before,after)|before==after))
+                    && self.fixture.left.join("notes.md").is_file() && !self.fixture.right.join("notes.md").exists()
+                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|crate::sync_report::export(state,crate::sync_report::Scope::Shown,crate::sync_report::Format::Json).as_ref()==Ok(&text) && std::fs::write(self.scenario_dir.join("plan-shown.json"),text).is_ok())
+                    && serde_json::to_vec_pretty(&serde_json::json!({"sort":state.review.sort.key(),"descending":state.review.descending,"export_scope":state.export_scope.key(),"query":state.review.query,"scope":format!("{:?}",state.review.scope),"indices":state.review.indices,"hidden_planned":state.review.hidden_planned,"left":state.left_dir,"right":state.right_dir,"rows":state.actions.iter().map(|row|serde_json::json!({"name":row.name,"status":format!("{:?}",row.status),"direction":format!("{:?}",row.direction)})).collect::<Vec<_>>(),"baseline":self.sync_review_baseline.as_ref().unwrap().iter().map(|row|serde_json::json!({"name":row.name,"status":format!("{:?}",row.status),"direction":format!("{:?}",row.direction)})).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("review-state.json"),bytes).is_ok())
+                })
+            }
+            Scenario::DiskTreeFilter => {
+                self.disk_tree_phase == 37
+                    && self.disk_tree_filter_ready(
+                        ("target", false, false),
+                        Some((
+                            3,
+                            &[
+                                "alpha",
+                                "alpha/shared/target-one",
+                                "beta",
+                                "beta/shared/target-two",
+                                "delta/shared/target-three",
+                            ],
+                        )),
+                        true,
+                        crate::app::DiskUsageMode::Tree,
+                    )
+            }
+            Scenario::PerItemStop => {
+                self.per_item_stop_phase == 6 && self.inner.ui.modals.run_command.as_ref().is_some_and(|state| {
+                    state.run.is_none() && state.output.as_ref().is_some_and(|output| {
+                        let files:Vec<_> = ["first.txt","later.txt"].into_iter().map(|name| {
+                            let path=self.fixture.left.join(name);
+                            serde_json::json!({"path":path,"contents":std::fs::read_to_string(&path).ok(),"started":std::fs::read_to_string(path.with_extension("txt.started")).ok()})
+                        }).collect();
+                        let ready = output.batch.as_ref().is_some_and(|batch|batch.total==2 && batch.completed==1 && batch.cancelled)
+                            && output.context.as_ref().is_some_and(|context|context.attempted_invocations==1)
+                            && output.stdout.contains("ready\n")
+                            && files[0]["contents"]=="initial\n" && files[1]["contents"]=="initial\n"
+                            && files[0]["started"]=="started" && files[1]["started"].is_null();
+                        ready && crate::command_report::export(output,crate::command_report::Format::Json).is_ok_and(|text|std::fs::write(self.scenario_dir.join("command-report.json"),text).is_ok())
+                            && serde_json::to_vec_pretty(&serde_json::json!({"phase":self.per_item_stop_phase,"files":files,"run_present":state.run.is_some(),"batch":output.batch,"context":output.context,"stdout":output.stdout,"stderr":output.stderr,"exit_code":output.exit_code,"error":output.error})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("per-item-stop-state.json"),bytes).is_ok())
+                    })
+                })
+            }
+            Scenario::PerItemCommand => {
+                let expected_cwd=self.fixture.right.canonicalize().unwrap_or_else(|_|self.fixture.right.clone());
+                let copied=self.counters.clipboard_text.lock().ok().and_then(|value|value.clone());
+                self.template_browser_phase == 70 && self.counters.clipboard.load(Ordering::Relaxed)==3 && self.inner.ui.modals.run_command.as_ref().is_some_and(|state| {
+                    state.run.is_none() && state.output_view.text_percent()==125 && state.output_view.line_state()==(true,10,Some(9),false,true) && state.output_view.regex_ready() && state.output_view.search_state()==(2,Some(0)) && state.line=="edited after finish" && state.template_name=="Edited name" && state.template_working_dir == crate::cmdtemplate::WorkingDirectory::Opening
+                    && state.output.as_ref().is_some_and(|output| {
+                        output.error.is_none() && output.exit_code == Some(0)
+                        && output.context.as_ref().is_some_and(|context|context.working_directory_policy==crate::cmdtemplate::WorkingDirectory::OtherPane && context.initial_working_directory==self.fixture.right && context.name=="Архив ZIP" && context.template=="pwd; printf '%s\\n' {names}")
+                        && output.batch.as_ref().is_some_and(|report| report.total==2 && report.completed==2 && report.succeeded==2 && report.failed==0 && !report.cancelled)
+                        && output.stdout.contains("notes.md\n") && output.stdout.contains("Design\n") && output.stdout.lines().filter(|line|*line==expected_cwd.to_string_lossy()).count()==2
+                        && copied.as_ref().is_some_and(|text|crate::command_report::export(output,crate::command_report::Format::Json).as_ref()==Ok(text) && std::fs::write(self.scenario_dir.join("command-report.json"),text).is_ok())
+                        && serde_json::to_vec_pretty(&serde_json::json!({"text_percent":state.output_view.text_percent(),"line_state":state.output_view.line_state(),"regex_ready":state.output_view.regex_ready(),"search_state":state.output_view.search_state(),"draft_line":state.line,"draft_name":state.template_name,"draft_working_dir":state.template_working_dir,"context":output.context,"expected_cwd":expected_cwd,"opening_left":state.opening.left_dir,"opening_right":state.opening.right_dir,"execution":state.template_execution,"batch":output.batch,"stdout":output.stdout,"stderr":output.stderr,"exit_code":output.exit_code,"error":output.error,"selection":state.opening.selection.iter().map(|entry|entry.path.clone()).collect::<Vec<_>>()})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("per-item-state.json"),bytes).is_ok())
+                    })
+                })
+            }
+            Scenario::TemplateBrowser => {
+                self.template_browser_phase == 18 && self.inner.ui.modals.run_command.as_ref().is_some_and(|state| {
+                    let ready = state.template_browser.query.is_empty() && state.template_browser.show_all && state.template_browser.indices == [0,1,2]
+                        && state.template_browser.applicable == 2 && state.line == "unzip {paths}" && state.template_name == "Архив ZIP"
+                        && state.template_extensions == "zip" && !state.template_require_all && state.template_kind == crate::cmdtemplate::InputKind::Files && state.template_limits.is_default() && state.opening.selection.len() == 2 && ctx.data(|data| data.get_temp::<bool>(egui::Id::new("run-command-enabled"))) == Some(false) && state.run.is_none() && state.output.is_none();
+                    ready && serde_json::to_vec_pretty(&serde_json::json!({"query":state.template_browser.query,"all":state.template_browser.show_all,"indices":state.template_browser.indices,"applicable":state.template_browser.applicable,"line":state.line,"name":state.template_name,"extensions":state.template_extensions,"require_all":state.template_require_all,"kind":state.template_kind,"opening_directories":state.opening.selection.iter().map(|entry|entry.is_dir).collect::<Vec<_>>(),"limits":state.template_limits,"selection_count":state.opening.selection.len(),"run_enabled":ctx.data(|data|data.get_temp::<bool>(egui::Id::new("run-command-enabled"))),"run_present":state.run.is_some(),"output_present":state.output.is_some(),"templates":self.inner.command_templates})).is_ok_and(|bytes|std::fs::write(self.scenario_dir.join("browser-state.json"),bytes).is_ok())
+                })
+            }
+            Scenario::FavoritePicker => {
+                self.favorite_picker_phase == 38 && self.favorite_picker_final()
+            }
+            Scenario::FavoriteImport => {
+                self.favorite_import_phase == 17 && self.favorite_import_export_ready()
+            }
+            Scenario::Favorites => {
+                self.favorite_phase == 41
+                    && self.favorite_navigation_ready(4)
+                    && !egui::Popup::is_any_open(&ctx)
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.name == "Design")
+            }
+            Scenario::ChecksumList => {
+                self.checksum_list_phase == 50
+                    && self.checksum_list_filtered_copy_ready(false, 6)
+                    && self.recorded_clipboard_dump("matching-name-report.txt")
             }
             Scenario::Checksums => {
-                self.checksum_click_phase == 12
+                let expected = format!(
+                    "900150983cd24fb0d6963f7d28e17f72 *{}\n",
+                    self.fixture.left.join("checksum.txt").display()
+                );
+                self.checksum_click_phase == 103
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 13
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|value| value.clone())
+                        .as_deref()
+                        == Some(expected.as_str())
+                    && self.inner.checksum_relative_mode_is(false)
                     && self.inner.checksum_comparison_is(
-                        crate::checksum::Algorithm::Blake3,
+                        crate::checksum::Algorithm::Md5,
                         crate::checksum::ExpectedMatch::Match,
                     )
             }
             Scenario::RenameOptions => {
-                self.rename_options_phase == 40
+                self.rename_options_phase == 97
+                    && self.rename_range_phase == 12
+                    && self.rename_insert_phase == 19
+                    && self.rename_character_phase == 18
+                    && self.rename_letter_phase == 9
+                    && self.rename_keep_phase == 15
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 3
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        .as_deref()
+                        == Some("Old name,New name,Status,Rule error\nnotes.md,01.md,ok,\n")
                     && self
                         .inner
                         .ui
@@ -2679,6 +19007,22 @@ impl eframe::App for VisualQaApp {
                             state.rule()
                                 == (crate::rename::RenameRule {
                                     remove_prefix: "TXT-".into(),
+                                    extra_replacements: vec![
+                                        crate::rename::ReplacementPair {
+                                            find: "TXT".into(),
+                                            replace: "Doc".into(),
+                                        },
+                                        crate::rename::ReplacementPair {
+                                            find: "Doc".into(),
+                                            replace: "Final".into(),
+                                        },
+                                    ],
+                                    numbering: Some(crate::rename::Numbering {
+                                        start: 1,
+                                        step: 1,
+                                        pad: 2,
+                                    }),
+                                    number_position: crate::rename::NumberPosition::CounterOnly,
                                     stem_limit: Some(32),
                                     trim_spaces: true,
                                     collapse_repeats: true,
@@ -2688,9 +19032,10 @@ impl eframe::App for VisualQaApp {
                                 && (state.num_start, state.num_step, state.num_pad) == (1, 1, 2)
                                 && state.preset_selected.is_none()
                                 && state.validation.as_ref().is_some_and(|validation| {
-                                    validation.options_preview(false, false, "TXT.txt")
+                                    validation.targets_preview(&[("notes.md", "01.md")])
                                 })
                         })
+                    && self.fixture.left.join("notes.md").exists()
                     && self.fixture.left.join("TXT-TXT.txt").exists()
                     && !self.fixture.left.join("-03doc-TXT.txt").exists()
             }
@@ -2726,6 +19071,15 @@ impl eframe::App for VisualQaApp {
                     && self.fixture.left.join("notes.md").exists()
                     && self.fixture.left.join("README.txt").exists()
             }
+            Scenario::Timestamps => {
+                self.timestamp_phase==27 && self.inner.ui.modals.permissions.as_ref().is_some_and(|state| {
+                    let view=state.timestamp_qa();
+                    let _=serde_json::to_vec_pretty(&serde_json::json!({"phase":self.timestamp_phase,"ready":state.plan.as_ref().is_some_and(crate::timestamps::ready),"view":view})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("times-end-observation.json"),b).is_ok());
+                    if !state.plan.as_ref().is_some_and(crate::timestamps::ready) || view["timestamps"]!=true || view["busy"]!=false || view["needs_reload"]!=false || view["modified"]!="" || view["accessed"]!="" || view["report"]["changed"]!=2 || view["report"]["errors"]!=serde_json::json!([]) {return false;}
+                    let facts=["times-a.txt","times-b.txt","times-untouched.txt"].into_iter().map(|name| {let path=self.fixture.left.join(name);let metadata=std::fs::metadata(&path).ok()?;let times=crate::timestamps::Snapshot::from_metadata(&metadata)?;Some(serde_json::json!({"path":path,"modified":crate::timestamps::format(times.modified),"accessed":crate::timestamps::format(times.accessed),"size":metadata.len()}))}).collect::<Option<Vec<_>>>();
+                    serde_json::to_vec_pretty(&serde_json::json!({"phase":self.timestamp_phase,"view":view,"files":facts})).is_ok_and(|b|std::fs::write(self.scenario_dir.join("times-final.json"),b).is_ok())
+                })
+            }
             Scenario::Permissions => {
                 self.inner
                     .ui
@@ -2737,6 +19091,35 @@ impl eframe::App for VisualQaApp {
                             plan.ready() && plan.changed_count(state.change) == 1
                         })
                     })
+            }
+            Scenario::PdfRegex => {
+                self.pdf_click_phase == 22
+                    && self.inner.pdf_cache.search_pages("right") == Some(vec![2])
+                    && self.inner.pdf_cache.search_modes("right") == Some([true, true, true])
+                    && self.inner.pdf_cache.shown_page("right") == Some(2)
+                    && ctx
+                        .data(|data| {
+                            data.get_temp::<crate::preview_find::PreviewFind>(
+                                egui::Id::new(("pdf-page-text", "right")).with("find"),
+                            )
+                        })
+                        .is_some_and(|find| {
+                            find.regex_ready()
+                                && find.smart_case_enabled()
+                                && find.match_count() == 1
+                        })
+            }
+            Scenario::PdfSearch => {
+                self.pdf_click_phase == 13
+                    && self.inner.pdf_cache.search_pages("right") == Some(vec![2])
+                    && self.inner.pdf_cache.shown_page("right") == Some(2)
+                    && ctx
+                        .data(|data| {
+                            data.get_temp::<crate::preview_find::PreviewFind>(
+                                egui::Id::new(("pdf-page-text", "right")).with("find"),
+                            )
+                        })
+                        .is_some_and(|find| find.match_count() == 1)
             }
             Scenario::PdfPreview => {
                 self.pdf_click_phase == 10
@@ -2766,7 +19149,33 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchiveBrowser => self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+            Scenario::ArchiveFuzzy => {
+                self.archive_copy_phase == 7
+                    && self.hex_verified_before_close
+                    && self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+                        state.filter == "frs"
+                            && state.member_filter.fuzzy_filter_applied()
+                            && state.member_filter.current_folder() == Some(Path::new("src"))
+                            && state.selected.len() == 1
+                            && state.selected.contains(&0)
+                            && state.listing.as_ref().is_some_and(|listing| {
+                                listing.members.iter().enumerate().all(|(id, member)| {
+                                    state.member_filter.row_position(id).is_some()
+                                        == matches!(
+                                            member.path.to_str(),
+                                            Some("src/file2.rs" | "src/file10.rs")
+                                        )
+                                })
+                            })
+                    })
+                    && self.inner.ws.pending_op.is_none()
+                    && !self.inner.ui.modals.any_open()
+            }
+            Scenario::ArchiveBrowser
+            | Scenario::ArchiveExport
+            | Scenario::ArchiveBzip2
+            | Scenario::ArchiveXz
+            | Scenario::ArchiveZstd => self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
                 state.listing.as_ref().is_some_and(|listing| {
                     let ordered = |a: &str, b: &str, folders: bool| {
                         let members = if folders {
@@ -2786,10 +19195,63 @@ impl eframe::App for VisualQaApp {
                         };
                         matches!((position(a), position(b)), (Some(a), Some(b)) if a < b)
                     };
-                    listing.kind == crate::archive::ArchiveKind::Tar
-                        && listing.members.len() == 7
+                    (self.scenario != Scenario::ArchiveBrowser
+                        || (self.archive_copy_phase == 35
+                            && state.member_filter.metadata_filters_are([
+                                "+1b",
+                                "1..3",
+                                "1970-01-01",
+                                "rs",
+                            ])
+                            && state
+                                .member_filter
+                                .saved_filter_matches_current(&state.filter)
+                            && state.member_filter.exclusion_glob_is("*2.rs")
+                            && listing.members.iter().enumerate().any(|(index, member)| {
+                                member.path == Path::new("src/file2.rs")
+                                    && state.member_filter.row_position(index).is_none()
+                            })
+                            && state.member_filter.dotfiles_hidden()
+                            && listing.members.iter().enumerate().any(|(index, member)| {
+                                member.path == Path::new("src/.cache/secret.txt")
+                                    && state.selected.contains(&index)
+                                    && state.member_filter.row_position(index).is_none()
+                            })
+                            && listing
+                                .tree
+                                .as_ref()
+                                .unwrap()
+                                .directories
+                                .iter()
+                                .enumerate()
+                                .all(|(index, entry)| {
+                                    entry.path != Path::new("src/.cache")
+                                        || state
+                                            .member_filter
+                                            .row_position(index + listing.members.len())
+                                            .is_none()
+                                })))
+                        && (self.scenario != Scenario::ArchiveExport
+                            || (self.archive_copy_phase == 43
+                                && self.counters.clipboard.load(Ordering::Relaxed) == 5
+                                && self
+                                    .counters
+                                    .clipboard_text
+                                    .lock()
+                                    .ok()
+                                    .and_then(|text| text.clone())
+                                    .as_deref()
+                                    == Some(self.archive_export_csv(true).as_str())))
+                        && Some(listing.kind) == self.scenario.archive_kind()
+                        && listing.members.len()
+                            == if self.scenario == Scenario::ArchiveBrowser {
+                                8
+                            } else {
+                                7
+                            }
                         && state.member_filter.order.natural
-                        && ordered("src/file2.rs", "src/file10.rs", false)
+                        && (self.scenario == Scenario::ArchiveBrowser
+                            || ordered("src/file2.rs", "src/file10.rs", false))
                         && ordered("src/folder2", "src/folder10", true)
                         && state.member_filter.current_folder() == Some(Path::new("src"))
                         && state.selected.contains(&0)
@@ -2803,8 +19265,51 @@ impl eframe::App for VisualQaApp {
                             .is_some_and(|member| member.path == Path::new("src/main.rs"))
                 })
             }),
+            Scenario::TabPathLabels => {
+                use crate::workspace::ActivePanel;
+                let tabs = self.inner.ws.tab_snapshot(ActivePanel::Left);
+                self.tab_group_phase == 18
+                    && tabs.entries.len() == 2
+                    && tabs.active == 0
+                    && tabs.entries[1].full_path_label
+                    && tabs.entries[1].close_protected
+                    && tabs.entries[1].title.as_deref() == Some("Work")
+                    && tabs.entries[1].path == self.fixture.left.join("Design")
+                    && tabs.entries[1].display_title()
+                        == self.fixture.left.join("Design").to_string_lossy()
+                    && self.inner.ws.left.current_path == self.fixture.left
+                    && self.inner.ws.right.current_path == self.fixture.right
+                    && self.inner.ws.active == ActivePanel::Right
+                    && self.inner.ws.tab_count(ActivePanel::Right) == 1
+                    && self.inner.ws.closed_tab_count(ActivePanel::Left) == 0
+                    && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
+            }
+            Scenario::MillerBrowser => {
+                self.disk_export_phase==65 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                    && self.inner.ws.left.current_path==self.fixture.left.join("column-A")
+                    && self.inner.ws.left.preview.is_none()
+                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.path==self.fixture.left.join("column-A/a.txt"))
+                    && self.inner.ws.right.current_path==self.fixture.right
+                    && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)==1
+                    && self.inner.ws.left.miller.columns.iter().all(|c|!matches!(c.dir_status(),crate::panel::DirStatus::Loading))
+                    && std::fs::copy(self.fixture.left.join("column-A/a.txt"),self.scenario_dir.join("source-A.txt")).is_ok()
+                    && std::fs::copy(self.fixture.left.join("column-B/a.txt"),self.scenario_dir.join("source-B.txt")).is_ok()
+            }
             Scenario::FolderTabs => {
-                self.tab_group_phase == 81
+                self.tab_group_phase == 100
+                    && self
+                        .inner
+                        .ws
+                        .tab_snapshot(crate::workspace::ActivePanel::Left)
+                        .entries[0]
+                        .full_path_label
+                    && self
+                        .inner
+                        .ws
+                        .tab_snapshot(crate::workspace::ActivePanel::Left)
+                        .entries[0]
+                        .display_title()
+                        == self.fixture.left.to_string_lossy()
                     && self
                         .inner
                         .ws
@@ -2831,7 +19336,7 @@ impl eframe::App for VisualQaApp {
                         .inner
                         .ws
                         .closed_tab_count(crate::workspace::ActivePanel::Left)
-                        == 4
+                        == 0
                     && self
                         .inner
                         .ws
@@ -2880,6 +19385,35 @@ impl eframe::App for VisualQaApp {
                             egui::Id::new(("text_preview", "right")).with("find"),
                         )
                         .is_some_and(|find| find.regex_ready() && find.match_count() == 2)
+                    })
+            }
+            Scenario::DocxPreview
+            | Scenario::OdtPreview
+            | Scenario::XlsxPreview
+            | Scenario::OdsPreview
+            | Scenario::PptxPreview
+            | Scenario::OdpPreview
+            | Scenario::EpubPreview
+            | Scenario::FictionbookPreview
+            | Scenario::RtfPreview => {
+                self.json_mode_phase == 3
+                    && self.counters.clipboard.load(Ordering::Relaxed) == 1
+                    && self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|text| text.clone())
+                        .as_deref()
+                        == self.scenario.office_text()
+                    && matches!(&self.inner.ws.right.preview,
+                    Some(crate::panel::PreviewContent::Text { content, .. })
+                    if Some(content.as_ref()) == self.scenario.office_text())
+                    && ctx.data(|data| {
+                        data.get_temp::<crate::preview_find::PreviewFind>(
+                            egui::Id::new(("text_preview", "right")).with("find"),
+                        )
+                        .is_some_and(|find| find.match_count() == 1)
                     })
             }
             Scenario::UnicodePreview => {
@@ -2953,6 +19487,30 @@ impl eframe::App for VisualQaApp {
                     )
                     .map(|find| find.match_count()))
             ));
+        }
+        if matches!(
+            self.scenario,
+            Scenario::HexSearch | Scenario::HexAlignment | Scenario::HexMatchCopy
+        ) {
+            self.last_probe_summary.push_str(&format!(
+                "; hex_phase={}, ready={}, offset={:?}, bookmark10={:?}, width={:?}, mode={:?}, wrap={:?}, focus={:?}, pending_op={}, modal={}, copied={}",
+                self.hex_search_phase, scenario_state_ready,
+                self.inner.hex_viewer.as_ref().and_then(crate::hex_preview::HexViewer::shown_offset),
+                self.inner.hex_viewer.as_ref().and_then(|v| v.bookmark_at(9)),
+                self.inner.hex_viewer.as_ref().map(crate::hex_preview::HexViewer::row_width_bytes),
+                self.inner.hex_viewer.as_ref().map(crate::hex_preview::HexViewer::search_input_mode),
+                self.inner.hex_viewer.as_ref().map(crate::hex_preview::HexViewer::wrapped_search),
+                ctx.memory(|memory| memory.focused()),
+                self.inner.ws.pending_op.is_some(),
+                self.inner.ui.modals.any_open(),
+                self.fixture.right.join("bytes.bin").exists(),
+            ));
+        }
+        if matches!(
+            self.scenario,
+            Scenario::ArchiveExport | Scenario::ArchiveBrowser
+        ) {
+            self.last_probe_summary.push_str(&format!("; archive_copy_phase={}, clipboard={}, text={:?}, first={:?}, folder={:?}, rect={:?}", self.archive_copy_phase, self.counters.clipboard.load(Ordering::Relaxed), self.counters.clipboard_text.lock().ok().and_then(|s| s.clone()), self.inner.ui.tools.archive.as_ref().and_then(|s| s.member_filter.first_visible_member()), self.inner.ui.tools.archive.as_ref().and_then(|s| s.member_filter.current_folder()), ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("archive-copy", false))))));
         }
         if listings_ready && thumbnail_ready && scenario_state_ready && probes.ready(self.scenario)
         {
@@ -3082,13 +19640,58 @@ struct NativeEffectCalls {
     free_space: usize,
 }
 
+const fn expected_clipboard_writes(scenario: Scenario) -> usize {
+    match scenario {
+        Scenario::SymlinkWorkflow
+        | Scenario::HexMatchCopy
+        | Scenario::DuplicateSort
+        | Scenario::SyncContents
+        | Scenario::ListingJson
+        | Scenario::AllocatedSelection
+        | Scenario::DuplicateRecursive => 2,
+        Scenario::LinksSearch
+        | Scenario::ImageMetadataJson
+        | Scenario::ShortcutExchange
+        | Scenario::ThemeExchange => 1,
+        Scenario::ProfileExchange => 2,
+        Scenario::ChecksumList | Scenario::FindSort => 6,
+        Scenario::RenameOptions
+        | Scenario::DuplicatePolicy
+        | Scenario::DuplicateSizes
+        | Scenario::DuplicateReport
+        | Scenario::PerItemCommand
+        | Scenario::TimeGroups
+        | Scenario::DiskAllocation
+        | Scenario::DiskCount => 3,
+        Scenario::DuplicateCross => 6,
+        Scenario::SyncReview => 6,
+        Scenario::Checksums => 13,
+        Scenario::GpxPreview | Scenario::KmlPreview => 1,
+        Scenario::TablePreview => 2,
+        Scenario::JsonPreview
+        | Scenario::DocxPreview
+        | Scenario::OdtPreview
+        | Scenario::XlsxPreview
+        | Scenario::OdsPreview
+        | Scenario::PptxPreview
+        | Scenario::OdpPreview
+        | Scenario::EpubPreview
+        | Scenario::FictionbookPreview
+        | Scenario::RtfPreview
+        | Scenario::DuplicateRoots
+        | Scenario::FavoriteImport
+        | Scenario::HardlinkSelection => 1,
+        Scenario::ArchiveExport | Scenario::SearchJson => 5,
+        Scenario::DiskUsageExport => 6,
+        Scenario::SearchResults => 14,
+        _ => 0,
+    }
+}
+
 impl NativeEffectCalls {
     fn expected_for(self, scenario: Scenario) -> bool {
-        if scenario == Scenario::JsonPreview {
-            self.clipboard == 1 && self.total() == 1
-        } else {
-            self.total() == 0
-        }
+        let expected = expected_clipboard_writes(scenario);
+        self.clipboard == expected && self.total() == expected
     }
     const fn total(self) -> usize {
         self.context_menu
@@ -3354,7 +19957,7 @@ fn write_capture(
         calls.expected_for(scenario),
         format!(
             "{calls:?}; expected {} recording clipboard write(s)",
-            usize::from(scenario == Scenario::JsonPreview)
+            expected_clipboard_writes(scenario)
         ),
     ));
 
@@ -3460,37 +20063,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_json_copy_scenario_accepts_exactly_one_recording_clipboard_call() {
+    fn copy_scenarios_enforce_recording_clipboard_counts() {
         for scenario in Scenario::ALL {
-            let empty = NativeEffectCalls::default();
-            assert_eq!(
-                empty.expected_for(scenario),
-                scenario != Scenario::JsonPreview
-            );
-            assert_eq!(
-                NativeEffectCalls {
-                    clipboard: 1,
-                    ..empty
-                }
-                .expected_for(scenario),
-                scenario == Scenario::JsonPreview
-            );
-            assert!(
-                !NativeEffectCalls {
-                    clipboard: 2,
-                    ..empty
-                }
-                .expected_for(scenario)
-            );
-            assert!(!NativeEffectCalls { opener: 1, ..empty }.expected_for(scenario));
-            assert!(
-                !NativeEffectCalls {
-                    clipboard: 1,
-                    opener: 1,
-                    ..empty
-                }
-                .expected_for(scenario)
-            );
+            let expected = match scenario {
+                Scenario::SymlinkWorkflow
+                | Scenario::HexMatchCopy
+                | Scenario::DuplicateSort
+                | Scenario::SyncContents
+                | Scenario::ListingJson
+                | Scenario::AllocatedSelection
+                | Scenario::DuplicateRecursive => 2,
+                Scenario::LinksSearch
+                | Scenario::ImageMetadataJson
+                | Scenario::ShortcutExchange
+                | Scenario::ThemeExchange => 1,
+                Scenario::ProfileExchange => 2,
+                Scenario::ChecksumList | Scenario::FindSort => 6,
+                Scenario::RenameOptions
+                | Scenario::DuplicatePolicy
+                | Scenario::DuplicateSizes
+                | Scenario::DuplicateReport
+                | Scenario::PerItemCommand
+                | Scenario::TimeGroups
+                | Scenario::DiskAllocation
+                | Scenario::DiskCount => 3,
+                Scenario::DuplicateCross => 6,
+                Scenario::SyncReview => 6,
+                Scenario::Checksums => 13,
+                Scenario::GpxPreview | Scenario::KmlPreview => 1,
+                Scenario::TablePreview => 2,
+                Scenario::JsonPreview
+                | Scenario::DocxPreview
+                | Scenario::OdtPreview
+                | Scenario::XlsxPreview
+                | Scenario::OdsPreview
+                | Scenario::PptxPreview
+                | Scenario::OdpPreview
+                | Scenario::EpubPreview
+                | Scenario::FictionbookPreview
+                | Scenario::RtfPreview
+                | Scenario::DuplicateRoots
+                | Scenario::FavoriteImport
+                | Scenario::HardlinkSelection => 1,
+                Scenario::ArchiveExport | Scenario::SearchJson => 5,
+                Scenario::DiskUsageExport => 6,
+                Scenario::SearchResults => 14,
+                _ => 0,
+            };
+            for clipboard in 0..=13 {
+                let calls = NativeEffectCalls {
+                    clipboard,
+                    ..NativeEffectCalls::default()
+                };
+                assert_eq!(calls.expected_for(scenario), clipboard == expected);
+                assert!(!NativeEffectCalls { opener: 1, ..calls }.expected_for(scenario));
+                assert!(!NativeEffectCalls { trash: 1, ..calls }.expected_for(scenario));
+            }
         }
     }
 
@@ -3503,20 +20131,126 @@ mod tests {
                 "icons_grid",
                 "image_preview",
                 "pdf_preview",
+                "pdf_search",
+                "pdf_regex",
                 "checksums",
+                "checksum_list",
+                "disk_tree_filter",
+                "sync_review",
+                "sync_contents",
+                "diff_navigation",
+                "diff_options",
+                "diff_intraline",
+                "diff_swap",
+                "symlink_workflow",
+                "symlink_info",
+                "allocated_info",
+                "file_identity_info",
+                "exif_info",
+                "exif_details_info",
+                "image_metadata_json",
+                "exif_png_info",
+                "exif_tiff_info",
+                "exif_webp_info",
+                "image_header_info",
+                "allocated_sort",
+                "time_sort",
+                "changed_sort",
+                "inode_sort",
+                "hard_links_sort",
+                "listing_json",
+                "allocated_selection",
+                "hardlink_selection",
+                "disk_usage_export",
+                "disk_allocation",
+                "disk_count",
+                "duplicate_policy",
+                "duplicate_ranking",
+                "duplicate_sort",
+                "duplicate_recursive",
+                "duplicate_sizes",
+                "duplicate_names",
+                "duplicate_extensions",
+                "duplicate_components",
+                "duplicate_relative",
+                "duplicate_depth",
+                "duplicate_copies",
+                "duplicate_report",
+                "duplicate_roots",
+                "duplicate_cross",
                 "hex_preview",
                 "hex_search",
+                "hex_alignment",
+                "hex_match_copy",
+                "hex_character_encoding",
+                "hex_utf8_encoding",
+                "hex_utf16_encoding",
+                "hex_repeat_search",
+                "hex_character_keys",
+                "hex_bom_encoding",
                 "permissions",
+                "timestamps",
                 "rename_presets",
                 "rename_target",
                 "rename_options",
                 "name_list",
+                "name_list_actions",
+                "mask_actions",
+                "custom_theme",
+                "theme_exchange",
+                "workspace_profiles",
+                "profile_tabs",
+                "profile_names",
+                "profile_exchange",
                 "folder_tabs",
+                "miller_browser",
+                "tab_path_labels",
+                "favorites",
+                "favorite_import",
+                "favorite_picker",
+                "template_browser",
+                "per_item_command",
+                "per_item_stop",
+                "search_results",
+                "search_json",
+                "broken_link_search",
+                "owner_search",
+                "identity_find",
+                "links_search",
+                "allocation_search",
+                "accessed_search",
+                "created_search",
+                "changed_search",
+                "time_groups",
+                "find_sort",
+                "parent_search",
                 "code_preview",
                 "unicode_preview",
+                "docx_preview",
+                "odt_preview",
+                "xlsx_preview",
+                "ods_preview",
+                "pptx_preview",
+                "odp_preview",
+                "epub_preview",
+                "fictionbook_preview",
+                "rtf_preview",
                 "regex_preview",
                 "json_preview",
+                "gpx_preview",
+                "kml_preview",
+                "custom_shortcuts",
+                "custom_navigation",
+                "shortcut_hints",
+                "shortcut_exchange",
+                "tab_selection_session",
+                "table_preview",
                 "archive_browser",
+                "archive_fuzzy",
+                "archive_export",
+                "archive_bzip2",
+                "archive_xz",
+                "archive_zstd",
                 "minimum_window",
                 "zoom_200_accessible",
                 "confirmation_owner",

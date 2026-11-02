@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "report_native_checks": 14,
+  "csv_native_checks": 14,
+  "input_phases": 18,
+  "recording_clipboard_writes_each": 3,
+  "other_recording_effect_calls": 0,
+  "exact_sorted_groups_and_original_ids": true,
+  "retained_applied_context": true,
+  "skip_all_trashes_nothing": true,
+  "restored_report_byte_identical": true,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3064,
+  "ignored": 3,
+  "listing_test_repeats": 64,
+  "checks": 6
+}

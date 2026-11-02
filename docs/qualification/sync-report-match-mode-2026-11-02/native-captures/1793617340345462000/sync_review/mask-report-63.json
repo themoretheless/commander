@@ -1,0 +1,33 @@
+{
+  "format": "commander.sync-plan-report",
+  "version": 1,
+  "comparison": "shallow_name_size_mtime",
+  "scope": "shown_rows",
+  "left_folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-94346-sync_review/left",
+  "right_folder": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-94346-sync_review/right",
+  "policy": "two_way",
+  "view_query": "*.MD;!read*",
+  "view_match_mode": "whole_name_masks",
+  "view_category": "All rows",
+  "view_sort": "name",
+  "view_descending": true,
+  "full_rows": 9,
+  "exported_rows": 1,
+  "full_planned": 8,
+  "exported_planned": 0,
+  "rows": [
+    {
+      "original_row": 3,
+      "name": "notes.md",
+      "status": "left_only",
+      "direction": "skip",
+      "left_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-94346-sync_review/left/notes.md",
+      "right_path": null,
+      "source_path": null,
+      "target_folder": null,
+      "comparison_display": null,
+      "content_comparison": "unchecked",
+      "content_error": null
+    }
+  ]
+}

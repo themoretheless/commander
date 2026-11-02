@@ -1,0 +1,14 @@
+{
+  "format": "commander.command-templates",
+  "version": 1,
+  "templates": [
+    {
+      "name": "Count lines",
+      "raw": "wc -l {paths}",
+      "exts": [
+        "txt",
+        "md"
+      ]
+    }
+  ]
+}

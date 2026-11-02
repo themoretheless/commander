@@ -1,0 +1,27 @@
+{
+  "expression": "device:16777230 inode:254292079 type:regular archives:on",
+  "matched": 2,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-55052-identity_find/left",
+  "rows": [
+    {
+      "explanations": [
+        "device:16777230 (observed device 16777230)",
+        "inode:254292079 (observed inode 254292079)",
+        "type:regular",
+        "archives:on"
+      ],
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-55052-identity_find/left/identity-original.txt"
+    },
+    {
+      "explanations": [
+        "device:16777230 (observed device 16777230)",
+        "inode:254292079 (observed inode 254292079)",
+        "type:regular",
+        "archives:on"
+      ],
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-55052-identity_find/left/nested/identity-alias.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

@@ -90,6 +90,11 @@ pub fn template(line: &str, name: &str, extensions: &str) -> Result<Template, &'
         name: name.to_string(),
         raw: raw.to_string(),
         exts: parse_extensions(extensions)?,
+        require_all: false,
+        working_dir: Default::default(),
+        execution: Default::default(),
+        kind: Default::default(),
+        limits: Default::default(),
     })
 }
 

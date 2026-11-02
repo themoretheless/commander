@@ -1,0 +1,23 @@
+{
+  "batch": {
+    "cancelled": false,
+    "completed": 2,
+    "failed": 0,
+    "stopped_on_error": false,
+    "succeeded": 2,
+    "total": 2
+  },
+  "error": null,
+  "execution": "per_item_continue",
+  "exit_code": 0,
+  "expected_cwd": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/right",
+  "opening_left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/left",
+  "opening_right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/right",
+  "selection": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/left/notes.md",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/left/Design"
+  ],
+  "stderr": "",
+  "stdout": "Per item: 2 / 2 completed · 2 succeeded · 0 failed · 0 remaining\n\n--- item 1 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/left/notes.md ---\n/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/right\nnotes.md\n\n--- item 2 / 2: /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/left/Design ---\n/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-93310-per_item_command/right\nDesign\n",
+  "working_dir": "other_pane"
+}

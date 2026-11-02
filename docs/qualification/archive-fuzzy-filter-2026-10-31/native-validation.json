@@ -1,0 +1,23 @@
+{
+  "status": "passed_scoped",
+  "phase": 7,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "literal_empty_checkpoint": true,
+  "fuzzy_query": "frs",
+  "expected_members": [
+    "src/file2.rs",
+    "src/file10.rs"
+  ],
+  "hidden_selected_rows": [
+    0
+  ],
+  "physical_keys": "pending"
+}

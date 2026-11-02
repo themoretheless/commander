@@ -16,6 +16,39 @@ pub(super) const TYPE_AHEAD_IDLE: f64 = 1.5;
 /// as a name ("2024") and jumps.
 const COUNT_WINDOW: f64 = 0.6;
 
+/// Horizontal Miller keys only navigate folders. Consume an inert Right on a
+/// file as well, so a focused widget cannot treat it as an activation.
+fn consume_miller_navigation(
+    input: &mut egui::InputState,
+    panel: &crate::panel::PanelState,
+) -> Option<Command> {
+    if panel.browser_mode() != crate::panel::BrowserMode::Miller || panel.preview.is_some() {
+        return None;
+    }
+    // egui consume_key accepts extra modifiers. Inspect event modifiers exactly
+    // so Shift/Option/Command arrows retain their original owners.
+    let mut consume_plain = |key| {
+        let mut consumed = false;
+        input.events.retain(|event| {
+            let matches = matches!(event, egui::Event::Key { key: event_key, pressed: true, modifiers, .. }
+                if *event_key == key && modifiers.is_none());
+            consumed |= matches;
+            !matches
+        });
+        consumed
+    };
+    if consume_plain(egui::Key::ArrowLeft) {
+        Some(Command::GoUp)
+    } else if consume_plain(egui::Key::ArrowRight) {
+        panel
+            .cursor_entry()
+            .filter(|entry| entry.is_dir)
+            .map(|_| Command::Activate)
+    } else {
+        None
+    }
+}
+
 /// The plain chord keys pressed this frame.
 #[derive(Clone, Copy, Default)]
 struct ChordKeys {
@@ -222,14 +255,35 @@ fn prioritized_modal(
 
 impl App {
     pub(crate) fn handle_keys(&mut self, ctx: &egui::Context) {
+        // The viewer is rendered after begin_frame. Leave its keys intact before
+        // pane commands can move the cursor or open Copy / New folder dialogs.
+        if self.hex_viewer.is_some()
+            && (ctx.input(crate::hex_preview::close_shortcut)
+                || ctx.input(crate::hex_preview::focus_shortcut)
+                || ctx.input(crate::hex_preview::character_shortcut)
+                || (!ctx.egui_wants_keyboard_input()
+                    && (ctx.input(crate::hex_preview::page_navigation_key)
+                        || ctx.input(crate::hex_preview::clear_match_shortcut)
+                        || ctx.input(crate::hex_preview::copy_match_shortcut)
+                        || ctx
+                            .input(crate::hex_preview::repeat_search_shortcut)
+                            .is_some())))
+        {
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+            self.custom_shortcuts.cancel();
+            return;
+        }
         if self.handle_diff_scroll_keys(ctx) {
             self.ui.type_ahead = None;
             self.ui.chord = None;
+            self.custom_shortcuts.cancel();
             return;
         }
         if self.handle_text_preview_scroll_keys(ctx) {
             self.ui.type_ahead = None;
             self.ui.chord = None;
+            self.custom_shortcuts.cancel();
             return;
         }
         let contract = self.ui_contract(ctx);
@@ -239,7 +293,39 @@ impl App {
         ) {
             self.ui.type_ahead = None;
             self.ui.chord = None;
+            self.custom_shortcuts.cancel();
             return;
+        }
+        let active_preview = self.ws.active_panel_ref().preview.is_some();
+        if self.hex_viewer.is_none()
+            && !self.ui.tools.any_open()
+            && !active_preview
+            && self.fallback_menu.is_none()
+        {
+            let owner = (
+                self.ws.active == ActivePanel::Left,
+                self.ws.active_tab_index(self.ws.active),
+                self.ws.tab_revision(),
+                self.ws.active_panel_ref().current_path.clone(),
+            );
+            let (claimed, command) = self.custom_shortcuts.input(ctx, owner);
+            if claimed {
+                self.ui.type_ahead = None;
+                self.ui.chord = None;
+                if let Some(command) = command {
+                    self.execute_key_command(ctx, command);
+                }
+                return;
+            }
+        } else {
+            self.custom_shortcuts.cancel();
+        }
+        if let Some(command) =
+            ctx.input_mut(|input| consume_miller_navigation(input, self.ws.active_panel_ref()))
+        {
+            self.ui.type_ahead = None;
+            self.ui.chord = None;
+            self.execute_key_command(ctx, command);
         }
         if self.icon_navigation_columns(ctx).is_some() {
             let horizontal = ctx.input_mut(|input| {
@@ -296,25 +382,7 @@ impl App {
             })
             .collect();
         for cmd in map_keys(&presses) {
-            let columns = self.icon_navigation_columns(ctx);
-            let cmd = match (columns, cmd) {
-                (Some(columns), Command::CursorUp) => Command::CursorMove(-(columns as i32)),
-                (Some(columns), Command::CursorDown) => {
-                    Command::CursorMove(if self.ws.active_panel_ref().cursor() == 0 {
-                        1
-                    } else {
-                        columns as i32
-                    })
-                }
-                _ => cmd,
-            };
-            if let (Some(columns), Command::ExtendSelectUp | Command::ExtendSelectDown) =
-                (columns, cmd)
-            {
-                self.extend_icon_selection(columns, cmd == Command::ExtendSelectDown);
-            } else {
-                self.execute_key_command(ctx, cmd);
-            }
+            self.execute_key_command(ctx, cmd);
             if self.ws.has_any_pending_ui_modal() {
                 break;
             }
@@ -322,6 +390,7 @@ impl App {
         if self.ws.has_any_pending_ui_modal() {
             self.ui.type_ahead = None;
             self.ui.chord = None;
+            self.custom_shortcuts.cancel();
             return;
         }
         let (claimed, replay) = self.handle_chords(ctx);
@@ -404,6 +473,24 @@ impl App {
     }
 
     fn execute_key_command(&mut self, ctx: &egui::Context, command: Command) {
+        let columns = self.icon_navigation_columns(ctx);
+        if let (Some(columns), Command::ExtendSelectUp | Command::ExtendSelectDown) =
+            (columns, command)
+        {
+            self.extend_icon_selection(columns, command == Command::ExtendSelectDown);
+            return;
+        }
+        let command = match (columns, command) {
+            (Some(columns), Command::CursorUp) => Command::CursorMove(-(columns as i32)),
+            (Some(columns), Command::CursorDown) => {
+                Command::CursorMove(if self.ws.active_panel_ref().cursor() == 0 {
+                    1
+                } else {
+                    columns as i32
+                })
+            }
+            _ => command,
+        };
         if super::update::switch_into_covered_pane(&self.ui.tools, self.ws.active, command) {
             if let Some(diff) = &mut self.ui.tools.diff {
                 diff.keyboard_focused = true;
@@ -427,14 +514,62 @@ impl App {
     }
 
     fn handle_diff_scroll_keys(&mut self, ctx: &egui::Context) -> bool {
+        let contract = self.ui_contract(ctx);
+        if matches!(contract.keyboard, KeyboardRoute::Modal(_)) {
+            return false;
+        }
+        let focused = ctx.memory(|memory| memory.focused());
+        let query_focused = focused == Some(crate::diff_find::query_id())
+            || focused == Some(crate::diff_goto::input_id());
+        let own_control = ctx
+            .data(|data| {
+                data.get_temp::<Vec<egui::Id>>(egui::Id::new("diff-navigation-widget-ids"))
+            })
+            .is_some_and(|ids| focused.is_some_and(|id| ids.contains(&id)));
+        if matches!(contract.keyboard, KeyboardRoute::TextInput(_))
+            && !query_focused
+            && !own_control
+        {
+            return false;
+        }
         let Some(diff) = &mut self.ui.tools.diff else {
             return false;
         };
-        if !diff.keyboard_focused {
+        if !diff.keyboard_focused && !query_focused {
             return false;
         }
-
+        if egui::Popup::is_any_open(ctx) {
+            return !query_focused;
+        }
+        if let Some(shortcut) = ctx.input_mut(crate::diff_find::consume_shortcut) {
+            diff.find.refresh(&diff.lines);
+            match shortcut {
+                crate::diff_find::Shortcut::Reload => super::diff_dialog::reload_comparison(diff),
+                crate::diff_find::Shortcut::GoToLine => {
+                    ctx.memory_mut(|m| m.request_focus(crate::diff_goto::input_id()))
+                }
+                crate::diff_find::Shortcut::Focus => {
+                    ctx.memory_mut(|m| m.request_focus(crate::diff_find::query_id()))
+                }
+                crate::diff_find::Shortcut::Next => {
+                    diff.find.pending_reveal = diff.find.step(false)
+                }
+                crate::diff_find::Shortcut::Previous => {
+                    diff.find.pending_reveal = diff.find.step(true)
+                }
+            }
+            return true;
+        }
+        // Text editing retains arrows, Home/End, Enter, Tab and Escape.
+        if query_focused {
+            return false;
+        }
+        if ctx.input_mut(crate::diff_navigation::consume_swap_shortcut) {
+            super::diff_dialog::swap_sides(diff);
+            return true;
+        }
         let mut exit = false;
+        let mut navigate = None;
         let command = ctx.input_mut(|input| {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
                 || input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
@@ -442,12 +577,25 @@ impl App {
                 exit = true;
                 return None;
             }
+            navigate = crate::diff_navigation::consume_shortcut(input);
+            if navigate.is_some() {
+                return None;
+            }
             consume_scroll_command(input, egui::Modifiers::NONE, true)
         });
         if exit {
             diff.keyboard_focused = false;
+        } else if let Some(step) = navigate {
+            diff.navigation.go(step);
+            diff.find.focused = false;
+            diff.jump.selected = None;
         } else if let Some(command) = command {
-            diff.scroll_offset = apply_scroll_command(diff.scroll_offset, command, 396.0);
+            diff.scroll_offset = apply_scroll_command(
+                diff.scroll_offset,
+                command,
+                ctx.data(|data| data.get_temp::<f32>(egui::Id::new("diff-viewport-height")))
+                    .unwrap_or(396.0),
+            );
         }
         true
     }
@@ -1037,5 +1185,81 @@ mod tests {
         }
         let modal = EscapeRoute::Modal(ModalSurface::Palette);
         assert_eq!(escape_route_under_menu(modal, true), modal);
+    }
+}
+
+#[cfg(test)]
+mod miller_key_tests {
+    use super::*;
+    #[test]
+    fn miller_arrows_navigate_directories_only_and_preserve_modified_keys() {
+        let root = crate::testutil::TempDir::new();
+        root.dir("child");
+        root.file("file.txt", "data");
+        let mut panel = crate::panel::PanelState::new(root.path().into());
+        panel.refresh();
+        panel.set_browser_mode(crate::panel::BrowserMode::Miller);
+        let route = |panel: &crate::panel::PanelState, key, modifiers| {
+            let ctx = egui::Context::default();
+            let mut result = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::ModifiersChanged(modifiers),
+                        egui::Event::Key {
+                            key,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| {
+                    result =
+                        Some(ui.input_mut(|i| {
+                            (consume_miller_navigation(i, panel), i.key_pressed(key))
+                        }));
+                },
+            ));
+            result.unwrap()
+        };
+        panel.focus_child("child".into());
+        assert_eq!(
+            route(&panel, egui::Key::ArrowRight, egui::Modifiers::NONE),
+            (Some(Command::Activate), false)
+        );
+        assert_eq!(
+            route(&panel, egui::Key::ArrowLeft, egui::Modifiers::NONE),
+            (Some(Command::GoUp), false)
+        );
+        panel.focus_child("file.txt".into());
+        assert_eq!(
+            route(&panel, egui::Key::ArrowRight, egui::Modifiers::NONE),
+            (None, false)
+        );
+        panel.set_cursor(0);
+        assert_eq!(
+            route(&panel, egui::Key::ArrowRight, egui::Modifiers::NONE),
+            (None, false)
+        );
+        for modifiers in [
+            egui::Modifiers::SHIFT,
+            egui::Modifiers::ALT,
+            egui::Modifiers::COMMAND,
+        ] {
+            assert_eq!(route(&panel, egui::Key::ArrowLeft, modifiers), (None, true));
+        }
+        for mode in [
+            crate::panel::BrowserMode::List,
+            crate::panel::BrowserMode::Icons,
+        ] {
+            panel.set_browser_mode(mode);
+            assert_eq!(
+                route(&panel, egui::Key::ArrowLeft, egui::Modifiers::NONE),
+                (None, true)
+            );
+        }
     }
 }

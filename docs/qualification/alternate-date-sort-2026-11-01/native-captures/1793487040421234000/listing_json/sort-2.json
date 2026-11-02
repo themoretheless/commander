@@ -1,0 +1,80 @@
+{
+  "config": {
+    "case_sensitive_name_sort": false,
+    "density": "Comfortable",
+    "folders_by_name": false,
+    "folders_first": true,
+    "mode": "List",
+    "natural_name_sort": true,
+    "show_hidden": false,
+    "sort_col": "Allocated",
+    "sort_order": "Asc"
+  },
+  "cursor": "sparse.bin",
+  "entries": [
+    {
+      "allocated": null,
+      "folder": true,
+      "logical": 0,
+      "name": "Design",
+      "symlink": false
+    },
+    {
+      "allocated": 0,
+      "folder": false,
+      "logical": 0,
+      "name": "empty.bin",
+      "symlink": false
+    },
+    {
+      "allocated": 0,
+      "folder": false,
+      "logical": 8388608,
+      "name": "sparse.bin",
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 24,
+      "name": "notes.md",
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 34,
+      "name": "photo.png",
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 10,
+      "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "symlink": false
+    },
+    {
+      "allocated": 4096,
+      "folder": false,
+      "logical": 28,
+      "name": "README.txt",
+      "symlink": false
+    },
+    {
+      "allocated": 8192,
+      "folder": false,
+      "logical": 8192,
+      "name": "dense.bin",
+      "symlink": false
+    },
+    {
+      "allocated": null,
+      "folder": false,
+      "logical": 8388608,
+      "name": "zz-link.bin",
+      "symlink": true
+    }
+  ],
+  "phase": 17
+}

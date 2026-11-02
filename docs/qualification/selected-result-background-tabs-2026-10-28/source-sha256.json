@@ -1,0 +1,7 @@
+{
+  "src/workspace/tabs.rs": "1efb8824f6534073ed9dfa30df005a5ff40371dcc464dd622ecaae0ade1b9936",
+  "src/app/find_dialog.rs": "8ae060fe9641abc32a2a1fbd19afc5270b84f2a93b78a7c88ae1d3862bcbda32",
+  "src/visual_qa.rs": "67460eff1520b29c8a1390890c0c5f609d2f7462b8e14208ce2e81aae61c8636",
+  "README.md": "5524339649bf66f1d6476b8233d6c9ac48f3d4fc111b7842e4e2a100a436f5fa",
+  "target/debug/commander": "0bf4779a403358d02a7dbab5809e3fad6ca27e03d744349248d1a83d7084cdc7"
+}

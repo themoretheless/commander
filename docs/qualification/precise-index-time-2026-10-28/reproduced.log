@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.34s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 1 test
+test search::tests::precise_indexed_modification_times_match_live_search ... FAILED
+
+failures:
+
+---- search::tests::precise_indexed_modification_times_match_live_search stdout ----
+
+thread 'search::tests::precise_indexed_modification_times_match_live_search' (85588997) panicked at src/search.rs:2282:21:
+assertion `left == right` failed: true: Exact: after:2026-01-01T00:00:00.25Z before:2026-01-01T00:00:00.75Z
+  left: []
+ right: ["fractional.txt"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    search::tests::precise_indexed_modification_times_match_live_search
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2523 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--bin commander`

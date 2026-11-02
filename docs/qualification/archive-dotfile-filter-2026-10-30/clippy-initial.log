@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+    --> src/visual_qa.rs:3243:9
+     |
+3243 | /         if self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 3 {
+3244 | |             if self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+3245 | |                 state.listing.is_some()
+3246 | |                     && state.member_filter.order.field == crate::archive_order::Field::Size
+...    |
+3266 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+3243 ~         if self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 3
+3244 ~             && self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
+3245 |                 state.listing.is_some()
+ ...
+3264 |                 self.archive_copy_phase += 1;
+3265 ~             }
+     |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

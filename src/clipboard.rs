@@ -41,7 +41,7 @@ pub const fn style_label(style: PathStyle) -> &'static str {
 /// folder yield that folder once.
 pub fn format(paths: &[PathBuf], style: PathStyle, other_root: Option<&Path>) -> String {
     let mut lines: Vec<String> = Vec::with_capacity(paths.len());
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for p in paths {
         let line = format_one(p, style, other_root);
         let line = match style {
@@ -49,7 +49,7 @@ pub fn format(paths: &[PathBuf], style: PathStyle, other_root: Option<&Path>) ->
             PathStyle::ShellEscaped | PathStyle::FileUrl => line,
             _ => one_line(line),
         };
-        if style == PathStyle::ParentPath && !seen.insert(line.clone()) {
+        if style == PathStyle::ParentPath && !seen.insert(p.parent().unwrap_or(p).to_path_buf()) {
             continue;
         }
         lines.push(line);
@@ -155,6 +155,18 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn parent_deduplication_uses_native_paths_before_control_escaping() {
+        let paths = [
+            PathBuf::from("/x/line\\nname/a"),
+            PathBuf::from("/x/line\nname/b"),
+        ];
+        assert_eq!(
+            format(&paths, PathStyle::ParentPath, None),
+            "/x/line\\nname\n/x/line\\nname"
+        );
     }
 
     #[test]

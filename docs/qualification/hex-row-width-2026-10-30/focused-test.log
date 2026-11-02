@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.58s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 2 tests
+test hex_preview::tests::row_width_pointer_preset_and_copy_use_loaded_snapshot_without_work ... ok
+test hex_preview::tests::row_width_layout_roundtrips_every_byte_and_exact_offset_for_all_widths ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2814 filtered out; finished in 0.21s
+

@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.49s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 7 tests
+test archive_check::tests::source_replacement_during_check_is_rejected_even_with_valid_old_bytes ... ok
+test archive_check::tests::tar_header_and_truncated_payload_fail_but_payload_checksums_are_not_invented ... ok
+test archive_check::tests::asynchronous_check_completes_and_dropping_a_run_sets_only_its_cancel_flag ... ok
+test archive_check::tests::zip_binary_crc_reads_are_complete_and_bad_payload_is_rejected ... FAILED
+test archive_check::tests::all_tar_codecs_read_binary_members_without_modifying_sources ... ok
+test archive_check::tests::budget_fences_count_limits_and_cancellation_never_return_complete ... ok
+test archive_check::tests::compressed_trailers_and_later_frames_are_not_ignored ... ok
+
+failures:
+
+---- archive_check::tests::zip_binary_crc_reads_are_complete_and_bad_payload_is_rejected stdout ----
+
+thread 'archive_check::tests::zip_binary_crc_reads_are_complete_and_bad_payload_is_rejected' (20945958) panicked at src/archive_check.rs:328:9:
+assertion failed: check(&path, &|| false, &progress).unwrap_err().contains("CRC")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    archive_check::tests::zip_binary_crc_reads_are_complete_and_bad_payload_is_rejected
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 2739 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

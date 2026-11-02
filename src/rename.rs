@@ -96,6 +96,27 @@ impl ReplaceTarget {
     }
 }
 
+/// Scope of positional removal/insertion, independent of find/replace scope.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum CharacterTarget {
+    #[default]
+    Stem,
+    Extension,
+    WholeName,
+}
+impl CharacterTarget {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Stem => "Name stem",
+            Self::Extension => "Extension",
+            Self::WholeName => "Whole name",
+        }
+    }
+    fn is_stem(&self) -> bool {
+        *self == Self::Stem
+    }
+}
+
 /// Place the counter around the decorated stem, or replace that stem entirely.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum NumberPosition {
@@ -117,8 +138,55 @@ impl NumberPosition {
     }
 }
 
+/// Rendering of the signed ordinal; letter modes use a bijective Latin alphabet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum NumberFormat {
+    #[default]
+    Decimal,
+    LowerLetters,
+    UpperLetters,
+}
+impl NumberFormat {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Decimal => "Decimal",
+            Self::LowerLetters => "a, b, …",
+            Self::UpperLetters => "A, B, …",
+        }
+    }
+    fn is_decimal(&self) -> bool {
+        *self == Self::Decimal
+    }
+    fn render(self, value: i128, pad: usize) -> String {
+        if self == Self::Decimal {
+            return format!("{value:0width$}", width = pad);
+        }
+        if value == 0 {
+            return "0".into();
+        }
+        let mut magnitude = value.unsigned_abs();
+        let base = if self == Self::UpperLetters {
+            b'A'
+        } else {
+            b'a'
+        };
+        let mut letters = Vec::new();
+        while magnitude != 0 {
+            magnitude -= 1;
+            letters.push(base + (magnitude % 26) as u8);
+            magnitude /= 26;
+        }
+        if value < 0 {
+            letters.push(b'-');
+        }
+        letters.reverse();
+        // Every byte is an ASCII Latin letter or the sign.
+        letters.into_iter().map(char::from).collect()
+    }
+}
+
 /// Optional signed counter on each decorated stem, numbered by input order.
-/// Padding includes a possible minus sign; zero step repeats the same value.
+/// Decimal padding includes a possible minus sign; zero step repeats the same value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Numbering {
     pub start: i64,
@@ -126,12 +194,118 @@ pub struct Numbering {
     pub pad: usize,
 }
 
+pub const MAX_EXTRA_REPLACEMENTS: usize = 16;
+const MAX_EXTRA_REPLACEMENT_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct ReplacementPair {
+    pub find: String,
+    pub replace: String,
+}
+
+/// Either remove a positional range or retain only that range.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum RangeAction {
+    #[default]
+    Remove,
+    Keep,
+}
+impl RangeAction {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Remove => "Remove",
+            Self::Keep => "Keep",
+        }
+    }
+    fn is_remove(&self) -> bool {
+        *self == Self::Remove
+    }
+}
+
+/// Positional range of whole grapheme clusters in a transformed component.
+/// Offset counts clusters to skip from the chosen edge; action is stored in the rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RemoveRange {
+    pub offset: usize,
+    pub count: usize,
+    pub from_end: bool,
+}
+
+impl RemoveRange {
+    fn apply(self, stem: &str, action: RangeAction) -> String {
+        use unicode_segmentation::UnicodeSegmentation;
+        let len = stem.graphemes(true).count();
+        let (start, end) = if self.from_end {
+            let end = len.saturating_sub(self.offset);
+            (end.saturating_sub(self.count), end)
+        } else {
+            let start = self.offset.min(len);
+            (start, start.saturating_add(self.count).min(len))
+        };
+        stem.graphemes(true)
+            .enumerate()
+            .filter_map(|(index, part)| {
+                let selected = (start..end).contains(&index);
+                (selected == (action == RangeAction::Keep)).then_some(part)
+            })
+            .collect()
+    }
+}
+
+/// Insert at a grapheme boundary, optionally replacing as many following
+/// graphemes as the inserted text contains. From-end changes the anchor only.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct InsertText {
+    pub text: String,
+    pub offset: usize,
+    pub from_end: bool,
+    pub overwrite: bool,
+}
+
+impl InsertText {
+    fn apply(&self, stem: &str) -> String {
+        use unicode_segmentation::UnicodeSegmentation;
+        let len = stem.graphemes(true).count();
+        let start = if self.from_end {
+            len.saturating_sub(self.offset)
+        } else {
+            self.offset.min(len)
+        };
+        let end = if self.overwrite {
+            start
+                .saturating_add(self.text.graphemes(true).count())
+                .min(len)
+        } else {
+            start
+        };
+        let byte_at = |index| {
+            stem.grapheme_indices(true)
+                .nth(index)
+                .map_or(stem.len(), |(byte, _)| byte)
+        };
+        format!(
+            "{}{}{}",
+            &stem[..byte_at(start)],
+            self.text,
+            &stem[byte_at(end)..]
+        )
+    }
+}
+
 /// A composable rename rule. Operations apply in a fixed, documented order:
 /// find/replace over the chosen name component, then split off the extension, then
-/// independent stem/extension case, prefix, suffix, and the counter on the stem.
+/// removal and insertion on the stem, independent case, prefix/suffix and counter.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenameRule {
+    #[serde(skip_serializing_if = "CharacterTarget::is_stem")]
+    pub character_target: CharacterTarget,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_text: Option<InsertText>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remove_range: Option<RemoveRange>,
+    #[serde(skip_serializing_if = "RangeAction::is_remove")]
+    pub range_action: RangeAction,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub remove_prefix: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -140,6 +314,9 @@ pub struct RenameRule {
     /// In regex mode, `$1`/`${name}`-style capture-group references are
     /// expanded (see [`regex::Regex::replace_all`]).
     pub replace: String,
+    /// Additional sequential pairs, sharing the primary replacement options/target.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_replacements: Vec<ReplacementPair>,
     /// Treat `find` as a regular expression instead of a literal substring.
     pub regex: bool,
     /// Case-insensitive matching uses the regex engine's Unicode simple folding.
@@ -168,6 +345,8 @@ pub struct RenameRule {
     #[serde(skip_serializing_if = "ExtensionCase::is_keep")]
     pub extension_case: ExtensionCase,
     pub numbering: Option<Numbering>,
+    #[serde(skip_serializing_if = "NumberFormat::is_decimal")]
+    pub number_format: NumberFormat,
     #[serde(skip_serializing_if = "NumberPosition::is_after")]
     pub number_position: NumberPosition,
 }
@@ -176,31 +355,62 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
-fn compile_find(rule: &RenameRule) -> Result<Option<regex::Regex>, regex::Error> {
-    if rule.find.is_empty() || !(rule.regex || rule.ignore_case) {
+fn compile_pattern(value: &str, rule: &RenameRule) -> Result<Option<regex::Regex>, String> {
+    if value.is_empty() || !(rule.regex || rule.ignore_case) {
         return Ok(None);
     }
     let pattern = if rule.regex {
-        std::borrow::Cow::Borrowed(rule.find.as_str())
+        std::borrow::Cow::Borrowed(value)
     } else {
-        std::borrow::Cow::Owned(regex::escape(&rule.find))
+        std::borrow::Cow::Owned(regex::escape(value))
     };
     regex::RegexBuilder::new(&pattern)
         .case_insensitive(rule.ignore_case)
         .build()
         .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn compile_find(rule: &RenameRule) -> Result<Vec<Option<regex::Regex>>, String> {
+    if rule.extra_replacements.len() > MAX_EXTRA_REPLACEMENTS {
+        return Err("At most 16 additional replacements are allowed".into());
+    }
+    let bytes = rule.extra_replacements.iter().fold(0usize, |bytes, pair| {
+        bytes
+            .saturating_add(pair.find.len())
+            .saturating_add(pair.replace.len())
+    });
+    if bytes > MAX_EXTRA_REPLACEMENT_BYTES {
+        return Err("Additional replacement text exceeds 64 KiB".into());
+    }
+    let mut compiled = vec![compile_pattern(&rule.find, rule)?];
+    for (index, pair) in rule.extra_replacements.iter().enumerate() {
+        if pair.find.is_empty() {
+            return Err(format!(
+                "Additional replacement {} needs a Find value",
+                index + 1
+            ));
+        }
+        compiled.push(
+            compile_pattern(&pair.find, rule)
+                .map_err(|error| format!("Additional replacement {}: {error}", index + 1))?,
+        );
+    }
+    Ok(compiled)
 }
 
 /// Compiler errors for regex or escaped case-insensitive literal matching.
 /// Invalid patterns remain no-ops in the pure planner; callers gate application
 /// on this error channel before any filesystem mutation.
 pub fn regex_error(rule: &RenameRule) -> Option<String> {
-    compile_find(rule).err().map(|error| error.to_string())
+    compile_find(rule).err()
 }
 
 /// Outcome of planning one entry.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlanStatus {
+    /// A chained replacement exceeded the bounded intermediate output size.
+    ExpansionLimit,
     /// Valid and different from the source name.
     Ok,
     /// The result equals the source name (nothing to do).
@@ -253,56 +463,192 @@ fn capitalize(text: &str) -> String {
     }
 }
 
-/// Compute the proposed new name for a single entry at position `index`.
-/// `compiled` is the pre-compiled pattern for regex mode (`None` when not in
-/// regex/ignore-case mode, or when compilation failed — see [`regex_error`]).
+const MAX_REPLACEMENT_OUTPUT_BYTES: usize = 64 * 1024;
+
+fn bounded_replace(
+    part: &str,
+    find: &str,
+    replacement: &str,
+    matcher: Option<&regex::Regex>,
+    rule: &RenameRule,
+) -> Result<String, ()> {
+    let mut output = String::new();
+    let append = |output: &mut String, value: &str| -> Result<(), ()> {
+        if value.len() > MAX_REPLACEMENT_OUTPUT_BYTES.saturating_sub(output.len()) {
+            return Err(());
+        }
+        output.push_str(value);
+        Ok(())
+    };
+    if find.is_empty() {
+        append(&mut output, part)?;
+        return Ok(output);
+    }
+    let mut last = 0;
+    if rule.regex || rule.ignore_case {
+        let Some(regex) = matcher else {
+            append(&mut output, part)?;
+            return Ok(output);
+        };
+        for captures in regex.captures_iter(part) {
+            let found = captures.get(0).ok_or(())?;
+            append(&mut output, &part[last..found.start()])?;
+            if rule.regex {
+                // Reuse the regex engine's exact $name/${name}/$$ grammar.
+                // Literal replacement text is bounded at compile time; capture
+                // appends are checked before allocation, avoiding expanding bombs.
+                if replacement.len() > MAX_REPLACEMENT_OUTPUT_BYTES {
+                    return Err(());
+                }
+                let mut expanded = String::new();
+                let mut overflow = false;
+                regex_automata::util::interpolate::string(
+                    replacement,
+                    |index, dst| {
+                        if let Some(capture) = captures.get(index) {
+                            if capture.len()
+                                > MAX_REPLACEMENT_OUTPUT_BYTES.saturating_sub(dst.len())
+                            {
+                                overflow = true;
+                            } else {
+                                dst.push_str(capture.as_str());
+                            }
+                        }
+                    },
+                    |name| {
+                        regex
+                            .capture_names()
+                            .position(|candidate| candidate == Some(name))
+                    },
+                    &mut expanded,
+                );
+                if overflow {
+                    return Err(());
+                }
+                append(&mut output, &expanded)?;
+            } else {
+                append(&mut output, replacement)?;
+            }
+            last = found.end();
+            if rule.first_only {
+                break;
+            }
+        }
+    } else {
+        for (start, _) in part.match_indices(find) {
+            append(&mut output, &part[last..start])?;
+            append(&mut output, replacement)?;
+            last = start + find.len();
+            if rule.first_only {
+                break;
+            }
+        }
+    }
+    append(&mut output, &part[last..])?;
+    Ok(output)
+}
+
+#[cfg(test)]
 fn rename_one(
     name: &str,
     is_dir: bool,
     index: usize,
     rule: &RenameRule,
-    compiled: Option<&regex::Regex>,
+    compiled: Option<&[Option<regex::Regex>]>,
 ) -> String {
+    rename_one_checked(name, is_dir, index, rule, compiled).unwrap_or_default()
+}
+
+/// Compute the proposed new name for a single entry at position `index`.
+/// `compiled` is the pre-compiled pattern for regex mode (`None` when not in
+/// regex/ignore-case mode, or when compilation failed — see [`regex_error`]).
+fn rename_one_checked(
+    name: &str,
+    is_dir: bool,
+    index: usize,
+    rule: &RenameRule,
+    compiled: Option<&[Option<regex::Regex>]>,
+) -> Result<String, ()> {
     let name = name.strip_prefix(&rule.remove_prefix).unwrap_or(name);
     let name = name.strip_suffix(&rule.remove_suffix).unwrap_or(name);
-    let replace = |part: &str| {
-        if rule.find.is_empty() {
-            part.to_string()
-        } else if rule.regex || rule.ignore_case {
-            compiled.map_or_else(
-                || part.to_string(),
-                |regex| {
-                    if rule.regex {
-                        if rule.first_only {
-                            regex.replace(part, rule.replace.as_str()).into_owned()
+    let replace_part =
+        |part: &str, find: &str, replacement: &str, matcher: Option<&regex::Regex>| {
+            if find.is_empty() {
+                part.to_string()
+            } else if rule.regex || rule.ignore_case {
+                matcher.map_or_else(
+                    || part.to_string(),
+                    |regex| {
+                        if rule.regex {
+                            if rule.first_only {
+                                regex.replace(part, replacement).into_owned()
+                            } else {
+                                regex.replace_all(part, replacement).into_owned()
+                            }
                         } else {
-                            regex.replace_all(part, rule.replace.as_str()).into_owned()
+                            // Literal replacement never expands $1/${name}, even when
+                            // the escaped matcher uses Unicode case-insensitive search.
+                            if rule.first_only {
+                                regex
+                                    .replace(part, regex::NoExpand(replacement))
+                                    .into_owned()
+                            } else {
+                                regex
+                                    .replace_all(part, regex::NoExpand(replacement))
+                                    .into_owned()
+                            }
                         }
-                    } else {
-                        // Literal replacement never expands $1/${name}, even when
-                        // the escaped matcher uses Unicode case-insensitive search.
-                        if rule.first_only {
-                            regex
-                                .replace(part, regex::NoExpand(&rule.replace))
-                                .into_owned()
-                        } else {
-                            regex
-                                .replace_all(part, regex::NoExpand(&rule.replace))
-                                .into_owned()
-                        }
-                    }
-                },
-            )
-        } else if rule.first_only {
-            part.replacen(&rule.find, &rule.replace, 1)
-        } else {
-            part.replace(&rule.find, &rule.replace)
+                    },
+                )
+            } else if rule.first_only {
+                part.replacen(find, replacement, 1)
+            } else {
+                part.replace(find, replacement)
+            }
+        };
+    let replace = |part: &str| -> Result<String, ()> {
+        if !rule.extra_replacements.is_empty() {
+            let mut result = bounded_replace(
+                part,
+                &rule.find,
+                &rule.replace,
+                compiled
+                    .and_then(|patterns| patterns.first())
+                    .and_then(Option::as_ref),
+                rule,
+            )?;
+            for (index, pair) in rule
+                .extra_replacements
+                .iter()
+                .take(MAX_EXTRA_REPLACEMENTS)
+                .enumerate()
+            {
+                result = bounded_replace(
+                    &result,
+                    &pair.find,
+                    &pair.replace,
+                    compiled
+                        .and_then(|patterns| patterns.get(index + 1))
+                        .and_then(Option::as_ref),
+                    rule,
+                )?;
+            }
+            return Ok(result);
         }
+        let result = replace_part(
+            part,
+            &rule.find,
+            &rule.replace,
+            compiled
+                .and_then(|patterns| patterns.first())
+                .and_then(Option::as_ref),
+        );
+        Ok(result)
     };
     let original_parts = || if is_dir { (name, "") } else { split_ext(name) };
     let (stem, ext) = match rule.replace_target {
         ReplaceTarget::WholeName => {
-            let replaced = replace(name);
+            let replaced = replace(name)?;
             let (stem, ext) = if is_dir {
                 (replaced.as_str(), "")
             } else {
@@ -312,7 +658,7 @@ fn rename_one(
         }
         ReplaceTarget::Stem => {
             let (stem, ext) = original_parts();
-            (replace(stem), ext.to_string())
+            (replace(stem)?, ext.to_string())
         }
         ReplaceTarget::Extension => {
             let (stem, ext) = original_parts();
@@ -320,7 +666,7 @@ fn rename_one(
                 (stem.to_string(), ext.to_string())
             } else {
                 let raw = ext.strip_prefix('.').unwrap_or(ext);
-                let replaced = replace(raw);
+                let replaced = replace(raw)?;
                 let extension = if replaced == raw {
                     ext.to_string()
                 } else if replaced.is_empty() {
@@ -329,6 +675,47 @@ fn rename_one(
                     format!(".{replaced}")
                 };
                 (stem.to_string(), extension)
+            }
+        }
+    };
+    let edit = |value: String| {
+        let value = if let Some(range) = rule.remove_range {
+            range.apply(&value, rule.range_action)
+        } else {
+            value
+        };
+        if let Some(insert) = &rule.insert_text {
+            insert.apply(&value)
+        } else {
+            value
+        }
+    };
+    let (stem, ext) = if rule.remove_range.is_none() && rule.insert_text.is_none() {
+        (stem, ext)
+    } else {
+        match rule.character_target {
+            CharacterTarget::Stem => (edit(stem), ext),
+            CharacterTarget::Extension if is_dir => (stem, ext),
+            CharacterTarget::Extension => {
+                let raw = ext.strip_prefix('.').unwrap_or(&ext);
+                let edited = edit(raw.to_owned());
+                let ext = if edited == raw {
+                    ext
+                } else if edited.is_empty() {
+                    String::new()
+                } else {
+                    format!(".{edited}")
+                };
+                (stem, ext)
+            }
+            CharacterTarget::WholeName => {
+                let edited = edit(format!("{stem}{ext}"));
+                let (stem, ext) = if is_dir {
+                    (edited.as_str(), "")
+                } else {
+                    split_ext(&edited)
+                };
+                (stem.to_owned(), ext.to_owned())
             }
         }
     };
@@ -342,10 +729,11 @@ fn rename_one(
     if let Some(n) = rule.numbering {
         // Widen before arithmetic: all i64 values and usize indices fit this sum.
         let value = i128::from(n.start) + index as i128 * i128::from(n.step);
+        let counter = rule.number_format.render(value, n.pad);
         stem = match rule.number_position {
-            NumberPosition::CounterOnly => format!("{value:0width$}", width = n.pad),
-            NumberPosition::BeforeName => format!("{value:0width$}{stem}", width = n.pad),
-            NumberPosition::AfterName => format!("{stem}{value:0width$}", width = n.pad),
+            NumberPosition::CounterOnly => counter,
+            NumberPosition::BeforeName => format!("{counter}{stem}"),
+            NumberPosition::AfterName => format!("{stem}{counter}"),
         };
     }
     let name = format!("{stem}{ext}");
@@ -360,7 +748,7 @@ fn rename_one(
         name
     };
     let name = rule.normalization.apply(name);
-    if let Some(limit) = rule.stem_limit {
+    Ok(if let Some(limit) = rule.stem_limit {
         use unicode_segmentation::UnicodeSegmentation;
         let (stem, ext) = if is_dir {
             (name.as_str(), "")
@@ -371,7 +759,7 @@ fn rename_one(
         format!("{shortened}{ext}")
     } else {
         name
-    }
+    })
 }
 
 fn collapse_repeats(name: &str) -> String {
@@ -440,11 +828,23 @@ pub fn plan_batch_rename_with(
     let existing_lower: HashSet<String> = existing.iter().map(|name| folding.key(name)).collect();
 
     // Compiled once for the whole batch, not per name.
-    let compiled = compile_find(rule).ok().flatten();
+    let compiled = compile_find(rule).ok();
+    let mut exceeded = Vec::with_capacity(names.len());
     let targets: Vec<String> = names
         .iter()
         .enumerate()
-        .map(|(i, n)| rename_one(n, dirs.contains(n), i, rule, compiled.as_ref()))
+        .map(|(index, name)| {
+            match rename_one_checked(name, dirs.contains(name), index, rule, compiled.as_deref()) {
+                Ok(target) => {
+                    exceeded.push(false);
+                    target
+                }
+                Err(()) => {
+                    exceeded.push(true);
+                    name.clone()
+                }
+            }
+        })
         .collect();
 
     // How many targets share each lowercased name (intra-batch clashes).
@@ -456,9 +856,12 @@ pub fn plan_batch_rename_with(
     names
         .iter()
         .zip(targets.iter())
-        .map(|(from, to)| {
+        .zip(exceeded.iter())
+        .map(|((from, to), exceeded)| {
             let to_lower = folding.key(to);
-            let status = if !is_valid_name(to) {
+            let status = if *exceeded {
+                PlanStatus::ExpansionLimit
+            } else if !is_valid_name(to) {
                 PlanStatus::Invalid
             } else if to == from {
                 PlanStatus::Unchanged
@@ -483,9 +886,12 @@ pub fn plan_batch_rename_with(
 /// invalid or colliding rows.
 pub fn plan_is_applicable(plans: &[RenamePlan]) -> bool {
     let any_change = plans.iter().any(|p| p.status == PlanStatus::Ok);
-    let any_bad = plans
-        .iter()
-        .any(|p| matches!(p.status, PlanStatus::Invalid | PlanStatus::Collision));
+    let any_bad = plans.iter().any(|p| {
+        matches!(
+            p.status,
+            PlanStatus::ExpansionLimit | PlanStatus::Invalid | PlanStatus::Collision
+        )
+    });
     any_change && !any_bad
 }
 
@@ -508,6 +914,205 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn replacement_chain_is_ordered_and_composes_with_existing_transforms() {
+        let mut rule = RenameRule {
+            find: "old".into(),
+            replace: "tmp".into(),
+            extra_replacements: vec![
+                ReplacementPair {
+                    find: "tmp".into(),
+                    replace: "final".into(),
+                },
+                ReplacementPair {
+                    find: "-".into(),
+                    replace: "_".into(),
+                },
+            ],
+            replace_target: ReplaceTarget::Stem,
+            case: CaseMode::Upper,
+            extension_case: ExtensionCase::Lower,
+            prefix: "P-".into(),
+            suffix: "-S".into(),
+            numbering: Some(Numbering {
+                start: 1,
+                step: 1,
+                pad: 2,
+            }),
+            ..Default::default()
+        };
+        for (first_only, expected) in [
+            (false, "P-FINAL_FINAL-S01.txt"),
+            (true, "P-FINAL_OLD-S01.txt"),
+        ] {
+            rule.first_only = first_only;
+            let compiled = compile_find(&rule).unwrap();
+            assert_eq!(
+                rename_one("old-old.TXT", false, 0, &rule, Some(&compiled)),
+                expected
+            );
+        }
+        rule.first_only = false;
+        let compiled = compile_find(&rule).unwrap();
+        assert_eq!(
+            rename_one("old-old.TXT", true, 0, &rule, Some(&compiled)),
+            "P-FINAL_FINAL.TXT-S01"
+        );
+        assert_eq!(
+            serde_json::from_str::<RenameRule>(&serde_json::to_string(&rule).unwrap()).unwrap(),
+            rule
+        );
+        assert!(
+            !serde_json::to_value(RenameRule::default())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("extra_replacements")
+        );
+        assert_eq!(
+            serde_json::from_str::<RenameRule>("{}")
+                .unwrap()
+                .extra_replacements,
+            vec![]
+        );
+    }
+
+    #[test]
+    fn replacement_chain_preserves_regex_capture_and_literal_semantics() {
+        for (find, replacement, text) in [
+            (r"(?P<word>[a-z]+)", "${word}-$0-$$-${missing}", "ab.txt"),
+            (r"^|$", "x", "ab"),
+            (r"(a)?b", "$1:${1}x:$missing:$$", "b ab"),
+        ] {
+            let rule = RenameRule {
+                regex: true,
+                extra_replacements: vec![ReplacementPair {
+                    find: find.into(),
+                    replace: replacement.into(),
+                }],
+                ..Default::default()
+            };
+            let compiled = compile_find(&rule).unwrap();
+            let expected = regex::Regex::new(find)
+                .unwrap()
+                .replace_all(text, replacement)
+                .into_owned();
+            assert_eq!(rename_one(text, true, 0, &rule, Some(&compiled)), expected);
+        }
+        let rule = RenameRule {
+            ignore_case: true,
+            replace_target: ReplaceTarget::Stem,
+            extra_replacements: vec![
+                ReplacementPair {
+                    find: "a".into(),
+                    replace: "$1".into(),
+                },
+                ReplacementPair {
+                    find: "1".into(),
+                    replace: "Z".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let compiled = compile_find(&rule).unwrap();
+        assert_eq!(
+            rename_one("A-a.txt", false, 0, &rule, Some(&compiled)),
+            "$Z-$Z.txt"
+        );
+        for (target, expected) in [
+            (ReplaceTarget::WholeName, "y.y"),
+            (ReplaceTarget::Stem, "y.foo"),
+            (ReplaceTarget::Extension, "foo.y"),
+        ] {
+            let rule = RenameRule {
+                find: "foo".into(),
+                replace: "x".into(),
+                extra_replacements: vec![ReplacementPair {
+                    find: "x".into(),
+                    replace: "y".into(),
+                }],
+                replace_target: target,
+                ..Default::default()
+            };
+            let compiled = compile_find(&rule).unwrap();
+            assert_eq!(
+                rename_one("foo.foo", false, 0, &rule, Some(&compiled)),
+                expected
+            );
+            if target == ReplaceTarget::Extension {
+                assert_eq!(
+                    rename_one("foo.foo", true, 0, &rule, Some(&compiled)),
+                    "foo.foo"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_chain_limits_block_expansion_without_rejecting_bounded_shrinking() {
+        let mut rule = RenameRule {
+            regex: true,
+            replace_target: ReplaceTarget::Stem,
+            extra_replacements: vec![
+                ReplacementPair {
+                    find: ".+".into(),
+                    replace: "x".repeat(32768),
+                },
+                ReplacementPair {
+                    find: "(x+)".into(),
+                    replace: "$1$1".into(),
+                },
+                ReplacementPair {
+                    find: "x+".into(),
+                    replace: "ok".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let names = vec!["a.txt".into()];
+        let existing = names.iter().cloned().collect();
+        assert!(regex_error(&rule).is_none());
+        let plans = plan_batch_rename(&names, &existing, &rule, &HashSet::new());
+        assert_eq!(plans[0].to, "ok.txt");
+        assert!(plan_is_applicable(&plans));
+        rule.extra_replacements[1].replace = "${1}${1}x".into();
+        let plans = plan_batch_rename(&names, &existing, &rule, &HashSet::new());
+        assert_eq!(plans[0].status, PlanStatus::ExpansionLimit);
+        assert!(!plan_is_applicable(&plans));
+        let mut rule = RenameRule {
+            extra_replacements: vec![ReplacementPair::default()],
+            ..Default::default()
+        };
+        assert!(
+            regex_error(&rule)
+                .unwrap()
+                .contains("Additional replacement 1")
+        );
+        rule.extra_replacements = vec![
+            ReplacementPair {
+                find: "a".into(),
+                replace: "b".into()
+            };
+            17
+        ];
+        assert!(regex_error(&rule).is_some());
+        rule.extra_replacements = vec![ReplacementPair {
+            find: "a".into(),
+            replace: "b".repeat(65536),
+        }];
+        assert!(regex_error(&rule).is_some());
+        rule.extra_replacements = vec![ReplacementPair {
+            find: "[".into(),
+            replace: "b".into(),
+        }];
+        rule.regex = true;
+        assert!(
+            regex_error(&rule)
+                .unwrap()
+                .contains("Additional replacement 1")
+        );
     }
 
     #[test]
@@ -554,6 +1159,575 @@ mod tests {
             rename_one("Photo.JPG", false, 0, &rule, None),
             "_PHOTO_end.jpg"
         );
+    }
+
+    #[test]
+    fn keep_range_extracts_graphemes_from_either_edge_and_clamps() {
+        for (offset, count, from_end, input, expected) in [
+            (4, 8, false, "IMG_20261030_raw.jpg", "20261030.jpg"),
+            (4, 8, true, "IMG_20261030_raw.jpg", "20261030.jpg"),
+            (1, 2, false, "Ae\u{301}👩‍💻Z.txt", "e\u{301}👩‍💻.txt"),
+            (1, 2, true, "Ae\u{301}👩‍💻Z.txt", "e\u{301}👩‍💻.txt"),
+            (0, usize::MAX, false, "short.txt", "short.txt"),
+            (0, usize::MAX, true, "short.txt", "short.txt"),
+            (usize::MAX, 2, false, "short.txt", ".txt"),
+            (usize::MAX, 2, true, "short.txt", ".txt"),
+        ] {
+            let rule = RenameRule {
+                range_action: RangeAction::Keep,
+                remove_range: Some(RemoveRange {
+                    offset,
+                    count,
+                    from_end,
+                }),
+                ..Default::default()
+            };
+            assert_eq!(rename_one(input, false, 0, &rule, None), expected);
+        }
+        let rule = RenameRule {
+            range_action: RangeAction::Keep,
+            remove_range: Some(RemoveRange {
+                offset: 7,
+                count: 4,
+                from_end: false,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(rename_one("folder.name", true, 0, &rule, None), "name");
+    }
+
+    #[test]
+    fn keep_range_composes_with_scopes_replacement_insertion_and_case() {
+        let mut rule = RenameRule {
+            range_action: RangeAction::Keep,
+            character_target: CharacterTarget::Extension,
+            replace_target: ReplaceTarget::Extension,
+            find: "old".into(),
+            replace: "abcde".into(),
+            remove_range: Some(RemoveRange {
+                offset: 1,
+                count: 2,
+                from_end: false,
+            }),
+            insert_text: Some(InsertText {
+                text: "z".into(),
+                offset: 2,
+                from_end: false,
+                overwrite: false,
+            }),
+            extension_case: ExtensionCase::Upper,
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("report.old", false, 0, &rule, None),
+            "report.BCZ"
+        );
+        assert_eq!(rename_one("folder.old", true, 0, &rule, None), "folder.old");
+        rule.character_target = CharacterTarget::WholeName;
+        rule.find.clear();
+        rule.insert_text = None;
+        rule.extension_case = ExtensionCase::Keep;
+        assert_eq!(rename_one("report.txt", false, 0, &rule, None), "ep");
+    }
+
+    #[test]
+    fn keep_range_preserves_legacy_remove_and_validates_empty_or_duplicate_names() {
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.range_action, RangeAction::Remove);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("range_action")
+        );
+        let mut rule = RenameRule {
+            range_action: RangeAction::Keep,
+            remove_range: Some(RemoveRange {
+                offset: 1,
+                count: 3,
+                from_end: false,
+            }),
+            ..Default::default()
+        };
+        let plans = plan_files(
+            &["xfoo.txt".into(), "yfoo.txt".into()],
+            &HashSet::new(),
+            &rule,
+        );
+        assert!(
+            plans
+                .iter()
+                .all(|plan| plan.to == "foo.txt" && plan.status == PlanStatus::Collision)
+        );
+        rule.character_target = CharacterTarget::WholeName;
+        rule.remove_range.as_mut().unwrap().offset = 255;
+        assert_eq!(
+            plan_files(&["foo.txt".into()], &HashSet::new(), &rule)[0].status,
+            PlanStatus::Invalid
+        );
+    }
+
+    #[test]
+    fn letter_counter_boundaries_signs_and_padding_are_explicit() {
+        for (value, expected) in [
+            (0, "0"),
+            (1, "a"),
+            (26, "z"),
+            (27, "aa"),
+            (52, "az"),
+            (53, "ba"),
+            (702, "zz"),
+            (703, "aaa"),
+            (-1, "-a"),
+            (-27, "-aa"),
+        ] {
+            assert_eq!(NumberFormat::LowerLetters.render(value, 6), expected);
+            assert_eq!(
+                NumberFormat::UpperLetters.render(value, 0),
+                expected.to_uppercase()
+            );
+        }
+        assert_eq!(NumberFormat::Decimal.render(-7, 4), "-007");
+        for value in [i128::MIN, i128::MAX] {
+            let result = NumberFormat::LowerLetters.render(value, usize::MAX);
+            assert!(result.len() <= 29);
+            assert!(
+                result
+                    .trim_start_matches('-')
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase())
+            );
+            assert_eq!(result.starts_with('-'), value < 0);
+        }
+    }
+
+    #[test]
+    fn letter_numbering_composes_with_position_case_and_signed_steps() {
+        let mut rule = RenameRule {
+            number_format: NumberFormat::LowerLetters,
+            numbering: Some(Numbering {
+                start: 25,
+                step: 1,
+                pad: 6,
+            }),
+            number_position: NumberPosition::CounterOnly,
+            ..Default::default()
+        };
+        for (index, expected) in [(0, "y.txt"), (1, "z.txt"), (2, "aa.txt")] {
+            assert_eq!(rename_one("photo.txt", false, index, &rule, None), expected);
+        }
+        rule.numbering = Some(Numbering {
+            start: 1,
+            step: -1,
+            pad: 2,
+        });
+        for (index, expected) in [(0, "a.txt"), (1, "0.txt"), (2, "-a.txt")] {
+            assert_eq!(rename_one("photo.txt", false, index, &rule, None), expected);
+        }
+        rule.number_position = NumberPosition::BeforeName;
+        rule.prefix = "P-".into();
+        rule.suffix = "-S".into();
+        rule.case = CaseMode::Upper;
+        assert_eq!(
+            rename_one("photo.txt", false, 0, &rule, None),
+            "aP-PHOTO-S.txt"
+        );
+        rule.number_format = NumberFormat::UpperLetters;
+        rule.number_position = NumberPosition::AfterName;
+        assert_eq!(
+            rename_one("photo.txt", false, 0, &rule, None),
+            "P-PHOTO-SA.txt"
+        );
+    }
+
+    #[test]
+    fn letter_counters_keep_legacy_defaults_and_collision_guards() {
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.number_format, NumberFormat::Decimal);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("number_format")
+        );
+        let rule = RenameRule {
+            number_format: NumberFormat::LowerLetters,
+            numbering: Some(Numbering {
+                start: 1,
+                step: 0,
+                pad: 2,
+            }),
+            number_position: NumberPosition::CounterOnly,
+            ..Default::default()
+        };
+        let plans = plan_files(
+            &["one.txt".into(), "two.txt".into()],
+            &HashSet::new(),
+            &rule,
+        );
+        assert!(
+            plans
+                .iter()
+                .all(|plan| plan.to == "a.txt" && plan.status == PlanStatus::Collision)
+        );
+        assert!(!plan_is_applicable(&plans));
+        let wide = RenameRule {
+            numbering: Some(Numbering {
+                start: i64::MIN,
+                step: i64::MIN,
+                pad: 0,
+            }),
+            ..rule
+        };
+        let output = rename_one("photo.txt", false, usize::MAX, &wide, None);
+        assert!(output.starts_with('-') && output.ends_with(".txt") && output.len() < 40);
+    }
+
+    #[test]
+    fn character_edit_scopes_handle_extensions_folders_and_dotfiles() {
+        for (target, input, is_dir, expected) in [
+            (CharacterTarget::Stem, "report.txt", false, "_report.txt"),
+            (
+                CharacterTarget::Extension,
+                "report.txt",
+                false,
+                "report._txt",
+            ),
+            (
+                CharacterTarget::WholeName,
+                "report.txt",
+                false,
+                "_report.txt",
+            ),
+            (CharacterTarget::Extension, "report", false, "report._"),
+            (CharacterTarget::Extension, ".hidden", false, ".hidden._"),
+            (
+                CharacterTarget::Extension,
+                "folder.name",
+                true,
+                "folder.name",
+            ),
+            (
+                CharacterTarget::WholeName,
+                "folder.name",
+                true,
+                "_folder.name",
+            ),
+            (
+                CharacterTarget::Extension,
+                "archive.tar.gz",
+                false,
+                "archive.tar._gz",
+            ),
+        ] {
+            let rule = RenameRule {
+                character_target: target,
+                insert_text: Some(InsertText {
+                    text: "_".into(),
+                    offset: 0,
+                    from_end: false,
+                    overwrite: false,
+                }),
+                ..Default::default()
+            };
+            assert_eq!(rename_one(input, is_dir, 0, &rule, None), expected);
+        }
+        let no_op = RenameRule {
+            character_target: CharacterTarget::Extension,
+            insert_text: Some(InsertText {
+                text: String::new(),
+                offset: 0,
+                from_end: false,
+                overwrite: true,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(rename_one("report.", false, 0, &no_op, None), "report.");
+    }
+
+    #[test]
+    fn character_edits_compose_with_replacement_and_extension_case() {
+        let rule = RenameRule {
+            character_target: CharacterTarget::Extension,
+            replace_target: ReplaceTarget::Extension,
+            find: "old".into(),
+            replace: "txt".into(),
+            remove_range: Some(RemoveRange {
+                offset: 0,
+                count: 1,
+                from_end: false,
+            }),
+            insert_text: Some(InsertText {
+                text: "p".into(),
+                offset: 0,
+                from_end: false,
+                overwrite: false,
+            }),
+            extension_case: ExtensionCase::Upper,
+            case: CaseMode::Lower,
+            prefix: "P-".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("Report.old", false, 0, &rule, None),
+            "P-report.PXT"
+        );
+        let whole = RenameRule {
+            character_target: CharacterTarget::WholeName,
+            remove_range: Some(RemoveRange {
+                offset: 6,
+                count: 1,
+                from_end: false,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("report.txt", false, 0, &whole, None),
+            "reporttxt"
+        );
+        let unicode = RenameRule {
+            character_target: CharacterTarget::Extension,
+            remove_range: Some(RemoveRange {
+                offset: 0,
+                count: 1,
+                from_end: false,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("name.e\u{301}👩‍💻", false, 0, &unicode, None),
+            "name.👩‍💻"
+        );
+    }
+
+    #[test]
+    fn character_scope_defaults_and_validation_preserve_existing_guards() {
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.character_target, CharacterTarget::Stem);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("character_target")
+        );
+        let mut rule = RenameRule {
+            character_target: CharacterTarget::Extension,
+            remove_range: Some(RemoveRange {
+                offset: 0,
+                count: 255,
+                from_end: false,
+            }),
+            ..Default::default()
+        };
+        let plans = plan_files(&["a.txt".into(), "a.md".into()], &HashSet::new(), &rule);
+        assert!(
+            plans
+                .iter()
+                .all(|plan| plan.to == "a" && plan.status == PlanStatus::Collision)
+        );
+        rule.character_target = CharacterTarget::WholeName;
+        assert_eq!(
+            plan_files(&["foo.txt".into()], &HashSet::new(), &rule)[0].status,
+            PlanStatus::Invalid
+        );
+    }
+
+    #[test]
+    fn insertion_and_overwrite_use_whole_graphemes_and_clamp_anchors() {
+        for (offset, from_end, overwrite, text, input, expected) in [
+            (2, false, false, "X", "abcdef.txt", "abXcdef.txt"),
+            (2, true, false, "X", "abcdef.txt", "abcdXef.txt"),
+            (1, false, true, "文", "Ae\u{301}👩‍💻Z.jpg", "A文👩‍💻Z.jpg"),
+            (2, true, true, "👨‍👩‍👧", "Ae\u{301}👩‍💻Z.jpg", "Ae\u{301}👨‍👩‍👧Z.jpg"),
+            (usize::MAX, false, false, "X", "a.txt", "aX.txt"),
+            (usize::MAX, true, true, "YZ", "a.txt", "YZ.txt"),
+            (1, false, true, "LONG", "ab.txt", "aLONG.txt"),
+            (0, false, true, "", "a.txt", "a.txt"),
+            (0, false, false, "$1", ".hidden", "$1.hidden"),
+            (0, true, false, "_", "archive.tar.gz", "archive.tar_.gz"),
+        ] {
+            let rule = RenameRule {
+                insert_text: Some(InsertText {
+                    offset,
+                    from_end,
+                    overwrite,
+                    text: text.into(),
+                }),
+                ..Default::default()
+            };
+            assert_eq!(rename_one(input, false, 0, &rule, None), expected);
+        }
+        let rule = RenameRule {
+            insert_text: Some(InsertText {
+                offset: 0,
+                from_end: true,
+                overwrite: false,
+                text: "_".into(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("folder.name", true, 0, &rule, None),
+            "folder.name_"
+        );
+    }
+
+    #[test]
+    fn insertion_composes_after_removal_before_case_and_decoration() {
+        let rule = RenameRule {
+            remove_range: Some(RemoveRange {
+                offset: 1,
+                count: 2,
+                from_end: false,
+            }),
+            insert_text: Some(InsertText {
+                text: "z".into(),
+                offset: 1,
+                from_end: false,
+                overwrite: false,
+            }),
+            find: "old".into(),
+            replace: "abcde".into(),
+            case: CaseMode::Upper,
+            prefix: "P-".into(),
+            suffix: "-S".into(),
+            numbering: Some(Numbering {
+                start: 7,
+                step: 1,
+                pad: 2,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("old.txt", false, 0, &rule, None),
+            "P-AZDE-S07.txt"
+        );
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(legacy.insert_text.is_none());
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("insert_text")
+        );
+    }
+
+    #[test]
+    fn inserted_invalid_names_and_overwrite_collisions_are_blocked() {
+        let mut rule = RenameRule {
+            insert_text: Some(InsertText {
+                text: "z".into(),
+                offset: 0,
+                from_end: false,
+                overwrite: true,
+            }),
+            ..Default::default()
+        };
+        let inputs = ["xfoo.txt".into(), "yfoo.txt".into()];
+        let plans = plan_files(&inputs, &HashSet::new(), &rule);
+        assert!(
+            plans
+                .iter()
+                .all(|plan| plan.status == PlanStatus::Collision)
+        );
+        assert!(!plan_is_applicable(&plans));
+        rule.insert_text.as_mut().unwrap().text = "/".into();
+        assert!(
+            plan_files(&inputs, &HashSet::new(), &rule)
+                .iter()
+                .all(|plan| plan.status == PlanStatus::Invalid)
+        );
+        rule.insert_text.as_mut().unwrap().text = "a".repeat(256);
+        assert!(
+            plan_files(&inputs, &HashSet::new(), &rule)
+                .iter()
+                .all(|plan| plan.status == PlanStatus::Invalid)
+        );
+    }
+
+    #[test]
+    fn remove_ranges_keep_graphemes_extensions_and_clamp_from_both_edges() {
+        for (offset, count, from_end, input, expected) in [
+            (1, 2, false, "abcdef.txt", "adef.txt"),
+            (1, 2, true, "abcdef.txt", "abcf.txt"),
+            (1, 1, false, "Ae\u{301}👩‍💻Z.jpg", "A👩‍💻Z.jpg"),
+            (1, 1, true, "Ae\u{301}👩‍💻Z.jpg", "Ae\u{301}Z.jpg"),
+            (99, usize::MAX, false, "short.txt", "short.txt"),
+            (99, usize::MAX, true, "short.txt", "short.txt"),
+            (1, usize::MAX, false, "abc.txt", "a.txt"),
+            (1, usize::MAX, true, "abc.txt", "c.txt"),
+            (0, 1, false, ".hidden", "hidden"),
+            (0, 2, true, "archive.tar.gz", "archive.t.gz"),
+        ] {
+            let rule = RenameRule {
+                remove_range: Some(RemoveRange {
+                    offset,
+                    count,
+                    from_end,
+                }),
+                ..Default::default()
+            };
+            assert_eq!(rename_one(input, false, 0, &rule, None), expected);
+        }
+        let rule = RenameRule {
+            remove_range: Some(RemoveRange {
+                offset: 1,
+                count: 2,
+                from_end: true,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(rename_one("folder.name", true, 0, &rule, None), "folder.ne");
+    }
+
+    #[test]
+    fn remove_range_composes_after_replacements_before_decoration_and_numbering() {
+        let rule = RenameRule {
+            remove_range: Some(RemoveRange {
+                offset: 1,
+                count: 2,
+                from_end: false,
+            }),
+            find: "old".into(),
+            replace: "abcde".into(),
+            case: CaseMode::Upper,
+            prefix: "P-".into(),
+            suffix: "-S".into(),
+            numbering: Some(Numbering {
+                start: 7,
+                step: 1,
+                pad: 2,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            rename_one("old.txt", false, 0, &rule, None),
+            "P-ADE-S07.txt"
+        );
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(legacy.remove_range.is_none());
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("remove_range")
+        );
+    }
+
+    #[test]
+    fn remove_range_reports_empty_and_duplicate_results() {
+        let rule = RenameRule {
+            remove_range: Some(RemoveRange {
+                offset: 0,
+                count: 1,
+                from_end: false,
+            }),
+            ..Default::default()
+        };
+        let plans = plan_files(
+            &["a".into(), "xfoo.txt".into(), "yfoo.txt".into()],
+            &HashSet::new(),
+            &rule,
+        );
+        assert_eq!(plans[0].status, PlanStatus::Invalid);
+        assert_eq!(plans[1].status, PlanStatus::Collision);
+        assert_eq!(plans[2].status, PlanStatus::Collision);
+        assert!(!plan_is_applicable(&plans));
     }
 
     #[test]

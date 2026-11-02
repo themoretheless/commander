@@ -1,0 +1,7 @@
+{
+  "src/app/mod.rs": "88ef62e2f35c36cd2b534dfcb4b3ac143e6f9a7a0ebdef2e971248fd219ec16b",
+  "src/app/find_dialog.rs": "aef413d2b209840a738a05f0a52a100733721eb2cbfc8dac2c381d754fe5bb95",
+  "src/visual_qa.rs": "62bd2f9a061dd6446e5a45c6e19b0af25f5eb0917e9b5f553fba7a56743b7e94",
+  "README.md": "cb7085a56917e17895aed75057978e91f229b607f279292f29d42c760f9806da",
+  "target/debug/commander": "57f560b0297ad05e2a37937f5fa99367984326c5cb5d8ed6a5cf580c52780dec"
+}

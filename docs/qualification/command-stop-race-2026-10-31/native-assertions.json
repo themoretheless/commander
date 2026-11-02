@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "checks": 16,
+  "normal_invocations": 2,
+  "normal_output_reconstructed": true,
+  "recording_clipboard_writes": 3,
+  "stress_before_failures": 2,
+  "stress_after_failures": 0,
+  "stress_after_attempts": 256,
+  "binary_matches_launch": true
+}

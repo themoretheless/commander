@@ -1,0 +1,6 @@
+{
+  "scenario": "duplicate_depth",
+  "out": "/tmp/commander-native-duplicate_depth-1793431117041864000",
+  "binary_sha256": "7f3293dfb10275567fbeff3d233b81c4a663b17d93106f409fb78b41ced6580e",
+  "core_sha256": "7f3293dfb10275567fbeff3d233b81c4a663b17d93106f409fb78b41ced6580e"
+}

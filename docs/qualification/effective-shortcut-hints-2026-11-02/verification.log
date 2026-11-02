@@ -1,0 +1,1 @@
+PASS: six gates; 3244 tests; native effective-hint/search stages 16/16 and previous Apply/sequence/modal-isolation control 14/14; independently expected hint payloads, shadow removal and result ordering; source/binary/tool hashes. Dependency audit remains open with unchanged graph/policy.

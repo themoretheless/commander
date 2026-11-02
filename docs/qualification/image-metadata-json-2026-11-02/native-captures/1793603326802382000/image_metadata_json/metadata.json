@@ -1,0 +1,112 @@
+{
+  "format": "commander.image-metadata",
+  "note": null,
+  "properties": [
+    {
+      "display_value": "JPEG",
+      "name": "Format"
+    },
+    {
+      "display_value": "4 × 3 pixels",
+      "name": "Header dimensions"
+    },
+    {
+      "display_value": "\"Commander QA\"",
+      "name": "Camera maker"
+    },
+    {
+      "display_value": "\"Fixture Camera\"",
+      "name": "Camera model"
+    },
+    {
+      "display_value": "\"QA 50mm\"",
+      "name": "Lens"
+    },
+    {
+      "display_value": "\"QA Photographer\"",
+      "name": "Artist"
+    },
+    {
+      "display_value": "\"QA rights reserved\"",
+      "name": "Copyright"
+    },
+    {
+      "display_value": "\"Commander QA encoder\"",
+      "name": "Software"
+    },
+    {
+      "display_value": "2026-11-02 12:34:56",
+      "name": "Taken"
+    },
+    {
+      "display_value": "\"+05:30\"",
+      "name": "Taken UTC offset"
+    },
+    {
+      "display_value": "\"250\"",
+      "name": "Taken subsecond digits"
+    },
+    {
+      "display_value": "aperture priority",
+      "name": "Exposure program"
+    },
+    {
+      "display_value": "pattern",
+      "name": "Metering mode"
+    },
+    {
+      "display_value": "1/125 s",
+      "name": "Exposure"
+    },
+    {
+      "display_value": "f/2.8",
+      "name": "Aperture"
+    },
+    {
+      "display_value": "200",
+      "name": "ISO"
+    },
+    {
+      "display_value": "50 mm",
+      "name": "Focal length"
+    },
+    {
+      "display_value": "row 0 at right and column 0 at top",
+      "name": "Orientation"
+    },
+    {
+      "display_value": "4 pixels",
+      "name": "Pixel width"
+    },
+    {
+      "display_value": "3 pixels",
+      "name": "Pixel height"
+    },
+    {
+      "display_value": "41 deg 43 min 0 sec N",
+      "name": "GPS latitude"
+    },
+    {
+      "display_value": "44 deg 47 min 0 sec E",
+      "name": "GPS longitude"
+    },
+    {
+      "display_value": "450 meters above sea level",
+      "name": "GPS altitude"
+    }
+  ],
+  "read_limit_bytes": 2097152,
+  "snapshot": "retained inspector display values",
+  "source": {
+    "changed_unix_ns": "1793603331643085681",
+    "device_id": 16777230,
+    "file_id": 257553204,
+    "modified_unix_ns": "1793603331643085681",
+    "path": {
+      "encoding": "utf8",
+      "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3547-image_metadata_json/left/photo-exif.jpg"
+    },
+    "size_bytes": 1313
+  },
+  "version": 1
+}

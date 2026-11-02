@@ -1,0 +1,4 @@
+MD5 checksum list
+Verified 4 of 4 records: 3 match, 0 mismatch, 1 failed
+Visible records: 1 of 4 completed; status=Problems; query=""
+ERROR ./verify-missing.txt expected=900150983cd24fb0d6963f7d28e17f72 actual=- (No such file or directory (os error 2))

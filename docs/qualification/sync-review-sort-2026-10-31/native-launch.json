@@ -1,0 +1,6 @@
+{
+  "scenario": "sync_review",
+  "out": "/tmp/commander-native-sync-sort-1793421758012946000",
+  "binary_sha256": "99dd281419edbc3f75cbfedf2658e6426fce591aa0c4f8f7ed40340d1e7b1cca",
+  "core_sha256": "99dd281419edbc3f75cbfedf2658e6426fce591aa0c4f8f7ed40340d1e7b1cca"
+}

@@ -1,0 +1,12 @@
+{
+  "src/diff_context.rs": "6d407db1ad27e988eb974bbcac2dfbcfd6bb8ba0d4a6730fa32103ba4011f783",
+  "src/diff_navigation.rs": "8d2868272954ccfb52b670cf6a0a36460f637760e2ea3a051d744cc42887f017",
+  "src/app/diff_dialog.rs": "780c1fb75ff7fd00bfe4f791c821cc8e174f4af61cf8230a77204c8cc0254d25",
+  "src/app/keys.rs": "bc6780e65f3345f7e065994a8ea8e9c2effff2ad940893b6d244bc522c41d0e4",
+  "src/app/mod.rs": "32be6cb73be0c45b3131cf3b2bd47b81473d4d6fbeaa0956c22d760cd789ea85",
+  "src/app/update.rs": "8c6591e6416e52c48ab199fcaa47f04c6052a31d10f448c022134ee8ee57747a",
+  "src/app/ui_state.rs": "8b052b1960edd34b141900582ebfac908d80033799fba84a56782320a819001f",
+  "src/main.rs": "a486f2d3d2b92ad360806d1e7ac841cd4ce49e8729e187f4d6ebe90ad4da7c93",
+  "src/visual_qa.rs": "1b7429c665fa9ff74b945c6d23b8f8093b14c19be93bf7fbeadc258be79e6919",
+  ".github/workflows/ci.yml": "1fa2de2481c6c80c8459b3ac8a156d803272b530d23913ea4532145fcab307d3"
+}

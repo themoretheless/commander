@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const MAX_TABS: usize = 8;
-const MAX_CLOSED_TABS: usize = 8;
+pub const MAX_CLOSED_TABS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedTab {
@@ -22,8 +22,21 @@ pub struct SavedTab {
         deserialize_with = "deserialize_protection"
     )]
     pub close_protected: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        deserialize_with = "deserialize_protection"
+    )]
+    pub full_path_label: bool,
     #[serde(default)]
     pub view: ViewConfig,
+    #[serde(default, skip_serializing_if = "crate::panel::MillerWidths::is_empty")]
+    pub miller_widths: crate::panel::MillerWidths,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::selection_snapshot::Snapshot::is_none"
+    )]
+    pub selection_snapshot: crate::selection_snapshot::Snapshot,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -57,18 +70,54 @@ fn deserialize_title<'de, D: serde::Deserializer<'de>>(
 }
 
 impl SavedTab {
+    pub fn display_title(&self) -> std::borrow::Cow<'_, str> {
+        if self.full_path_label {
+            self.path.to_string_lossy()
+        } else if let Some(title) = &self.title {
+            std::borrow::Cow::Borrowed(title)
+        } else {
+            self.path
+                .file_name()
+                .unwrap_or(self.path.as_os_str())
+                .to_string_lossy()
+        }
+    }
+
+    fn from_panel(panel: &PanelState) -> Self {
+        Self {
+            path: panel.current_path.clone(),
+            title: panel.tab_title.clone(),
+            close_protected: panel.tab_close_protected,
+            full_path_label: panel.tab_full_path_label,
+            view: panel.view_config(),
+            miller_widths: panel.miller_width_snapshot(),
+            selection_snapshot: panel.tab_selection.clone(),
+        }
+    }
+
     fn panel(&self) -> PanelState {
         let mut panel = PanelState::new_with_view(self.path.clone(), self.view);
+        panel.restore_miller_widths(self.miller_widths.clone());
+        panel.tab_selection = self.selection_snapshot.clone();
         panel.tab_title = self.title.as_deref().and_then(clean_title);
         panel.tab_close_protected = self.close_protected;
+        panel.tab_full_path_label = self.full_path_label;
         panel
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SavedClosedTab {
+    pub tab: SavedTab,
+    pub position: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SavedTabs {
     pub entries: Vec<SavedTab>,
     pub active: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub closed: Vec<SavedClosedTab>,
 }
 
 impl<'de> Deserialize<'de> for SavedTabs {
@@ -94,6 +143,27 @@ impl<'de> Deserialize<'de> for SavedTabs {
                     saved.entries.push(tab);
                 }
             }
+        }
+        if let Some(rows) = value.get("closed").and_then(|v| v.as_array()) {
+            // Recent valid entries win, without inspecting paths on disk.
+            for row in rows.iter().rev().take(256) {
+                if saved.closed.len() == MAX_CLOSED_TABS {
+                    break;
+                }
+                if let Some(tab) = row
+                    .get("tab")
+                    .and_then(|v| serde_json::from_value::<SavedTab>(v.clone()).ok())
+                    && tab.path.is_absolute()
+                {
+                    let position = row
+                        .get("position")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        .min(MAX_TABS as u64) as usize;
+                    saved.closed.push(SavedClosedTab { tab, position });
+                }
+            }
+            saved.closed.reverse();
         }
         Ok(saved)
     }
@@ -206,19 +276,31 @@ impl PaneTabs {
                 .slots
                 .iter()
                 .map(|slot| slot.as_ref().unwrap_or(visible))
-                .map(|panel| SavedTab {
-                    path: panel.current_path.clone(),
-                    title: panel.tab_title.clone(),
-                    close_protected: panel.tab_close_protected,
-                    view: panel.view_config(),
-                })
+                .map(SavedTab::from_panel)
                 .collect(),
             active: self.active,
+            closed: self
+                .closed
+                .iter()
+                .skip(self.closed.len().saturating_sub(MAX_CLOSED_TABS))
+                .map(|closed| SavedClosedTab {
+                    tab: SavedTab::from_panel(&closed.panel),
+                    position: closed.position,
+                })
+                .collect(),
         }
     }
 
     fn restore(&mut self, saved: &SavedTabs) {
-        self.closed.clear();
+        self.closed = saved
+            .closed
+            .iter()
+            .skip(saved.closed.len().saturating_sub(MAX_CLOSED_TABS))
+            .map(|closed| ClosedTab {
+                panel: closed.tab.panel(),
+                position: closed.position.min(MAX_TABS),
+            })
+            .collect();
         if saved.entries.is_empty() {
             return;
         }
@@ -241,6 +323,39 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn apply_profile_tab_layout(
+        &mut self,
+        layout: &crate::workspace_profile::TabLayout,
+    ) -> Result<(), String> {
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            if self
+                .tab_snapshot(side)
+                .entries
+                .iter()
+                .any(|tab| tab.close_protected)
+            {
+                return Err("Unprotect current tabs before replacing the tab set".into());
+            }
+        }
+        let mut left = layout.left.clone();
+        let mut right = layout.right.clone();
+        left.closed = self.tab_snapshot(ActivePanel::Left).closed;
+        right.closed = self.tab_snapshot(ActivePanel::Right).closed;
+        let new_left = left.entries[left.active].panel();
+        let new_right = right.entries[right.active].panel();
+        self.tabs[0].restore(&left);
+        self.tabs[1].restore(&right);
+        self.left = new_left;
+        self.right = new_right;
+        self.active = if layout.active == 0 {
+            ActivePanel::Left
+        } else {
+            ActivePanel::Right
+        };
+        self.reset_tab_presentation();
+        Ok(())
+    }
+
     pub fn tab_snapshot(&self, side: ActivePanel) -> SavedTabs {
         match side {
             ActivePanel::Left => self.tabs[0].saved(&self.left),
@@ -260,6 +375,27 @@ impl Workspace {
             return false;
         }
         panel.tab_title = title;
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        *self.command_capabilities.borrow_mut() = None;
+        true
+    }
+
+    /// Change a pointed tab's label style without activating or rescanning it.
+    pub fn set_tab_full_path_label(
+        &mut self,
+        side: ActivePanel,
+        index: usize,
+        full_path: bool,
+    ) -> bool {
+        if !self.tabs_can_change() || index >= self.tab_count(side) {
+            return false;
+        }
+        let (tabs, visible) = self.tabs_and_panel(side);
+        let panel = tabs.slots[index].as_mut().unwrap_or(visible);
+        if panel.tab_full_path_label == full_path {
+            return false;
+        }
+        panel.tab_full_path_label = full_path;
         self.tab_revision = self.tab_revision.wrapping_add(1);
         *self.command_capabilities.borrow_mut() = None;
         true
@@ -303,6 +439,14 @@ impl Workspace {
             if saved.entries.is_empty() {
                 continue;
             }
+            if let Some(tab) = saved
+                .entries
+                .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
+                .filter(|tab| tab.path == panel.current_path)
+            {
+                panel.restore_miller_widths(tab.miller_widths.clone());
+                panel.tab_selection = tab.selection_snapshot.clone();
+            }
             panel.tab_title = saved
                 .entries
                 .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
@@ -313,6 +457,10 @@ impl Workspace {
                 .entries
                 .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
                 .is_some_and(|tab| tab.path == panel.current_path && tab.close_protected);
+            panel.tab_full_path_label = saved
+                .entries
+                .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
+                .is_some_and(|tab| tab.path == panel.current_path && tab.full_path_label);
         }
     }
 
@@ -346,6 +494,47 @@ impl Workspace {
         true
     }
 
+    /// Open an existing favorite without consulting or modifying the cursor selection.
+    /// Uses the same pending-operation/modal gate and capacity owner as normal tabs.
+    pub fn open_favorite(&mut self, path: &std::path::Path, target: super::FavoriteTarget) -> bool {
+        self.open_favorite_at(self.active, path, target)
+    }
+    /// Bind a picker action to the panel that opened it, even if active focus changed.
+    pub fn open_favorite_at(
+        &mut self,
+        source: ActivePanel,
+        path: &std::path::Path,
+        target: super::FavoriteTarget,
+    ) -> bool {
+        if !self.tabs_can_change() || !path.is_absolute() || !self.bookmarks.contains(path) {
+            return false;
+        }
+        match target {
+            super::FavoriteTarget::NewTab => self.new_tab(source, Some(path.to_path_buf())),
+            super::FavoriteTarget::BackgroundTab => {
+                self.new_background_tab(source, path.to_path_buf())
+            }
+            super::FavoriteTarget::CurrentPanel | super::FavoriteTarget::OtherPanel => {
+                let destination = if target == super::FavoriteTarget::CurrentPanel {
+                    source
+                } else {
+                    source.other()
+                };
+                let (_, panel) = self.tabs_and_panel(destination);
+                if panel.current_path != path {
+                    panel.preview = None;
+                    panel.navigate_to(path.to_path_buf());
+                    self.tab_revision = self.tab_revision.wrapping_add(1);
+                    self.preview_declined = None;
+                    self.left.drag.clear();
+                    self.right.drag.clear();
+                    *self.command_capabilities.borrow_mut() = None;
+                }
+                true
+            }
+        }
+    }
+
     pub fn new_tab(&mut self, side: ActivePanel, path: Option<PathBuf>) -> bool {
         if !self.tabs_can_change() || self.tab_count(side) >= MAX_TABS {
             return false;
@@ -362,11 +551,77 @@ impl Workspace {
 
     /// Insert beside the current tab, leaving its listing, watcher and preview live.
     pub fn new_background_tab(&mut self, side: ActivePanel, path: PathBuf) -> bool {
+        self.insert_background_tab(side, path, None)
+    }
+
+    /// Reveal a target in a lazy background tab without moving the live pane.
+    pub fn reveal_in_background_tab(&mut self, side: ActivePanel, target: PathBuf) -> bool {
+        let Some(parent) = target.parent().map(std::path::Path::to_path_buf) else {
+            return false;
+        };
+        let Some(name) = target
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            return false;
+        };
+        self.insert_background_tab(side, parent, Some(name))
+    }
+
+    /// Open an entire result group, preserving order and rejecting it before mutation
+    /// if any target is invalid, an operation blocks tab changes, or capacity is short.
+    pub fn reveal_in_background_tabs(&mut self, side: ActivePanel, targets: Vec<PathBuf>) -> bool {
+        if targets.is_empty()
+            || !self.tabs_can_change()
+            || targets.len() > MAX_TABS.saturating_sub(self.tab_count(side))
+        {
+            return false;
+        }
+        let (tabs, visible) = self.tabs_and_panel(side);
+        let prepared: Option<Vec<_>> = targets
+            .into_iter()
+            .map(|target| {
+                let parent = target.parent()?.to_path_buf();
+                let name = target.file_name()?.to_string_lossy().into_owned();
+                let config = if name.starts_with('.') {
+                    visible.view_config().with_show_hidden(true)
+                } else {
+                    visible.view_config()
+                };
+                let mut panel = PanelState::new_with_view(parent, config);
+                panel.queue_initial_focus_child(name);
+                Some(Some(panel))
+            })
+            .collect();
+        let Some(prepared) = prepared else {
+            return false;
+        };
+        let index = tabs.active + 1;
+        tabs.slots.splice(index..index, prepared);
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        *self.command_capabilities.borrow_mut() = None;
+        true
+    }
+
+    fn insert_background_tab(
+        &mut self,
+        side: ActivePanel,
+        path: PathBuf,
+        focus: Option<String>,
+    ) -> bool {
         if !self.tabs_can_change() || self.tab_count(side) >= MAX_TABS {
             return false;
         }
         let (tabs, visible) = self.tabs_and_panel(side);
-        let next = PanelState::new_with_view(path, visible.view_config());
+        let config = if focus.as_ref().is_some_and(|name| name.starts_with('.')) {
+            visible.view_config().with_show_hidden(true)
+        } else {
+            visible.view_config()
+        };
+        let mut next = PanelState::new_with_view(path, config);
+        if let Some(name) = focus {
+            next.queue_initial_focus_child(name);
+        }
         tabs.slots.insert(tabs.active + 1, Some(next));
         self.tab_revision = self.tab_revision.wrapping_add(1);
         *self.command_capabilities.borrow_mut() = None;
@@ -585,13 +840,37 @@ impl Workspace {
             .len()
     }
 
-    /// Oldest first, bounded to eight runtime-only panels per pane.
+    /// Oldest first, bounded to eight panels per pane; presentation persists in the session.
+    #[cfg(any(test, feature = "visual-qa"))]
     pub fn closed_tab_paths(&self, side: ActivePanel) -> Vec<PathBuf> {
         self.tabs[if side == ActivePanel::Left { 0 } else { 1 }]
             .closed
             .iter()
             .map(|closed| closed.panel.current_path.clone())
             .collect()
+    }
+
+    /// Forget presentation history only; never switch panes or disturb live previews.
+    pub fn forget_closed_tab_at(&mut self, side: ActivePanel, index: usize) -> bool {
+        if !self.tabs_can_change() || index >= self.closed_tab_count(side) {
+            return false;
+        }
+        self.tabs[if side == ActivePanel::Left { 0 } else { 1 }]
+            .closed
+            .remove(index);
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        true
+    }
+
+    pub fn clear_closed_tabs(&mut self, side: ActivePanel) -> bool {
+        if !self.tabs_can_change() || self.closed_tab_count(side) == 0 {
+            return false;
+        }
+        self.tabs[if side == ActivePanel::Left { 0 } else { 1 }]
+            .closed
+            .clear();
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        true
     }
 
     pub fn reopen_closed_tab(&mut self, side: ActivePanel) -> bool {
@@ -708,6 +987,213 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    #[test]
+    fn favorite_picker_binding_uses_its_opening_panel_and_revalidates_removed_paths() {
+        use crate::workspace::FavoriteTarget;
+        let temp = TempDir::new();
+        let favorite = temp.dir("favorite");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.bookmarks.add("Pinned", favorite.clone());
+        ws.active = ActivePanel::Right;
+        assert!(ws.open_favorite_at(ActivePanel::Left, &favorite, FavoriteTarget::CurrentPanel));
+        assert_eq!(ws.left.current_path, favorite);
+        assert_eq!(ws.right.current_path, temp.path());
+        assert_eq!(ws.active, ActivePanel::Right);
+        assert!(ws.open_favorite_at(ActivePanel::Left, &favorite, FavoriteTarget::BackgroundTab));
+        assert_eq!(ws.tab_count(ActivePanel::Left), 2);
+        assert_eq!(ws.tab_count(ActivePanel::Right), 1);
+        ws.bookmarks.remove(&favorite);
+        let before = [
+            ws.tab_snapshot(ActivePanel::Left),
+            ws.tab_snapshot(ActivePanel::Right),
+        ];
+        assert!(!ws.open_favorite_at(ActivePanel::Left, &favorite, FavoriteTarget::NewTab));
+        assert_eq!(
+            [
+                ws.tab_snapshot(ActivePanel::Left),
+                ws.tab_snapshot(ActivePanel::Right)
+            ],
+            before
+        );
+    }
+
+    #[test]
+    fn favorite_destinations_preserve_source_state_and_bookmarks_for_both_active_sides() {
+        use crate::workspace::FavoriteTarget;
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            let temp = TempDir::new();
+            let source = temp.dir("source");
+            let other = temp.dir("other");
+            let favorite = temp.dir("favorite");
+            let mut ws = Workspace::new(source.clone(), other.clone());
+            ws.active = side;
+            ws.bookmarks.add("Pinned", favorite.clone());
+            ws.bookmarks.assign_slot(&favorite, 3);
+            let original = ws.bookmarks.clone();
+            let source_path = ws.active_panel_ref().current_path.clone();
+            ws.active_panel().set_search_query("keep-filter");
+            let preview = crate::panel::PreviewContent::Image(temp.path().join("preview.png"));
+            ws.active_panel().preview = Some(preview.clone());
+            assert!(ws.open_favorite(&favorite, FavoriteTarget::BackgroundTab));
+            assert_eq!(ws.active_panel_ref().current_path, source_path);
+            assert_eq!(ws.active_tab_index(side), 0);
+            assert_eq!(ws.tab_count(side), 2);
+            assert_eq!(ws.active_panel_ref().search_query(), "keep-filter");
+            assert_eq!(ws.tab_snapshot(side).entries[1].path, favorite);
+            assert_eq!(ws.active_panel_ref().preview, Some(preview.clone()));
+            assert!(ws.open_favorite(&favorite, FavoriteTarget::OtherPanel));
+            assert_eq!(ws.active_panel_ref().current_path, source_path);
+            assert_eq!(ws.active_panel_ref().search_query(), "keep-filter");
+            assert_eq!(ws.inactive_panel().current_path, favorite);
+            assert_eq!(ws.active_panel_ref().preview, Some(preview));
+            assert_eq!(ws.active, side);
+            assert!(ws.open_favorite(&favorite, FavoriteTarget::NewTab));
+            assert_eq!(ws.active_tab_index(side), 1);
+            assert_eq!(ws.tab_count(side), 3);
+            assert_eq!(ws.active_panel_ref().current_path, favorite);
+            assert!(ws.select_tab(side, 0));
+            assert_eq!(ws.active_panel_ref().current_path, source_path);
+            assert_eq!(ws.active_panel_ref().search_query(), "keep-filter");
+            assert_eq!(ws.bookmarks, original);
+        }
+    }
+
+    #[test]
+    fn favorite_open_rejects_unknown_paths_modal_and_capacity_without_partial_changes() {
+        use crate::workspace::FavoriteTarget;
+        let temp = TempDir::new();
+        let favorite = temp.dir("favorite");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.bookmarks.add("Pinned", favorite.clone());
+        for target in [
+            FavoriteTarget::OtherPanel,
+            FavoriteTarget::NewTab,
+            FavoriteTarget::BackgroundTab,
+        ] {
+            assert!(!ws.open_favorite(&temp.path().join("unknown"), target));
+            ws.emit_ui_request(crate::ui_request::UiRequest::Rename(favorite.clone()));
+            let before = [
+                ws.tab_snapshot(ActivePanel::Left),
+                ws.tab_snapshot(ActivePanel::Right),
+            ];
+            assert!(!ws.open_favorite(&favorite, target));
+            assert_eq!(
+                [
+                    ws.tab_snapshot(ActivePanel::Left),
+                    ws.tab_snapshot(ActivePanel::Right)
+                ],
+                before
+            );
+            ws.drain_ui_requests();
+        }
+        for _ in 1..MAX_TABS {
+            assert!(ws.new_background_tab(ActivePanel::Left, favorite.clone()));
+        }
+        let before = [
+            ws.tab_snapshot(ActivePanel::Left),
+            ws.tab_snapshot(ActivePanel::Right),
+        ];
+        assert!(!ws.open_favorite(&favorite, FavoriteTarget::NewTab));
+        assert!(!ws.open_favorite(&favorite, FavoriteTarget::BackgroundTab));
+        assert_eq!(
+            [
+                ws.tab_snapshot(ActivePanel::Left),
+                ws.tab_snapshot(ActivePanel::Right)
+            ],
+            before
+        );
+        assert!(ws.open_favorite(&favorite, FavoriteTarget::OtherPanel));
+        assert_eq!(ws.tab_count(ActivePanel::Left), MAX_TABS);
+    }
+
+    #[test]
+    fn full_path_labels_preserve_inactive_tab_state_and_custom_titles() {
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            let temp = TempDir::new();
+            let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+            ws.new_tab(side, Some(temp.dir("work")));
+            ws.active = side;
+            ws.active_panel().set_search_query("retained");
+            ws.set_tab_title(side, 0, "Project");
+            let before = ws.tab_snapshot(side);
+            let other = ws.tab_snapshot(side.other());
+            let revision = ws.tab_revision();
+            let generation = ws.active_panel_ref().entries_gen();
+            assert!(ws.set_tab_full_path_label(side, 0, true));
+            let after = ws.tab_snapshot(side);
+            assert_eq!(after.active, before.active);
+            assert_eq!(
+                after.entries[0].display_title(),
+                temp.path().to_string_lossy()
+            );
+            assert_eq!(after.entries[0].title.as_deref(), Some("Project"));
+            assert_eq!(ws.active, side);
+            assert_eq!(ws.active_panel_ref().search_query(), "retained");
+            assert_eq!(ws.active_panel_ref().entries_gen(), generation);
+            assert_eq!(ws.tab_snapshot(side.other()), other);
+            assert_eq!(ws.closed_tab_count(side), 0);
+            assert!(ws.tab_revision() > revision);
+            let revision = ws.tab_revision();
+            assert!(!ws.set_tab_full_path_label(side, 0, true));
+            assert!(!ws.set_tab_full_path_label(side, usize::MAX, true));
+            assert_eq!(ws.tab_revision(), revision);
+            assert!(ws.set_tab_full_path_label(side, 0, false));
+            assert_eq!(ws.tab_snapshot(side), before);
+            assert_eq!(ws.tab_snapshot(side).entries[0].display_title(), "Project");
+            ws.emit_ui_request(crate::ui_request::UiRequest::Rename(
+                temp.file("modal.txt", "x"),
+            ));
+            let revision = ws.tab_revision();
+            assert!(!ws.set_tab_full_path_label(side, 0, true));
+            assert_eq!(ws.tab_revision(), revision);
+        }
+    }
+
+    #[test]
+    fn full_path_label_restore_does_not_leak_to_overridden_visible_paths() {
+        let temp = TempDir::new();
+        let original = temp.dir("original");
+        let replacement = temp.dir("replacement");
+        let mut source = Workspace::new(original.clone(), original);
+        source.set_tab_full_path_label(ActivePanel::Left, 0, true);
+        source.set_tab_full_path_label(ActivePanel::Right, 0, true);
+        let left = source.tab_snapshot(ActivePanel::Left);
+        let right = source.tab_snapshot(ActivePanel::Right);
+        let mut restored = Workspace::new(replacement.clone(), replacement);
+        restored.restore_tabs(&left, &right);
+        assert!(!restored.tab_snapshot(ActivePanel::Left).entries[0].full_path_label);
+        assert!(!restored.tab_snapshot(ActivePanel::Right).entries[0].full_path_label);
+    }
+
+    #[test]
+    fn full_path_label_metadata_defaults_and_malformed_fields_keep_tabs() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!("yes"),
+            serde_json::json!(1),
+            serde_json::json!({}),
+        ] {
+            let saved: SavedTabs = serde_json::from_value(serde_json::json!({"entries":[{"path":"/a","title":"Project","full_path_label":value}],"active":0})).unwrap();
+            assert_eq!(saved.entries.len(), 1);
+            assert!(!saved.entries[0].full_path_label);
+            assert_eq!(saved.entries[0].display_title(), "Project");
+        }
+        let legacy: SavedTabs =
+            serde_json::from_str(r#"{"entries":[{"path":"/a"}],"active":0}"#).unwrap();
+        assert!(!legacy.entries[0].full_path_label);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("full_path_label")
+        );
+        let mut saved = legacy;
+        saved.entries[0].full_path_label = true;
+        assert_eq!(
+            serde_json::from_str::<SavedTabs>(&serde_json::to_string(&saved).unwrap()).unwrap(),
+            saved
+        );
+    }
+
     #[test]
     fn duplicate_priority_keeps_named_or_protected_runtime_state_and_recovers_closed_tabs() {
         for side in [ActivePanel::Left, ActivePanel::Right] {
@@ -889,6 +1375,7 @@ mod tests {
             ws.new_tab(side, Some(a.clone()));
             let focus = ws.active;
             assert!(ws.set_tab_title(side, 0, "  Проект  "));
+            assert!(ws.set_tab_full_path_label(side, 0, true));
             assert_eq!(ws.active, focus);
             assert_eq!(ws.active_tab_index(side), 1);
             assert_eq!(
@@ -904,7 +1391,9 @@ mod tests {
                 ws.tab_snapshot(side).entries[1].title.as_deref(),
                 Some("Проект")
             );
+            assert!(ws.tab_snapshot(side).entries[1].full_path_label);
             assert!(ws.copy_tabs_to_other(side));
+            assert!(ws.tab_snapshot(side.other()).entries[1].full_path_label);
             assert_eq!(
                 ws.tab_snapshot(side.other()).entries[1].title.as_deref(),
                 Some("Проект")
@@ -923,6 +1412,11 @@ mod tests {
                 ws.tab_snapshot(side.other()).entries[1].title.as_deref(),
                 Some("Проект")
             );
+            assert!(ws.tab_snapshot(side.other()).entries[1].full_path_label);
+            assert_eq!(
+                ws.tab_snapshot(side.other()).entries[1].display_title(),
+                nested.to_string_lossy()
+            );
             assert_eq!(ws.tab_snapshot(side.other()).entries[1].path, nested);
             assert!(ws.close_tab_at(side.other(), 1));
             assert!(ws.reopen_closed_tab(side.other()));
@@ -930,6 +1424,7 @@ mod tests {
                 ws.tab_snapshot(side.other()).entries[1].title.as_deref(),
                 Some("Проект")
             );
+            assert!(ws.tab_snapshot(side.other()).entries[1].full_path_label);
             let left = ws.tab_snapshot(ActivePanel::Left);
             let right = ws.tab_snapshot(ActivePanel::Right);
             let left: SavedTabs =
@@ -945,6 +1440,12 @@ mod tests {
             assert_eq!(restored.tab_snapshot(ActivePanel::Right), right);
             assert!(restored.set_tab_title(side.other(), 1, ""));
             assert_eq!(restored.tab_snapshot(side.other()).entries[1].title, None);
+            assert!(restored.tab_snapshot(side.other()).entries[1].full_path_label);
+            assert!(restored.set_tab_full_path_label(side.other(), 1, false));
+            assert_eq!(
+                restored.tab_snapshot(side.other()).entries[1].display_title(),
+                "nested"
+            );
             assert_eq!(restored.tab_snapshot(side.other()).entries[1].path, nested);
         }
     }
@@ -997,6 +1498,9 @@ mod tests {
                                 path: path.clone(),
                                 title: None,
                                 close_protected: false,
+                                full_path_label: false,
+                                miller_widths: Default::default(),
+                                selection_snapshot: Default::default(),
                                 view: ViewConfig::default().with_mode(if index % 2 == 0 {
                                     crate::panel::BrowserMode::Icons
                                 } else {
@@ -1005,6 +1509,7 @@ mod tests {
                             })
                             .collect(),
                         active: source_count - 1,
+                        closed: Vec::new(),
                     };
                     let target_saved = SavedTabs {
                         entries: paths[..destination_count]
@@ -1013,10 +1518,14 @@ mod tests {
                                 path: path.clone(),
                                 title: None,
                                 close_protected: false,
+                                full_path_label: false,
+                                miller_widths: Default::default(),
+                                selection_snapshot: Default::default(),
                                 view: ViewConfig::default(),
                             })
                             .collect(),
                         active: destination_count / 2,
+                        closed: Vec::new(),
                     };
                     let mut ws = Workspace::new(paths[0].clone(), paths[0].clone());
                     if source == ActivePanel::Left {
@@ -1136,6 +1645,150 @@ mod tests {
         );
         assert!(ws.select_tab(ActivePanel::Left, 0));
         assert!(ws.left.is_selected(&root.path().join("selected.txt")));
+    }
+
+    #[test]
+    fn background_result_group_preserves_order_lazy_focus_and_rejects_partial_opening() {
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            let temp = TempDir::new();
+            let keep = temp.file("keep.txt", "keep");
+            let first = temp.file("one/a.txt", "a");
+            let second = temp.file("two/.hidden.txt", "b");
+            let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+            ws.left.refresh();
+            ws.right.refresh();
+            ws.left.toggle_select(keep.clone());
+            ws.right.toggle_select(keep.clone());
+            let active = ws.active;
+            let revision = ws.tab_revision;
+            assert!(!ws.reveal_in_background_tabs(side, vec![first.clone(), PathBuf::from("/")]));
+            assert_eq!(ws.tab_revision, revision);
+            assert_eq!(ws.tab_count(side), 1);
+            assert!(!ws.reveal_in_background_tabs(side, vec![]));
+            ws.emit_ui_request(crate::ui_request::UiRequest::Rename(first.clone()));
+            assert!(!ws.reveal_in_background_tabs(side, vec![first.clone(), second.clone()]));
+            assert_eq!(ws.tab_count(side), 1);
+            assert_eq!(ws.tab_revision, revision);
+            ws.drain_ui_requests();
+            assert!(ws.reveal_in_background_tabs(
+                side,
+                vec![first.clone(), second.clone(), first.clone()]
+            ));
+            assert_eq!(ws.active, active);
+            assert_eq!(ws.active_tab_index(side), 0);
+            assert_eq!(ws.tab_count(side), 4);
+            assert_eq!(ws.left.current_path, temp.path());
+            assert_eq!(ws.right.current_path, temp.path());
+            assert!(ws.left.is_selected(&keep));
+            assert!(ws.right.is_selected(&keep));
+            let saved = ws.tab_snapshot(side);
+            let entries = &saved.entries;
+            let slots = match side {
+                ActivePanel::Left => &ws.tabs[0],
+                ActivePanel::Right => &ws.tabs[1],
+            };
+            for slot in slots.slots.iter().skip(1) {
+                let panel = slot.as_ref().unwrap();
+                assert!(panel.entries().is_empty());
+                assert!(!panel.has_notify());
+            }
+            assert_eq!(entries[1].path, first.parent().unwrap());
+            assert_eq!(entries[2].path, second.parent().unwrap());
+            assert_eq!(entries[3].path, first.parent().unwrap());
+            assert!(entries[2].view.show_hidden());
+            for (index, expected) in [(1, first.clone()), (2, second.clone()), (3, first.clone())] {
+                assert!(ws.select_tab(side, index));
+                let panel = match side {
+                    ActivePanel::Left => &mut ws.left,
+                    ActivePanel::Right => &mut ws.right,
+                };
+                panel.refresh();
+                assert_eq!(panel.cursor_entry().unwrap().path, expected);
+                assert!(ws.select_tab(side, 0));
+            }
+            while ws.tab_count(side) < MAX_TABS - 1 {
+                assert!(ws.new_background_tab(side, temp.path().into()));
+            }
+            let count = ws.tab_count(side);
+            let revision = ws.tab_revision;
+            assert!(!ws.reveal_in_background_tabs(side, vec![first.clone(), second.clone()]));
+            assert_eq!(ws.tab_count(side), count);
+            assert_eq!(ws.tab_revision, revision);
+            assert!(ws.reveal_in_background_tabs(side, vec![first]));
+            assert_eq!(ws.tab_count(side), MAX_TABS);
+        }
+    }
+
+    #[test]
+    fn background_result_reveal_defers_focus_and_preserves_both_live_panes() {
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            let temp = TempDir::new();
+            let selected = temp.file("keep.txt", "keep");
+            let target = temp.file("found/target.txt", "target");
+            temp.file("found/other.txt", "other");
+            let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+            ws.left.refresh();
+            ws.right.refresh();
+            ws.left.toggle_select(selected.clone());
+            ws.right.toggle_select(selected.clone());
+            let active = ws.active;
+            assert!(ws.reveal_in_background_tab(side, target.clone()));
+            assert_eq!(ws.active, active);
+            assert_eq!(ws.active_tab_index(side), 0);
+            assert_eq!(ws.left.current_path, temp.path());
+            assert_eq!(ws.right.current_path, temp.path());
+            assert!(ws.left.is_selected(&selected) && ws.right.is_selected(&selected));
+            let slot = match side {
+                ActivePanel::Left => &ws.tabs[0],
+                ActivePanel::Right => &ws.tabs[1],
+            }
+            .slots[1]
+                .as_ref()
+                .unwrap();
+            assert!(slot.entries().is_empty());
+            assert!(!slot.has_notify());
+            assert!(ws.select_tab(side, 1));
+            let panel = match side {
+                ActivePanel::Left => &mut ws.left,
+                ActivePanel::Right => &mut ws.right,
+            };
+            panel.refresh();
+            assert_eq!(panel.cursor_entry().unwrap().path, target);
+            panel.focus_child("other.txt".into());
+            panel.refresh();
+            assert_eq!(panel.cursor_entry().unwrap().name, "other.txt");
+            while ws.tab_count(side) < MAX_TABS {
+                assert!(ws.new_background_tab(side, temp.path().into()));
+            }
+            let before = ws.tab_snapshot(side);
+            assert!(!ws.reveal_in_background_tab(side, target));
+            assert_eq!(ws.tab_snapshot(side), before);
+            assert!(!ws.reveal_in_background_tab(side, PathBuf::from("/")));
+        }
+    }
+
+    #[test]
+    fn background_result_reveal_shows_hidden_targets_without_changing_the_live_view() {
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            let temp = TempDir::new();
+            let target = temp.file("found/.hidden.txt", "hidden");
+            let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+            ws.emit_ui_request(crate::ui_request::UiRequest::Rename(target.clone()));
+            assert!(!ws.reveal_in_background_tab(side, target.clone()));
+            assert_eq!(ws.tab_count(side), 1);
+            ws.drain_ui_requests();
+            assert!(ws.reveal_in_background_tab(side, target.clone()));
+            let saved = ws.tab_snapshot(side);
+            assert!(!saved.entries[0].view.show_hidden());
+            assert!(saved.entries[1].view.show_hidden());
+            assert!(ws.select_tab(side, 1));
+            let panel = match side {
+                ActivePanel::Left => &mut ws.left,
+                ActivePanel::Right => &mut ws.right,
+            };
+            panel.refresh();
+            assert_eq!(panel.cursor_entry().unwrap().path, target);
+        }
     }
 
     #[test]
@@ -1818,10 +2471,14 @@ mod tests {
                     path: PathBuf::from(format!("/missing-{n}")),
                     title: None,
                     close_protected: false,
+                    full_path_label: false,
+                    miller_widths: Default::default(),
+                    selection_snapshot: Default::default(),
                     view: ViewConfig::default(),
                 })
                 .collect(),
             active: 2,
+            closed: Vec::new(),
         };
         ws.restore_tabs(&saved, &SavedTabs::default());
         assert_eq!(ws.left.current_path, temp.path());
@@ -2047,6 +2704,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn persistent_tab_selection_follows_closed_tabs_and_survives_optional_corruption() {
+        use crate::command::Command;
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.dir("a");
+        let b = temp.dir("b");
+        let file = a.join("selected.txt");
+        std::fs::write(&file, "content").unwrap();
+        let mut ws = Workspace::new(a.clone(), b.clone());
+        ws.left.refresh();
+        ws.left.select_path(file.clone());
+        ws.execute(Command::SaveTabSelection);
+        assert!(ws.new_background_tab(ActivePanel::Left, b.clone()));
+        assert!(ws.close_tab(ActivePanel::Left));
+        let saved = ws.tab_snapshot(ActivePanel::Left);
+        let encoded = serde_json::to_vec(&saved).unwrap();
+        let restored: SavedTabs = serde_json::from_slice(&encoded).unwrap();
+        let mut fresh = Workspace::new(b.clone(), b);
+        fresh.restore_tabs(&restored, &Default::default());
+        fresh.execute(Command::ReopenClosedTab);
+        assert_eq!(fresh.left.current_path, a);
+        assert_eq!(fresh.left.selected_count(), 0);
+        fresh.left.refresh();
+        fresh.execute(Command::RestoreTabSelection);
+        assert!(fresh.left.is_selected(&file));
+        let mut bad = serde_json::to_value(fresh.tab_snapshot(ActivePanel::Left)).unwrap();
+        bad["entries"][0]["selection_snapshot"] = serde_json::json!({"bad":"value"});
+        let recovered: SavedTabs = serde_json::from_value(bad).unwrap();
+        assert!(!recovered.entries.is_empty());
+        assert!(recovered.entries[0].selection_snapshot.is_none());
+    }
     #[test]
     fn selection_memory_commands_follow_owned_tabs_and_respect_modals() {
         use crate::command::{Command, availability};
@@ -2375,5 +3063,129 @@ mod tests {
             restored.left.browser_mode(),
             crate::panel::BrowserMode::Icons
         );
+    }
+}
+
+#[cfg(test)]
+mod miller_session_tests {
+    use super::*;
+    use std::path::Path;
+    #[test]
+    fn fresh_workspace_restores_geometry_and_respects_cli_path_override() {
+        let mut original = Workspace::new(PathBuf::from("/tmp"), PathBuf::from("/"));
+        original
+            .left
+            .resize_miller_column(PathBuf::from("/"), 281.0);
+        let saved = original.tab_snapshot(ActivePanel::Left);
+        let saved: SavedTabs =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut fresh = Workspace::new(PathBuf::from("/tmp"), PathBuf::from("/"));
+        fresh.restore_tabs(&saved, &SavedTabs::default());
+        assert_eq!(fresh.left.miller_column_width(Path::new("/"), 220.0), 281.0);
+        let mut overridden = Workspace::new(PathBuf::from("/"), PathBuf::from("/"));
+        overridden.restore_tabs(&saved, &SavedTabs::default());
+        assert_eq!(
+            overridden.left.miller_column_width(Path::new("/"), 220.0),
+            220.0
+        );
+        let mut malformed = serde_json::to_value(&saved).unwrap();
+        malformed["entries"][0]["miller_widths"] = serde_json::json!({"bad": true});
+        let restored: SavedTabs = serde_json::from_value(malformed).unwrap();
+        assert_eq!(restored.entries.len(), 1);
+        assert!(restored.entries[0].miller_widths.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod closed_history_persistence_tests {
+    use super::*;
+    #[test]
+    fn closed_history_is_optional_tolerant_recent_bounded_and_lazy() {
+        let mut rows: Vec<_> = (0..20)
+            .map(|n| serde_json::json!({"tab":{"path":format!("/missing-{n}")},"position":999}))
+            .collect();
+        rows.push(serde_json::json!({"tab":{"path":"relative"}}));
+        rows.push(serde_json::json!({"tab":false}));
+        let saved: SavedTabs = serde_json::from_value(serde_json::json!({"closed":rows})).unwrap();
+        assert_eq!(saved.closed.len(), MAX_CLOSED_TABS);
+        assert_eq!(saved.closed[0].tab.path, PathBuf::from("/missing-12"));
+        assert_eq!(saved.closed[7].tab.path, PathBuf::from("/missing-19"));
+        assert!(saved.closed.iter().all(|c| c.position == MAX_TABS));
+        let mut ws = Workspace::new("/".into(), "/".into());
+        ws.restore_tabs(&saved, &SavedTabs::default());
+        assert_eq!(ws.left.current_path, PathBuf::from("/"));
+        assert_eq!(ws.closed_tab_count(ActivePanel::Left), MAX_CLOSED_TABS);
+        assert!(ws.reopen_closed_tab(ActivePanel::Left));
+        assert_eq!(ws.left.current_path, PathBuf::from("/missing-19"));
+        assert!(ws.left.entries().is_empty());
+        let legacy: SavedTabs =
+            serde_json::from_value(serde_json::json!({"entries":[{"path":"/"}],"closed":false}))
+                .unwrap();
+        assert!(legacy.closed.is_empty());
+        assert_eq!(legacy.entries.len(), 1);
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("closed"));
+    }
+}
+
+#[cfg(test)]
+mod closed_history_management_tests {
+    use super::*;
+    #[test]
+    fn forgetting_duplicate_locations_is_exact_and_preserves_live_owners() {
+        let root = crate::testutil::TempDir::new();
+        let file = root.file("a.txt", "data");
+        let mut ws = Workspace::new(root.path().into(), root.path().into());
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            for title in ["First", "Second"] {
+                assert!(ws.new_tab(side, None));
+                let index = ws.active_tab_index(side);
+                assert!(ws.set_tab_title(side, index, title));
+                assert!(ws.close_tab(side));
+            }
+        }
+        ws.left.refresh();
+        ws.left.focus_child("a.txt".into());
+        ws.left.select_cursor();
+        ws.right.preview = Some(crate::panel::PreviewContent::Text {
+            identity: crate::panel::PreviewIdentity {
+                path: file.clone(),
+                size: 4,
+                modified: None,
+            },
+            content: std::sync::Arc::from("preview"),
+        });
+        let preview = ws.right.preview.clone();
+        let revision = ws.left.entries_gen();
+        let other = ws.tab_snapshot(ActivePanel::Right);
+        let tab_revision = ws.tab_revision();
+        assert!(!ws.forget_closed_tab_at(ActivePanel::Left, 99));
+        assert_eq!(ws.tab_revision(), tab_revision);
+        assert!(ws.forget_closed_tab_at(ActivePanel::Left, 0));
+        assert_eq!(
+            ws.tab_snapshot(ActivePanel::Left).closed[0]
+                .tab
+                .title
+                .as_deref(),
+            Some("Second")
+        );
+        assert_eq!(ws.tab_revision(), tab_revision + 1);
+        assert_eq!(ws.tab_snapshot(ActivePanel::Right), other);
+        assert_eq!(ws.right.preview, preview);
+        assert_eq!(ws.left.entries_gen(), revision);
+        assert_eq!(ws.left.cursor_entry().unwrap().path, file);
+        assert!(ws.left.is_selected(&file));
+        assert!(ws.clear_closed_tabs(ActivePanel::Left));
+        assert!(!ws.clear_closed_tabs(ActivePanel::Left));
+        assert_eq!(ws.right.preview, preview);
+        assert!(file.exists());
+        let restored: SavedTabs = serde_json::from_slice(
+            &serde_json::to_vec(&ws.tab_snapshot(ActivePanel::Left)).unwrap(),
+        )
+        .unwrap();
+        assert!(restored.closed.is_empty());
+        ws.emit_ui_request(crate::ui_request::UiRequest::Rename(file));
+        assert!(!ws.clear_closed_tabs(ActivePanel::Right));
+        assert!(!ws.forget_closed_tab_at(ActivePanel::Right, 0));
+        assert_eq!(ws.tab_snapshot(ActivePanel::Right), other);
     }
 }

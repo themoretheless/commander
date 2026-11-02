@@ -1,0 +1,13 @@
+# Copy visible search result paths — 2026-10-28
+
+Independent adaptation of Nimble Commander's [Copy Item Path action and reuse of found files](https://github.com/mikekazakov/nimble-commander/blob/main/Docs/Help.md), from the researched cohort. Commander exposes path copying directly in Find; this is not a claim that Nimble has the same search-dialog button. No upstream code copied.
+
+Find now has a Copy paths button for all currently visible results in their displayed order, including the selected time grouping. Hidden rows are excluded, while distinct rows sharing native identity remain distinct. Archive hits retain their full virtual member paths rather than collapsing to the archive container. Newline/tab/control escaping uses the established pane clipboard formatter. The list is plain text, not shell-escaped arguments or file transfer data. During streaming it reflects the received results at click time; it does not imply complete traversal beyond existing caps/errors.
+
+Empty visible lists disable the action and produce no clipboard request. Copy keeps Find open, retains results and returns keyboard focus to the query. The existing clipboard port and feedback path report success/submission/failure; no new native clipboard implementation was introduced.
+
+A focused regression exercises no results, hidden rows, result-order changes, time grouping, virtual archive paths, multiple paths with shared native identity, line-control escaping, all-hidden state and restoration. The native SearchResults scenario retains all prior hide/restore/tab/keyboard checks and then clicks Copy paths. Capture readiness requires the exact visible notes.md/Design payload, query focus and existing result/tab invariants. Its recording clipboard port accepts exactly one write; the system clipboard remains untouched. Other native effect counters must stay zero.
+
+The initial test compile found an incorrect QA counter field name; it was corrected and the rejected log is retained. No commit or push.
+
+Validation: **2527 passed, 0 failed, 3 ignored** in the full locked visual-qa suite; focused path-export regression passed. All-target visual-qa Clippy with warnings denied, current debug QA build, formatting and scoped whitespace checks passed. Native SearchResults capture passed **16/16 checks**, including all mandatory glyph probes and effect isolation (one recording clipboard write, all other counters zero). Frame visually inspected: Copy paths, hidden count, restored query focus and success feedback visible. The QA app exited after successful capture before the accessibility tool could attach; current manifest/log/frame confirm success. See [native frame](frame.png) and retained native/build logs.

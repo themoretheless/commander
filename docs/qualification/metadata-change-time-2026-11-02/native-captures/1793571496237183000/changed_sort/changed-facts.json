@@ -1,0 +1,57 @@
+[
+  {
+    "changed_nanos": 501010814,
+    "changed_seconds": 1793571504,
+    "folder": false,
+    "modified": {
+      "nanos_since_epoch": 500996000,
+      "secs_since_epoch": 1793485104
+    },
+    "name": "change-old.txt",
+    "symlink": false
+  },
+  {
+    "changed_nanos": 501378356,
+    "changed_seconds": 1793571504,
+    "folder": false,
+    "modified": {
+      "nanos_since_epoch": 501363000,
+      "secs_since_epoch": 1793398704
+    },
+    "name": "change-middle.txt",
+    "symlink": false
+  },
+  {
+    "changed_nanos": 501641232,
+    "changed_seconds": 1793571504,
+    "folder": false,
+    "modified": {
+      "nanos_since_epoch": 501628000,
+      "secs_since_epoch": 1793312304
+    },
+    "name": "change-new.txt",
+    "symlink": false
+  },
+  {
+    "changed_nanos": 501732649,
+    "changed_seconds": 1793571504,
+    "folder": true,
+    "modified": {
+      "nanos_since_epoch": 501732649,
+      "secs_since_epoch": 1793571504
+    },
+    "name": "change-folder",
+    "symlink": false
+  },
+  {
+    "changed_nanos": 501844815,
+    "changed_seconds": 1793571504,
+    "folder": false,
+    "modified": {
+      "nanos_since_epoch": 500996000,
+      "secs_since_epoch": 1793485104
+    },
+    "name": "change-link.txt",
+    "symlink": true
+  }
+]

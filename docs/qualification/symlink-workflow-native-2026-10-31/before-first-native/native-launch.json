@@ -1,0 +1,6 @@
+{
+  "scenario": "symlink_workflow",
+  "out": "/tmp/commander-native-symlink-workflow-1793426257607647000",
+  "binary_sha256": "10559c06890f2059a13da3426770e74e9b00519fc0388e538c710010c562f077",
+  "core_sha256": "10559c06890f2059a13da3426770e74e9b00519fc0388e538c710010c562f077"
+}

@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native F5/F7 focus/scroll/layout capture",
+  "binary_sha256": "255cbb18c76d5e1b4d21d1184b52dd849c9988bfc34377b10a46b66ba3e8e30e",
+  "headless_coverage": "field focus, retained page/query, no work, modifier and busy guards passed",
+  "earlier_native_gates": "remain pending"
+}

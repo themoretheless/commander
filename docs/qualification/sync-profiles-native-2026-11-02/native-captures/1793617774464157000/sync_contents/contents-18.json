@@ -1,0 +1,110 @@
+{
+  "actions": [
+    {
+      "content": "unchecked",
+      "direction": "ToRight",
+      "error": null,
+      "name": "Design",
+      "status": "LeftOnly"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToRight",
+      "error": null,
+      "name": "README.txt",
+      "status": "LeftOnly"
+    },
+    {
+      "content": "different",
+      "direction": "Skip",
+      "error": null,
+      "name": "different-size.txt",
+      "status": "Differing"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToRight",
+      "error": null,
+      "name": "notes.md",
+      "status": "LeftOnly"
+    },
+    {
+      "content": "unchecked",
+      "direction": "Skip",
+      "error": null,
+      "name": "paired-folder",
+      "status": "DirectoryPair"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToRight",
+      "error": null,
+      "name": "photo.png",
+      "status": "LeftOnly"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToRight",
+      "error": null,
+      "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+      "status": "LeftOnly"
+    },
+    {
+      "content": "equal",
+      "direction": "Skip",
+      "error": null,
+      "name": "same-bytes.txt",
+      "status": "LeftNewer"
+    },
+    {
+      "content": "equal",
+      "direction": "Skip",
+      "error": null,
+      "name": "same-stat.bin",
+      "status": "Identical"
+    },
+    {
+      "content": "unavailable",
+      "direction": "Skip",
+      "error": "Only regular files are compared; symbolic links and special files are not followed",
+      "name": "unverified.lnk",
+      "status": "LeftNewer"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToLeft",
+      "error": null,
+      "name": "Archive",
+      "status": "RightOnly"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToLeft",
+      "error": null,
+      "name": "invoice.pdf",
+      "status": "RightOnly"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToLeft",
+      "error": null,
+      "name": "release.zip",
+      "status": "RightOnly"
+    },
+    {
+      "content": "unchecked",
+      "direction": "ToLeft",
+      "error": null,
+      "name": "source.rs",
+      "status": "RightOnly"
+    }
+  ],
+  "contents": true,
+  "phase": 18,
+  "scope": "Same contents",
+  "shown": [
+    "same-bytes.txt",
+    "same-stat.bin"
+  ],
+  "stamp_contents": true
+}

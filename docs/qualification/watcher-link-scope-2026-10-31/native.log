@@ -1,0 +1,4 @@
+2026-10-31T04:16:55 INFO  commander::logging: logging initialized
+2026-10-31T04:16:55 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: duplicate_recursive
+2026-10-31T04:16:55 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-watcher-link-scope-1793405807031959000
+2026-10-31T04:16:55 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

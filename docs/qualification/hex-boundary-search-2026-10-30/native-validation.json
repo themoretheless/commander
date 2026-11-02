@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "Find first/last native click and keyboard accessibility",
+    "button wrapping and scroll reachability",
+    "focus and busy/cancel presentation"
+  ]
+}

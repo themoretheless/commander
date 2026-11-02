@@ -1,0 +1,7 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Windows-1251/1252 mode/search/layout capture",
+  "binary_sha256": "5edd0acdc665b6a5f11395d39791c71748b05302aead2c5e71903331dc1d475a",
+  "historical_HexSearch_capture": "prior modes only, not current qualification",
+  "earlier_archive_native_gates": "remain pending"
+}

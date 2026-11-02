@@ -1,0 +1,20 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: no method named `tabs_session` found for struct `workspace::Workspace` in the current scope
+    --> src/workspace/tabs.rs:1236:28
+     |
+1236 |             let saved = ws.tabs_session();
+     |                            ^^^^^^^^^^^^
+     |
+    ::: src/workspace.rs:334:1
+     |
+ 334 | pub struct Workspace {
+     | -------------------- method `tabs_session` not found for this struct
+     |
+help: there is a method `drag_session` with a similar name
+     |
+1236 -             let saved = ws.tabs_session();
+1236 +             let saved = ws.drag_session();
+     |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -1,0 +1,13 @@
+{
+  "status": "captured",
+  "scene": "duplicate_recursive",
+  "scene_phase": 21,
+  "checks": 14,
+  "all_passed": true,
+  "clipboard_writes": 2,
+  "other_effects": 0,
+  "frame_visually_inspected": true,
+  "binary_hash_matches": true,
+  "loop_or_restart_log_lines": 0,
+  "prior_capture_loop_or_restart_log_lines": 8
+}

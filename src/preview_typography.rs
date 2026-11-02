@@ -7,14 +7,24 @@ pub fn toolbar(ui: &mut Ui, id: Id) -> f32 {
         .ctx()
         .data(|data| data.get_temp::<u16>(key).unwrap_or(100))
         .clamp(50, 200);
+    let scale = toolbar_owned(ui, id, &mut percent);
+    ui.ctx().data_mut(|data| data.insert_temp(key, percent));
+    scale
+}
+
+/// Caller-owned magnification for modal lifetimes; no context state is retained.
+pub fn toolbar_owned(ui: &mut Ui, id: Id, percent: &mut u16) -> f32 {
+    #[cfg(not(any(test, feature = "visual-qa")))]
+    let _ = id;
+    let mut value = (*percent).clamp(50, 200);
     ui.horizontal_wrapped(|ui| {
         ui.label("Text size");
         for (label, target) in [
-            ("A−", percent.saturating_sub(25).max(50)),
+            ("A−", value.saturating_sub(25).max(50)),
             ("100%", 100),
-            ("A+", (percent + 25).min(200)),
+            ("A+", (value + 25).min(200)),
         ] {
-            let response = ui.add_enabled(target != percent, egui::Button::new(label));
+            let response = ui.add_enabled(target != value, egui::Button::new(label));
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(
                     egui::WidgetType::Button,
@@ -30,13 +40,13 @@ pub fn toolbar(ui: &mut Ui, id: Id) -> f32 {
             ui.ctx()
                 .data_mut(|data| data.insert_temp(id.with(label), response.rect));
             if response.clicked() {
-                percent = target;
+                value = target;
             }
         }
-        ui.label(format!("{percent}%"));
+        ui.label(format!("{value}%"));
     });
-    ui.ctx().data_mut(|data| data.insert_temp(key, percent));
-    f32::from(percent) / 100.0
+    *percent = value;
+    f32::from(value) / 100.0
 }
 
 pub fn scale_job(job: &mut egui::text::LayoutJob, scale: f32) {

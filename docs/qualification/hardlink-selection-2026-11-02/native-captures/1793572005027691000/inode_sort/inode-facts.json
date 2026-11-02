@@ -1,0 +1,26 @@
+[
+  {
+    "device": 16777230,
+    "inode": 254206435,
+    "name": "inode-old.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254206436,
+    "name": "inode-middle.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254206435,
+    "name": "inode-new.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254206449,
+    "name": "inode-link.txt",
+    "symlink": true
+  }
+]

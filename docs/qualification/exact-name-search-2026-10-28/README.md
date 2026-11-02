@@ -1,0 +1,13 @@
+# Whole literal filename conditions — 2026-10-28
+
+Independent adaptation of fd `--exact`, cohort repository #77 ([primary man page](https://github.com/sharkdp/fd/blob/master/doc/fd.1)). fd documents whole-filename literal comparison as distinct from fixed-string substring matching. Commander exposes this per predicate and adds a matching negative condition; no upstream code copied.
+
+`nameexact:"report[1].txt"` compares the entire basename literally; `notnameexact:"report[1].txt"` rejects it. Both are independent of Exact/Fuzzy/Regex mode and use the global case policy. Smart-case analysis treats the complete name as literal text, including uppercase letters in apparent regex syntax. Ordinary `name:`, `glob:`, `filter:` and alternative name groups retain their existing semantics. File and directory names and archive member basenames use the same compiled matcher. Other conditions remain AND; no content read is required by either predicate.
+
+The shared compiler rejects empty model values, escapes regex metacharacters and anchors with `\A` and `\z`, including names containing newline characters. Unicode case folding follows the existing regex engine; filename text uses the existing provider name representation. A successful positive condition reports score 120 with a full character-range highlight and a whole-name literal explanation. Negative success reports its existing zero-score negative-name component. Chips, canonical expressions and saved JSON preserve the explicit field and quoting. No index schema or dependencies change.
+
+Three regressions cover every text mode, positive/negative matching, file/directory kind, wildcard and regex punctuation, Unicode, spaces, embedded/trailing newlines, empty parser/model rejection, expression/JSON round trips and literal smart-case policy. A native/index/ZIP/TAR matrix covers whole names versus prefix/suffix/regex-lookalike distractors, sensitive/smart case, negative conditions combined with name/glob, contradictory conditions, content conjunction, full highlights and scores. Case variants are placed in separate native directories so the fixture also works on case-insensitive filesystems; ZIP/TAR include nested members. The initial same-directory case-variant fixture reproduced the host’s case-insensitive name collision and was corrected before final qualification.
+
+Validation results are in the adjacent logs. No UI layout changed; no new native screenshot capture is claimed. No commit or push. The wider transfer objective remains open.
+
+Final validation: `cargo test --locked --features visual-qa` **2597 passed, 0 failed, 3 ignored**; `cargo clippy --locked --all-targets --features visual-qa -- -D warnings`, `cargo fmt --check` and `git diff --check` passed.

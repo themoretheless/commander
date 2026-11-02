@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "checks": 16,
+  "clipboard_writes": 3,
+  "original_context_after_draft_edit": true,
+  "retained_streams_exact": true,
+  "attempted_commands_exact": true,
+  "binary_matches_launch": true
+}

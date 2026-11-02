@@ -1,0 +1,26 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+  --> src/office_preview.rs:52:9
+   |
+52 | /         if file.name().map_err(|_| PreviewError::InvalidDocument)? == member {
+53 | |             if index.replace(i).is_some() {
+54 | |                 return Err(PreviewError::InvalidDocument);
+55 | |             }
+56 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+   = note: `-D clippy::collapsible-if` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+   |
+52 ~         if file.name().map_err(|_| PreviewError::InvalidDocument)? == member
+53 ~             && index.replace(i).is_some() {
+54 |                 return Err(PreviewError::InvalidDocument);
+55 ~             }
+   |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -1,0 +1,17 @@
+[
+  {
+    "allocated": 0,
+    "logical": 0,
+    "name": "disk-empty"
+  },
+  {
+    "allocated": 0,
+    "logical": 8388608,
+    "name": "disk-sparse"
+  },
+  {
+    "allocated": 8192,
+    "logical": 8192,
+    "name": "disk-dense"
+  }
+]

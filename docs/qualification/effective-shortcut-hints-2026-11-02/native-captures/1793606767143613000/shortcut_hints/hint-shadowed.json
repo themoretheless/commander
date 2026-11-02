@@ -1,0 +1,19 @@
+{
+  "bindings": [
+    {
+      "command": "Reverse sort order",
+      "keys": "F5"
+    },
+    {
+      "command": "Toggle hidden files",
+      "keys": "Alt+G H"
+    }
+  ],
+  "copy_keybar_hint": "",
+  "hint": "",
+  "label": "Copy to other panel",
+  "query": ">Copy to other panel",
+  "visible": [
+    "Copy to other panel"
+  ]
+}

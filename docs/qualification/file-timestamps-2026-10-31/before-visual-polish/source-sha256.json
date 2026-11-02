@@ -1,0 +1,13 @@
+{
+  "src/timestamps.rs": "25f7ffa1d3640098a9850ad7bdc636a9daecb105097697d4fe44dea8389d788d",
+  "src/permissions.rs": "e477da6882da007abd6d8404e3df9ca1f038037f0b2f3132929fa46954d8dabd",
+  "src/app/permissions_dialog.rs": "ecf4ea896c3034542d4042f706dbcb80f00402588bff2ee3b90150fd5006b3a0",
+  "src/app/update.rs": "145e41a90957c8bd87725f8276707551eb605c7be973ccb4b1900260ee07a0f6",
+  "src/command.rs": "93355f9a36ad33c80b96c17010bd78c477e81c0010f0c3062e289c83e8f9eea8",
+  "src/ui_request.rs": "93bda838116721558c91978ca1b77e0029f80daa1c0a26be31ab3ec1e14aef95",
+  "src/workspace.rs": "12d42846d2c63a3d8f198dabcc1f7bded861466af998f87291ccfdd94d63c72d",
+  "src/workspace/tests.rs": "cd9719a5d8ceeb370266a540324817e5bc862c03addf3488d1a811224de6360d",
+  "src/visual_qa.rs": "81448bcb73b11f507025744b85ba22d4325e8187a32ec91cc21e3eadd4bfddbe",
+  ".github/workflows/ci.yml": "8119b560852801fa4cb08793a7242e5e1ce36ad212a536243e2de73fdf188063",
+  "src/main.rs": "81f8d5f06c7233645827631fcb62b54e57dfe891b7c33872cbd29dddbf2f9ba4"
+}

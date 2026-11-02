@@ -1,0 +1,6 @@
+{
+  "scenario": "duplicate_cross",
+  "out": "/tmp/commander-native-duplicate_cross-1793435016584051000",
+  "binary_sha256": "a171ba47ef751621612ae2c800c4ff675370d96f6ac7db70795abaf348ebac8a",
+  "core_sha256": "a171ba47ef751621612ae2c800c4ff675370d96f6ac7db70795abaf348ebac8a"
+}

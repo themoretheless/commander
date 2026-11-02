@@ -1,0 +1,65 @@
+{
+  "facts": [
+    {
+      "blocks": 16,
+      "links": 2,
+      "modified_nanos": 0,
+      "modified_seconds": 1577836800,
+      "name": "sort-file10.bin",
+      "regular": true,
+      "size": 8192,
+      "symlink": false
+    },
+    {
+      "blocks": 16,
+      "links": 2,
+      "modified_nanos": 0,
+      "modified_seconds": 1577836800,
+      "name": "sort-alias.bin",
+      "regular": true,
+      "size": 8192,
+      "symlink": false
+    },
+    {
+      "blocks": 0,
+      "links": 1,
+      "modified_nanos": 645978824,
+      "modified_seconds": 1793588195,
+      "name": "sort-file2.bin",
+      "regular": true,
+      "size": 65536,
+      "symlink": false
+    },
+    {
+      "blocks": 0,
+      "links": 1,
+      "modified_nanos": 646064199,
+      "modified_seconds": 1793588195,
+      "name": "sort-empty.bin",
+      "regular": true,
+      "size": 0,
+      "symlink": false
+    },
+    {
+      "blocks": 0,
+      "links": 1,
+      "modified_nanos": 646242618,
+      "modified_seconds": 1793588195,
+      "name": "sort-link",
+      "regular": false,
+      "size": 15,
+      "symlink": true
+    },
+    {
+      "blocks": 8,
+      "links": 1,
+      "modified_nanos": 650065323,
+      "modified_seconds": 1793588195,
+      "name": "other.zip",
+      "regular": true,
+      "size": 135,
+      "symlink": false
+    }
+  ],
+  "utc_offset_seconds": 14400
+}

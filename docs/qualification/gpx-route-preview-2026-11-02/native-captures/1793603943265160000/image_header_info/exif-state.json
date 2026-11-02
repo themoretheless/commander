@@ -1,0 +1,17 @@
+{
+  "container": "png",
+  "has_exif": false,
+  "left_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9448-image_header_info/left",
+  "note": "No EXIF metadata found",
+  "right_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-9448-image_header_info/right",
+  "rows": [
+    [
+      "Format",
+      "PNG"
+    ],
+    [
+      "Header dimensions",
+      "4 × 3 pixels"
+    ]
+  ]
+}

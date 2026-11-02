@@ -1,0 +1,8 @@
+{
+  "src/app/mod.rs": "b66e572719e708ce29ba120d8ca44fba13245db6a1da97eacbe689c4a1ded11e",
+  "src/app/run_command_dialog.rs": "e07b80b9532d910cd258afa5e13f8a31eb75f38ea50ec1c458b769da7dce9c47",
+  "src/command_batch.rs": "9fb7c2c7c3d54237cfdcb87938f696bf983338c4e86ed6b6173aacacfee281d6",
+  "src/command_report.rs": "ba99e75afa4a455774401384fe012986e40a6bbdd7d1e86927d328925bd4e14c",
+  "src/visual_qa.rs": "ff0a3837a8bf8f4f458c6d16d9ebad3c3caf76b817728dc73b13501c59ed9652",
+  ".github/workflows/ci.yml": "a8f0ef212b63169cdf7b3bb83a57e4feb2d7888060b8718fea437bb885c9e8a4"
+}

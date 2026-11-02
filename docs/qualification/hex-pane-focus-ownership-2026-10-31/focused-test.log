@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.38s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 1 test
+test app::file_list::tests::viewer_releases_only_pane_rows_and_cancels_deferred_refocus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2859 filtered out; finished in 0.03s
+

@@ -1,0 +1,11 @@
+# File allocation: native qualification — 2026-11-02
+
+Completes the native-switch validation left open in [the implementation report](../disk-file-allocation-2026-11-02/README.md). The feature independently adapts [dust apparent versus allocated size](https://github.com/bootandy/dust/blob/master/README.md), cohort #82.
+
+New CI scenario `disk_allocation` drives real input through File allocation, copied scan JSON, Tree, copied visible CSV, Logical size, copied logical JSON, File allocation and Map. Before the logical rescan it navigates the left listing into `sparse`; the usage tool must continue scanning its original captured root. The final source-owned report and screenshot retain that root while the listing shows its child.
+
+The fixture includes a 32 MiB sparse file, dense data, a hard-link pair within one subtree, a symbolic link and ordinary files/directories. Raw Unix device, inode, nlink, length and blocks observations are captured independently of the product metric helper. verify.py recomputes unique-identity totals, every represented subtree and top-level weight, CSV cells, and logical-versus-allocation largest-entry selection. Allocation means regular-file data blocks, excludes directory/link storage and does not promise reclaimable/exclusive extents.
+
+Both the new scenario and neighboring disk_usage_export run use the final binary. Checks, complete source hashes, binary/core hashes, raw observations, clipboard reports and screenshots are preserved. The first new scenario completed all 24 input phases and wrote its reports, but screenshot capture failed because the navigated fixture folder contained no ordinary-file glyph. Adding a text fixture retained the existing mandatory glyph contract. Failed evidence remains in native-captures; previous intermediate checks remain in previous-checks.
+
+Final results: six checks passed; 3173 tests passed / 3 ignored; allocation-switch and neighboring export native scenarios each passed 14/14. Screenshots were inspected. Exactly three/six intercepted clipboard writes, all other native effects zero. Independent raw filesystem totals, subtree/map/CSV data, metric ranking, original-root rescans and final source/binary hashes passed verify.py. The remaining 99-repository transfer scope is still open.

@@ -1,0 +1,32 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0618]: expected function, found `Response`
+   --> src/template_exchange.rs:228:27
+    |
+139 | pub fn export(current: &Templates) -> Result<String, String> {
+    | ------------------------------------------------------------ this function of the same name is available here, but it's shadowed by the local binding
+...
+225 |                 let export = ui.button("Copy all templates as JSON");
+    |                     ------ `export` has type `Response`
+...
+228 |                     match export(current) { Ok(text) => *copy = Some(text), Err(error) => self.message = Some(error) }
+    |                           ^^^^^^---------
+    |                           |
+    |                           call expression requires function
+    |
+   ::: src/capability_diagnostic.rs:205:1
+    |
+205 | pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
+    | ----------------------------------------------------------- this function of the same name is available here, but it's shadowed by the local binding
+    |
+   ::: src/support_bundle.rs:285:1
+    |
+285 | pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
+    | ----------------------------------------------------------- this function of the same name is available here, but it's shadowed by the local binding
+    |
+   ::: src/bookmark_exchange.rs:208:1
+    |
+208 | pub fn export(current: &Bookmarks) -> Result<String, String> {
+    | ------------------------------------------------------------ this function of the same name is available here, but it's shadowed by the local binding
+
+For more information about this error, try `rustc --explain E0618`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

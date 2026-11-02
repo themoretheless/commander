@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "checks": 15,
+  "difference_blocks": 3,
+  "current_block": 3,
+  "compact_rows": 28,
+  "compact_hidden": 159,
+  "expanded_rows": 100,
+  "expanded_hidden": 86,
+  "full_view_restored": true,
+  "visible_selected_block": true,
+  "source_reconstruction": true,
+  "native_effect_calls": 0,
+  "binary_matches_launch": true,
+  "command_f_query_focus": true,
+  "f7_query_focus": true,
+  "f3_next_wrap": true,
+  "shift_f3_previous_wrap": true,
+  "hidden_search_row_rendered": 51
+}

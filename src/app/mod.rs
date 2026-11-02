@@ -5,8 +5,11 @@
 mod activity;
 mod archive_dialog;
 mod batch_rename_dialog;
+mod bookmark_import_dialog;
+mod checksum_list_dialog;
 mod collections_dialog;
 mod confirm_dialog;
+mod custom_theme_dialog;
 mod developer_panel;
 mod diff_dialog;
 mod duplicates_dialog;
@@ -17,6 +20,7 @@ mod history_dialog;
 mod keyboard_help;
 mod keys;
 mod mask_dialog;
+mod miller_browser;
 mod omnibar_dialog;
 mod permissions_dialog;
 mod preload;
@@ -36,6 +40,7 @@ mod tree;
 mod treemap_dialog;
 mod ui_state;
 mod update;
+mod workspace_profiles_dialog;
 
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
 use std::path::PathBuf;
@@ -76,12 +81,15 @@ pub struct App {
     /// Track the OS appearance each frame instead of a fixed `theme_mode`.
     pub(crate) follow_system_theme: bool,
     pub(crate) theme_palette: Option<String>,
+    pub(crate) custom_theme: crate::custom_theme::State,
+    pub(crate) sync_profiles: crate::sync_profiles::State,
     pub colors: ThemeColors,
     pub(crate) accessibility_preferences: crate::accessibility::Preferences,
     /// Re-reads [`Self::accessibility_preferences`] on window focus gain.
     pub(crate) accessibility_watch: crate::accessibility::PreferenceWatch,
     pub(crate) prev_window_width: f32,
     pub(crate) image_cache: crate::image_cache::ImageCache,
+    pub(crate) image_metadata: crate::image_metadata::Cache,
     pub(crate) pdf_cache: crate::pdf_preview::Cache,
     pub(crate) show_tree: bool,
     pub(crate) tree_expanded: std::collections::HashSet<PathBuf>,
@@ -127,6 +135,7 @@ pub struct App {
     pub(crate) palette_usage: crate::command::UsageStats,
     /// Monotonic counter stamped onto each palette command run.
     pub(crate) palette_tick: u64,
+    pub(crate) custom_shortcuts: crate::keybindings::State,
     /// Saved searches, loaded lazily on first use.
     pub(crate) smart_folders: Option<crate::smart_folder::SmartFolders>,
     /// Persisted multi-root projects and active virtual-view UI state.
@@ -162,11 +171,15 @@ pub struct App {
     pub(crate) quit_when_operations_settle: bool,
     pub(crate) quit_confirmation: bool,
     pub(crate) hex_viewer: Option<crate::hex_preview::HexViewer>,
+    checksum_list_dialog: Option<checksum_list_dialog::Dialog>,
+    bookmark_import: Option<bookmark_import_dialog::Dialog>,
     checksum_task: Option<ChecksumTask>,
     checksum_report: Option<crate::checksum::ChecksumReport>,
     checksum_generation: u64,
     checksum_expected: String,
     checksum_algorithm: crate::checksum::Algorithm,
+    checksum_relative_paths: bool,
+    checksum_relative_base: Option<Result<std::path::PathBuf, String>>,
 }
 
 struct ChecksumTask {
@@ -300,8 +313,16 @@ impl DeveloperNotice {
 
 /// UI state for the run-command / open-with bar.
 pub struct RunCommandState {
+    pub output_view: crate::command_output_view::View,
+    pub template_browser: crate::template_browser::Browser,
+    pub exchange: crate::template_exchange::Editor,
     pub template_name: String,
     pub template_extensions: String,
+    pub template_require_all: bool,
+    pub template_working_dir: crate::cmdtemplate::WorkingDirectory,
+    pub template_execution: crate::cmdtemplate::ExecutionMode,
+    pub template_kind: crate::cmdtemplate::InputKind,
+    pub template_limits: crate::cmdtemplate::SelectionLimits,
     /// The editable command line (placeholders expand against the selection).
     pub line: String,
     /// Separates egui scroll memory from earlier openings of this dialog.
@@ -317,26 +338,31 @@ pub struct CommandOutputRun {
     /// The running process, shared with its worker so Stop (or closing the
     /// bar, via `Drop`) can kill it instead of leaving it running unseen.
     pub child: CommandChildSlot,
+    pub progress: std::sync::Arc<crate::command_batch::Progress>,
 }
 
 pub type CommandChildSlot = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
 
+/// Signal only a still-owned group leader. The worker does not reap Unix
+/// leaders until the pipes drain and retires the slot under this same lock.
+#[cfg(unix)]
+fn kill_command_group(child: &std::process::Child) {
+    if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: the caller holds the owned child slot; its PID is not reaped.
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+}
 impl CommandOutputRun {
     pub fn stop(&self) {
+        self.progress
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(child) = crate::lock_util::recover(&self.child).as_mut() {
-            // The shell leads its own process group (see `run_shell`); kill
-            // the whole group so forked pipeline stages and `a; b` steps stop
-            // too and release the output pipes. The slot is cleared once the
-            // pipes are drained, so the group id is still ours here.
             #[cfg(unix)]
-            if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
-                // SAFETY: plain syscall; a negative pid targets the group.
-                unsafe {
-                    libc::kill(-pgid, libc::SIGKILL);
-                }
-            }
-            // std never signals a child it has already reaped, so this is
-            // safe after normal completion too.
+            kill_command_group(child);
+            #[cfg(not(unix))]
             let _ = child.kill();
         }
     }
@@ -355,6 +381,8 @@ pub struct CommandOutput {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
+    pub batch: Option<crate::command_batch::Report>,
+    pub context: Option<crate::command_report::Context>,
 }
 
 #[derive(Clone)]
@@ -425,16 +453,22 @@ pub enum DiskUsageMode {
 }
 
 pub struct DiskUsageState {
+    pub metric: crate::disk_usage_metric::Metric,
     pub initial: crate::workspace::TreemapSnapshot,
     pub mode: DiskUsageMode,
     pub run: Option<crate::tree_overview::OverviewRun>,
     pub progress: crate::tree_overview::ScanProgress,
     pub overview: Option<crate::tree_overview::OverviewSnapshot>,
+    pub tree_filter: crate::tree_filter::View,
+    pub tree_share_parent: bool,
     pub stopping: bool,
     pub error: Option<String>,
 }
 
 pub struct ArchiveState {
+    pub check: Option<crate::archive_check::Run>,
+    pub check_result: Option<Result<crate::archive_check::Report, String>>,
+    pub copy_format: crate::archive_export::Format,
     pub path: PathBuf,
     pub filter: String,
     pub run: Option<crate::archive::ListingRun>,
@@ -447,6 +481,26 @@ pub struct ArchiveState {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum FindCopyFormat {
+    #[default]
+    Paths,
+    Names,
+    ShellArguments,
+    DetailsCsv,
+    DetailsJson,
+    FileUrls,
+    NamesWithoutExtension,
+    ParentFolders,
+    RelativePaths,
+}
+
+/// One runtime-only selection snapshot, bound to a Find root.
+pub struct FindResultSelection {
+    root: PathBuf,
+    locations: std::collections::HashSet<crate::search::SearchLocation>,
+}
+
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
 /// this holds the editable fields, the search root, and the results.
 pub struct FindState {
@@ -454,9 +508,17 @@ pub struct FindState {
     pub mode: crate::query::MatchMode,
     pub root: PathBuf,
     pub results: Vec<crate::search::SearchHit>,
+    pub hidden_results: std::collections::HashSet<crate::search::SearchLocation>,
+    pub selected_results: std::collections::HashSet<crate::search::SearchLocation>,
+    pub result_selection_anchor: Option<crate::search::SearchLocation>,
+    pub remembered_result_selection: Option<FindResultSelection>,
+    pub result_copy_format: FindCopyFormat,
+    pub result_action_error: Option<String>,
     pub run: Option<crate::search::SearchRun>,
     pub generation: u64,
     pub ran: bool,
+    /// True only after a non-cancelled completion for the retained query.
+    pub result_complete: bool,
     pub scanned: usize,
     pub matched: usize,
     pub elapsed: std::time::Duration,
@@ -469,6 +531,7 @@ pub struct FindState {
     pub stable_order: Vec<crate::search::FileIdentity>,
     pub last_query: Option<(String, crate::query::MatchMode, PathBuf)>,
     pub time_pivot: crate::search::TimePivot,
+    pub result_sort: crate::search_order::Sort,
     pub history_open: bool,
     /// The hit whose "why matched" line is open. Keyed by identity and
     /// location: hard links share an identity, so identity alone would open
@@ -524,9 +587,16 @@ impl Default for FindState {
             mode: crate::query::MatchMode::Exact,
             root: PathBuf::new(),
             results: Vec::new(),
+            hidden_results: std::collections::HashSet::new(),
+            selected_results: std::collections::HashSet::new(),
+            result_selection_anchor: None,
+            remembered_result_selection: None,
+            result_copy_format: FindCopyFormat::Paths,
+            result_action_error: None,
             run: None,
             generation: 0,
             ran: false,
+            result_complete: false,
             scanned: 0,
             matched: 0,
             elapsed: std::time::Duration::ZERO,
@@ -537,6 +607,7 @@ impl Default for FindState {
             stable_order: Vec::new(),
             last_query: None,
             time_pivot: crate::search::TimePivot::None,
+            result_sort: Default::default(),
             history_open: false,
             explanation_open: None,
             highlighted_result: None,
@@ -581,6 +652,14 @@ impl FindState {
 /// `crate::textdiff`; this holds the two names and the computed lines (or a
 /// message when the pair cannot be diffed as text).
 pub struct DiffState {
+    pub intraline: crate::diff_intraline::Intraline,
+    pub source: Option<(String, String)>,
+    pub options: crate::textdiff::Options,
+    pub paths: (PathBuf, PathBuf),
+    pub jump: crate::diff_goto::Jump,
+    pub find: crate::diff_find::Find,
+    pub context_view: crate::diff_context::Context,
+    pub navigation: crate::diff_navigation::Navigation,
     pub name_a: String,
     pub name_b: String,
     pub lines: Vec<crate::textdiff::DiffLine>,
@@ -623,11 +702,31 @@ fn apply_scroll_command(
 /// UI state for the duplicate-finder sheet. Grouping lives in `crate::dedup`;
 /// this holds the groups, the per-group keep choice, and the policy.
 pub struct DupState {
+    pub other_root: PathBuf,
+    pub include_other: bool,
+    pub cross_only: bool,
+    pub fresh_enumeration: bool,
+    pub min_copies: crate::dedup_scan::MinCopies,
+    pub copies_draft: String,
+    pub name_validation: crate::duplicate_name_filter::Validation,
+    pub name_draft: crate::duplicate_name_filter::Rules,
+    pub names: crate::duplicate_name_filter::Filter,
     pub groups: Vec<crate::dedup::DupGroup>,
     /// Index (into each group's `files`) of the file to keep; `None` keeps
     /// every copy of that group ("Keep all").
     pub keep: Vec<Option<usize>>,
+    pub history: crate::duplicate_history::History,
     pub policy: crate::dedup::KeepPolicy,
+    pub sort: crate::dedup::GroupSort,
+    pub group_order: Vec<usize>,
+    pub root: std::path::PathBuf,
+    pub recursive: bool,
+    pub max_depth: Option<u32>,
+    pub depth_draft: String,
+    pub sizes: crate::dedup_scan::SizeRange,
+    pub min_size: String,
+    pub max_size: String,
+    pub scan_issues: usize,
     /// The background hash scan while it runs; `groups` fill in when done.
     pub scan: Option<crate::dedup_scan::DupScan>,
 }
@@ -635,6 +734,9 @@ pub struct DupState {
 /// UI state for the directory-synchronise sheet. The diff lives in
 /// `crate::sync`; this holds the chosen policy and the editable action rows.
 pub struct SyncState {
+    pub compare_contents: bool,
+    pub export_scope: crate::sync_report::Scope,
+    pub review: crate::sync_review::Review,
     pub policy: crate::sync::SyncPolicy,
     pub durability: crate::operation::DurabilityProfile,
     pub version_retention: crate::operation::VersionRetentionPolicy,
@@ -670,6 +772,7 @@ pub struct BatchRenameState {
     pub remove_suffix: String,
     pub find: String,
     pub replace: String,
+    pub extra_replacements: Vec<crate::rename::ReplacementPair>,
     /// Treat `find` as a regular expression (`$1`-style groups in `replace`)
     /// instead of a literal substring.
     pub regex_mode: bool,
@@ -678,6 +781,17 @@ pub struct BatchRenameState {
     pub trim_spaces: bool,
     pub collapse_repeats: bool,
     pub normalization: crate::rename::NameNormalization,
+    pub character_target: crate::rename::CharacterTarget,
+    pub insert_text_on: bool,
+    pub insert_text: String,
+    pub insert_offset: u32,
+    pub insert_from_end: bool,
+    pub insert_overwrite: bool,
+    pub range_action: crate::rename::RangeAction,
+    pub remove_range_on: bool,
+    pub remove_offset: u32,
+    pub remove_count: u32,
+    pub remove_from_end: bool,
     pub stem_limit_on: bool,
     pub stem_limit: u32,
     pub replace_target: crate::rename::ReplaceTarget,
@@ -686,6 +800,7 @@ pub struct BatchRenameState {
     pub case: crate::rename::CaseMode,
     pub extension_case: crate::rename::ExtensionCase,
     pub numbering_on: bool,
+    pub number_format: crate::rename::NumberFormat,
     pub number_position: crate::rename::NumberPosition,
     pub num_start: i64,
     pub num_step: i64,
@@ -707,6 +822,13 @@ impl BatchRenameState {
         self.num_step = 1;
         self.num_pad = 2;
         self.stem_limit = 32;
+        self.insert_text.clear();
+        self.insert_offset = 0;
+        self.insert_from_end = false;
+        self.insert_overwrite = false;
+        self.remove_offset = 0;
+        self.remove_count = 1;
+        self.remove_from_end = false;
         self.preset_name.clear();
         self.preset_selected = None;
         self.preset_status = Some(Ok("Rule reset".into()));
@@ -714,10 +836,26 @@ impl BatchRenameState {
     }
 
     fn load_rule(&mut self, rule: &crate::rename::RenameRule) {
+        self.character_target = rule.character_target;
+        self.insert_text_on = rule.insert_text.is_some();
+        if let Some(insert) = &rule.insert_text {
+            self.insert_text = insert.text.clone();
+            self.insert_offset = insert.offset as u32;
+            self.insert_from_end = insert.from_end;
+            self.insert_overwrite = insert.overwrite;
+        }
+        self.range_action = rule.range_action;
+        self.remove_range_on = rule.remove_range.is_some();
+        if let Some(range) = rule.remove_range {
+            self.remove_offset = range.offset as u32;
+            self.remove_count = range.count as u32;
+            self.remove_from_end = range.from_end;
+        }
         self.remove_prefix = rule.remove_prefix.clone();
         self.remove_suffix = rule.remove_suffix.clone();
         self.find = rule.find.clone();
         self.replace = rule.replace.clone();
+        self.extra_replacements = rule.extra_replacements.clone();
         self.regex_mode = rule.regex;
         self.ignore_case = rule.ignore_case;
         self.first_only = rule.first_only;
@@ -734,6 +872,7 @@ impl BatchRenameState {
         self.case = rule.case;
         self.extension_case = rule.extension_case;
         self.numbering_on = rule.numbering.is_some();
+        self.number_format = rule.number_format;
         self.number_position = rule.number_position;
         if let Some(numbering) = rule.numbering {
             self.num_start = numbering.start;
@@ -745,10 +884,24 @@ impl BatchRenameState {
     /// Build the pure rename rule from the current field values.
     pub(crate) fn rule(&self) -> crate::rename::RenameRule {
         crate::rename::RenameRule {
+            character_target: self.character_target,
+            insert_text: self.insert_text_on.then(|| crate::rename::InsertText {
+                text: self.insert_text.clone(),
+                offset: self.insert_offset as usize,
+                from_end: self.insert_from_end,
+                overwrite: self.insert_overwrite,
+            }),
+            range_action: self.range_action,
+            remove_range: self.remove_range_on.then_some(crate::rename::RemoveRange {
+                offset: self.remove_offset as usize,
+                count: self.remove_count as usize,
+                from_end: self.remove_from_end,
+            }),
             remove_prefix: self.remove_prefix.clone(),
             remove_suffix: self.remove_suffix.clone(),
             find: self.find.clone(),
             replace: self.replace.clone(),
+            extra_replacements: self.extra_replacements.clone(),
             regex: self.regex_mode,
             ignore_case: self.ignore_case,
             first_only: self.first_only,
@@ -761,6 +914,7 @@ impl BatchRenameState {
             suffix: self.suffix.clone(),
             case: self.case,
             extension_case: self.extension_case,
+            number_format: self.number_format,
             number_position: self.number_position,
             numbering: self.numbering_on.then_some(crate::rename::Numbering {
                 start: self.num_start,
@@ -1072,6 +1226,11 @@ impl App {
                 .map(|s| s.palette_usage.clone())
                 .unwrap_or_default(),
             palette_tick: session.as_ref().map_or(0, |s| s.palette_tick),
+            custom_shortcuts: crate::keybindings::State::from_saved(
+                session
+                    .as_ref()
+                    .map_or(serde_json::Value::Null, |s| s.custom_shortcuts.clone()),
+            ),
             startup_trace: Some(startup),
             launch_focus: (left_focus, right_focus),
             ..Self::assemble(AppParts {
@@ -1096,6 +1255,18 @@ impl App {
             .as_ref()
             .and_then(|s| s.theme_palette.clone())
             .filter(|id| crate::theme_catalog::find(id).is_some());
+        app.custom_theme = crate::custom_theme::State::from_saved(
+            session
+                .as_ref()
+                .map(|s| s.custom_theme.clone())
+                .unwrap_or_default(),
+        );
+        app.sync_profiles = crate::sync_profiles::State::from_saved(
+            session
+                .as_ref()
+                .map(|s| s.sync_profiles.clone())
+                .unwrap_or_default(),
+        );
         app.apply_current_palette(&cc.egui_ctx);
         if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
@@ -1195,6 +1366,7 @@ impl App {
             accessibility_watch: crate::accessibility::PreferenceWatch::default(),
             prev_window_width: 0.0,
             pdf_cache: crate::pdf_preview::Cache::default(),
+            image_metadata: crate::image_metadata::Cache::default(),
             image_cache,
             show_tree: false,
             tree_expanded: std::collections::HashSet::new(),
@@ -1209,6 +1381,8 @@ impl App {
             show_key_bar: false,
             follow_system_theme: false,
             theme_palette: None,
+            custom_theme: Default::default(),
+            sync_profiles: crate::sync_profiles::State::from_saved(serde_json::Value::Null),
             fallback_menu: None,
             show_operations_center: false,
             operations_tab: OperationsTab::default(),
@@ -1225,6 +1399,7 @@ impl App {
             recovery,
             palette_usage: crate::command::UsageStats::default(),
             palette_tick: 0,
+            custom_shortcuts: Default::default(),
             smart_folders: None,
             project_collections,
             command_templates: None,
@@ -1241,11 +1416,15 @@ impl App {
             quit_when_operations_settle: false,
             quit_confirmation: false,
             hex_viewer: None,
+            checksum_list_dialog: None,
+            bookmark_import: None,
             checksum_task: None,
             checksum_report: None,
             checksum_generation: 0,
             checksum_expected: String::new(),
             checksum_algorithm: crate::checksum::Algorithm::default(),
+            checksum_relative_paths: false,
+            checksum_relative_base: None,
         }
     }
 
@@ -1338,6 +1517,8 @@ impl App {
             theme_dark: self.theme_mode == ThemeMode::Dark,
             theme_follow_system: self.follow_system_theme,
             theme_palette: self.theme_palette.clone(),
+            custom_theme: self.custom_theme.saved(),
+            sync_profiles: self.sync_profiles.saved(),
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
@@ -1349,6 +1530,7 @@ impl App {
             right_view: crate::session::PersistedRightView::from(right_view),
             palette_usage: self.palette_usage.clone(),
             palette_tick: self.palette_tick,
+            custom_shortcuts: self.custom_shortcuts.saved(),
             recent_paths,
             recent_stats,
             recent_order: self.recent_order,

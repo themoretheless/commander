@@ -1,0 +1,7 @@
+{
+  "scenario": "duplicate_recursive",
+  "output": "/tmp/commander-native-watcher-link-scope-1793405807031959000",
+  "binary_sha256": "4bf6c61b2433f9f97a389f3a4c48a8d984ef766fe57c324d79f907b8d185ecc2",
+  "wrapper": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA",
+  "started_ns": 1793405807089437000
+}

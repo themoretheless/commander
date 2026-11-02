@@ -57,6 +57,7 @@ pub enum SyncDirection {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SyncAction {
+    pub content: crate::sync_content::Comparison,
     /// Display name (original case from whichever side holds the file).
     pub name: String,
     pub status: SyncStatus,
@@ -87,6 +88,34 @@ impl SideFacts {
 }
 
 impl SyncAction {
+    pub fn matching(&self) -> bool {
+        matches!(self.content, crate::sync_content::Comparison::Equal)
+            || (self.content == crate::sync_content::Comparison::Unchecked
+                && self.status == SyncStatus::Identical)
+    }
+    pub fn default_direction(&self, policy: SyncPolicy) -> SyncDirection {
+        if matches!(
+            self.content,
+            crate::sync_content::Comparison::Equal
+                | crate::sync_content::Comparison::Unavailable(_)
+        ) {
+            SyncDirection::Skip
+        } else {
+            default_direction(self.status, policy)
+        }
+    }
+    pub fn set_content(&mut self, content: crate::sync_content::Comparison, policy: SyncPolicy) {
+        if content == crate::sync_content::Comparison::Different
+            && self.status == SyncStatus::Identical
+        {
+            self.status = SyncStatus::Differing;
+        }
+        self.content = content;
+        self.direction = self.default_direction(policy);
+    }
+    pub fn side_paths(&self) -> [Option<&Path>; 2] {
+        [self.left_path.as_deref(), self.right_path.as_deref()]
+    }
     /// "Left: 12 KB, <date> · Right: 15 KB, <date>" for a pair of files;
     /// `None` for one-sided rows and folders.
     pub fn comparison_text(&self) -> Option<String> {
@@ -99,6 +128,9 @@ impl SyncAction {
 
     /// Whether this row has a stable source for `direction`.
     pub fn allows(&self, direction: SyncDirection) -> bool {
+        if self.content.error().is_some() {
+            return direction == SyncDirection::Skip;
+        }
         if matches!(
             self.status,
             SyncStatus::DirectoryPair | SyncStatus::TypeConflict
@@ -125,6 +157,7 @@ impl SyncAction {
 #[cfg(test)]
 pub fn test_action(name: &str, status: SyncStatus, direction: SyncDirection) -> SyncAction {
     SyncAction {
+        content: Default::default(),
         name: name.to_string(),
         status,
         direction,
@@ -240,6 +273,7 @@ pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) ->
             None => (SyncStatus::LeftOnly, None, None),
         };
         actions.push(SyncAction {
+            content: Default::default(),
             name: l.name.clone(),
             status,
             direction: default_direction(status, policy),
@@ -265,6 +299,7 @@ pub fn sync_diff(left: &[FileEntry], right: &[FileEntry], policy: SyncPolicy) ->
             SyncStatus::RightOnly
         };
         actions.push(SyncAction {
+            content: Default::default(),
             name: r.name.clone(),
             status,
             direction: default_direction(status, policy),
@@ -332,7 +367,18 @@ mod tests {
 
     fn entry(name: &str, size: u64, secs: Option<u64>) -> FileEntry {
         FileEntry {
+            symlink: None,
             permissions: None,
+            allocated_size: None,
+            hard_links: None,
+            owner_uid: None,
+            owner_gid: None,
+            accessed: None,
+            created: None,
+            accessed_str: "Unavailable".into(),
+            created_str: "Unavailable".into(),
+            changed: None,
+            changed_str: "Unavailable".into(),
             name: name.to_string(),
             name_lower: name.to_lowercase(),
             sort_key: crate::panel::diacritic_sort_key(&name.to_lowercase()),

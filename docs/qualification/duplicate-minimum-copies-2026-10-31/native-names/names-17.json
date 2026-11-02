@@ -1,0 +1,20 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "skip*",
+    "include": "*.jpg"
+  },
+  "draft": {
+    "case": true,
+    "exclude": "skip*",
+    "include": "*.jpg"
+  },
+  "files": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-31207-duplicate_names/left/one.JPG",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-31207-duplicate_names/left/two.jpg",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-31207-duplicate_names/left/nested/three.jpg"
+  ],
+  "issues": 0,
+  "recursive": true,
+  "step": 17
+}

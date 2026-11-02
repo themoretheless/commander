@@ -1,0 +1,19 @@
+# Immediate-parent search
+
+Independently adapts the direct-child workflow from [fd search paths and exact-depth filtering](https://github.com/sharkdp/fd/blob/master/doc/fd.1), cohort #77, into one composable parent constraint. The `parent:` syntax additionally follows [FSearch parent filtering](https://github.com/cboxdoerfer/fsearch/wiki/Search-syntax); FSearch is outside the original 99 and does not count as another cohort transfer. No upstream implementation copied.
+
+Find accepts `parent:"/absolute/folder"` to retain immediate children only, including directories. Descendants, prefix-similar folders and the parent folder itself do not match. Conditions combine through AND with names, types, contents and other filters. Query expression, chips, saved-query serialization and JSON applied-query context use the shared predicate. Indexed queries use retained paths without re-observing the source.
+
+The filter compares lexical path components using Rust Path equality: repeated separators and interior `.` follow that existing representation. It requires a platform-absolute path; relative paths, `..` components and NUL are rejected both by parsing and deserialized-query validation. There is no canonicalization, symlink-target following, regex interpretation or case folding; text mode and case flags do not change the parent constraint. The spelling should match the lexical path shown by the result. Invalid UTF-8 native paths cannot alias a replacement-character label.
+
+Archive results use the existing virtual namespace: `parent:"/absolute/bundle.zip!/nested"` matches direct children of that member folder; `parent:"/absolute/bundle.zip!"` matches root members. This is a filter over retained virtual addresses, not archive extraction or filesystem traversal. The provider continues its normal bounded scan; this predicate does not prune the traversal or override archive/exclusion policy.
+
+## Validation
+
+Two regressions cover literal/metacharacter/case/immediate/root semantics, invalid values and query/serde round trips; live and serialized-index results across all matching modes, contents/type conjunctions, nonexistent parents, archive-root and nested member parents. Native parent_search enters three queries through the real Find editor: native direct children, content-constrained regular child, and a nested archive member. Separately derived expected paths and match explanations are checked by verify.py. Existing allocation_search is the neighboring native regression. See checks.json, tests.log, validators.json, verification.log and source/binary-bound captures.
+
+Windows absolute paths are implemented using std::path but native Windows execution is not qualified here. This filter does not establish object identity, current filesystem state or safe authorization for operations.
+
+The fd-reference.json records an independent fd 10.4.2 direct-child run on an equivalent fixture with the resolved executable hash. fd canonicalizes the search root on this host; the comparison uses a resolved temporary root, while Commander deliberately retains lexical paths. Early final-binary native attempts timed out at different phases or while awaiting screenshot delivery; their artifacts are retained. Native observations can auto-launch a finished wrapper, so only terminal manifests are used for acceptance.
+
+Final evidence: six checks passed, **3142 tests passed / 3 ignored**; both parent_search and allocation_search passed **16/16**, with zero external effects, on the source-bound final binary. Final frame images were inspected. The accepted parent capture launched through CUA and raised its window; only its terminal captured manifest is accepted. The independent verifier passed. The ordinary non-QA check retains the pre-existing unused-response warning in diff_find.rs. Full parity with the 99 repositories remains open.

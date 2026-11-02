@@ -1,0 +1,11 @@
+{
+  "column": 1,
+  "error": null,
+  "exclude": false,
+  "fuzzy": false,
+  "heading": true,
+  "query": "^file2$",
+  "regex": true,
+  "rows": [],
+  "whole_words": false
+}

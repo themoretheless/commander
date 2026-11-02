@@ -1,0 +1,103 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "include": ""
+  },
+  "groups": [
+    [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/bare-a",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/bare-b",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/one.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/one.txt",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/three.TXT",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/two.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/two.txt"
+    ]
+  ],
+  "keep": [
+    0
+  ],
+  "report": {
+    "context": {
+      "configured_subfolder_levels": null,
+      "group_sort": "scan",
+      "keep_policy": "shortest_path",
+      "max_bytes": null,
+      "max_subfolder_levels": null,
+      "metadata_source": "retained_pane_listing",
+      "min_bytes": 0,
+      "minimum_copies": 2,
+      "names": {
+        "case": false,
+        "exclude": "",
+        "extension": "Any",
+        "include": ""
+      },
+      "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left",
+      "scope": "listing"
+    },
+    "format": "commander_duplicate_report",
+    "groups": [
+      {
+        "files": [
+          {
+            "action": "keep",
+            "member": 1,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/bare-a"
+          },
+          {
+            "action": "trash",
+            "member": 2,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/bare-b"
+          },
+          {
+            "action": "trash",
+            "member": 3,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/one.bin"
+          },
+          {
+            "action": "trash",
+            "member": 4,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/one.txt"
+          },
+          {
+            "action": "trash",
+            "member": 5,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/three.TXT"
+          },
+          {
+            "action": "trash",
+            "member": 6,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/two.bin"
+          },
+          {
+            "action": "trash",
+            "member": 7,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67799-duplicate_extensions/left/two.txt"
+          }
+        ],
+        "group": 1,
+        "original_group": 1,
+        "size_bytes": 20
+      }
+    ],
+    "snapshot": "retained_duplicate_scan_proposal",
+    "summary": {
+      "files": 7,
+      "groups": 1,
+      "partial": false,
+      "proposed_trash_bytes": 120,
+      "proposed_trash_files": 6,
+      "scan_issues": 0
+    },
+    "version": 1
+  }
+}

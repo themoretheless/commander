@@ -202,18 +202,28 @@ fn render_text_preview(
                 });
             });
             let kind = crate::document_preview::kind(path);
+            if crate::rtf_preview::supported(path) {
+                ui.small("RTF document · text only");
+            }
+            if crate::fictionbook_preview::supported(path) {
+                ui.small("FB2 book · text only");
+            }
+            if crate::office_preview::supported(path) {
+                ui.small(if crate::epub_preview::supported(path) { "EPUB book · text only" } else { "Office document · text only" });
+            }
+            let route = crate::route_preview::supported(path);
             let json = crate::json_preview::is_json(path);
             let table_delimiter = crate::table_preview::delimiter(path);
             let source_key = egui::Id::new(("document_source", panel_side));
             let mut source = ui
                 .ctx()
                 .data(|data| data.get_temp::<bool>(source_key).unwrap_or(false));
-            if kind.is_some() || table_delimiter.is_some() || json {
+            if kind.is_some() || table_delimiter.is_some() || json || route {
                 ui.horizontal(|ui| {
                     let formatted_mode = ui.selectable_value(
                         &mut source,
                         false,
-                        if table_delimiter.is_some() {
+                        if route { "Route" } else if table_delimiter.is_some() {
                             "Table"
                         } else {
                             "Formatted"
@@ -221,7 +231,7 @@ fn render_text_preview(
                     );
                     let source_mode = ui.selectable_value(&mut source, true, "Source");
                     #[cfg(feature = "visual-qa")]
-                    if json {
+                    if json || route {
                         ui.ctx().data_mut(|data| {
                             data.insert_temp(
                                 egui::Id::new(("json-preview-mode", panel_side, false)),
@@ -243,7 +253,7 @@ fn render_text_preview(
             let syntax_key = egui::Id::new(("text_preview_syntax", panel_side));
             let numbers_key = egui::Id::new(("text_preview_numbers", panel_side));
             let mut whitespace = false;
-            let plain_source = (kind.is_none() && table_delimiter.is_none()) || source;
+            let plain_source = (kind.is_none() && table_delimiter.is_none() && !route) || source;
             let mut numbers = ui
                 .ctx()
                 .data(|data| data.get_temp::<bool>(numbers_key).unwrap_or(true));
@@ -256,7 +266,7 @@ fn render_text_preview(
             let language = crate::code_preview::language(path);
             let within_budget =
                 content.is_none_or(|text| text.len() <= crate::code_preview::SYNTAX_BYTE_LIMIT);
-            if (kind.is_none() && table_delimiter.is_none()) || source {
+            if (kind.is_none() && table_delimiter.is_none() && !route) || source {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     ui.checkbox(&mut wrap, "Wrap lines");
@@ -287,8 +297,16 @@ fn render_text_preview(
             // cancelled or retargeted by the other pane, which would otherwise
             // leave this pane on a spinner forever.
             if let Some(content) = content {
+                if route && !source {
+                    if let Some(text)=crate::route_preview::render(ui, content, panel_side) {
+                        *copy_preview_text=Some(std::sync::Arc::from(text));
+                    }
+                    return;
+                }
                 if let Some(delimiter) = table_delimiter.filter(|_| !source) {
-                    crate::table_preview::render(ui, content, delimiter, panel_side);
+                    if let Some(text) = crate::table_preview::render(ui, content, delimiter, panel_side) {
+                        *copy_preview_text = Some(std::sync::Arc::from(text));
+                    }
                     return;
                 }
                 let formatted_json = (json && !source)
@@ -329,6 +347,8 @@ fn render_text_preview(
                         dark: t.is_dark(),
                     },
                 );
+                #[cfg(feature="visual-qa")]
+                if route && source {ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("gpx-source-shown",panel_side)),galley.text().to_owned()));}
                 if let Some(lines) = &mut lines {
                     lines.update_layout(&galley);
                 }
@@ -694,6 +714,7 @@ fn pane_filter_field(
             .desired_width(f32::INFINITY)
             .margin(egui::vec2(8.0, 4.0)),
     );
+    let response = response.on_hover_text("Fuzzy name filter. Use ^text for a prefix, text$ for a suffix, ^text$ for a whole name, or !text to exclude a literal match. Combine conditions with && or alternatives with |, surrounded by spaces; double-quote a literal alternative containing spaces or |. Start with an apostrophe (') for literal text; spaces after it are significant. Matching is case-insensitive.");
     let label = format!("Filter {panel_side} pane");
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_label(label);
@@ -778,22 +799,40 @@ fn column_headers(
     };
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.add_space(8.0);
-        let size_order = order_for(SortColumn::Size);
-        let modified_order = order_for(SortColumn::Modified);
-        let width = header_width(ui, "Size", size_order)
+        let (size_label, size_column) = if order_for(SortColumn::Allocated).is_some() {
+            ("Allocated", SortColumn::Allocated)
+        } else {
+            ("Size", SortColumn::Size)
+        };
+        let size_order = order_for(size_column);
+        let (time_label, time_column) = if order_for(SortColumn::HardLinks).is_some() {
+            ("Links", SortColumn::HardLinks)
+        } else if order_for(SortColumn::Inode).is_some() {
+            ("Inode", SortColumn::Inode)
+        } else if order_for(SortColumn::Accessed).is_some() {
+            ("Accessed", SortColumn::Accessed)
+        } else if order_for(SortColumn::Changed).is_some() {
+            ("Changed", SortColumn::Changed)
+        } else if order_for(SortColumn::Created).is_some() {
+            ("Created", SortColumn::Created)
+        } else {
+            ("Modified", SortColumn::Modified)
+        };
+        let modified_order = order_for(time_column);
+        let width = header_width(ui, size_label, size_order)
             + GAP
-            + header_width(ui, "Modified", modified_order);
+            + header_width(ui, time_label, modified_order);
         ui.allocate_ui_with_layout(
             Vec2::new(width, ui.available_height()),
             Layout::left_to_right(Align::Center),
             |ui| {
-                if crate::app::glyphs::sort_header(ui, "Size", size_order, color).clicked() {
-                    clicked = Some(SortColumn::Size);
+                if crate::app::glyphs::sort_header(ui, size_label, size_order, color).clicked() {
+                    clicked = Some(size_column);
                 }
                 ui.add_space(GAP);
-                if crate::app::glyphs::sort_header(ui, "Modified", modified_order, color).clicked()
+                if crate::app::glyphs::sort_header(ui, time_label, modified_order, color).clicked()
                 {
-                    clicked = Some(SortColumn::Modified);
+                    clicked = Some(time_column);
                 }
             },
         );
@@ -881,6 +920,7 @@ impl App {
         t: &ThemeColors,
         image_cache: &mut crate::image_cache::ImageCache,
         pdf_cache: &mut crate::pdf_preview::Cache,
+        image_metadata: &mut crate::image_metadata::Cache,
         panel_side: &str,
         tree_open: bool,
         size_bars: bool,
@@ -1185,8 +1225,11 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            for (mode, label) in [(crate::panel::BrowserMode::List, "List"), (crate::panel::BrowserMode::Icons, "Icons")] {
-                                if ui.selectable_label(panel.browser_mode() == mode, label).clicked() { panel.set_browser_mode(mode); }
+                            for (mode, label) in [(crate::panel::BrowserMode::List, "List"), (crate::panel::BrowserMode::Icons, "Icons"), (crate::panel::BrowserMode::Miller, "Columns")] {
+                                let choice=ui.selectable_label(panel.browser_mode() == mode, label);
+                                #[cfg(feature="visual-qa")]
+                                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("browser-mode",panel_side,label)),choice.rect));
+                                if choice.clicked() { panel.set_browser_mode(mode); }
                             }
                             let mut query = panel.search_query().to_string();
                             let text_filter_active = !query.trim().is_empty();
@@ -1380,6 +1423,7 @@ impl App {
                                 .fill(t.bg_panel)
                                 .inner_margin(Margin::same(14))
                                 .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.x=8.0;
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             egui::RichText::new("Get Info")
@@ -1398,6 +1442,7 @@ impl App {
                                     });
                                     ui.add(egui::Separator::default().spacing(8.0));
                                     ui.add_space(4.0);
+                                    egui::ScrollArea::vertical().id_salt(("info-body",panel_side)).auto_shrink([false,false]).show(ui,|ui|{
                                     ui.label(
                                         egui::RichText::new(&card.name)
                                             .size(15.0)
@@ -1412,26 +1457,37 @@ impl App {
                                                     .size(11.0)
                                                     .color(t.text_muted),
                                             );
-                                            ui.label(
+                                            ui.add(egui::Label::new(
                                                 egui::RichText::new(v)
                                                     .size(11.0)
-                                                    .color(t.text_secondary),
-                                            );
+                                                    .color(t.text_secondary)).wrap());
                                         });
                                     };
                                     row("Kind", &card.kind);
                                     row("Size", &card.size);
+                                    row("Allocated size", &card.allocated_size);
+                                    row("Filesystem ID", &card.filesystem_id);
+                                    row("Hard links", &card.hard_links);
+                                    row("Owner UID", &card.owner_uid);
+                                    row("Group GID", &card.owner_gid);
                                     if let Some(n) = card.children {
                                         row("Items", &n.to_string());
                                     }
                                     row("Modified", &card.modified);
+                                    row("Accessed", &card.accessed);
+                                    row("Created", &card.created);
+                                    row("Metadata changed", &card.changed);
                                     row("Permissions", &card.permissions);
+                                    if let Some(status)=&card.link_status {row("Link status",status);}
+                                    if let Some(identity)=&card.image_metadata {copy_preview_text=image_metadata.render(ui,identity,panel_side);}
+                                    ui.small("Hard-link count includes this name. Shared blocks do not predict space freed by deletion.");
                                     ui.add_space(6.0);
                                     ui.label(
                                         egui::RichText::new(&card.path)
                                             .size(10.0)
                                             .color(t.text_muted),
                                     );
+                                    });
                                 });
                         }
                     }
@@ -1973,6 +2029,67 @@ mod tests {
             values.iter().any(|value| value == NAV_LOCK_BADGE_LABEL),
             "no nav-lock badge in {values:?}"
         );
+    }
+
+    #[test]
+    fn filtered_selected_pane_does_not_expand_its_resizable_container() {
+        let dir = crate::testutil::TempDir::new();
+        let a = dir.file("sparse.bin", "a");
+        let b = dir.file("dense.bin", "b");
+        let hidden = dir.file("notes.md", "c");
+        let mut panel = crate::panel::PanelState::new(dir.path().to_path_buf());
+        panel.refresh();
+        panel.replace_selection([a, b, hidden]);
+        panel.set_search_query(".bin");
+        panel.set_sort(SortColumn::Allocated);
+        let ctx = egui::Context::default();
+        let mut images = crate::image_cache::ImageCache::new();
+        let mut pdf = crate::pdf_preview::Cache::default();
+        for frame in 0..12 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                events: vec![egui::Event::PointerMoved(egui::pos2(318.0, 324.0))],
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                let response = egui::Panel::left("filtered-test")
+                    .default_size(637.0)
+                    .min_size(237.0)
+                    .resizable(true)
+                    .show(ui, |ui| {
+                        super::App::render_panel(
+                            &mut panel,
+                            ui,
+                            true,
+                            false,
+                            &crate::theme::ThemeColors::dark(),
+                            &mut images,
+                            &mut pdf,
+                            &mut crate::image_metadata::Cache::default(),
+                            "left",
+                            false,
+                            false,
+                            None,
+                            &|_| {},
+                            false,
+                            &[],
+                            crate::density::metrics(crate::density::Density::Comfortable),
+                            true,
+                            false,
+                            false,
+                        );
+                    });
+                assert!(
+                    response.response.rect.width() <= 640.0,
+                    "frame {frame}: {:?}",
+                    response.response.rect
+                );
+            });
+            let _ = crate::testutil::take_egui_output(output);
+        }
     }
 
     #[test]

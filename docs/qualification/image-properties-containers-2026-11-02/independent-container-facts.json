@@ -1,0 +1,98 @@
+[
+  {
+    "scenario": "exif_png_info",
+    "source_sha256": "2a486719854f582eafd3ad9810f0ae92e7809ea6aeb797c3aca605fc4611676a",
+    "properties": {
+      "Format": "PNG",
+      "Header dimensions": "4 \u00d7 3 pixels",
+      "Camera maker": "\"Commander QA\"",
+      "Camera model": "\"Fixture Camera\"",
+      "Lens": "\"QA 50mm\"",
+      "Taken": "2026-11-02 12:34:56",
+      "Exposure": "1/125 s",
+      "Aperture": "f/2.8",
+      "ISO": "200",
+      "Focal length": "50 mm",
+      "Orientation": "row 0 at right and column 0 at top",
+      "Pixel width": "4 pixels",
+      "Pixel height": "3 pixels",
+      "GPS latitude": "41 deg 43 min 0 sec N",
+      "GPS longitude": "44 deg 47 min 0 sec E",
+      "GPS altitude": "450 meters above sea level"
+    }
+  },
+  {
+    "scenario": "exif_tiff_info",
+    "source_sha256": "651687d3a4dff209202caefb2284e0f85902cf3be52a3d71c52584f1ffac2951",
+    "properties": {
+      "Format": "TIFF",
+      "Header dimensions": "4 \u00d7 3 pixels",
+      "Camera maker": "\"Commander QA\"",
+      "Camera model": "\"Fixture Camera\"",
+      "Lens": "\"QA 50mm\"",
+      "Taken": "2026-11-02 12:34:56",
+      "Exposure": "1/125 s",
+      "Aperture": "f/2.8",
+      "ISO": "200",
+      "Focal length": "50 mm",
+      "Orientation": "row 0 at right and column 0 at top",
+      "Pixel width": "4 pixels",
+      "Pixel height": "3 pixels",
+      "GPS latitude": "41 deg 43 min 0 sec N",
+      "GPS longitude": "44 deg 47 min 0 sec E",
+      "GPS altitude": "450 meters above sea level"
+    }
+  },
+  {
+    "scenario": "exif_webp_info",
+    "source_sha256": "3a89524ffb1d7160f4e9b7e2d8e5d1d9d8bff063daf26a3e75830d46dd028fee",
+    "properties": {
+      "Format": "WebP",
+      "Header dimensions": "4 \u00d7 3 pixels",
+      "Camera maker": "\"Commander QA\"",
+      "Camera model": "\"Fixture Camera\"",
+      "Lens": "\"QA 50mm\"",
+      "Taken": "2026-11-02 12:34:56",
+      "Exposure": "1/125 s",
+      "Aperture": "f/2.8",
+      "ISO": "200",
+      "Focal length": "50 mm",
+      "Orientation": "row 0 at right and column 0 at top",
+      "Pixel width": "4 pixels",
+      "Pixel height": "3 pixels",
+      "GPS latitude": "41 deg 43 min 0 sec N",
+      "GPS longitude": "44 deg 47 min 0 sec E",
+      "GPS altitude": "450 meters above sea level"
+    }
+  },
+  {
+    "scenario": "exif_info",
+    "source_sha256": "cbc76094508f12f461f97c4f27f88279d8b7157aff3d3c7fbd483617ebcdf6eb",
+    "properties": {
+      "Format": "JPEG",
+      "Header dimensions": "4 \u00d7 3 pixels",
+      "Camera maker": "\"Commander QA\"",
+      "Camera model": "\"Fixture Camera\"",
+      "Lens": "\"QA 50mm\"",
+      "Taken": "2026-11-02 12:34:56",
+      "Exposure": "1/125 s",
+      "Aperture": "f/2.8",
+      "ISO": "200",
+      "Focal length": "50 mm",
+      "Orientation": "row 0 at right and column 0 at top",
+      "Pixel width": "4 pixels",
+      "Pixel height": "3 pixels",
+      "GPS latitude": "41 deg 43 min 0 sec N",
+      "GPS longitude": "44 deg 47 min 0 sec E",
+      "GPS altitude": "450 meters above sea level"
+    }
+  },
+  {
+    "scenario": "image_header_info",
+    "source_sha256": "3784a398e7938f2ea56e3dd9720b6db1716a260a22ac023f053ad0005a778bcf",
+    "properties": {
+      "Format": "PNG",
+      "Header dimensions": "4 \u00d7 3 pixels"
+    }
+  }
+]

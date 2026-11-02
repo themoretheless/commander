@@ -1,0 +1,67 @@
+{
+  "apply": {
+    "clicked": false,
+    "down": true,
+    "enabled": false,
+    "hovered": false,
+    "id": "Id::new(10595527320215386277)",
+    "kind": "apply",
+    "pointer": [
+      418.28125,
+      366.0
+    ],
+    "rect": [
+      360.0,
+      529.0,
+      483.96875,
+      553.0
+    ]
+  },
+  "phase": 23,
+  "reset": {
+    "clicked": false,
+    "down": true,
+    "enabled": true,
+    "hovered": false,
+    "id": "Id::new(7191319803250058260)",
+    "kind": "reset",
+    "pointer": [
+      418.28125,
+      366.0
+    ],
+    "rect": [
+      482.5625,
+      354.0,
+      615.21875,
+      378.0
+    ]
+  },
+  "state": {
+    "accessed": "",
+    "busy": false,
+    "error": null,
+    "modified": "",
+    "needs_reload": false,
+    "report": {
+      "cancelled": false,
+      "changed": 2,
+      "errors": [],
+      "unchanged": 0
+    },
+    "rows": [
+      {
+        "accessed": "2025-01-02T00:00:00Z",
+        "error": null,
+        "modified": "2026-10-31T06:30:00Z",
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13450-timestamps/left/times-a.txt"
+      },
+      {
+        "accessed": "2025-01-02T00:00:00Z",
+        "error": null,
+        "modified": "2026-10-31T06:30:00Z",
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13450-timestamps/left/times-b.txt"
+      }
+    ],
+    "timestamps": true
+  }
+}

@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.05s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 2 tests
+test search::tests::exclude_file_query_keeps_directories_and_archive_descendants ... ok
+test query::tests::exclude_file_query_preserves_masks_case_and_saved_semantics ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2547 filtered out; finished in 0.48s
+

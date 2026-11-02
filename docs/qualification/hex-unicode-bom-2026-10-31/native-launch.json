@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793396861.587085,
+  "binary_sha256": "1d9e49418220e4d5ffc481731024bd08fdd056d2471a01cf719b31ccafd4281c",
+  "scenario": "hex_bom_encoding",
+  "output_root": "/tmp/commander-native-hex-bom-1793396861538726000"
+}

@@ -18,9 +18,8 @@ const MAX_IN_FLIGHT_LISTINGS: usize = 2;
 /// navigation stuck on Loading; this separately bounds how many may pile up.
 const MAX_CANCELLED_LISTINGS: usize = 4;
 
-/// Workload replacement keys include `(kind, path, generation)` but not the
-/// panel. Generations must therefore be process-wide, or two panes listing the
-/// same path can cancel/reject one another as stale.
+/// Process-wide identifiers keep diagnostics and binding identities distinct
+/// across panels. Supersession cancellation stays local to each controller.
 static NEXT_LISTING_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn next_listing_generation() -> u64 {
@@ -269,9 +268,11 @@ impl ListingJobController {
         let worker_notify = Arc::clone(&notify);
         let abandoned_notify = notify;
         let worker_read = read_dir;
+        // Replacement by (kind,path) would cancel a different panel/column
+        // browsing the same directory. This controller already cancels its
+        // own superseded jobs and checks bindings before publication.
         let spec = TaskSpec::new(TaskKind::Listing, binding.path.clone(), binding.generation)
-            .priority(Priority::Interactive)
-            .replace_older_generation();
+            .priority(Priority::Interactive);
 
         let submitted = workload.submit_with_abandonment(
             spec,

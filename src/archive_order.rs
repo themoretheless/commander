@@ -5,6 +5,7 @@ use crate::archive::{ArchiveKind, ArchiveListing};
 pub enum Field {
     #[default]
     Name,
+    Extension,
     Size,
     Packed,
     Ratio,
@@ -12,8 +13,9 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Name,
+        Self::Extension,
         Self::Size,
         Self::Packed,
         Self::Ratio,
@@ -22,6 +24,7 @@ impl Field {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Name => "Member",
+            Self::Extension => "Extension",
             Self::Size => "Size",
             Self::Packed => "Packed",
             Self::Ratio => "Ratio",
@@ -30,6 +33,9 @@ impl Field {
     }
     pub fn available(self, kind: ArchiveKind) -> bool {
         kind == ArchiveKind::Zip || !matches!(self, Self::Packed | Self::Ratio)
+    }
+    pub fn default_descending(self) -> bool {
+        !matches!(self, Self::Name | Self::Extension)
     }
 }
 
@@ -67,7 +73,7 @@ impl Order {
             self.descending = !self.descending;
         } else {
             self.field = field;
-            self.descending = field != Field::Name;
+            self.descending = field.default_descending();
         }
     }
 
@@ -80,6 +86,8 @@ impl Order {
             }
             let cmp = match self.field {
                 Field::Name => self.compare_names(&lower_paths[left], &lower_paths[right]),
+                Field::Extension => extension_key(&lower_paths[left], a.is_dir)
+                    .cmp(extension_key(&lower_paths[right], b.is_dir)),
                 Field::Size => a.size.cmp(&b.size),
                 Field::Packed => a.compressed_size.cmp(&b.compressed_size),
                 Field::Modified => a.modified.cmp(&b.modified),
@@ -101,6 +109,17 @@ impl Order {
     }
 }
 
+pub fn extension_key(path: &str, is_dir: bool) -> &str {
+    if is_dir {
+        ""
+    } else {
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +137,13 @@ mod tests {
                     index,
                     path: PathBuf::from(name),
                     is_dir: index == 2,
+                    is_regular: index != 2,
+                    unix_mode: None,
+                    owner_uid: None,
+                    owner_gid: None,
+                    file_type_bits: 0,
+                    is_symlink: false,
+                    is_executable: Some(false),
                     size: [60, 4, 0][index],
                     compressed_size: [30, 1, 0][index],
                     tar_name: None,
@@ -146,6 +172,75 @@ mod tests {
     }
 
     #[test]
+    fn extensions_use_final_component_and_keep_duplicate_member_ids() {
+        let mut listing = listing();
+        let template = listing.members[0].clone();
+        listing.members = [
+            "z/file10.TXT",
+            "a/file2.txt",
+            "archive.tar.gz",
+            ".profile",
+            "dir.rs",
+            "noext",
+            "trailing.",
+            "a/file2.txt",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, path)| ArchiveMember {
+            index,
+            path: (*path).into(),
+            is_dir: index == 4,
+            ..template.clone()
+        })
+        .collect();
+        let order = Order {
+            field: Field::Extension,
+            ..Default::default()
+        };
+        assert_eq!(sorted(&listing, order), [3, 4, 5, 6, 2, 1, 7, 0]);
+        assert_eq!(
+            sorted(
+                &listing,
+                Order {
+                    descending: true,
+                    ..order
+                }
+            ),
+            [1, 7, 0, 2, 3, 4, 5, 6]
+        );
+        assert_eq!(
+            sorted(
+                &listing,
+                Order {
+                    folders_first: true,
+                    descending: true,
+                    ..order
+                }
+            ),
+            [4, 1, 7, 0, 2, 3, 5, 6]
+        );
+        assert_eq!(super::extension_key("parent.txt/file", false), "");
+        assert_eq!(super::extension_key(".config.json", false), "json");
+        assert_eq!(super::extension_key("a.ёж", false), "ёж");
+        let mut chosen = Order::default();
+        chosen.choose(Field::Extension);
+        assert!(!chosen.descending);
+        chosen.choose(Field::Extension);
+        assert!(chosen.descending);
+        for kind in [
+            ArchiveKind::Zip,
+            ArchiveKind::Tar,
+            ArchiveKind::TarGz,
+            ArchiveKind::TarBz2,
+            ArchiveKind::TarXz,
+            ArchiveKind::TarZstd,
+        ] {
+            assert!(Field::Extension.available(kind));
+        }
+    }
+
+    #[test]
     fn natural_archive_names_ties_and_duplicate_ids_are_deterministic() {
         let mut listing = listing();
         let template = listing.members[0].clone();
@@ -156,6 +251,13 @@ mod tests {
                 index,
                 path: (*name).into(),
                 is_dir: false,
+                is_regular: true,
+                unix_mode: None,
+                owner_uid: None,
+                owner_gid: None,
+                file_type_bits: 0,
+                is_symlink: false,
+                is_executable: Some(false),
                 size: 1,
                 ..template.clone()
             })

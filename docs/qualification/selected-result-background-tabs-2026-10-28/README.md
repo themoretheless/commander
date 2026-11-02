@@ -1,0 +1,15 @@
+# Open selected Find results in background tabs — 2026-10-28
+
+Independent adaptation of Double Commander's [Open In New Tab(s) for selected search results](https://doublecmd.github.io/doc/en/findfiles.html). No upstream code copied.
+
+Open selected tabs reveals one target per selected visible result beside the active tab, in the displayed/time-group order. Find stays open, the active tab/pane and both live listings/selections remain in place, and result selection is retained. Archive results reveal their native archive containers; repeated containers intentionally get separate tabs for separate selected rows, as do repeated native target paths. A target is focused when its lazy tab is activated, using the existing pending-focus mechanism. Hidden target names enable hidden rows only in their new tab.
+
+The Workspace group API preflights operation guards, the complete group's capacity under the existing eight-tab limit and lexical parent/name validity before changing slots. It prepares lazy panels then inserts them together in order, updating tab revision/capabilities once. Insufficient capacity, a blocking modal/operation, an empty group or an invalid lexical target returns refusal without opening a partial group. The UI reports refusal in Find. No filesystem stat/target existence check is added during preparation; stale search hits retain the existing activation-time behavior.
+
+Focused result regressions include both-pane group ordering, repeated targets, deferred cursor landing, hidden-target view, preservation of live paths/picks/active tab, empty/invalid-target/blocked-request rejection, insufficient capacity without mutation and exact remaining-capacity acceptance. Find target collection additionally covers selected/hidden rows, current result order, archive-container mapping and repeated containers in the full suite.
+
+Native SearchResults QA retains prior hide/restore/copy/selection/keyboard/single-tab checks and then clicks Open selected tabs with two selected rows. It requires five total tabs before proceeding to hide/restore, and final readiness keeps the original tab active with all results intact and query focus. The same two recording clipboard writes are permitted; opening groups must add no native effects.
+
+The first test compile used a nonexistent tabs_session helper; it was corrected to the existing tab_snapshot API and the rejected log retained. No commit or push.
+
+Validation: **2531 passed, 0 failed, 3 ignored** in the full locked visual-qa suite; 12 focused result regressions passed. All-target visual-qa Clippy with warnings denied, current QA debug build, formatting and scoped whitespace checks passed. Native group-open sequence passed **16/16 capture checks**, retaining all mandatory glyph probes and existing effect isolation. Frame visually inspected: five left tabs, first still active, Find still open with all three restored results and query focus. The QA app exited after capture before accessibility attachment completed; fresh manifest/log/frame establish success. See [native frame](frame.png).

@@ -1,0 +1,26 @@
+{
+  "expression": "parent:\"/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98662-parent_search/left/scope [literal]\"",
+  "matched": 2,
+  "rows": [
+    {
+      "allocated": 4096,
+      "explanations": [
+        "parent:/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98662-parent_search/left/scope [literal]"
+      ],
+      "name": "child.txt",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98662-parent_search/left/scope [literal]/child.txt",
+      "size": 6
+    },
+    {
+      "allocated": null,
+      "explanations": [
+        "parent:/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98662-parent_search/left/scope [literal]"
+      ],
+      "name": "nested",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98662-parent_search/left/scope [literal]/nested",
+      "size": 0
+    }
+  ],
+  "skipped": 0,
+  "source": "Live + archives"
+}

@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.02s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 1 test
+test query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match ... FAILED
+
+failures:
+
+---- query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match stdout ----
+
+thread 'query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match' (87648153) panicked at src/query.rs:1789:13:
+assertion failed: Query::parse(&format!("size:>{}B", u64::MAX), mode).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    query::tests::strict_size_upper_bound_never_saturates_to_an_inclusive_match
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2542 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin commander`

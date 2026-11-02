@@ -1,0 +1,17 @@
+{
+  "expression": "allocated:>0 name:disk-",
+  "matched": 1,
+  "rows": [
+    {
+      "allocated": 8192,
+      "explanations": [
+        "allocated:>=1B (observed 8192 allocated bytes)",
+        "literal \"disk-\""
+      ],
+      "name": "disk-dense",
+      "size": 8192
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

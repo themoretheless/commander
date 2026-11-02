@@ -1,0 +1,9 @@
+{
+  "src/hex_preview.rs": "80dfe0857b38358e004ca675c03911f0b693dd41fab6c50cef2f6719bc5aba76",
+  "src/visual_qa.rs": "428b2527f14a22a0e9fd2c766fa0c205e8f1868f44d206f36c1c44f6632e08b2",
+  "Cargo.toml": "16c4b6db3b8b9f381b52fd3034622336f0f51881c789ed6ab93a1614dec8009b",
+  "Cargo.lock": "531f713572670f0b9abc020aaa37846b23fc7172444197573ad9748dfa938c60",
+  "README.md": "292ce39d0a7443cfe9ec5e019add2dcc102b006ffe8e63d0fa106ac8c293dba2",
+  "docs/research/feature-transfers-2026-10-27.md": "89c50e2a22bf816fad39399635254d3bac26aeef4843fce1aca16c19fe10169f",
+  "docs/strata-parity.md": "b7306211f4eb3b81755b69268380f93e7d37669f6f50fce18ed7520f30fb3bd6"
+}

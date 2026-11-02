@@ -12,3 +12,11 @@ The catalog includes Tinted Theming Base16 schemes, upstream revision
 scheme authors. See [license](data/licenses/Tinted-Theming-MIT.txt).
 Commander maps their semantic colors to egui; GTK CSS and syntax themes are
 not used. Original catalog color values and palette identifiers are preserved.
+
+## Rust EXIF metadata parser
+
+Image metadata uses `kamadak-exif` 0.6.1 and its dependency `mutate_once` 0.1.2,
+Copyright KAMADA Ken'ichi, BSD-2-Clause. See
+[EXIF license](data/licenses/kamadak-exif-BSD-2-Clause.txt) and
+[mutate_once license](data/licenses/mutate-once-BSD-2-Clause.txt).
+The parser runs against a bounded in-memory snapshot on a preview worker.

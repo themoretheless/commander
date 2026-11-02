@@ -1,0 +1,14 @@
+{
+  "src/favorite_search.rs": "bbb0fba7784dd702056390846208ed7c751aeba79528879a9598e91d3263f2ca",
+  "src/omnibar.rs": "cf3f408d8d2a42caa1a1f329f31be1c86ce3b29429e5cd9ef0f762d72be03c42",
+  "src/app/omnibar_dialog.rs": "4bad2af2cd28eafc5da866cc5fadeb1e46f2954dc716fd4e8ef6c94070917d6e",
+  "src/workspace.rs": "500ffd5aa982d2105129ca4a009fd716ba60a76a6b51857a56b108d57d0c752e",
+  "src/workspace/tabs.rs": "f477788912f4b67ab9f65fc8f14331eb020a208ded7953834ee99df7495dfd8a",
+  "src/app/tree.rs": "9819fdcf5ff571a7b40f38aa1830207e67109607da7694be022e4567ff6f8b5b",
+  "src/command.rs": "3b6f888181867e77797b6d9b16dff49b87685dabd5cc39c68e8089906d97d307",
+  "src/ui_request.rs": "e51911968d1cab167b9aebd30e59e237c3c977ec13d3d8711ca7236b255375d4",
+  "src/app/update.rs": "1789c5447629144cc0c74df7e8fb498b10c99efcf04738bc2f8b6a60cc659d2c",
+  "src/main.rs": "41c2a11c7334b4da010d21f6c7355ea04f78382f98182be21c59c560c8ded498",
+  "src/visual_qa.rs": "4bd3cd0bafc70f596d7c2da17e8bb2acb498f375b49bfa7c929545a7843d8e4a",
+  ".github/workflows/ci.yml": "943ee997af4b7f0fe81d4507f9cc1110ef632ca1e8bafa295a86ab9aadbe90e5"
+}

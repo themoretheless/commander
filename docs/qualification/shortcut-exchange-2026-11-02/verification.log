@@ -1,0 +1,1 @@
+PASS: six gates; 3247 tests; native export/import/Apply/motion and previous sequence/modal-isolation control each 14/14; actual recorded clipboard JSON and pre/post-Apply ownership independently matched; source/binary/tool hashes. Dependency audit remains open with unchanged graph/policy.

@@ -1,0 +1,19 @@
+{
+  "expression": "parent:\"/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88809-parent_search/left/scope [literal]\" content:needle type:regular",
+  "matched": 1,
+  "rows": [
+    {
+      "allocated": 4096,
+      "explanations": [
+        "parent:/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88809-parent_search/left/scope [literal]",
+        "type:regular",
+        "literal \"needle\""
+      ],
+      "name": "child.txt",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88809-parent_search/left/scope [literal]/child.txt",
+      "size": 6
+    }
+  ],
+  "skipped": 0,
+  "source": "Live + archives"
+}

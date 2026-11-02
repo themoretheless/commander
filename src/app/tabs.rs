@@ -1,5 +1,101 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClosedTabAction {
+    Reopen(usize),
+    Forget(usize),
+    Clear,
+}
+
+fn closed_tabs_menu(
+    ui: &mut egui::Ui,
+    snapshot: &crate::workspace::tabs::SavedTabs,
+    side: ActivePanel,
+) -> Option<ClosedTabAction> {
+    if snapshot.closed.is_empty() {
+        return None;
+    }
+    let mut action = None;
+    let response = ui.menu_button(format!("Closed ({})", snapshot.closed.len()), |ui| {
+        for (index, closed) in snapshot.closed.iter().enumerate().rev() {
+            ui.horizontal(|ui| {
+                let title = closed.tab.display_title();
+                let entry = ui.add_enabled(
+                    snapshot.entries.len() < crate::workspace::tabs::MAX_TABS,
+                    egui::Button::new(format!(
+                        "Reopen {}",
+                        crate::display_name::truncate_preserving_extension(&title, 32)
+                    )),
+                );
+                entry.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        entry.enabled(),
+                        format!(
+                            "Reopen closed folder tab: {title}, {}",
+                            closed.tab.path.display()
+                        ),
+                    )
+                });
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new(("closed-tab-reopen", side, index)),
+                        entry.rect,
+                    )
+                });
+                if entry
+                    .on_hover_text(closed.tab.path.display().to_string())
+                    .clicked()
+                {
+                    action = Some(ClosedTabAction::Reopen(index));
+                }
+                let forget = ui
+                    .button("Forget")
+                    .on_hover_text("Remove this history entry; files are unchanged");
+                forget.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        forget.enabled(),
+                        format!("Forget closed folder tab: {title}"),
+                    )
+                });
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new(("closed-tab-forget", side, index)),
+                        forget.rect,
+                    )
+                });
+                if forget.clicked() {
+                    action = Some(ClosedTabAction::Forget(index));
+                }
+            });
+        }
+        ui.separator();
+        let clear = ui.button("Clear history");
+        #[cfg(any(test, feature = "visual-qa"))]
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(("closed-tab-clear", side)), clear.rect));
+        if clear.clicked() {
+            action = Some(ClosedTabAction::Clear);
+        }
+        ui.label("Cmd+Shift+T reopens the most recent tab");
+        if action.is_some() {
+            ui.close();
+        }
+    });
+    #[cfg(any(test, feature = "visual-qa"))]
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new(("closed-tab-menu", side)),
+            response.response.rect,
+        )
+    });
+    let _ = (side, response);
+    action
+}
+
 impl App {
     /// Applies tab changes after rendering the strip so no row can retarget an action mid-loop.
     pub(super) fn render_folder_tabs(&mut self, ui: &mut egui::Ui, side: ActivePanel) -> bool {
@@ -8,10 +104,11 @@ impl App {
         let active_binding = (
             snapshot.active,
             snapshot.entries[snapshot.active].path.clone(),
+            snapshot.entries[snapshot.active].full_path_label,
         );
         let reveal_active = ui.ctx().data_mut(|data| {
-            let changed =
-                data.get_temp::<(usize, PathBuf)>(reveal_key).as_ref() != Some(&active_binding);
+            let changed = data.get_temp::<(usize, PathBuf, bool)>(reveal_key).as_ref()
+                != Some(&active_binding);
             data.insert_temp(reveal_key, active_binding);
             changed
         });
@@ -22,6 +119,7 @@ impl App {
         let mut copy_path_at = None;
         let mut rename_title = None;
         let mut protection_change = None;
+        let mut path_label_change = None;
         let mut transfer_tab = None;
         let mut new_tab = false;
         let mut background_tab = None;
@@ -40,7 +138,7 @@ impl App {
         let mut close_group = None;
         let mut close_left = None;
         let mut reopen = None;
-        let closed_paths = self.ws.closed_tab_paths(side);
+        let mut history_action = None;
         let duplicate_count = self.ws.duplicate_tab_count(side);
         egui::Frame::NONE
             .fill(self.colors.bg_card)
@@ -81,38 +179,19 @@ impl App {
                             .on_hover_text("Close active folder tab (Cmd+Shift+W)")
                             .clicked();
                     }
-                    if !closed_paths.is_empty() {
-                        ui.add_enabled_ui(snapshot.entries.len() < crate::workspace::tabs::MAX_TABS, |ui| {
-                            ui.menu_button(format!("Closed ({})", closed_paths.len()), |ui| {
-                                for (index, path) in closed_paths.iter().enumerate().rev() {
-                                    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
-                                    let entry = ui.button(format!("Reopen {}", crate::display_name::truncate_preserving_extension(&name, 32)));
-                                    entry.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, entry.enabled(), format!("Reopen closed folder tab: {}", path.display())));
-                                    if entry.on_hover_text(path.display().to_string()).clicked() {
-                                        reopen = Some(index);
-                                        ui.close();
-                                    }
-                                }
-                                ui.separator();
-                                ui.label("Cmd+Shift+T reopens the most recent tab");
-                            });
-                        });
-                    }
+                    history_action = closed_tabs_menu(ui, &snapshot, side);
                     egui::ScrollArea::horizontal()
                         .id_salt(("folder_tabs", side))
                         .max_height(28.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 for (index, tab) in snapshot.entries.iter().enumerate() {
-                                    let folder_name = tab.path.file_name().unwrap_or(tab.path.as_os_str()).to_string_lossy();
-                                    let name = tab.title.as_deref().unwrap_or(&folder_name);
+                                    let name = tab.display_title();
                                     let label = format!(
                                         "{}{} {}",
                                         if tab.close_protected { "*" } else { "" },
                                         index + 1,
-                                        crate::display_name::truncate_preserving_extension(
-                                            name, 18
-                                        )
+                                        if tab.full_path_label { crate::display_name::truncate_path(&name, 40) } else { crate::display_name::truncate_preserving_extension(&name, 18) }
                                     );
                                     let button =
                                         ui.selectable_label(index == snapshot.active, label);
@@ -144,6 +223,12 @@ impl App {
                                         #[cfg(feature = "visual-qa")]
                                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("folder-tab-protect", side)), protect.rect));
                                         if protect.changed() { protection_change = Some((index, protected)); }
+                                        let mut full_path = tab.full_path_label;
+                                        let path_label = ui.checkbox(&mut full_path, "Show full folder path")
+                                            .on_hover_text("Use a compact path label on this tab; keep its custom title for switching back");
+                                        #[cfg(feature = "visual-qa")]
+                                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("folder-tab-full-path", side)), path_label.rect));
+                                        if path_label.changed() { path_label_change = Some((index, full_path)); ui.close(); }
                                         let mut title = ui.ctx().data(|data| data.get_temp::<String>(title_id))
                                             .unwrap_or_else(|| tab.title.clone().unwrap_or_default());
                                         ui.label("Tab title");
@@ -254,6 +339,20 @@ impl App {
                         });
                 });
             });
+        match history_action {
+            Some(ClosedTabAction::Forget(index)) => {
+                self.ws.forget_closed_tab_at(side, index);
+                ui.ctx().request_repaint();
+                return false;
+            }
+            Some(ClosedTabAction::Clear) => {
+                self.ws.clear_closed_tabs(side);
+                ui.ctx().request_repaint();
+                return false;
+            }
+            Some(ClosedTabAction::Reopen(index)) => reopen = Some(index),
+            None => {}
+        }
         if let Some(index) = transfer_tab {
             let visible_changed = index == snapshot.active;
             if self.ws.move_tab_to_other(side, index) {
@@ -272,6 +371,13 @@ impl App {
             if self.ws.duplicate_tab_at(side, index) {
                 self.ui.cancel_context_menu();
                 self.compare_cache = None;
+                ui.ctx().request_repaint();
+            }
+            return false;
+        }
+        if let Some((index, full_path)) = path_label_change {
+            if self.ws.set_tab_full_path_label(side, index, full_path) {
+                self.ui.cancel_context_menu();
                 ui.ctx().request_repaint();
             }
             return false;
@@ -369,5 +475,123 @@ impl App {
             return self.ws.close_tab(side);
         }
         select.is_some_and(|index| self.ws.select_tab(side, index))
+    }
+}
+
+#[cfg(test)]
+mod closed_menu_tests {
+    use super::*;
+    fn frame(
+        ctx: &egui::Context,
+        snapshot: &crate::workspace::tabs::SavedTabs,
+        events: Vec<egui::Event>,
+        time: &mut f64,
+    ) -> Option<ClosedTabAction> {
+        *time += 0.1;
+        let mut action = None;
+        crate::testutil::discard_egui_output(ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 700.0),
+                )),
+                time: Some(*time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                action = closed_tabs_menu(ui, snapshot, ActivePanel::Left);
+            },
+        ));
+        action
+    }
+    fn click(
+        ctx: &egui::Context,
+        snapshot: &crate::workspace::tabs::SavedTabs,
+        id: egui::Id,
+        time: &mut f64,
+    ) -> Option<ClosedTabAction> {
+        let pos = ctx.data(|d| d.get_temp::<egui::Rect>(id)).unwrap().center();
+        let mut result = None;
+        for pressed in [true, false] {
+            result = result.or(frame(
+                ctx,
+                snapshot,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                time,
+            ));
+        }
+        result
+    }
+    #[test]
+    fn history_menu_remains_actionable_at_capacity_without_reopening() {
+        let root = crate::testutil::TempDir::new();
+        let mut ws = crate::workspace::Workspace::new(root.path().into(), root.path().into());
+        assert!(ws.new_tab(ActivePanel::Left, None));
+        assert!(ws.set_tab_title(ActivePanel::Left, 1, "Saved project"));
+        assert!(ws.close_tab(ActivePanel::Left));
+        let mut snapshot = ws.tab_snapshot(ActivePanel::Left);
+        let entry = snapshot.entries[0].clone();
+        snapshot
+            .entries
+            .resize(crate::workspace::tabs::MAX_TABS, entry);
+        for (action, id) in [
+            (
+                None,
+                egui::Id::new(("closed-tab-reopen", ActivePanel::Left, 0usize)),
+            ),
+            (
+                Some(ClosedTabAction::Forget(0)),
+                egui::Id::new(("closed-tab-forget", ActivePanel::Left, 0usize)),
+            ),
+            (
+                Some(ClosedTabAction::Clear),
+                egui::Id::new(("closed-tab-clear", ActivePanel::Left)),
+            ),
+        ] {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            frame(&ctx, &snapshot, vec![], &mut time);
+            click(
+                &ctx,
+                &snapshot,
+                egui::Id::new(("closed-tab-menu", ActivePanel::Left)),
+                &mut time,
+            );
+            for _ in 0..2 {
+                frame(&ctx, &snapshot, vec![], &mut time);
+            }
+            assert_eq!(click(&ctx, &snapshot, id, &mut time), action);
+        }
+        snapshot.entries.truncate(1);
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        frame(&ctx, &snapshot, vec![], &mut time);
+        click(
+            &ctx,
+            &snapshot,
+            egui::Id::new(("closed-tab-menu", ActivePanel::Left)),
+            &mut time,
+        );
+        for _ in 0..2 {
+            frame(&ctx, &snapshot, vec![], &mut time);
+        }
+        assert_eq!(
+            click(
+                &ctx,
+                &snapshot,
+                egui::Id::new(("closed-tab-reopen", ActivePanel::Left, 0usize)),
+                &mut time
+            ),
+            Some(ClosedTabAction::Reopen(0))
+        );
     }
 }

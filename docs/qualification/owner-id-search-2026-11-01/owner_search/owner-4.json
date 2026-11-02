@@ -1,0 +1,23 @@
+{
+  "explanations": [
+    [
+      "uid:424242",
+      "gid:606060",
+      "literal \"owned-\""
+    ],
+    [
+      "uid:424242",
+      "gid:606060",
+      "literal \"owned-\""
+    ]
+  ],
+  "expression": "uid:424242 gid:606060 name:owned-",
+  "matched": 2,
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13332-owner_search/left/owners.tar!/owned-alpha.txt",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-13332-owner_search/left/owners.tar!/owned-link"
+  ],
+  "phase": 4,
+  "skipped": 1,
+  "source": "Live + archives"
+}

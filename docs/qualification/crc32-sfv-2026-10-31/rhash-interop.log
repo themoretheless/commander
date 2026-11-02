@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.37s
+     Running unittests src/main.rs (target/debug/build/commander/46bdd2423b30e094/out/commander-46bdd2423b30e094)
+
+running 1 test
+test checksum::tests::crc32_vectors_comparison_and_sfv_interoperability ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2890 filtered out; finished in 0.02s
+

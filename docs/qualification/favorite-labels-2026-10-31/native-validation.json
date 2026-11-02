@@ -1,0 +1,20 @@
+{
+  "checks_passed": 14,
+  "phase": 20,
+  "native_effect_calls": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "bookmark_rows": 3,
+  "label": "Проект UI",
+  "assigned_slot": 3,
+  "prior_slot_holder_cleared": true,
+  "reloaded_store_equals_live_store": true,
+  "navigated_to_original_design": true,
+  "control_payload_unchanged": true,
+  "binary_hash_matched": true
+}

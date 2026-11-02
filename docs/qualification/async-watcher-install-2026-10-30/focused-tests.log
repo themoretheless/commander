@@ -1,0 +1,30 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.72s
+     Running unittests src/main.rs (target/debug/build/commander/03c9e28554d7c682/out/commander-03c9e28554d7c682)
+
+running 22 tests
+test panel::watcher::tests::path_bound_snapshot_never_borrows_a_stale_subscription ... ok
+test panel::watcher::tests::a_deferred_snapshot_holds_back_its_ticket_until_the_backoff ... ok
+test panel::watcher::tests::deferring_a_ticket_from_an_old_binding_is_ignored ... ok
+test panel::watcher::tests::async_subscription_completion_reconciles_the_initial_listing_gap ... ok
+test panel::watcher::tests::access_events_are_ignored ... ok
+test panel::watcher::tests::events_reported_under_the_canonical_path_are_direct ... ok
+test panel::watcher::tests::events_on_the_folder_or_its_children_are_direct_and_deeper_ones_are_not ... ok
+test panel::watcher::tests::per_path_backend_errors_reconcile_without_restarting ... ok
+test panel::watcher::tests::snapshot_from_another_listing_binding_cannot_acknowledge_ticket ... ok
+test panel::watcher::tests::stale_callback_after_navigation_is_ignored ... ok
+test panel::watcher::tests::stale_install_completion_cannot_activate_a_new_binding ... ok
+test panel::watcher::tests::blocked_install_is_singleflight_off_ui_and_admission_stays_bounded_after_navigation ... ok
+test panel::watcher::tests::deep_change_only_marks_sizes_dirty ... ok
+test panel::watcher::tests::snapshot_older_than_gap_generation_cannot_acknowledge_gap ... ok
+test panel::watcher::tests::event_between_subscription_and_snapshot_is_not_acknowledged_early ... ok
+test panel::watcher::tests::a_full_inbox_collapses_into_a_gap ... ok
+test panel::watcher::tests::repeated_subscription_failures_back_off_without_relisting ... ok
+test panel::watcher::tests::a_backend_error_dropped_on_a_full_inbox_still_restarts ... ok
+test panel::watcher::tests::backend_error_drops_binding_and_observes_retry_backoff ... ok
+test panel::watcher::tests::failed_promotion_keeps_polling_but_failed_initial_install_backs_off ... ok
+test panel::watcher::tests::one_poll_applies_a_bounded_number_of_messages ... ok
+test panel::watcher::tests::installed_background_backend_observes_real_child_creation ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 2641 filtered out; finished in 0.04s
+

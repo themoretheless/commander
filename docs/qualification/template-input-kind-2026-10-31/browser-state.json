@@ -1,0 +1,51 @@
+{
+  "all": true,
+  "applicable": 2,
+  "extensions": "zip",
+  "indices": [
+    0,
+    1,
+    2
+  ],
+  "kind": "files",
+  "limits": {
+    "max": null,
+    "min": 0
+  },
+  "line": "unzip {paths}",
+  "name": "Архив ZIP",
+  "opening_directories": [
+    false,
+    true
+  ],
+  "output_present": false,
+  "query": "",
+  "require_all": false,
+  "run_enabled": false,
+  "run_present": false,
+  "selection_count": 2,
+  "templates": {
+    "items": [
+      {
+        "exts": [
+          "zip"
+        ],
+        "kind": "files",
+        "name": "Архив ZIP",
+        "raw": "unzip {paths}"
+      },
+      {
+        "exts": [
+          "md"
+        ],
+        "name": "Notes",
+        "raw": "wc -l {paths}"
+      },
+      {
+        "exts": [],
+        "name": "Inspect",
+        "raw": "file {paths}"
+      }
+    ]
+  }
+}

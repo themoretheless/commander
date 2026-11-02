@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0308]: `match` arms have incompatible types
+   --> src/route_preview.rs:594:29
+    |
+592 | /             match crate::route_report::json(&route) {
+593 | |                 Ok(text)=> {copied=Some(text);ui.ctx().data_mut(|data|data.remove::<(Arc<Route>,String)>(error_id));},
+    | |                                               ---------------------------------------------------------------------- this is found to be of type `()`
+594 | |                 Err(error)=>ui.ctx().data_mut(|data|data.insert_temp(error_id,(route.clone(),error))),
+    | |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `()`, found `RawKey`
+595 | |             }
+    | |_____________- `match` arms have incompatible types
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

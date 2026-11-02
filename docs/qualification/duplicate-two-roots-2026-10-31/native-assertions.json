@@ -1,0 +1,18 @@
+{
+  "status": "passed",
+  "roots_native_checks": 14,
+  "single_report_native_checks": 14,
+  "input_phases": 21,
+  "exact_root_group_sets": true,
+  "retained_roots_after_panel_context_change": true,
+  "fresh_single_root_fallback": true,
+  "combined_report_context": true,
+  "one_keeper_per_group": true,
+  "recording_clipboard_writes_roots": 1,
+  "recording_clipboard_writes_single_report": 3,
+  "other_recording_effect_calls": 0,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3067,
+  "ignored": 3,
+  "checks": 6
+}

@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.95s
+     Running unittests src/main.rs (target/debug/build/commander/38bcb24728f56284/out/commander-38bcb24728f56284)
+
+running 6 tests
+test spreadsheet_preview::tests::xml_budget_is_aggregate_across_package_parts ... ok
+test spreadsheet_preview::tests::sparse_coordinates_preserve_gaps_precision_errors_dates_and_literal_formulas ... ok
+test spreadsheet_preview::tests::workbook_values_sheet_order_rich_strings_and_cached_formulas_agree ... ok
+test spreadsheet_preview::tests::ods_repeats_covered_cells_and_formula_fallback_are_bounded ... ok
+test spreadsheet_preview::tests::relationship_resolution_rejects_external_escape_missing_and_duplicate_targets ... ok
+test spreadsheet_preview::tests::invalid_cell_references_and_shared_indices_do_not_publish_partial_values ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 2679 filtered out; finished in 0.01s
+

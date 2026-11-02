@@ -1,0 +1,10 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "extension field entry and errors",
+    "saved filter recall and Reset",
+    "focus, accessibility, wrapping and scroll reachability"
+  ]
+}

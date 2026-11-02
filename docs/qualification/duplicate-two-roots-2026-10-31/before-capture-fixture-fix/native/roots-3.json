@@ -1,0 +1,34 @@
+{
+  "both": true,
+  "current_left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left",
+  "current_right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right",
+  "fresh": true,
+  "groups": [
+    {
+      "files": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left/cross.bin",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right/cross.bin"
+      ],
+      "size": 11
+    },
+    {
+      "files": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left/own-1.bin",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left/own-2.bin"
+      ],
+      "size": 11
+    },
+    {
+      "files": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right/invoice.pdf",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right/release.zip"
+      ],
+      "size": 8
+    }
+  ],
+  "issues": 0,
+  "other_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/right",
+  "phase": 3,
+  "recursive": false,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-97495-duplicate_roots/left"
+}

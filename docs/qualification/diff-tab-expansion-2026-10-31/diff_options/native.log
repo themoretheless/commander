@@ -1,0 +1,89 @@
+2026-10-31T14:22:23 INFO  commander::logging: logging initialized
+2026-10-31T14:22:23 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: diff_options
+2026-10-31T14:22:23 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-diff_options-1793442130003957000
+2026-10-31T14:22:23 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 0, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 1, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=true value=false
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 2, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=true changed=true enabled=true value=true
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 3, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 4, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=true value=true
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 5, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=true changed=true enabled=true value=false
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 6, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 7, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=true value=false
+2026-10-31T14:22:24 INFO  commander::visual_qa: Diff options QA phase 8, target Id::new("diff-expand-tabs"), rect [[916.2 141.5] - [1095.6 165.5]]
+2026-10-31T14:22:24 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=true changed=true enabled=true value=true
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 9, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 10, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:25 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=true value=true
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 11, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:25 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 12, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 13, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:25 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 14, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:25 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 15, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 16, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:25 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:25 INFO  commander::visual_qa: Diff options QA phase 17, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:25 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=true value=true
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 18, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 19, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:26 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=true value=true
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 20, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:26 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=true value=true
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 21, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 22, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:26 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=true value=true
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 23, target Id::new("diff-ignore-spaces"), rect [[649.0 141.5] - [790.9 165.5]]
+2026-10-31T14:22:26 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 24, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 25, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:26 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 26, target Id::new("diff-ignore-case"), rect [[828.7 169.5] - [912.6 193.5]]
+2026-10-31T14:22:26 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:26 INFO  commander::visual_qa: Diff options QA phase 27, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 28, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 29, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 30, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 31, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 32, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 33, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 34, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 35, target Id::new("diff-ignore-all-spaces"), rect [[796.9 141.5] - [910.2 165.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 36, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 37, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:27 INFO  commander::visual_qa: Diff options QA phase 38, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:27 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 39, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 40, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:28 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 41, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:28 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 42, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 43, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:28 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 44, target Id::new("diff-ignore-crlf"), rect [[649.0 169.5] - [822.7 193.5]]
+2026-10-31T14:22:28 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 45, target Id::new("diff-reload"), rect [[649.0 113.5] - [797.7 137.5]]
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 46, target Id::new("diff-reload"), rect [[649.0 113.5] - [797.7 137.5]]
+2026-10-31T14:22:28 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 47, target Id::new("diff-reload"), rect [[649.0 113.5] - [797.7 137.5]]
+2026-10-31T14:22:28 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:28 INFO  commander::visual_qa: Diff options QA phase 48, target Id::new("diff-swap"), rect [[803.7 113.5] - [948.0 137.5]]
+2026-10-31T14:22:29 INFO  commander::visual_qa: Diff options QA phase 49, target Id::new("diff-swap"), rect [[803.7 113.5] - [948.0 137.5]]
+2026-10-31T14:22:29 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=true released=false clicked=false changed=false enabled=false value=true
+2026-10-31T14:22:29 INFO  commander::visual_qa: Diff options QA phase 50, target Id::new("diff-swap"), rect [[803.7 113.5] - [948.0 137.5]]
+2026-10-31T14:22:29 INFO  commander::app::diff_dialog: Tab checkbox input: pressed=false released=true clicked=false changed=false enabled=false value=true

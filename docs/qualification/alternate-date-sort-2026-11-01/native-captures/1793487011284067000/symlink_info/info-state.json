@@ -1,0 +1,11 @@
+{
+  "accessed": "Link object: 01 Nov 26  02:50",
+  "created": "Link object: 01 Nov 26  02:50",
+  "kind": "Symlink to TXT file",
+  "link_status": "Target exists",
+  "owner_gid": "Link object: 20",
+  "owner_uid": "Link object: 501",
+  "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-44084-symlink_info/left/link.txt -> ../right/portable.txt",
+  "permissions": "rw-r--r--",
+  "size": "16 B"
+}

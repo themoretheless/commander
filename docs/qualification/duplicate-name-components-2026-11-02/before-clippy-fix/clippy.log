@@ -1,0 +1,36 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: pub(crate) function inside private module
+  --> src/duplicate_extension.rs:40:1
+   |
+40 | pub(crate) fn retain_groups(
+   | ----------^^^^^^^^^^^^^^^^^
+   | |
+   | help: consider using: `pub`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+   = note: `-D clippy::redundant-pub-crate` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::redundant_pub_crate)]`
+
+error: pub(crate) function inside private module
+  --> src/duplicate_extension.rs:58:1
+   |
+58 | pub(crate) fn partition_by(
+   | ----------^^^^^^^^^^^^^^^^
+   | |
+   | help: consider using: `pub`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+
+error: could not compile `commander` (bin "commander") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: struct update has no effect, all the fields in the struct have already been specified
+   --> src/duplicate_report.rs:241:19
+    |
+241 |                 ..Default::default()
+    |                   ^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#needless_update
+    = note: `-D clippy::needless-update` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_update)]`
+
+error: could not compile `commander` (bin "commander" test) due to 3 previous errors

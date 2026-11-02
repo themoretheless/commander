@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.32s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 7 tests
+test panel::sort::tests::case_sensitive_names_use_original_case_for_primary_and_tied_order ... ok
+test session::tests::case_sensitive_sort_persists_for_both_panes_and_legacy_defaults_off ... ok
+test rename::tests::collision_policy_distinguishes_case_sensitive_directories ... ok
+test fuzzy::tests::case_sensitive_fuzzy_matching_preserves_short_and_streaming_alignment ... ok
+test workspace::tabs::tests::case_sensitive_sort_command_preserves_focus_and_follows_tab_view_copies ... ok
+test query::tests::case_sensitive_query_controls_text_masks_extensions_and_saved_filters ... ok
+test search::tests::case_sensitive_query_agrees_across_live_indexed_and_archive_providers ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 2488 filtered out; finished in 0.06s
+

@@ -1,0 +1,21 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "RelativePath",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "RelativePath",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "groups": [],
+  "keep": [],
+  "report": null
+}

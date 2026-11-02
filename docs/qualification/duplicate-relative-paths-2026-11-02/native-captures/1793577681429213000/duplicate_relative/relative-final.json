@@ -1,0 +1,105 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "groups": [
+    [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/left/docs/report.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/left/img/item.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/left/misc/local.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/right/Docs/REPORT.BIN",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/right/else/local.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/right/img/item.bin"
+    ]
+  ],
+  "keep": [
+    1
+  ],
+  "report": {
+    "context": {
+      "additional_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/right",
+      "configured_subfolder_levels": null,
+      "group_sort": "scan",
+      "keep_policy": "shortest_path",
+      "max_bytes": null,
+      "max_subfolder_levels": null,
+      "metadata_source": "fresh_tree_enumeration",
+      "min_bytes": 0,
+      "minimum_copies": 2,
+      "names": {
+        "case": false,
+        "exclude": "",
+        "extension": "Any",
+        "grouping": "Any",
+        "grouping_ignore_ascii_case": false,
+        "include": ""
+      },
+      "only_cross_root_groups": true,
+      "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/left",
+      "scope": "two_trees"
+    },
+    "format": "commander_duplicate_report",
+    "groups": [
+      {
+        "files": [
+          {
+            "action": "trash",
+            "member": 1,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/left/docs/report.bin"
+          },
+          {
+            "action": "keep",
+            "member": 2,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/left/img/item.bin"
+          },
+          {
+            "action": "trash",
+            "member": 3,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/left/misc/local.bin"
+          },
+          {
+            "action": "trash",
+            "member": 4,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/right/Docs/REPORT.BIN"
+          },
+          {
+            "action": "trash",
+            "member": 5,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/right/else/local.bin"
+          },
+          {
+            "action": "trash",
+            "member": 6,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-42504-duplicate_relative/right/img/item.bin"
+          }
+        ],
+        "group": 1,
+        "original_group": 1,
+        "size_bytes": 17
+      }
+    ],
+    "snapshot": "retained_duplicate_scan_proposal",
+    "summary": {
+      "files": 6,
+      "groups": 1,
+      "partial": false,
+      "proposed_trash_bytes": 85,
+      "proposed_trash_files": 5,
+      "scan_issues": 0
+    },
+    "version": 1
+  }
+}

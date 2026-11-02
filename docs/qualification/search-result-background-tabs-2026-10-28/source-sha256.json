@@ -1,0 +1,9 @@
+{
+  "src/panel.rs": "3aafaf7d107a9ac1e6c0b185a98e07db37784b23dd28ccfd0073625c25736531",
+  "src/panel/nav.rs": "0e6b47ec44280bbf68d3639b6d7bb12795a552af9991d56226a725c5d3509289",
+  "src/workspace/tabs.rs": "ba8824ec48104c8b23b23fcc6209b26751374b096224e8d3d18fc646f5622f52",
+  "src/app/mod.rs": "2a7a41d18f4502862bbac6aabba2e8086a4a85312befa9027dd8db8d20d2c72a",
+  "src/app/find_dialog.rs": "c4f6b468adab5f808943b2a559f9d28c144a7d3dd4b0b46844ac1634577ceb4e",
+  "src/visual_qa.rs": "8f6cbd710750419149c78b0ac54fd3e96f69ae854a544d0bd391b7991aed9a55",
+  "README.md": "b1deac6f01eb2ab543492601d23f09bf4a9ac4366b3881ec74b18d68259efd9a"
+}

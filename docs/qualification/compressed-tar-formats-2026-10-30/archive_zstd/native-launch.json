@@ -1,0 +1,6 @@
+{
+  "started_unix": 1793360582.07887,
+  "binary_sha256": "e97a80449de61bc5b7f0044ec1dcf8c604dbec8af774e29b2510276e3036a0c9",
+  "scenario": "archive_zstd",
+  "output_root": "/tmp/commander-native-archive_zstd-1793360582078687000"
+}

@@ -1,0 +1,15 @@
+# Copy visible CSV/TSV records — 2026-10-31
+
+Independent adaptation of [fzf's filter/select/output workflow](https://github.com/junegunn/fzf#using-the-finder), cohort #75, to Commander's bounded parsed table preview. Upstream README inspected through GitHub connector; no upstream implementation copied. CSV/TSV serialization uses the existing Rust csv crate.
+
+Copy visible CSV/TSV exports current shown data records in displayed column/source sort order, plus original record zero as headings when enabled. Output uses the input delimiter and LF record terminators, quotes embedded delimiters/quotes/newlines, retains ragged field counts and exact Unicode/formula-like cell strings, and introduces no row-number column. It exports parsed records, not original bytes/BOM/line endings. Hidden or unloaded rows are omitted. Empty data views cannot copy headings alone. Unsupported delimiters, stale record IDs, header duplication and exports over 1 MiB return an error without a copy request. Existing loaded preview limits remain authoritative; no new reads or tasks.
+
+The render owner returns a one-frame text request. The pane's existing copy_preview_text outcome forwards it to the application write_clipboard/native-effect owner; no direct clipboard API is used by the table module. Pointer regression requires exactly one returned request for the filtered duplicate records and no request after an empty view is clicked. Serialization regression round-trips CSV and TSV with reordered/hidden rows, headings/headerless mode, ragged cells, quotes/newlines/Unicode and literal formulas, and exercises invalid/export bounds.
+
+Native table_preview retains all phase-29 heading/sort/literal/Fuzzy/Clear/retype states, then clicks the actual copy button. Phase-32 capture requires exactly one recording clipboard write and exact Name,Count / file2,10 / file2,1 LF payload. OS clipboard delivery, physical input, VoiceOver and native TSV/quoted-field variants remain open.
+
+Fresh CUA-launched phase-32 native capture passed 14/14 checks with exactly one recording clipboard write and all other effects zero. Mandatory readiness compares the actual recorded payload to expected-copied.csv content. Frame inspected: filtered two rows with original labels 3/4, headings, Name [asc], Copy visible CSV (2) and copied-preview toast. Launch/current binary SHA-256 verified. CUA returned running-app-not-found after successful short-lived capture; unique fresh artifacts confirm completion.
+
+Initial Clippy flagged byte_char_slices in the cfg(test) delimiter fixture; corrected, with initial logs retained under initial-pass. The rebuilt production executable is byte-for-byte identical by SHA-256 to the qualified native capture, so that capture remains authoritative after this test-only change.
+
+Final validation: locked visual-qa build passed; 2886 tests passed, 3 ignored, 0 failed. All-target Clippy with warnings denied, default-feature cargo check, rustfmt and git diff whitespace checks passed. Final source hashes and native executable hash verified; exact commands and exit codes retained in checks.json.

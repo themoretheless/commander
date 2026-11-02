@@ -1,0 +1,11 @@
+# Negative content search — 2026-10-28
+
+Independent adaptation of Double Commander's [Find files NOT containing the text](https://doublecmd.github.io/doc/en/findfiles.html), from the researched 99-repository cohort. No upstream code copied.
+
+Find accepts `notcontent:draft`, including quoted values, and conjunctions such as `content:ERROR notcontent:expected`. The selected Exact/Fuzzy/Regex mode applies to positive and negative text conditions. Expressions and saved JSON retain negative predicates. Empty text can satisfy absence; directories cannot. Match explanations describe the absent text without invented character highlights.
+
+Absence requires complete text. Unreadable, binary, unavailable and partial inputs are skipped rather than emitted as absence hits. Live reads retain the 16 MiB cap and probe EOF; files beyond the cap are unverified. Existing positive prefix-search behavior remains. Archive text readers already return either complete bounded text or no text. Indexed searches operate on their snapshot: new records carry a serde-defaulted `content_complete` marker, set by an EOF probe during index construction. Legacy records without this marker remain usable for positive content search but require rebuilding for absence search. Prefix cache data cannot prove absence. Index content quotas and binary sniffing remain in force.
+
+Coverage includes grammar/JSON/expression persistence in all modes, invalid regex validation, deferred content inspection, partial-text rejection, real live/indexed/ZIP results, combined positive/negative conditions, empty and binary files, and a file with the forbidden text beyond the live read cap. Legacy index deserialization is checked for conservative absence handling while positive search still succeeds. A separate index-reader regression checks exact-limit EOF and a file growing beyond its recorded size/read cap. No native UI interaction/capture; no commit or push.
+
+Validation: **2489 passed, 0 failed, 3 ignored** in the full locked suite. A final test-only refinement exercises actual Exact/Fuzzy/Regex absence matching; all five negative-content focused tests then passed, and the separate EOF-completeness test passed. Final all-target Clippy with visual-qa and warnings denied passed. Formatting and scoped whitespace checks passed. No rejected run for this feature.

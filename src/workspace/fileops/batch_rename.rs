@@ -167,6 +167,12 @@ pub fn apply_batch_rename_in(
     );
     if plans
         .iter()
+        .any(|plan| plan.status == crate::rename::PlanStatus::ExpansionLimit)
+    {
+        return Err("Replacement output exceeds 64 KiB; no names were changed".into());
+    }
+    if plans
+        .iter()
         .any(|p| p.status == crate::rename::PlanStatus::Invalid)
     {
         return Err("Fix the invalid names first".into());

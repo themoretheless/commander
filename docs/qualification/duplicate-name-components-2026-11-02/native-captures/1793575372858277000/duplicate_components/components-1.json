@@ -1,0 +1,97 @@
+{
+  "applied": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "draft": {
+    "case": false,
+    "exclude": "",
+    "extension": "Any",
+    "grouping": "Any",
+    "grouping_ignore_ascii_case": false,
+    "include": ""
+  },
+  "groups": [
+    [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/A/album/report.txt",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/B/album/report.txt",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/C/Album/REPORT.TXT",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/D/other/report.bin",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/E/other/another.bin"
+    ]
+  ],
+  "keep": [
+    0
+  ],
+  "report": {
+    "context": {
+      "configured_subfolder_levels": null,
+      "group_sort": "scan",
+      "keep_policy": "shortest_path",
+      "max_bytes": null,
+      "max_subfolder_levels": null,
+      "metadata_source": "fresh_tree_enumeration",
+      "min_bytes": 0,
+      "minimum_copies": 2,
+      "names": {
+        "case": false,
+        "exclude": "",
+        "extension": "Any",
+        "grouping": "Any",
+        "grouping_ignore_ascii_case": false,
+        "include": ""
+      },
+      "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left",
+      "scope": "recursive"
+    },
+    "format": "commander_duplicate_report",
+    "groups": [
+      {
+        "files": [
+          {
+            "action": "keep",
+            "member": 1,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/A/album/report.txt"
+          },
+          {
+            "action": "trash",
+            "member": 2,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/B/album/report.txt"
+          },
+          {
+            "action": "trash",
+            "member": 3,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/C/Album/REPORT.TXT"
+          },
+          {
+            "action": "trash",
+            "member": 4,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/D/other/report.bin"
+          },
+          {
+            "action": "trash",
+            "member": 5,
+            "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96531-duplicate_components/left/E/other/another.bin"
+          }
+        ],
+        "group": 1,
+        "original_group": 1,
+        "size_bytes": 11
+      }
+    ],
+    "snapshot": "retained_duplicate_scan_proposal",
+    "summary": {
+      "files": 5,
+      "groups": 1,
+      "partial": false,
+      "proposed_trash_bytes": 44,
+      "proposed_trash_files": 4,
+      "scan_issues": 0
+    },
+    "version": 1
+  }
+}

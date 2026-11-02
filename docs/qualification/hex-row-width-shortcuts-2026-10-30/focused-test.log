@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.79s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 4 tests
+test hex_preview::tests::row_width_shortcuts_preserve_focused_input_popup_and_busy_work ... ok
+test hex_preview::tests::row_width_pointer_preset_and_copy_use_loaded_snapshot_without_work ... ok
+test hex_preview::tests::row_width_shortcuts_reflow_without_reads_at_edges_and_block_boundaries ... ok
+test hex_preview::tests::row_width_layout_roundtrips_every_byte_and_exact_offset_for_all_widths ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2842 filtered out; finished in 0.21s
+

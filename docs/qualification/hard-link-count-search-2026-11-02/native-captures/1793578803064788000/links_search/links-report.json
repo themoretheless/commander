@@ -1,0 +1,194 @@
+{
+  "format": "commander.search-report",
+  "version": 1,
+  "snapshot": "retained search observations",
+  "scope": "visible_results",
+  "partial": false,
+  "root": {
+    "encoding": "utf8",
+    "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left"
+  },
+  "context": {
+    "expression": "links:>=3 links:<=3 archives:off link-",
+    "mode": "Exact",
+    "generation": 9,
+    "source": "Live (archives off)",
+    "completed": true,
+    "running": false,
+    "pending_rerun": false,
+    "draft_differs": false,
+    "scanned": 14,
+    "matched": 3,
+    "skipped": 0,
+    "truncated": false,
+    "archive_error": null,
+    "received_rows": 3,
+    "visible_rows": 3,
+    "visible_selected_rows": 0,
+    "pivot": "None",
+    "selected_only": false,
+    "ordered_at_utc": "2026-11-02T00:20:14.577574Z"
+  },
+  "exported_rows": 3,
+  "rows": [
+    {
+      "row": 1,
+      "display_name": "link-original.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left/link-original.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 254767747
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "allocated_bytes": 4096,
+      "hard_links": 3,
+      "modified_utc": "2026-11-02T00:20:11.583239303Z",
+      "accessed_utc": "2026-11-02T00:20:11.583157053Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "filter",
+          "detail": "links:>=3 (observed 3 hard links)",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "filter",
+          "detail": "links:<=3 (observed 3 hard links)",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "filter",
+          "detail": "archives:off",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "name",
+          "detail": "literal \"link-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "display_name": "link-third.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left/nested/deep/link-third.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 254767747
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "allocated_bytes": 4096,
+      "hard_links": 3,
+      "modified_utc": "2026-11-02T00:20:11.583239303Z",
+      "accessed_utc": "2026-11-02T00:20:11.583157053Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "filter",
+          "detail": "links:>=3 (observed 3 hard links)",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "filter",
+          "detail": "links:<=3 (observed 3 hard links)",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "filter",
+          "detail": "archives:off",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "name",
+          "detail": "literal \"link-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "display_name": "link-alias.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-64623-links_search/left/nested/link-alias.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 254767747
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "allocated_bytes": 4096,
+      "hard_links": 3,
+      "modified_utc": "2026-11-02T00:20:11.583239303Z",
+      "accessed_utc": "2026-11-02T00:20:11.583157053Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "filter",
+          "detail": "links:>=3 (observed 3 hard links)",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "filter",
+          "detail": "links:<=3 (observed 3 hard links)",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "filter",
+          "detail": "archives:off",
+          "score": 0,
+          "matched_character_ranges": []
+        },
+        {
+          "field": "name",
+          "detail": "literal \"link-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

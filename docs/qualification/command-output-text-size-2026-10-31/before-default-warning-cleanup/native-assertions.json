@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "checks": 16,
+  "clipboard_writes": 3,
+  "original_context_after_draft_edit": true,
+  "retained_streams_exact": true,
+  "text_percent": 125,
+  "line_state": [
+    true,
+    10,
+    9,
+    false,
+    true
+  ],
+  "regex_ready": true,
+  "search_state": [
+    2,
+    0
+  ],
+  "attempted_commands_exact": true,
+  "binary_matches_launch": true
+}

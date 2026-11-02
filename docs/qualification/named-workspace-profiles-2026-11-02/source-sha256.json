@@ -1,0 +1,16 @@
+{
+  "src/workspace_profile.rs": "96dbc7f959cee12eb60c9d4dc9d079ff1e8594ed159d02cad4ad9653d8d599c8",
+  "src/workspace.rs": "f3eeb36f1ff6090764e28bc37f1fa9b5b9b5393be9968b1503edb55d76947c38",
+  "src/workspace/tests.rs": "444f9de33d00880ccbff9fd0ea9bc034477eb3c1dfbb04f755c6bb02d3c47f2d",
+  "src/command.rs": "d5cf5a70166dc5e9aaa111c2115a95cff873a588b2b9db2131dae5ac2b3ce200",
+  "src/ui_request.rs": "8c3c69b26ddb8232c5d0f0ea084ac7e9079d353fe3404b68912630258d76529c",
+  "src/app/ui_state.rs": "7c7e90e7ebb41f374191fac0e485b11863105063f053b216f67d431b77378fcd",
+  "src/app/mod.rs": "87e5fc9ba292ba71b33f0d3efd178096c068ab661679f92adc22df1fccbb47c4",
+  "src/app/update.rs": "1d0ea67ce4b043cbf3a6ca148b0b56233ddaea044f67659bcbf94126f75594f0",
+  "src/app/workspace_profiles_dialog.rs": "f780e3d05050f78cad2a11510e47a3035ecaf89735dca9f350f670dd8310016c",
+  "src/accessibility.rs": "a76e7bf1b68fd8912b3b990b1b977a1f5d54755e529ed745edc9e0b1ddc9648e",
+  "src/visual_qa.rs": "121f11cf01f15d776ce95ef0e45a9217751926bf3215d8c8e8cd53a479eaae0d",
+  ".github/workflows/ci.yml": "fe987e88f806a5f3beb506d41520a62413ac056b8f06905abfe7771a443e4d9b",
+  "Cargo.toml": "43c766f54aa06ff4714a4f9184961bed8e280fd9fd7c9cae3d53bb74c245f5bb",
+  "Cargo.lock": "48542ea8a0c4dbdfe477068655e8015dffe2a321bbef190d52f15cc6e8e7b969"
+}

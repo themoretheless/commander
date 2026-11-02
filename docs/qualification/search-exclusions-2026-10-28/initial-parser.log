@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.57s
+     Running unittests src/main.rs (target/debug/build/commander/d8ba807828a005e2/out/commander-d8ba807828a005e2)
+
+running 1 test
+test query::tests::exclusion_query_round_trips_and_rejects_invalid_masks ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2480 filtered out; finished in 0.44s
+

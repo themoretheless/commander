@@ -1,0 +1,20 @@
+[
+  {
+    "name": "back\\slash",
+    "exit_code": 1,
+    "stdout": "\n--( Verifying /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-sfv-names-cszqoja_/0.sfv )--\n/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-sfv-names-cszqoja_/back\\slash No such file or directory\n--------------------------------------------------------------------------------\nErrors Occurred: Errors:0   Miss:1   Success:0   Total:1  \n",
+    "stderr": ""
+  },
+  {
+    "name": "trailing ",
+    "exit_code": 0,
+    "stdout": "\n--( Verifying /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-sfv-names-cszqoja_/1.sfv )--\n/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-sfv-names-cszqoja_/trailing  OK \n--------------------------------------------------------------------------------\nEverything OK\n",
+    "stderr": ""
+  },
+  {
+    "name": "tab\tname",
+    "exit_code": 0,
+    "stdout": "\n--( Verifying /var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-sfv-names-cszqoja_/2.sfv )--\n/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-sfv-names-cszqoja_/tab\tname OK \n--------------------------------------------------------------------------------\nEverything OK\n",
+    "stderr": ""
+  }
+]

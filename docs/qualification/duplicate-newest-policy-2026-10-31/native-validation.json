@@ -1,0 +1,31 @@
+{
+  "status": "passed_scoped",
+  "phase": 15,
+  "checks": 14,
+  "effects": {
+    "context_menu": 0,
+    "deferred_menu": 0,
+    "clipboard": 0,
+    "opener": 0,
+    "trash": 0,
+    "free_space": 0
+  },
+  "policy": "Newest",
+  "keeper": "newest-copy.bin",
+  "group_copies": 3,
+  "proposed_removals": 2,
+  "proposed_bytes": 50,
+  "required_prior_states": [
+    "ShortestPath keeps a.bin",
+    "Newest keeps newest-copy.bin",
+    "Keep all groups keeps all; policy unchanged",
+    "Apply policy restores newest-copy.bin",
+    "Oldest keeps a.bin"
+  ],
+  "mtime_order": "a.bin < middle.bin < newest-copy.bin",
+  "payloads_intact_at_capture": true,
+  "frame_inspected": true,
+  "binary_hash_verified": true,
+  "physical_input": "pending",
+  "cua_result": "running-app-not-found after successful short-lived capture"
+}

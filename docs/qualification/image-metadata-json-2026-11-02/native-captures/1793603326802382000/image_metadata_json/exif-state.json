@@ -1,0 +1,101 @@
+{
+  "container": "jpeg",
+  "has_exif": true,
+  "left_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3547-image_metadata_json/left",
+  "note": null,
+  "right_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-3547-image_metadata_json/right",
+  "rows": [
+    [
+      "Format",
+      "JPEG"
+    ],
+    [
+      "Header dimensions",
+      "4 × 3 pixels"
+    ],
+    [
+      "Camera maker",
+      "\"Commander QA\""
+    ],
+    [
+      "Camera model",
+      "\"Fixture Camera\""
+    ],
+    [
+      "Lens",
+      "\"QA 50mm\""
+    ],
+    [
+      "Artist",
+      "\"QA Photographer\""
+    ],
+    [
+      "Copyright",
+      "\"QA rights reserved\""
+    ],
+    [
+      "Software",
+      "\"Commander QA encoder\""
+    ],
+    [
+      "Taken",
+      "2026-11-02 12:34:56"
+    ],
+    [
+      "Taken UTC offset",
+      "\"+05:30\""
+    ],
+    [
+      "Taken subsecond digits",
+      "\"250\""
+    ],
+    [
+      "Exposure program",
+      "aperture priority"
+    ],
+    [
+      "Metering mode",
+      "pattern"
+    ],
+    [
+      "Exposure",
+      "1/125 s"
+    ],
+    [
+      "Aperture",
+      "f/2.8"
+    ],
+    [
+      "ISO",
+      "200"
+    ],
+    [
+      "Focal length",
+      "50 mm"
+    ],
+    [
+      "Orientation",
+      "row 0 at right and column 0 at top"
+    ],
+    [
+      "Pixel width",
+      "4 pixels"
+    ],
+    [
+      "Pixel height",
+      "3 pixels"
+    ],
+    [
+      "GPS latitude",
+      "41 deg 43 min 0 sec N"
+    ],
+    [
+      "GPS longitude",
+      "44 deg 47 min 0 sec E"
+    ],
+    [
+      "GPS altitude",
+      "450 meters above sea level"
+    ]
+  ]
+}

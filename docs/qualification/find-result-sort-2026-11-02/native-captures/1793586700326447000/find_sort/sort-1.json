@@ -1,0 +1,263 @@
+{
+  "format": "commander.search-report",
+  "version": 1,
+  "snapshot": "retained search observations",
+  "scope": "visible_results",
+  "partial": false,
+  "root": {
+    "encoding": "utf8",
+    "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96933-find_sort/left"
+  },
+  "context": {
+    "expression": "sort-",
+    "mode": "Exact",
+    "generation": 3,
+    "source": "Live + archives",
+    "completed": true,
+    "running": false,
+    "pending_rerun": false,
+    "draft_differs": false,
+    "scanned": 12,
+    "matched": 6,
+    "skipped": 0,
+    "truncated": false,
+    "archive_error": null,
+    "received_rows": 6,
+    "visible_rows": 6,
+    "visible_selected_rows": 0,
+    "pivot": "None",
+    "result_sort": {
+      "field": "name",
+      "descending": false
+    },
+    "selected_only": false,
+    "ordered_at_utc": "2026-11-02T02:31:47.523486Z"
+  },
+  "exported_rows": 6,
+  "rows": [
+    {
+      "row": 1,
+      "display_name": "sort-alias.bin",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96933-find_sort/left/sort-alias.bin"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 255679570
+      },
+      "is_directory": false,
+      "listed_size_bytes": 8192,
+      "allocated_bytes": 8192,
+      "hard_links": 2,
+      "modified_utc": "2020-01-01T00:00:00Z",
+      "accessed_utc": "2026-11-02T02:31:45.517370176Z",
+      "created_utc": "2020-01-01T00:00:00Z",
+      "changed_utc": "2026-11-02T02:31:45.518796182Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"sort-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "display_name": "sort-empty.bin",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96933-find_sort/left/sort-empty.bin"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 255679574
+      },
+      "is_directory": false,
+      "listed_size_bytes": 0,
+      "allocated_bytes": 0,
+      "hard_links": 1,
+      "modified_utc": "2026-11-02T02:31:45.518197305Z",
+      "accessed_utc": "2026-11-02T02:31:45.518197305Z",
+      "created_utc": "2026-11-02T02:31:45.518197305Z",
+      "changed_utc": "2026-11-02T02:31:45.518197305Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"sort-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "display_name": "sort-file2.bin",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96933-find_sort/left/sort-file2.bin"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 255679573
+      },
+      "is_directory": false,
+      "listed_size_bytes": 65536,
+      "allocated_bytes": 0,
+      "hard_links": 1,
+      "modified_utc": "2026-11-02T02:31:45.518106013Z",
+      "accessed_utc": "2026-11-02T02:31:45.518035220Z",
+      "created_utc": "2026-11-02T02:31:45.518035220Z",
+      "changed_utc": "2026-11-02T02:31:45.518106013Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"sort-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 4,
+      "display_name": "sort-file10.bin",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96933-find_sort/left/sort-file10.bin"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 255679570
+      },
+      "is_directory": false,
+      "listed_size_bytes": 8192,
+      "allocated_bytes": 8192,
+      "hard_links": 2,
+      "modified_utc": "2020-01-01T00:00:00Z",
+      "accessed_utc": "2026-11-02T02:31:45.517370176Z",
+      "created_utc": "2020-01-01T00:00:00Z",
+      "changed_utc": "2026-11-02T02:31:45.518796182Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"sort-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 5,
+      "display_name": "sort-link",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96933-find_sort/left/sort-link"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 255679575
+      },
+      "is_directory": false,
+      "listed_size_bytes": 15,
+      "allocated_bytes": null,
+      "hard_links": null,
+      "modified_utc": "2026-11-02T02:31:45.518295263Z",
+      "accessed_utc": "2026-11-02T02:31:45.518295263Z",
+      "created_utc": "2026-11-02T02:31:45.518295263Z",
+      "changed_utc": "2026-11-02T02:31:45.518295263Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"sort-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 6,
+      "display_name": "sort-member.bin",
+      "location": {
+        "kind": "archive_member",
+        "archive": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-96933-find_sort/left/other.zip"
+        },
+        "member": {
+          "encoding": "utf8",
+          "text": "sort-member.bin"
+        },
+        "index": 0
+      },
+      "native_id": null,
+      "is_directory": false,
+      "listed_size_bytes": 5,
+      "allocated_bytes": null,
+      "hard_links": null,
+      "modified_utc": "2026-11-02T02:31:45.521436443Z",
+      "accessed_utc": "2026-11-02T02:31:45.518872474Z",
+      "created_utc": null,
+      "changed_utc": null,
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"sort-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              5
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+2026-11-02T06:56:06 INFO  commander::logging: logging initialized
+2026-11-02T06:56:06 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: search_results
+2026-11-02T06:56:06 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 0, target [[873.8 436.0] - [901.1 451.0]], hidden 0
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 1, target [[873.8 435.0] - [901.1 452.0]], hidden 0
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 2, target [[873.8 435.0] - [901.1 452.0]], hidden 0
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 3, target [[295.0 400.2] - [404.8 415.2]], hidden 1
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 4, target [[295.0 399.2] - [404.8 416.2]], hidden 1
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 5, target [[295.0 399.2] - [404.8 416.2]], hidden 1
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 6, target [[873.8 404.0] - [901.1 419.0]], hidden 0
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 7, target [[873.8 403.0] - [901.1 420.0]], hidden 0
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 8, target [[873.8 403.0] - [901.1 420.0]], hidden 0
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 9, target [[826.9 432.0] - [867.8 447.0]], hidden 1
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 10, target [[826.9 431.0] - [867.8 448.0]], hidden 1
+2026-11-02T06:56:07 INFO  commander::visual_qa: search QA phase 11, target [[826.9 431.0] - [867.8 448.0]], hidden 1
+2026-11-02T06:56:08 INFO  commander::visual_qa: search QA keyboard phase 17, native_focus=true, query_focus=Some(true), row=None, focused_id=Some(Id::new("find-query-editor"))
+2026-11-02T06:56:08 INFO  commander::visual_qa: search QA keyboard phase 18, native_focus=true, query_focus=Some(true), row=Some(0), focused_id=Some(Id::new("find-query-editor"))
+2026-11-02T06:56:08 INFO  commander::visual_qa: search QA keyboard phase 19, native_focus=true, query_focus=Some(true), row=Some(0), focused_id=Some(Id::new("find-query-editor"))
+2026-11-02T06:56:08 INFO  commander::visual_qa: search QA keyboard phase 20, native_focus=true, query_focus=Some(true), row=Some(0), focused_id=Some(Id::new("find-query-editor"))

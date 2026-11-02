@@ -1,0 +1,19 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0061]: this function takes 3 arguments but 2 arguments were supplied
+   --> src/fuzzy.rs:303:24
+    |
+303 |             assert_eq!(greedy_score(&folded, c), score(q, c), "{q} in {c}");
+    |                        ^^^^^^^^^^^^------------ argument #3 of type `bool` is missing
+    |
+note: function defined here
+   --> src/fuzzy.rs:148:4
+    |
+148 | fn greedy_score(q: &[char], candidate: &str, case_sensitive: bool) -> Option<MatchScore> {
+    |    ^^^^^^^^^^^^                              --------------------
+help: provide the argument
+    |
+303 |             assert_eq!(greedy_score(&folded, c, /* bool */), score(q, c), "{q} in {c}");
+    |                                               ++++++++++++
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

@@ -306,6 +306,7 @@ impl App {
             for (mode, label) in [
                 (crate::panel::BrowserMode::List, "List"),
                 (crate::panel::BrowserMode::Icons, "Icons"),
+                (crate::panel::BrowserMode::Miller, "Columns"),
             ] {
                 if ui
                     .selectable_label(self.ws.active_panel_ref().browser_mode() == mode, label)
@@ -336,8 +337,12 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("Theme");
             let follow = self.follow_system_theme;
-            let light = !follow && self.theme_mode == ThemeMode::Light;
-            let dark = !follow && self.theme_mode == ThemeMode::Dark;
+            let light = !follow
+                && self.custom_theme.colors().is_none()
+                && self.theme_mode == ThemeMode::Light;
+            let dark = !follow
+                && self.custom_theme.colors().is_none()
+                && self.theme_mode == ThemeMode::Dark;
             if ui.selectable_label(light, "Light").clicked() {
                 self.set_theme(ctx, ThemeMode::Light);
             }
@@ -349,6 +354,7 @@ impl App {
                 .on_hover_text("Follow the system light/dark appearance")
                 .clicked()
             {
+                self.custom_theme.deactivate();
                 self.theme_palette = None;
                 self.follow_system_theme = true;
                 self.follow_system_appearance(ctx);
@@ -356,20 +362,26 @@ impl App {
             }
         });
         let mut palette = self.theme_palette.clone();
+        let mut reset_palette = false;
         egui::ComboBox::from_id_salt("theme_palette")
-            .selected_text(
+            .selected_text(if self.custom_theme.colors().is_some() {
+                "Custom theme"
+            } else {
                 palette
                     .as_deref()
                     .and_then(crate::theme_catalog::find)
-                    .map_or("Commander defaults", |p| p.name.as_str()),
-            )
+                    .map_or("Commander defaults", |p| p.name.as_str())
+            })
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut palette, None, "Commander defaults");
+                reset_palette = ui
+                    .selectable_value(&mut palette, None, "Commander defaults")
+                    .clicked();
                 for item in crate::theme_catalog::palettes() {
                     ui.selectable_value(&mut palette, Some(item.id.clone()), &item.name);
                 }
             });
-        if palette != self.theme_palette {
+        if palette != self.theme_palette || reset_palette {
+            self.custom_theme.deactivate();
             self.theme_palette = palette;
             self.follow_system_theme = false;
             if let Some(colors) = self
@@ -385,6 +397,11 @@ impl App {
                 };
             }
             self.apply_current_palette(ctx);
+        }
+        if ui.button("Custom theme / JSON…").clicked() {
+            self.ui.modals.custom_theme_open = true;
+            Self::mark_modal_opened(ctx, UiModal::CustomTheme);
+            ui.close();
         }
         let text_size = ui.label("Text size");
         let mut scale = self.ui_scale;
@@ -420,6 +437,7 @@ impl App {
 
     /// Use `mode` from now on, no longer following the system appearance.
     fn set_theme(&mut self, ctx: &egui::Context, mode: ThemeMode) {
+        self.custom_theme.deactivate();
         self.follow_system_theme = false;
         self.theme_palette = None;
         self.apply_theme_mode(ctx, mode);
@@ -444,11 +462,18 @@ impl App {
 
     pub(super) fn apply_current_palette(&mut self, ctx: &egui::Context) {
         let preferences = self.accessibility_preferences;
-        self.colors = crate::theme_catalog::resolve(
-            self.theme_palette.as_deref(),
-            self.theme_mode,
-            preferences,
-        );
+        self.colors = if !preferences.high_contrast {
+            self.custom_theme.colors()
+        } else {
+            None
+        }
+        .unwrap_or_else(|| {
+            crate::theme_catalog::resolve(
+                self.theme_palette.as_deref(),
+                self.theme_mode,
+                preferences,
+            )
+        });
         let theme = if self.colors.is_dark() {
             egui::Theme::Dark
         } else {

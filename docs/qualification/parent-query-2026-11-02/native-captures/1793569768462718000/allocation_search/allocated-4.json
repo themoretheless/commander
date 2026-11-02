@@ -1,0 +1,28 @@
+{
+  "expression": "allocated:=0 name:disk-",
+  "matched": 2,
+  "rows": [
+    {
+      "allocated": 0,
+      "explanations": [
+        "allocated:>=0B (observed 0 allocated bytes)",
+        "allocated:<=0B (observed 0 allocated bytes)",
+        "literal \"disk-\""
+      ],
+      "name": "disk-empty",
+      "size": 0
+    },
+    {
+      "allocated": 0,
+      "explanations": [
+        "allocated:>=0B (observed 0 allocated bytes)",
+        "allocated:<=0B (observed 0 allocated bytes)",
+        "literal \"disk-\""
+      ],
+      "name": "disk-sparse",
+      "size": 8388608
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

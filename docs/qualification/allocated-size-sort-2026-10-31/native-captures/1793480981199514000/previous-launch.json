@@ -1,0 +1,6 @@
+{
+  "scenario": "allocated_sort",
+  "out": "/tmp/commander-native-allocated_sort-1793443328188227000",
+  "binary_sha256": "03588741828633c64da71132e99597c2df63ce4b070db20a444ce86a851b7bae",
+  "core_sha256": "03588741828633c64da71132e99597c2df63ce4b070db20a444ce86a851b7bae"
+}

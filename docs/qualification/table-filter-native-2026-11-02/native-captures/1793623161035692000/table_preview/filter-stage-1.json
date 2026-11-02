@@ -1,0 +1,11 @@
+{
+  "column": null,
+  "error": null,
+  "exclude": false,
+  "fuzzy": false,
+  "heading": true,
+  "query": "fl2",
+  "regex": true,
+  "rows": [],
+  "whole_words": false
+}

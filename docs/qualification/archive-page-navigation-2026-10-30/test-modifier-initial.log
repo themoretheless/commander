@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.53s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 2 tests
+test app::archive_dialog::tests::member_page_cursor_clamps_in_display_order_and_preserves_hidden_selection ... ok
+test app::archive_dialog::tests::member_page_input_is_focus_scoped_shift_aware_and_preserves_modified_keys ... FAILED
+
+failures:
+
+---- app::archive_dialog::tests::member_page_input_is_focus_scoped_shift_aware_and_preserves_modified_keys stdout ----
+
+thread 'app::archive_dialog::tests::member_page_input_is_focus_scoped_shift_aware_and_preserves_modified_keys' (24607637) panicked at src/app/archive_dialog.rs:2818:17:
+assertion `left == right` failed
+  left: Some((false, 7, false))
+ right: Some((false, 7, true))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::archive_dialog::tests::member_page_input_is_focus_scoped_shift_aware_and_preserves_modified_keys
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2800 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

@@ -1,0 +1,15 @@
+{
+  "status": "passed",
+  "swap_native_checks": 14,
+  "options_regression_checks": 14,
+  "input_phases": 29,
+  "exact_sources_and_operand_paths": true,
+  "source_numbers": true,
+  "text_field_ownership": true,
+  "retained_sources_until_explicit_reload": true,
+  "all_effect_calls": 0,
+  "binary_matches_launch": true,
+  "full_tests_passed": 3072,
+  "ignored": 3,
+  "checks": 6
+}

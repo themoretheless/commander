@@ -1,0 +1,6 @@
+{
+  "src/panel/miller.rs": "f017aa5ec9996452a6061ef730aa8274a32c032c0424feb8de0eb60483ef07b6",
+  "src/panel.rs": "9100502b51cb1ed609efba2a23527b1df906ccfa95c0c520f22b83dff4006357",
+  "src/workspace/tabs.rs": "5bb1c4071e97d0fc78e789c75fa3aa62652d72a7fb1cfd549b5bded1d0fd4756",
+  "src/session.rs": "742f40fdfaabe0fe8294c9bb11ebf1d0714bf5c8da65e6e7190c0e42c44a4ffe"
+}

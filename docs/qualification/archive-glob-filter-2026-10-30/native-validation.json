@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "reason": "No CUA tool exposed in this continuation",
+  "native_launch_attempted": false,
+  "required_gates": [
+    "native Glob/Regex/Exact selection",
+    "mask entry and errors",
+    "saved recall/navigation/exclusion",
+    "focus/layout"
+  ]
+}

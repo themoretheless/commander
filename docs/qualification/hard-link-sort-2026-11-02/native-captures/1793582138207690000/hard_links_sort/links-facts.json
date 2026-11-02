@@ -1,0 +1,47 @@
+[
+  {
+    "device": 16777230,
+    "directory": false,
+    "inode": 255261053,
+    "links": 3,
+    "name": "links-old.txt",
+    "regular": true,
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "directory": false,
+    "inode": 255261054,
+    "links": 1,
+    "name": "links-middle.txt",
+    "regular": true,
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "directory": false,
+    "inode": 255261053,
+    "links": 3,
+    "name": "links-new.txt",
+    "regular": true,
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "directory": false,
+    "inode": 255261057,
+    "links": 1,
+    "name": "links-link.txt",
+    "regular": false,
+    "symlink": true
+  },
+  {
+    "device": 16777230,
+    "directory": true,
+    "inode": 255261059,
+    "links": 2,
+    "name": "links-folder",
+    "regular": false,
+    "symlink": false
+  }
+]

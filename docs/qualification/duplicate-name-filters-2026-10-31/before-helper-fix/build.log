@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `duplicate_candidates` is never used
+    --> src/workspace.rs:3446:12
+     |
+ 622 | impl Workspace {
+     | -------------- method in this implementation
+...
+3446 |     pub fn duplicate_candidates(&self) -> Vec<FileEntry> {
+     |            ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.06s

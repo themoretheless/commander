@@ -1,0 +1,5 @@
+{
+  "pid": 9762,
+  "reason": "Palette exact label Sort by name chose SortByStem; scripted stage 2 requires SortColumn::Name. Owned process stopped to fix actual ranking.",
+  "signal": "SIGTERM"
+}

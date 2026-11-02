@@ -1,0 +1,6 @@
+{
+  "status": "pending",
+  "reason": "Desktop CUA unavailable; no native Member details expansion/cursor/layout capture",
+  "binary_sha256": "78f08662fdf98f266db1077f73c3668d9ae998734dcb6a8afa77891472b98361",
+  "earlier_archive_native_gates": "remain pending"
+}

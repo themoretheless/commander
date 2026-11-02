@@ -1,0 +1,27 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0425]: cannot find type `Path` in this scope
+   --> src/query.rs:468:44
+    |
+468 |     pub fn matches_directory(&self, path: &Path, root: &Path) -> bool {
+    |                                            ^^^^ not found in this scope
+    |
+    = note: struct `crate::workspace_profile::tests::Path` exists but is inaccessible
+help: consider importing this struct
+    |
+  7 + use std::path::Path;
+    |
+
+error[E0425]: cannot find type `Path` in this scope
+   --> src/query.rs:468:57
+    |
+468 |     pub fn matches_directory(&self, path: &Path, root: &Path) -> bool {
+    |                                                         ^^^^ not found in this scope
+    |
+    = note: struct `crate::workspace_profile::tests::Path` exists but is inaccessible
+help: consider importing this struct
+    |
+  7 + use std::path::Path;
+    |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

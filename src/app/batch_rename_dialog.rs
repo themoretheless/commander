@@ -15,6 +15,7 @@ const PREVIEW_SCROLL_ID: &str = "batch_rename_preview";
 fn status_hint(status: PlanStatus) -> Option<&'static str> {
     match status {
         PlanStatus::Ok | PlanStatus::Unchanged => None,
+        PlanStatus::ExpansionLimit => Some("Replacement output exceeds 64 KiB"),
         PlanStatus::Invalid => Some("Name is not valid"),
         PlanStatus::Collision => Some("Name already exists or repeats another row"),
     }
@@ -79,6 +80,17 @@ impl ValidatedBatchRename {
             && self.regex_error.is_none()
     }
     #[cfg(feature = "visual-qa")]
+    pub fn targets_preview(&self, expected: &[(&str, &str)]) -> bool {
+        self.applicable
+            && self.regex_error.is_none()
+            && self.plans.len() == expected.len()
+            && self
+                .plans
+                .iter()
+                .zip(expected)
+                .all(|(plan, (from, to))| plan.from == *from && plan.to == *to)
+    }
+    #[cfg(feature = "visual-qa")]
     pub fn options_preview(&self, ignore_case: bool, first_only: bool, expected: &str) -> bool {
         self.rule.ignore_case == ignore_case
             && self.rule.first_only == first_only
@@ -125,6 +137,14 @@ impl ValidatedBatchRename {
             (false, Some("Fix the Find pattern to continue".to_string()))
         } else if plan_is_applicable(&plans) {
             (true, None)
+        } else if plans
+            .iter()
+            .any(|plan| plan.status == PlanStatus::ExpansionLimit)
+        {
+            (
+                false,
+                Some("Reduce the replacement expansion (64 KiB per stage)".into()),
+            )
         } else if plans.iter().any(|plan| plan.status == PlanStatus::Invalid) {
             (false, Some("Fix the invalid names to continue".to_string()))
         } else if changes.is_empty() {
@@ -166,6 +186,40 @@ impl ValidatedBatchRename {
     }
 }
 
+fn reorder_targets(
+    context: &mut BatchRenameContext,
+    validation: &mut Option<ValidatedBatchRename>,
+    error: &mut Option<String>,
+    from: usize,
+    to: usize,
+) -> bool {
+    if from == to || from >= context.targets.len() || to >= context.targets.len() {
+        return false;
+    }
+    context.targets.swap(from, to);
+    *validation = None;
+    *error = None;
+    true
+}
+
+fn exclude_target(
+    context: &mut BatchRenameContext,
+    validation: &mut Option<ValidatedBatchRename>,
+    error: &mut Option<String>,
+    index: usize,
+) -> bool {
+    if index >= context.targets.len() {
+        return false;
+    }
+    let name = context.targets.remove(index);
+    context.dirs.remove(&name);
+    // This sibling stays on disk: retain it in existing to detect collisions
+    // with a target that previously could have relied on its vacated name.
+    *validation = None;
+    *error = None;
+    true
+}
+
 impl App {
     pub(crate) fn open_batch_rename(&mut self, ctx: &egui::Context) {
         let Some(context) = self.ws.batch_rename_context() else {
@@ -180,12 +234,24 @@ impl App {
             remove_suffix: String::new(),
             find: String::new(),
             replace: String::new(),
+            extra_replacements: Vec::new(),
             regex_mode: false,
             ignore_case: false,
             first_only: false,
             trim_spaces: false,
             collapse_repeats: false,
             normalization: crate::rename::NameNormalization::Keep,
+            character_target: crate::rename::CharacterTarget::Stem,
+            insert_text_on: false,
+            insert_text: String::new(),
+            insert_offset: 0,
+            insert_from_end: false,
+            insert_overwrite: false,
+            range_action: crate::rename::RangeAction::Remove,
+            remove_range_on: false,
+            remove_offset: 0,
+            remove_count: 1,
+            remove_from_end: false,
             stem_limit_on: false,
             stem_limit: 32,
             replace_target: crate::rename::ReplaceTarget::WholeName,
@@ -194,6 +260,7 @@ impl App {
             case: crate::rename::CaseMode::Keep,
             extension_case: crate::rename::ExtensionCase::Keep,
             numbering_on: false,
+            number_format: crate::rename::NumberFormat::Decimal,
             number_position: crate::rename::NumberPosition::default(),
             num_start: 1,
             num_step: 1,
@@ -248,6 +315,10 @@ impl App {
 
         let mut commit: Option<(RenameRule, BatchRenameContext)> = None;
         let mut cancel = false;
+        let mut move_target = None;
+        let mut remove_target = None;
+        let mut copy_format = None;
+        let mut clipboard_payload = None;
         let mut presets_changed = false;
         let presets = &mut self.rename_presets;
         let preset_name_id = egui::Id::new("batch-rename-preset-name");
@@ -420,7 +491,7 @@ impl App {
                         ui.add(edit).labelled_by(label.id)
                     };
 
-                    let text_fields = egui::Grid::new("batch_rename_fields")
+                    let mut text_fields = egui::Grid::new("batch_rename_fields")
                         .num_columns(4)
                         .spacing([10.0, 8.0])
                         .show(ui, |ui| {
@@ -447,8 +518,39 @@ impl App {
                             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-remove-prefix"), remove_prefix.rect));
                             [first.id, replace.id, prefix.id, suffix.id, remove_prefix.id, remove_suffix.id]
                         })
-                        .inner;
+                        .inner.to_vec();
 
+                    let add = ui.add_enabled(state.extra_replacements.len() < crate::rename::MAX_EXTRA_REPLACEMENTS, egui::Button::new("Add replacement").small())
+                        .on_hover_text("Run another Find/Replace after the previous pair, before case/numbering. All pairs share the matching options and target below; at most 16 additional pairs.");
+                    #[cfg(feature = "visual-qa")]
+                    ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-add-replacement"), add.rect));
+                    let added = add.clicked();
+                    if added { state.extra_replacements.push(crate::rename::ReplacementPair::default()); preset_interaction = true; }
+                    let pair_count = state.extra_replacements.len();
+                    let mut remove = None;
+                    let mut move_pair = None;
+                    for (index, pair) in state.extra_replacements.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            let label = ui.small(format!("Then {}", index + 1));
+                            let find = ui.add(egui::TextEdit::singleline(&mut pair.find).id(egui::Id::new(("rename-extra-find", index))).desired_width(140.0).hint_text("Find (required)")).labelled_by(label.id);
+                            let arrow = ui.label("to");
+                            let replace = ui.add(egui::TextEdit::singleline(&mut pair.replace).id(egui::Id::new(("rename-extra-replace", index))).desired_width(140.0).hint_text("Replace")).labelled_by(arrow.id);
+                            text_fields.extend([find.id, replace.id]);
+                            if added && index + 1 == pair_count { find.request_focus(); }
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| { data.insert_temp(egui::Id::new(("rename-extra-find", index)), find.rect); data.insert_temp(egui::Id::new(("rename-extra-replace", index)), replace.rect); });
+                            let up = ui.add_enabled(index > 0, egui::Button::new("Up").small()).on_hover_text("Run this replacement before the previous pair");
+                            let down = ui.add_enabled(index + 1 < pair_count, egui::Button::new("Down").small()).on_hover_text("Run this replacement after the next pair");
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| { data.insert_temp(egui::Id::new(("rename-extra-up", index)), up.rect); data.insert_temp(egui::Id::new(("rename-extra-down", index)), down.rect); });
+                            if up.clicked() { move_pair = Some((index, index - 1)); preset_interaction = true; }
+                            if down.clicked() { move_pair = Some((index, index + 1)); preset_interaction = true; }
+                            let delete = ui.small_button("Remove");
+                            if delete.clicked() { remove = Some(index); preset_interaction = true; }
+                        });
+                    }
+                    if let Some(index) = remove { state.extra_replacements.remove(index); }
+                    else if let Some((from, to)) = move_pair { state.extra_replacements.swap(from, to); }
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         let regex = ui.checkbox(&mut state.regex_mode, "Find is a regex");
@@ -499,6 +601,59 @@ impl App {
                     });
                     ui.add_space(8.0);
 
+                    ui.horizontal_wrapped(|ui| {
+                        use crate::rename::CharacterTarget;
+                        ui.label("Character edits").on_hover_text("Scope of range edits and Insert text; independent of find/replace. Extension excludes its dot and skips folders.");
+                        for target in [CharacterTarget::Stem, CharacterTarget::Extension, CharacterTarget::WholeName] {
+                            let response = ui.selectable_value(&mut state.character_target, target, target.label());
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("rename-character-target", target.label())), response.rect));
+                            preset_interaction |= response.has_focus() || response.clicked();
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let enabled = ui.checkbox(&mut state.remove_range_on, "Range")
+                            .on_hover_text("Remove a range of whole Unicode graphemes, or keep only that range; applies to the chosen character-edit scope before insertion, case and decoration");
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-remove-range"), enabled.rect));
+                        preset_interaction |= enabled.has_focus() || enabled.clicked();
+                        ui.add_enabled_ui(state.remove_range_on, |ui| {
+                            for action in [crate::rename::RangeAction::Remove, crate::rename::RangeAction::Keep] {
+                                let response = ui.selectable_value(&mut state.range_action, action, action.label());
+                                #[cfg(feature = "visual-qa")]
+                                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("rename-range-action", action.label())), response.rect));
+                                preset_interaction |= response.has_focus() || response.clicked();
+                            }
+                            ui.label("skip");
+                            ui.add(egui::DragValue::new(&mut state.remove_offset).range(0..=255));
+                            ui.label("count");
+                            ui.add(egui::DragValue::new(&mut state.remove_count).range(1..=255));
+                            let edge = ui.checkbox(&mut state.remove_from_end, "from end").on_hover_text("Skip from the end of the chosen component, then count backwards; shorter names clamp and an out-of-range selection is empty");
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-remove-range-end"), edge.rect));
+                            preset_interaction |= edge.has_focus() || edge.clicked();
+                        });
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let enabled = ui.checkbox(&mut state.insert_text_on, "Insert text")
+                            .on_hover_text("Insert into the chosen character-edit scope after range removal, before case and decoration");
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-insert-enabled"), enabled.rect));
+                        preset_interaction |= enabled.has_focus() || enabled.clicked();
+                        ui.add_enabled_ui(state.insert_text_on, |ui| {
+                            let edit = ui.add(egui::TextEdit::singleline(&mut state.insert_text).desired_width(110.0).hint_text("literal text"));
+                            text_fields.push(edit.id);
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-insert-text"), edit.rect));
+                            ui.label("at");
+                            ui.add(egui::DragValue::new(&mut state.insert_offset).range(0..=255));
+                            let edge = ui.checkbox(&mut state.insert_from_end, "from end");
+                            let overwrite = ui.checkbox(&mut state.insert_overwrite, "Overwrite").on_hover_text("Replace following whole graphemes equal to the inserted text length; reaching the end appends the rest");
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| { data.insert_temp(egui::Id::new("rename-insert-end"), edge.rect); data.insert_temp(egui::Id::new("rename-insert-overwrite"), overwrite.rect); });
+                            preset_interaction |= edge.has_focus() || edge.clicked() || overwrite.has_focus() || overwrite.clicked();
+                        });
+                    });
                     ui.horizontal_wrapped(|ui| {
                     let trim = ui.checkbox(&mut state.trim_spaces, "Trim spaces")
                         .on_hover_text("Remove whitespace at the beginning and end of the final name");
@@ -587,11 +742,23 @@ impl App {
                                 .labelled_by(label.id);
                             let label =
                                 ui.label(egui::RichText::new("pad").size(10.0).color(t.text_muted));
-                            ui.add(egui::DragValue::new(&mut state.num_pad).range(0..=6))
+                            ui.add_enabled(state.number_format == crate::rename::NumberFormat::Decimal, egui::DragValue::new(&mut state.num_pad).range(0..=6))
                                 .labelled_by(label.id);
                         });
                     });
 
+                    ui.add_enabled_ui(state.numbering_on, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            use crate::rename::NumberFormat;
+                            ui.label("Counter format").on_hover_text("Letters use 1=a, 26=z, 27=aa; zero stays 0 and negatives get a minus sign. Padding applies only to Decimal.");
+                            for format in [NumberFormat::Decimal, NumberFormat::LowerLetters, NumberFormat::UpperLetters] {
+                                let response = ui.selectable_value(&mut state.number_format, format, format.label());
+                                #[cfg(feature = "visual-qa")]
+                                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("rename-number-format", format.label())), response.rect));
+                                preset_interaction |= response.has_focus() || response.clicked();
+                            }
+                        });
+                    });
                     ui.add_enabled_ui(state.numbering_on, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Counter position");
@@ -622,21 +789,35 @@ impl App {
 
                     // ── Preview ─────────────────────────────────────────────
                     // Fixed-height rows, so only the visible ones are laid out.
-                    const ROW_H: f32 = 18.0;
+                    const ROW_H: f32 = 24.0;
                     egui::ScrollArea::vertical()
                         .id_salt((PREVIEW_SCROLL_ID, state.scroll_nonce))
                         .max_height(240.0)
                         .auto_shrink([false, true])
                         .show_rows(ui, ROW_H, validation.plans.len(), |ui, range| {
-                            for p in &validation.plans[range] {
+                            for index in range {
+                                let p = &validation.plans[index];
                                 let (color, mark) = match p.status {
                                     PlanStatus::Ok => (t.accent, "->"),
                                     PlanStatus::Unchanged => (t.text_muted, "="),
+                                    PlanStatus::ExpansionLimit => (t.accent_red, "x"),
                                     PlanStatus::Invalid => (t.accent_red, "x"),
                                     PlanStatus::Collision => (t.accent_warning, "!"),
                                 };
                                 ui.horizontal(|ui| {
                                     ui.set_height(ROW_H);
+                                    if validation.plans.len() > 1 {
+                                        let up = ui.add_enabled(index > 0, egui::Button::new("Up").small()).on_hover_text("Move this file earlier in the batch; recalculate numbering");
+                                        let down = ui.add_enabled(index + 1 < validation.plans.len(), egui::Button::new("Down").small()).on_hover_text("Move this file later in the batch; recalculate numbering");
+                                        #[cfg(feature = "visual-qa")]
+                                        ui.ctx().data_mut(|data| { data.insert_temp(egui::Id::new(("rename-target-up", index)), up.rect); data.insert_temp(egui::Id::new(("rename-target-down", index)), down.rect); });
+                                        if up.clicked() { move_target = Some((index, index - 1)); preset_interaction = true; }
+                                        if down.clicked() { move_target = Some((index, index + 1)); preset_interaction = true; }
+                                    }
+                                    let exclude = ui.small_button("Exclude").on_hover_text("Remove this file from the rename batch; leave it untouched on disk");
+                                    #[cfg(feature = "visual-qa")]
+                                    ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("rename-target-exclude", index)), exclude.rect));
+                                    if exclude.clicked() { remove_target = Some(index); preset_interaction = true; }
                                     // Split the row so a long name truncates (full
                                     // name on hover) instead of widening the sheet.
                                     let name_w = ((ui.available_width() - 24.0) / 2.0).max(60.0);
@@ -667,6 +848,16 @@ impl App {
                             }
                         });
 
+                    ui.horizontal_wrapped(|ui| {
+                        use crate::listing_export::RenamePlanFormat;
+                        for (format, label) in [(RenamePlanFormat::OriginalNames, "Copy original names"), (RenamePlanFormat::ProposedNames, "Copy proposed names"), (RenamePlanFormat::MappingCsv, "Copy mapping (CSV)")] {
+                            let enabled = crate::listing_export::can_copy_rename_plan(&validation.plans, format, validation.regex_error.as_deref());
+                            let response = ui.add_enabled(enabled, egui::Button::new(label).small()).on_hover_text(if format == RenamePlanFormat::MappingCsv { "Copy every current row with raw CSV-quoted names, status and any rule error; does not apply the plan" } else { "Copy every current row in displayed order, with line controls escaped; proposed names require a valid conflict-free plan" });
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("rename-copy-plan", label)), response.rect));
+                            if response.clicked() { copy_format = Some(format); preset_interaction = true; }
+                        }
+                    });
                     ui.add_space(10.0);
                     let mut submit_requested = false;
                     {
@@ -733,11 +924,25 @@ impl App {
                     {
                         submit_requested = true;
                     }
-                    if let Some(rule) = validation.rule_for_submit(submit_requested) {
+                    if let Some(rule) = validation.rule_for_submit(submit_requested && move_target.is_none() && remove_target.is_none() && copy_format.is_none()) {
                         commit = Some((rule, state.context.clone()));
+                    }
+                    if move_target.is_none() && remove_target.is_none()
+                        && let Some(format) = copy_format
+                        && let Some(text) = crate::listing_export::rename_plan(&validation.plans, format, validation.regex_error.as_deref()) {
+                        clipboard_payload = Some((text, format!("{} {}", validation.plans.len(), format.label())));
                     }
                     if escape_requested {
                         cancel = true;
+                    }
+                    if let Some(index) = remove_target {
+                        if exclude_target(&mut state.context, &mut state.validation, &mut state.error, index) {
+                            cancel |= state.context.targets.is_empty();
+                            ctx.request_repaint();
+                        }
+                    } else if let Some((from, to)) = move_target
+                        && reorder_targets(&mut state.context, &mut state.validation, &mut state.error, from, to) {
+                        ctx.request_repaint();
                     }
                 });
         });
@@ -750,6 +955,10 @@ impl App {
                 crate::visual_qa::ProbeId::Confirmation,
                 &response.response,
             );
+        }
+
+        if let Some((text, label)) = clipboard_payload {
+            self.write_clipboard(&text, &label, ctx);
         }
 
         if presets_changed {
@@ -828,12 +1037,27 @@ mod tests {
             remove_suffix: ".old".into(),
             find: "(".into(),
             replace: "replacement".into(),
+            extra_replacements: vec![crate::rename::ReplacementPair {
+                find: "old".into(),
+                replace: "new".into(),
+            }],
             regex_mode: true,
             ignore_case: true,
             first_only: true,
             trim_spaces: true,
             collapse_repeats: true,
             normalization: crate::rename::NameNormalization::Nfkd,
+            character_target: crate::rename::CharacterTarget::WholeName,
+            insert_text_on: true,
+            insert_text: "draft".into(),
+            insert_offset: 2,
+            insert_from_end: true,
+            insert_overwrite: true,
+            range_action: crate::rename::RangeAction::Keep,
+            remove_range_on: true,
+            remove_offset: 2,
+            remove_count: 3,
+            remove_from_end: true,
             stem_limit_on: true,
             stem_limit: 2,
             replace_target: crate::rename::ReplaceTarget::Extension,
@@ -842,6 +1066,7 @@ mod tests {
             case: crate::rename::CaseMode::Upper,
             extension_case: crate::rename::ExtensionCase::Lower,
             numbering_on: true,
+            number_format: crate::rename::NumberFormat::UpperLetters,
             number_position: crate::rename::NumberPosition::BeforeName,
             num_start: -9,
             num_step: -2,
@@ -855,6 +1080,33 @@ mod tests {
         };
         state.validation = Some(ValidatedBatchRename::build(&state.context, state.rule()));
         assert!(state.validation.as_ref().unwrap().regex_error.is_some());
+        let range_rule = RenameRule {
+            range_action: crate::rename::RangeAction::Keep,
+            number_format: crate::rename::NumberFormat::LowerLetters,
+            character_target: crate::rename::CharacterTarget::Extension,
+            insert_text: Some(crate::rename::InsertText {
+                text: "文".into(),
+                offset: 3,
+                from_end: true,
+                overwrite: true,
+            }),
+            remove_range: Some(crate::rename::RemoveRange {
+                offset: 4,
+                count: 5,
+                from_end: false,
+            }),
+            ..Default::default()
+        };
+        state.load_rule(&range_rule);
+        assert_eq!(state.rule(), range_rule);
+        assert_eq!(
+            (
+                state.remove_offset,
+                state.remove_count,
+                state.remove_from_end
+            ),
+            (4, 5, false)
+        );
         state.reset_rule();
         assert_eq!(state.rule(), RenameRule::default());
         assert_eq!((state.num_start, state.num_step, state.num_pad), (1, 1, 2));
@@ -867,6 +1119,128 @@ mod tests {
         let rule = state.rule();
         let validation = ValidatedBatchRename::cached(&mut state.validation, &state.context, rule);
         assert_eq!(validation.plans[0].to, "Photo.JPG");
+        assert!(validation.rule_for_submit(true).is_none());
+    }
+
+    #[test]
+    fn range_action_changes_refresh_cached_proposals_and_submit_rules() {
+        let context = context(&["abcdef.txt"], &[]);
+        let mut cached = None;
+        for (action, expected) in [
+            (crate::rename::RangeAction::Remove, "adef.txt"),
+            (crate::rename::RangeAction::Keep, "bc.txt"),
+        ] {
+            let rule = RenameRule {
+                range_action: action,
+                remove_range: Some(crate::rename::RemoveRange {
+                    offset: 1,
+                    count: 2,
+                    from_end: false,
+                }),
+                ..Default::default()
+            };
+            let validation = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+            assert_eq!(validation.plans[0].to, expected);
+            assert_eq!(validation.rule_for_submit(true), Some(rule));
+        }
+    }
+
+    #[test]
+    fn counter_format_changes_refresh_cached_proposals_and_submit_rules() {
+        let context = context(&["photo.txt"], &[]);
+        let mut cached = None;
+        for (format, expected) in [
+            (crate::rename::NumberFormat::Decimal, "27.txt"),
+            (crate::rename::NumberFormat::LowerLetters, "aa.txt"),
+            (crate::rename::NumberFormat::UpperLetters, "AA.txt"),
+        ] {
+            let rule = RenameRule {
+                number_format: format,
+                numbering: Some(crate::rename::Numbering {
+                    start: 27,
+                    step: 1,
+                    pad: 2,
+                }),
+                number_position: crate::rename::NumberPosition::CounterOnly,
+                ..Default::default()
+            };
+            let validation = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+            assert_eq!(validation.plans[0].to, expected);
+            assert_eq!(validation.rule_for_submit(true), Some(rule));
+        }
+    }
+
+    #[test]
+    fn character_target_changes_refresh_cached_proposals_and_submit_rules() {
+        let context = context(&["report.txt"], &[]);
+        let mut cached = None;
+        for (target, expected) in [
+            (crate::rename::CharacterTarget::Stem, "report_.txt"),
+            (crate::rename::CharacterTarget::Extension, "report.txt_"),
+            (crate::rename::CharacterTarget::WholeName, "report_.txt"),
+        ] {
+            let rule = RenameRule {
+                character_target: target,
+                insert_text: Some(crate::rename::InsertText {
+                    text: "_".into(),
+                    offset: 6,
+                    from_end: false,
+                    overwrite: false,
+                }),
+                ..Default::default()
+            };
+            let validation = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+            assert_eq!(validation.plans[0].to, expected);
+            assert_eq!(validation.rule_for_submit(true), Some(rule));
+        }
+    }
+
+    #[test]
+    fn insertion_rebuilds_cached_proposal_and_submission_for_each_mode() {
+        let context = context(&["abcdef.txt"], &[]);
+        let mut cached = None;
+        for (from_end, overwrite, text, expected) in [
+            (false, false, "X", "aXbcdef.txt"),
+            (false, true, "Y", "aYcdef.txt"),
+            (true, true, "X", "abcdeX.txt"),
+        ] {
+            let rule = RenameRule {
+                insert_text: Some(crate::rename::InsertText {
+                    text: text.into(),
+                    offset: 1,
+                    from_end,
+                    overwrite,
+                }),
+                ..Default::default()
+            };
+            let validation = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+            assert_eq!(validation.plans[0].to, expected);
+            assert_eq!(validation.rule_for_submit(true), Some(rule));
+        }
+        let validation = ValidatedBatchRename::cached(&mut cached, &context, RenameRule::default());
+        assert_eq!(validation.plans[0].to, "abcdef.txt");
+        assert!(validation.rule_for_submit(true).is_none());
+    }
+
+    #[test]
+    fn removal_range_rebuilds_preview_and_submission_after_edge_changes() {
+        let context = context(&["abcdef.txt"], &[]);
+        let mut cached = None;
+        for (from_end, expected) in [(false, "adef.txt"), (true, "abcf.txt")] {
+            let rule = RenameRule {
+                remove_range: Some(crate::rename::RemoveRange {
+                    offset: 1,
+                    count: 2,
+                    from_end,
+                }),
+                ..Default::default()
+            };
+            let validation = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+            assert_eq!(validation.plans[0].to, expected);
+            assert_eq!(validation.rule_for_submit(true), Some(rule));
+        }
+        let validation = ValidatedBatchRename::cached(&mut cached, &context, RenameRule::default());
+        assert_eq!(validation.plans[0].to, "abcdef.txt");
         assert!(validation.rule_for_submit(true).is_none());
     }
 
@@ -996,6 +1370,192 @@ mod tests {
             assert_eq!(validation.plans[0].to, expected);
             assert_eq!(validation.rule_for_submit(true), Some(rule));
         }
+    }
+
+    #[test]
+    fn excluded_target_remains_a_sibling_and_last_exclusion_empties_the_batch() {
+        let mut context = context(&["a.txt", "b.txt", "folder"], &["folder"]);
+        let rule = RenameRule {
+            extra_replacements: vec![
+                crate::rename::ReplacementPair {
+                    find: "a".into(),
+                    replace: "tmp".into(),
+                },
+                crate::rename::ReplacementPair {
+                    find: "b".into(),
+                    replace: "a".into(),
+                },
+                crate::rename::ReplacementPair {
+                    find: "tmp".into(),
+                    replace: "b".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut cache = Some(ValidatedBatchRename::build(&context, rule.clone()));
+        let mut error = Some("stale".into());
+        assert!(cache.as_ref().unwrap().applicable);
+        assert!(!exclude_target(&mut context, &mut cache, &mut error, 3));
+        assert!(cache.is_some());
+        assert!(error.is_some());
+        assert!(exclude_target(&mut context, &mut cache, &mut error, 0));
+        assert!(cache.is_none());
+        assert!(error.is_none());
+        assert!(context.existing.contains("a.txt"));
+        let validation = ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+        assert_eq!(validation.plans[0].from, "b.txt");
+        assert_eq!(validation.plans[0].to, "a.txt");
+        assert_eq!(validation.plans[0].status, PlanStatus::Collision);
+        assert!(validation.rule_for_submit(true).is_none());
+        assert!(exclude_target(&mut context, &mut cache, &mut error, 1));
+        assert!(!context.dirs.contains("folder"));
+        assert!(context.existing.contains("folder"));
+        assert!(exclude_target(&mut context, &mut cache, &mut error, 0));
+        assert!(context.targets.is_empty());
+        assert!(!ValidatedBatchRename::cached(&mut cache, &context, rule).applicable);
+    }
+
+    #[test]
+    fn excluding_a_target_compacts_numbering_and_preserves_remaining_order() {
+        let mut context = context(&["a.txt", "b.md", "c.txt"], &[]);
+        let rule = RenameRule {
+            numbering: Some(crate::rename::Numbering {
+                start: 10,
+                step: 2,
+                pad: 2,
+            }),
+            number_position: crate::rename::NumberPosition::CounterOnly,
+            ..Default::default()
+        };
+        let mut cache = Some(ValidatedBatchRename::build(&context, rule.clone()));
+        let mut error = None;
+        assert_eq!(cache.as_ref().unwrap().plans[2].to, "14.txt");
+        assert!(exclude_target(&mut context, &mut cache, &mut error, 1));
+        let rebuilt = ValidatedBatchRename::cached(&mut cache, &context, rule);
+        assert_eq!(
+            rebuilt
+                .plans
+                .iter()
+                .map(|plan| (plan.from.as_str(), plan.to.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("a.txt", "10.txt"), ("c.txt", "12.txt")]
+        );
+        assert!(context.existing.contains("b.md"));
+        assert!(rebuilt.applicable);
+    }
+
+    #[test]
+    fn reordered_targets_invalidate_cached_numbering_without_changing_membership() {
+        let mut context = context(&["photo.txt", "notes.md", "folder"], &["folder"]);
+        let original_existing = context.existing.clone();
+        let original_dirs = context.dirs.clone();
+        let rule = RenameRule {
+            numbering: Some(crate::rename::Numbering {
+                start: 1,
+                step: 1,
+                pad: 2,
+            }),
+            number_position: crate::rename::NumberPosition::CounterOnly,
+            ..Default::default()
+        };
+        let mut cache = Some(ValidatedBatchRename::build(&context, rule.clone()));
+        let mut error = Some("stale".into());
+        assert_eq!(cache.as_ref().unwrap().plans[0].to, "01.txt");
+        assert!(!reorder_targets(&mut context, &mut cache, &mut error, 0, 0));
+        assert!(!reorder_targets(&mut context, &mut cache, &mut error, 3, 0));
+        assert!(cache.is_some());
+        assert!(error.is_some());
+        assert!(reorder_targets(&mut context, &mut cache, &mut error, 0, 1));
+        assert!(cache.is_none());
+        assert!(error.is_none());
+        let reordered = ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+        assert_eq!(
+            reordered
+                .plans
+                .iter()
+                .map(|plan| (plan.from.as_str(), plan.to.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("notes.md", "01.md"),
+                ("photo.txt", "02.txt"),
+                ("folder", "03")
+            ]
+        );
+        assert_eq!(reordered.rule_for_submit(true), Some(rule.clone()));
+        assert_eq!(context.existing, original_existing);
+        assert_eq!(context.dirs, original_dirs);
+        assert!(reorder_targets(&mut context, &mut cache, &mut error, 1, 0));
+        assert_eq!(
+            ValidatedBatchRename::cached(&mut cache, &context, rule).plans[0].to,
+            "01.txt"
+        );
+    }
+
+    #[test]
+    fn reordered_replacement_chain_revalidates_preview_and_submitted_order() {
+        let context = context(&["TXT.txt"], &[]);
+        let mut cache = None;
+        let mut rule = RenameRule {
+            extra_replacements: vec![
+                crate::rename::ReplacementPair {
+                    find: "TXT".into(),
+                    replace: "Doc".into(),
+                },
+                crate::rename::ReplacementPair {
+                    find: "Doc".into(),
+                    replace: "Final".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            ValidatedBatchRename::cached(&mut cache, &context, rule.clone()).plans[0].to,
+            "Final.txt"
+        );
+        rule.extra_replacements.swap(0, 1);
+        let reversed = ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+        assert_eq!(reversed.plans[0].to, "Doc.txt");
+        assert_eq!(reversed.rule_for_submit(true), Some(rule.clone()));
+        assert_eq!(
+            serde_json::from_str::<RenameRule>(&serde_json::to_string(&rule).unwrap()).unwrap(),
+            rule
+        );
+        rule.extra_replacements.swap(1, 0);
+        let restored = ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+        assert_eq!(restored.plans[0].to, "Final.txt");
+        assert_eq!(restored.rule_for_submit(true), Some(rule));
+    }
+
+    #[test]
+    fn replacement_chain_edits_rebuild_preview_and_block_invalid_submission() {
+        let context = context(&["old-old.TXT"], &[]);
+        let mut cached = None;
+        let mut rule = RenameRule {
+            find: "old".into(),
+            replace: "tmp".into(),
+            extra_replacements: vec![crate::rename::ReplacementPair {
+                find: "tmp".into(),
+                replace: "new".into(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            ValidatedBatchRename::cached(&mut cached, &context, rule.clone()).plans[0].to,
+            "new-new.TXT"
+        );
+        rule.extra_replacements[0].replace = "final".into();
+        let validation = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+        assert_eq!(validation.plans[0].to, "final-final.TXT");
+        assert_eq!(validation.rule_for_submit(true), Some(rule.clone()));
+        rule.extra_replacements[0].find.clear();
+        let validation = ValidatedBatchRename::cached(&mut cached, &context, rule.clone());
+        assert!(validation.regex_error.is_some());
+        assert!(validation.rule_for_submit(true).is_none());
+        rule.extra_replacements.clear();
+        assert_eq!(
+            ValidatedBatchRename::cached(&mut cached, &context, rule).plans[0].to,
+            "tmp-tmp.TXT"
+        );
     }
 
     #[test]

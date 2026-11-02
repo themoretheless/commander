@@ -8,6 +8,8 @@ pub enum OmnibarMode<'a> {
     Jump(&'a str),
     /// `>`: commands only.
     Command(&'a str),
+    /// `@`: Favorites only, searched across the full opening snapshot.
+    Favorites(&'a str),
     /// `/` or `~`: a literal folder path; `./` or `../`: a path relative to
     /// the active folder (see [`resolve_relative`]).
     Path(&'a str),
@@ -23,6 +25,8 @@ impl<'a> OmnibarMode<'a> {
         let path_input = trimmed.trim_end();
         if let Some(rest) = trimmed.strip_prefix('>') {
             Self::Command(rest.trim())
+        } else if let Some(rest) = trimmed.strip_prefix('@') {
+            Self::Favorites(rest.trim())
         } else if let Some(rest) = trimmed.strip_prefix('?') {
             Self::Search(rest.trim())
         } else if let Some(rest) = trimmed.strip_prefix('!') {
@@ -43,6 +47,7 @@ impl<'a> OmnibarMode<'a> {
         match self {
             Self::Jump(_) => "Go",
             Self::Command(_) => "Command",
+            Self::Favorites(_) => "Favorites",
             Self::Path(_) => "Path",
             Self::Search(_) => "Search",
             Self::Shell(_) => "Shell",
@@ -98,7 +103,7 @@ pub fn resolve_relative(input: &str, base: &std::path::Path) -> Option<String> {
 }
 
 /// Hint row shown under an empty omnibar.
-pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  /, ~ or ./ path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
+pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  @ favorites  \u{00b7}  /, ~ or ./ path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
 
 #[cfg(test)]
 mod tests {
@@ -109,6 +114,15 @@ mod tests {
         assert_eq!(OmnibarMode::parse(""), OmnibarMode::Jump(""));
         assert_eq!(OmnibarMode::parse("  docs "), OmnibarMode::Jump("docs"));
         assert_eq!(OmnibarMode::parse("> copy"), OmnibarMode::Command("copy"));
+        assert_eq!(
+            OmnibarMode::parse(" @ Проект "),
+            OmnibarMode::Favorites("Проект")
+        );
+        assert_eq!(OmnibarMode::parse("@"), OmnibarMode::Favorites(""));
+        assert_eq!(
+            OmnibarMode::parse("./@folder"),
+            OmnibarMode::Path("./@folder")
+        );
         assert_eq!(OmnibarMode::parse("?*.rs"), OmnibarMode::Search("*.rs"));
         assert_eq!(OmnibarMode::parse("! ls -la"), OmnibarMode::Shell("ls -la"));
         assert_eq!(OmnibarMode::parse("~/Doc"), OmnibarMode::Path("~/Doc"));

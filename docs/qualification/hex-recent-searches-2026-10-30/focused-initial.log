@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.87s
+     Running unittests src/main.rs (target/debug/build/commander/c13b85c03feaef22/out/commander-c13b85c03feaef22)
+
+running 3 tests
+test hex_preview::tests::recent_searches_deduplicate_full_settings_and_bound_count_and_text ... ok
+test hex_preview::tests::recent_searches_record_only_valid_submitted_searches_and_recall_without_work ... ok
+test hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching ... FAILED
+
+failures:
+
+---- hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching stdout ----
+
+thread 'hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching' (23309006) panicked at src/hex_preview.rs:1405:9:
+assertion `left == right` failed
+  left: ""
+ right: "і"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hex_preview::tests::recent_search_menu_pointer_restores_query_encoding_and_wrap_without_searching
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 2795 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `--bin commander`

@@ -1,0 +1,1 @@
+PASS: six checks; 3147 tests; six native orders match independent lexical ctime and display mtime facts, preserve cursor/hidden selection and exact JSON time; two native scenarios 14/14 each

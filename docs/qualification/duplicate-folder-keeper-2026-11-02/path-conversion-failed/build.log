@@ -1,0 +1,42 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: expected an `FnMut(&&std::path::Path)` closure, found `for<'a> fn(&'a std::path::PathBuf) -> &'a std::path::Path {std::path::PathBuf::as_path}`
+  --> src/app/duplicates_dialog.rs:55:30
+   |
+55 |             roots.iter().map(std::path::PathBuf::as_path),
+   |                          --- ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected an `FnMut(&&std::path::Path)` closure, found `for<'a> fn(&'a std::path::PathBuf) -> &'a std::path::Path {std::path::PathBuf::as_path}`
+   |                          |
+   |                          required by a bound introduced by this call
+   |
+   = help: the trait `FnMut(&&std::path::Path)` is not implemented for fn item `for<'a> fn(&'a std::path::PathBuf) -> &'a std::path::Path {std::path::PathBuf::as_path}`
+   = note: expected a closure with signature `fn(&&std::path::Path)`
+              found a closure with signature `fn(&std::path::PathBuf)`
+note: required by a bound in `std::iter::Iterator::map`
+  --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/iter/traits/iterator.rs:831:4
+
+error[E0277]: expected an `FnOnce(&&std::path::Path)` closure, found `for<'a> fn(&'a std::path::PathBuf) -> &'a std::path::Path {std::path::PathBuf::as_path}`
+   --> src/app/duplicates_dialog.rs:55:13
+    |
+ 53 |         let owner = crate::dedup_scan::root_owner(
+    |                     ----------------------------- required by a bound introduced by this call
+ 54 |             &file.path,
+ 55 |             roots.iter().map(std::path::PathBuf::as_path),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected an `FnOnce(&&std::path::Path)` closure, found `for<'a> fn(&'a std::path::PathBuf) -> &'a std::path::Path {std::path::PathBuf::as_path}`
+    |
+    = help: the trait `FnOnce(&&std::path::Path)` is not implemented for fn item `for<'a> fn(&'a std::path::PathBuf) -> &'a std::path::Path {std::path::PathBuf::as_path}`
+    = note: expected a closure with signature `fn(&&std::path::Path)`
+               found a closure with signature `fn(&std::path::PathBuf)`
+    = note: required for `Map<Iter<'_, &Path>, fn(&PathBuf) -> &Path {PathBuf::as_path}>` to implement `Iterator`
+    = note: required for `Map<Iter<'_, &Path>, fn(&PathBuf) -> &Path {PathBuf::as_path}>` to implement `IntoIterator`
+note: required by a bound in `root_owner`
+   --> src/dedup_scan.rs:275:17
+    |
+273 | pub fn root_owner<'a>(
+    |        ---------- required by a bound in this function
+274 |     path: &std::path::Path,
+275 |     roots: impl IntoIterator<Item = &'a std::path::Path>,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `root_owner`
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/ba5961aec00a8818/out/commander.long-type-17962787296522026282.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors

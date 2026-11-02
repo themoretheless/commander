@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::Instant;
 
 use super::{Notify, invalidate_size_cache, invalidate_size_cache_many};
@@ -81,6 +81,7 @@ pub(super) struct WatchPoll {
     pub(super) sizes_dirty: bool,
 }
 
+#[derive(Clone)]
 struct WatcherCallback {
     binding: WatchBinding,
     /// The binding path as the backend may report it: macOS `FSEvents`
@@ -221,8 +222,8 @@ impl WatcherCallback {
 /// Dropped watcher callbacks may still race with navigation, but their messages
 /// cannot affect the new directory because `poll` rejects a non-current binding.
 pub(super) struct DirectoryWatcherState {
-    watcher: Option<DirectoryWatcher>,
-    pending_native: Option<PendingNativeInstall>,
+    watcher: Option<WatchLease>,
+    pending_install: Option<PendingInstall>,
     binding: Option<WatchBinding>,
     retry: Option<(PathBuf, Instant)>,
     /// Consecutive failures to subscribe to this path with any backend.
@@ -240,10 +241,164 @@ pub(super) struct DirectoryWatcherState {
     retry_reconciliation_at: Option<Instant>,
 }
 
-struct PendingNativeInstall {
-    binding: WatchBinding,
+/// UI-owned lease: dropping the last sender only signals the worker. Backend
+/// destruction, like installation, remains on that worker even after navigation.
+#[derive(Clone)]
+struct WatchLease {
+    _stop: mpsc::Sender<()>,
+}
+
+struct InstalledBackend {
+    backend: crate::watcher_policy::WatcherBackend,
     depth: crate::watcher_policy::WatchDepth,
-    receiver: mpsc::Receiver<Result<DirectoryWatcher, String>>,
+    fallback: bool,
+}
+
+struct PendingInstall {
+    binding: WatchBinding,
+    lease: WatchLease,
+    recovering: bool,
+    receiver: mpsc::Receiver<Result<InstalledBackend, String>>,
+}
+
+const MAX_WATCHER_INSTALLS: usize = 8;
+static INSTALL_BUDGET: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
+
+struct InstallPermit(Arc<AtomicUsize>);
+impl InstallPermit {
+    fn acquire(budget: &Arc<AtomicUsize>) -> Option<Self> {
+        budget
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_WATCHER_INSTALLS).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| Self(Arc::clone(budget)))
+    }
+}
+impl Drop for InstallPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn install_backend(
+    backend: crate::watcher_policy::WatcherBackend,
+    depth: crate::watcher_policy::WatchDepth,
+    interval: std::time::Duration,
+    callback: WatcherCallback,
+) -> Result<DirectoryWatcher, String> {
+    use crate::watcher_policy::WatcherBackend;
+    use notify::Watcher as _;
+    let path = callback.binding.path.clone();
+    // Watch the lexical tree: linked targets can escape it or form cycles even
+    // in a shallow PollWatcher scan. Keep following disabled on supporting backends.
+    let config = notify::Config::default()
+        .with_poll_interval(interval)
+        .with_follow_symlinks(false);
+    let result = match backend {
+        WatcherBackend::Native => notify::RecommendedWatcher::new(callback.into_handler(), config)
+            .map(DirectoryWatcher::Native),
+        WatcherBackend::Polling => {
+            notify::PollWatcher::new(callback.into_handler(), config).map(DirectoryWatcher::Polling)
+        }
+    };
+    let mut watcher = result.map_err(|error| {
+        crate::watcher_health::record_start_failure();
+        error.to_string()
+    })?;
+    watcher.watch(&path, depth).map_err(|error| {
+        crate::watcher_health::record_watch_failure();
+        error.to_string()
+    })?;
+    Ok(watcher)
+}
+
+/// This entire function runs off the UI thread, including mount probing and
+/// the initial polling scan. Notifications carry metadata, never backend owners.
+fn run_install(
+    mut callback: WatcherCallback,
+    sender: mpsc::SyncSender<Result<InstalledBackend, String>>,
+    stop: mpsc::Receiver<()>,
+    permit: InstallPermit,
+) {
+    use crate::watcher_policy::{WatchDepth, WatcherBackend};
+    let path = callback.binding.path.clone();
+    let policy = crate::watcher_policy::policy_for(crate::volume_profile::profile(&path).backend);
+    callback.canonical = std::fs::canonicalize(&path)
+        .ok()
+        .filter(|canonical| canonical != &path);
+    if matches!(
+        stop.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected) | Ok(())
+    ) {
+        return;
+    }
+    let publish = |result| {
+        let sent = sender.send(result).is_ok();
+        if sent && let Some(wake) = &callback.wake {
+            wake();
+        }
+        sent
+    };
+    let native = policy.backend == WatcherBackend::Native;
+    let depth = if native {
+        WatchDepth::DirectoryOnly
+    } else {
+        policy.depth
+    };
+    let mut watcher = match install_backend(
+        WatcherBackend::Polling,
+        depth,
+        policy.poll_interval,
+        callback.clone(),
+    ) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            publish(Err(error));
+            return;
+        }
+    };
+    if !publish(Ok(InstalledBackend {
+        backend: WatcherBackend::Polling,
+        depth,
+        fallback: native,
+    })) {
+        return;
+    }
+    if native
+        && !matches!(
+            stop.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected) | Ok(())
+        )
+    {
+        match install_backend(
+            WatcherBackend::Native,
+            policy.depth,
+            policy.poll_interval,
+            callback.clone(),
+        ) {
+            Ok(installed) => {
+                watcher = installed;
+                if !publish(Ok(InstalledBackend {
+                    backend: WatcherBackend::Native,
+                    depth: policy.depth,
+                    fallback: false,
+                })) {
+                    return;
+                }
+            }
+            Err(error) => {
+                if !publish(Err(error)) {
+                    return;
+                }
+            }
+        }
+    }
+    drop(sender);
+    // Healthy subscriptions do not consume admission slots while they wait.
+    drop(permit);
+    let _ = stop.recv();
+    drop(watcher);
 }
 
 impl Default for DirectoryWatcherState {
@@ -251,7 +406,7 @@ impl Default for DirectoryWatcherState {
         let (sender, receiver) = mpsc::sync_channel(INBOX_CAPACITY);
         Self {
             watcher: None,
-            pending_native: None,
+            pending_install: None,
             binding: None,
             retry: None,
             unavailable: None,
@@ -274,7 +429,7 @@ impl DirectoryWatcherState {
     pub(super) fn set_notify(&mut self, notify: Notify) {
         self.notify = Some(notify);
         self.watcher = None;
-        self.pending_native = None;
+        self.pending_install = None;
         self.binding = None;
         self.retry = None;
         self.unavailable = None;
@@ -294,12 +449,12 @@ impl DirectoryWatcherState {
     }
 
     pub(super) fn ensure_binding(&mut self, path: &Path) {
-        self.poll_native_install();
+        self.poll_install();
         if self
             .binding
             .as_ref()
             .is_some_and(|binding| binding.path == path)
-            && self.watcher.is_some()
+            && (self.watcher.is_some() || self.pending_install.is_some())
         {
             return;
         }
@@ -307,235 +462,137 @@ impl DirectoryWatcherState {
             .retry
             .as_ref()
             .is_some_and(|(retry_path, retry_at)| retry_path == path && Instant::now() < *retry_at)
+            || self.notify.is_none()
         {
             return;
         }
-        if self.notify.is_none() {
-            return;
-        }
-
         let recovering = self
             .retry
             .take()
             .is_some_and(|(retry_path, _)| retry_path == path);
         self.watcher = None;
-        self.pending_native = None;
-        self.binding = None;
+        self.pending_install = None;
         self.wake_scheduled = Arc::new(AtomicBool::new(false));
         self.overflowed = Arc::new(AtomicU8::new(0));
-
         let binding = WatchBinding {
             path: path.to_path_buf(),
             epoch: self.next_binding_epoch,
         };
         self.next_binding_epoch = self.next_binding_epoch.wrapping_add(1).max(1);
-
-        let profile = crate::volume_profile::profile(path);
-        let policy = crate::watcher_policy::policy_for(profile.backend);
-        let attempts = [
-            (policy.backend, policy.depth, false),
-            (
-                crate::watcher_policy::WatcherBackend::Polling,
-                crate::watcher_policy::WatchDepth::DirectoryOnly,
-                true,
-            ),
-        ];
-        let attempt_count =
-            usize::from(policy.backend == crate::watcher_policy::WatcherBackend::Native) + 1;
-        let canonical = std::fs::canonicalize(path)
-            .ok()
-            .filter(|canonical| canonical != path);
-
-        if policy.backend == crate::watcher_policy::WatcherBackend::Native {
-            let callback = WatcherCallback {
-                binding: binding.clone(),
-                canonical: canonical.clone(),
-                sender: self.sender.clone(),
-                wake_scheduled: Arc::clone(&self.wake_scheduled),
-                overflowed: Arc::clone(&self.overflowed),
-                wake: self.notify.clone(),
-            };
-            let polling = notify::PollWatcher::new(
-                callback.into_handler(),
-                notify::Config::default().with_poll_interval(policy.poll_interval),
-            )
-            .map(DirectoryWatcher::Polling)
-            .and_then(|mut watcher| {
-                watcher
-                    .watch(path, crate::watcher_policy::WatchDepth::DirectoryOnly)
-                    .map(|()| watcher)
-            });
-            match polling {
-                Ok(watcher) => {
-                    self.binding = Some(binding.clone());
-                    self.watcher = Some(watcher);
-                    self.retry = None;
-                    self.unavailable = None;
-                    self.request_reconciliation(true);
-                    crate::watcher_health::record_watcher_start(
-                        crate::watcher_policy::WatcherBackend::Polling,
-                        crate::watcher_policy::WatchDepth::DirectoryOnly,
-                        true,
-                    );
-                    if recovering {
-                        crate::watcher_health::record_reconnect();
-                    }
-                    self.start_native_install(binding, canonical, policy.depth);
-                    return;
-                }
-                Err(error) => {
-                    crate::watcher_health::record_start_failure();
-                    log::warn!(
-                        target: "commander::watcher",
-                        "cannot start temporary polling watcher for {}: {error}",
-                        path.display()
-                    );
-                    self.mark_unavailable(path);
-                    return;
-                }
-            }
-        }
-
-        for &(backend, depth, fallback) in attempts.iter().take(attempt_count) {
-            let callback = WatcherCallback {
-                binding: binding.clone(),
-                canonical: canonical.clone(),
-                sender: self.sender.clone(),
-                wake_scheduled: Arc::clone(&self.wake_scheduled),
-                overflowed: Arc::clone(&self.overflowed),
-                wake: self.notify.clone(),
-            };
-            let watcher = match backend {
-                crate::watcher_policy::WatcherBackend::Native => {
-                    notify::recommended_watcher(callback.into_handler())
-                        .map(DirectoryWatcher::Native)
-                }
-                crate::watcher_policy::WatcherBackend::Polling => notify::PollWatcher::new(
-                    callback.into_handler(),
-                    notify::Config::default().with_poll_interval(policy.poll_interval),
-                )
-                .map(DirectoryWatcher::Polling),
-            };
-            let mut watcher = match watcher {
-                Ok(watcher) => watcher,
-                Err(error) => {
-                    crate::watcher_health::record_start_failure();
-                    log::warn!(
-                        target: "commander::watcher",
-                        "cannot start the {backend:?} watcher for {}: {error}",
-                        path.display()
-                    );
-                    continue;
-                }
-            };
-            if let Err(error) = watcher.watch(path, depth) {
-                crate::watcher_health::record_watch_failure();
-                // inotify's ENOSPC here means fs.inotify.max_user_watches
-                // is exhausted; the next attempt falls back to polling.
-                log::warn!(
-                    target: "commander::watcher",
-                    "cannot watch {} ({backend:?}, {depth:?}): {error}",
-                    path.display()
-                );
-                continue;
-            }
-
-            self.binding = Some(binding.clone());
-            self.watcher = Some(watcher);
-            self.retry = None;
-            self.unavailable = None;
-            self.request_reconciliation(true);
-            crate::watcher_health::record_watcher_start(backend, depth, fallback);
-            if recovering {
-                crate::watcher_health::record_reconnect();
-            }
-            return;
-        }
-
-        self.mark_unavailable(path);
-    }
-
-    fn start_native_install(
-        &mut self,
-        binding: WatchBinding,
-        canonical: Option<PathBuf>,
-        depth: crate::watcher_policy::WatchDepth,
-    ) {
+        self.binding = Some(binding.clone());
+        // A listing can start now; installation completion requests another
+        // snapshot to cover all changes before the subscription became live.
+        self.request_reconciliation(false);
         let callback = WatcherCallback {
             binding: binding.clone(),
-            canonical,
+            canonical: None,
             sender: self.sender.clone(),
             wake_scheduled: Arc::clone(&self.wake_scheduled),
             overflowed: Arc::clone(&self.overflowed),
             wake: self.notify.clone(),
         };
-        let wake = self.notify.clone();
-        let path = binding.path.clone();
-        let (sender, receiver) = mpsc::sync_channel(1);
+        let budget = INSTALL_BUDGET.get_or_init(|| Arc::new(AtomicUsize::new(0)));
+        if !self.start_install(binding, callback, budget, run_install) {
+            self.mark_unavailable(path);
+        } else if let Some(pending) = self.pending_install.as_mut() {
+            pending.recovering = recovering;
+        }
+    }
+
+    fn start_install(
+        &mut self,
+        binding: WatchBinding,
+        callback: WatcherCallback,
+        budget: &Arc<AtomicUsize>,
+        install: impl FnOnce(
+            WatcherCallback,
+            mpsc::SyncSender<Result<InstalledBackend, String>>,
+            mpsc::Receiver<()>,
+            InstallPermit,
+        ) + Send
+        + 'static,
+    ) -> bool {
+        let Some(permit) = InstallPermit::acquire(budget) else {
+            return false;
+        };
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let (stop, stop_receiver) = mpsc::channel();
         match std::thread::Builder::new()
-            .name("commander-watcher-install".to_string())
+            .name("commander-watcher-install".into())
             .spawn(move || {
-                let result = notify::recommended_watcher(callback.into_handler())
-                    .map(DirectoryWatcher::Native)
-                    .and_then(|mut watcher| watcher.watch(&path, depth).map(|()| watcher))
-                    .map_err(|error| error.to_string());
-                let _ = sender.send(result);
-                if let Some(wake) = wake {
-                    wake();
+                let failure_callback = callback.clone();
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    install(callback, sender, stop_receiver, permit);
+                })).is_err() {
+                    crate::watcher_health::record_backend_error();
+                    failure_callback.send(WatchMessageKind::BackendError);
+                    log::warn!(target: "commander::watcher", "watcher worker panicked; subscription will restart");
                 }
-            }) {
+            })
+        {
             Ok(_) => {
-                self.pending_native = Some(PendingNativeInstall {
+                self.pending_install = Some(PendingInstall {
                     binding,
-                    depth,
+                    lease: WatchLease { _stop: stop },
+                    recovering: false,
                     receiver,
                 });
+                true
             }
             Err(error) => {
                 crate::watcher_health::record_start_failure();
-                log::warn!(
-                    target: "commander::watcher",
-                    "cannot spawn native watcher installer for {}: {error}",
-                    binding.path.display()
-                );
+                log::warn!(target: "commander::watcher", "cannot spawn watcher installer: {error}");
+                false
             }
         }
     }
 
-    fn poll_native_install(&mut self) {
-        let Some(pending) = self.pending_native.as_ref() else {
-            return;
-        };
-        let result = match pending.receiver.try_recv() {
-            Ok(result) => result,
-            Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("native watcher installer disconnected".to_string())
+    fn poll_install(&mut self) {
+        loop {
+            let Some(pending) = self.pending_install.as_ref() else {
+                return;
+            };
+            let result = match pending.receiver.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let path = pending.binding.path.clone();
+                    self.pending_install = None;
+                    if self.watcher.is_none() {
+                        self.mark_unavailable(&path);
+                    }
+                    return;
+                }
+            };
+            if self.binding.as_ref() != Some(&pending.binding) {
+                self.pending_install = None;
+                return;
             }
-        };
-        let binding = pending.binding.clone();
-        let depth = pending.depth;
-        self.pending_native = None;
-        if self.binding.as_ref() != Some(&binding) {
-            return;
-        }
-        match result {
-            Ok(watcher) => {
-                self.watcher = Some(watcher);
-                self.request_reconciliation(true);
-                crate::watcher_health::record_watcher_start(
-                    crate::watcher_policy::WatcherBackend::Native,
-                    depth,
-                    false,
-                );
-            }
-            Err(error) => {
-                crate::watcher_health::record_watch_failure();
-                log::warn!(
-                    target: "commander::watcher",
-                    "cannot install native watcher for {}: {error}; keeping polling",
-                    binding.path.display()
-                );
+            match result {
+                Ok(installed) => {
+                    self.watcher = Some(pending.lease.clone());
+                    if pending.recovering {
+                        crate::watcher_health::record_reconnect();
+                    }
+                    self.pending_install.as_mut().unwrap().recovering = false;
+                    self.retry = None;
+                    self.unavailable = None;
+                    self.request_reconciliation(true);
+                    crate::watcher_health::record_watcher_start(
+                        installed.backend,
+                        installed.depth,
+                        installed.fallback,
+                    );
+                }
+                Err(error) => {
+                    let path = pending.binding.path.clone();
+                    self.pending_install = None;
+                    if self.watcher.is_none() {
+                        self.mark_unavailable(&path);
+                    }
+                    log::warn!(target: "commander::watcher", "cannot install watcher for {}: {error}", path.display());
+                    return;
+                }
             }
         }
     }
@@ -601,7 +658,7 @@ impl DirectoryWatcherState {
 
     pub(super) fn poll(&mut self, path: &Path) -> WatchPoll {
         self.ensure_binding(path);
-        self.poll_native_install();
+        self.poll_install();
         let mut outcome = WatchPoll::default();
         let mut restart = false;
         let mut changed = Vec::new();
@@ -652,7 +709,7 @@ impl DirectoryWatcherState {
 
         if restart {
             self.watcher = None;
-            self.pending_native = None;
+            self.pending_install = None;
             self.binding = None;
             self.retry = Some((path.to_path_buf(), Instant::now() + WATCHER_RETRY_BACKOFF));
         }
@@ -730,7 +787,7 @@ impl DirectoryWatcherState {
         };
         self.unavailable = Some((path.to_path_buf(), failures));
         self.watcher = None;
-        self.pending_native = None;
+        self.pending_install = None;
         self.binding = None;
         let backoff = WATCHER_RETRY_BACKOFF
             .saturating_mul(1 << failures.min(WATCHER_RETRY_BACKOFF_MAX_SHIFT));
@@ -802,23 +859,301 @@ impl DirectoryWatcherState {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
-    fn native_recursive_install_starts_from_a_polling_subscription() {
-        let temp = crate::testutil::TempDir::new();
-        let profile = crate::volume_profile::profile(temp.path());
-        if crate::watcher_policy::policy_for(profile.backend).backend
-            != crate::watcher_policy::WatcherBackend::Native
-        {
-            return;
+    fn polling_watchers_ignore_link_cycles_and_external_targets_but_detect_real_changes() {
+        use crate::watcher_policy::{WatchDepth, WatcherBackend};
+        use std::time::{Duration, UNIX_EPOCH};
+        for depth in [WatchDepth::Recursive, WatchDepth::DirectoryOnly] {
+            let dir = crate::testutil::TempDir::new();
+            let external = crate::testutil::TempDir::new();
+            let direct = dir.file("direct", "before");
+            let nested = dir.file("real/nested", "before");
+            let outside = external.file("target", "outside");
+            std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+            std::os::unix::fs::symlink(external.path(), dir.path().join("escape")).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.path().join("file-link")).unwrap();
+            let mut state = DirectoryWatcherState::default();
+            let binding = state.activate_test_binding(dir.path());
+            let callback = callback_for(&state, binding);
+            let mut backend = install_backend(
+                WatcherBackend::Polling,
+                depth,
+                Duration::from_secs(3600),
+                callback,
+            )
+            .unwrap();
+            assert!(
+                state.receiver.try_recv().is_err(),
+                "initial scan must not report a symlink cycle as backend failure"
+            );
+            std::fs::write(&outside, "external payload changed").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&outside)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_secs(2_000_000_000))
+                .unwrap();
+            let new_link = dir.path().join("new-link");
+            std::os::unix::fs::symlink(&outside, &new_link).unwrap();
+            let target = if depth == WatchDepth::Recursive {
+                nested
+            } else {
+                direct
+            };
+            std::fs::write(&target, "real payload changed").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&target)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_secs(2_000_000_001))
+                .unwrap();
+            let DirectoryWatcher::Polling(watcher) = &backend else {
+                unreachable!()
+            };
+            watcher.poll().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let local_paths = |message: WatchMessage| match message.kind {
+                WatchMessageKind::Changed { paths, .. } => {
+                    assert!(
+                        paths
+                            .iter()
+                            .all(|path| !path.starts_with(dir.path().join("escape"))
+                                && !path.starts_with(dir.path().join("loop"))
+                                && path != &dir.path().join("file-link")),
+                        "linked targets must not be watched: {paths:?}"
+                    );
+                    paths
+                }
+                other => panic!("link cycle must not force reconciliation/restart: {other:?}"),
+            };
+            let mut observed = false;
+            let mut observed_link = false;
+            while !observed || !observed_link {
+                let message = state
+                    .receiver
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .expect("real file modification must still be observed");
+                let paths = local_paths(message);
+                observed |= paths.contains(&target);
+                observed_link |= paths.contains(&new_link);
+            }
+            // Unwatch takes notify's scan locks, completing the in-flight scan
+            // before we drain the rest or remove fixtures.
+            let DirectoryWatcher::Polling(watcher) = &mut backend else {
+                unreachable!()
+            };
+            notify::Watcher::unwatch(watcher, dir.path()).unwrap();
+            for message in state.receiver.try_iter() {
+                local_paths(message);
+            }
+            drop(backend);
         }
+    }
+
+    fn callback_for(state: &DirectoryWatcherState, binding: WatchBinding) -> WatcherCallback {
+        WatcherCallback {
+            binding,
+            canonical: None,
+            sender: state.sender.clone(),
+            wake_scheduled: Arc::clone(&state.wake_scheduled),
+            overflowed: Arc::clone(&state.overflowed),
+            wake: state.notify.clone(),
+        }
+    }
+
+    fn polling_notice() -> InstalledBackend {
+        InstalledBackend {
+            backend: crate::watcher_policy::WatcherBackend::Polling,
+            depth: crate::watcher_policy::WatchDepth::DirectoryOnly,
+            fallback: true,
+        }
+    }
+
+    #[test]
+    fn blocked_install_is_singleflight_off_ui_and_admission_stays_bounded_after_navigation() {
         let mut state = DirectoryWatcherState::default();
         state.set_notify(Arc::new(|| {}));
+        let binding = state.activate_test_binding(Path::new("/watched"));
+        let callback = callback_for(&state, binding.clone());
+        let budget = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (exited_tx, exited_rx) = mpsc::channel();
+        assert!(
+            state.start_install(binding, callback, &budget, move |_, sender, _, permit| {
+                entered_tx.send(std::thread::current().id()).unwrap();
+                release_rx.recv().unwrap();
+                assert!(
+                    sender.send(Ok(polling_notice())).is_err(),
+                    "navigation retired the receiver"
+                );
+                drop(permit);
+                exited_tx.send(()).unwrap();
+            })
+        );
+        let worker = entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_ne!(worker, std::thread::current().id());
+        let epoch = state.next_binding_epoch;
+        let generation = state.requested_generation;
+        state.ensure_binding(Path::new("/watched"));
+        assert_eq!(state.next_binding_epoch, epoch);
+        assert_eq!(state.requested_generation, generation);
+        assert_eq!(budget.load(Ordering::Acquire), 1);
+        assert!(!state.is_active());
+        assert!(state.snapshot_ticket_for(Path::new("/watched")).is_some());
+        // Abandonment is nonblocking; an OS call may still occupy its permit.
+        state.set_notify(Arc::new(|| {}));
+        let held: Vec<_> = (1..MAX_WATCHER_INSTALLS)
+            .map(|_| InstallPermit::acquire(&budget).unwrap())
+            .collect();
+        assert!(InstallPermit::acquire(&budget).is_none());
+        release_tx.send(()).unwrap();
+        exited_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(InstallPermit::acquire(&budget).is_some());
+        drop(held);
+        assert_eq!(budget.load(Ordering::Acquire), 0);
+        assert!(!state.is_active() && state.binding.is_none());
+    }
 
+    #[test]
+    fn async_subscription_completion_reconciles_the_initial_listing_gap() {
+        let mut state = DirectoryWatcherState::default();
+        let binding = state.activate_test_binding(Path::new("/watched"));
+        let before = state.snapshot_ticket().unwrap();
+        state.acknowledge_snapshot(Some(before.clone()), Path::new("/watched"));
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let (stop, stop_rx) = mpsc::channel();
+        state.pending_install = Some(PendingInstall {
+            binding,
+            lease: WatchLease { _stop: stop },
+            recovering: false,
+            receiver,
+        });
+        sender.send(Ok(polling_notice())).unwrap();
+        drop(sender);
+        state.poll_install();
+        assert!(state.is_active());
+        assert!(state.pending_install.is_none());
+        assert!(state.snapshot_ticket().unwrap().generation > before.generation);
+        assert!(state.has_pending_reconciliation_for_test());
+        assert!(matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        state.set_notify(Arc::new(|| {}));
+        assert!(matches!(
+            stop_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn stale_install_completion_cannot_activate_a_new_binding() {
+        let mut state = DirectoryWatcherState::default();
+        let old = state.activate_test_binding(Path::new("/old"));
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let (stop, stop_rx) = mpsc::channel();
+        state.pending_install = Some(PendingInstall {
+            binding: old,
+            lease: WatchLease { _stop: stop },
+            recovering: false,
+            receiver,
+        });
+        let current = state.activate_test_binding(Path::new("/new"));
+        let generation = state.requested_generation;
+        sender.send(Ok(polling_notice())).unwrap();
+        state.poll_install();
+        assert_eq!(state.binding.as_ref(), Some(&current));
+        assert_eq!(state.requested_generation, generation);
+        assert!(!state.is_active() && state.pending_install.is_none());
+        assert!(matches!(
+            stop_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn failed_promotion_keeps_polling_but_failed_initial_install_backs_off() {
+        for started in [false, true] {
+            let mut state = DirectoryWatcherState::default();
+            let binding = state.activate_test_binding(Path::new("/watched"));
+            let (sender, receiver) = mpsc::sync_channel(2);
+            let (stop, stop_rx) = mpsc::channel();
+            state.pending_install = Some(PendingInstall {
+                binding,
+                lease: WatchLease { _stop: stop },
+                recovering: false,
+                receiver,
+            });
+            if started {
+                sender.send(Ok(polling_notice())).unwrap();
+            }
+            sender.send(Err("installer failed".into())).unwrap();
+            state.poll_install();
+            assert_eq!(state.is_active(), started);
+            assert_eq!(state.retry.is_some(), !started);
+            assert_eq!(state.binding.is_some(), started);
+            assert_eq!(
+                matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                started
+            );
+        }
+    }
+
+    #[test]
+    fn worker_panic_after_publication_retires_the_dead_subscription() {
+        let mut state = DirectoryWatcherState::default();
+        let binding = state.activate_test_binding(Path::new("/watched"));
+        let callback = callback_for(&state, binding.clone());
+        let budget = Arc::new(AtomicUsize::new(0));
+        assert!(
+            state.start_install(binding, callback, &budget, |_, sender, _, _permit| {
+                sender.send(Ok(polling_notice())).unwrap();
+                panic!("injected watcher installation failure after publication");
+            })
+        );
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while state.retry.is_none() {
+            state.poll(Path::new("/watched"));
+            assert!(
+                Instant::now() < deadline,
+                "dead subscription remained active"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!state.is_active());
+        assert!(state.binding.is_none() && state.pending_install.is_none());
+        assert_eq!(budget.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn installed_background_backend_observes_real_child_creation() {
+        let temp = crate::testutil::TempDir::new();
+        let mut state = DirectoryWatcherState::default();
+        state.set_notify(Arc::new(|| {}));
         state.ensure_binding(temp.path());
-
-        assert!(matches!(state.watcher, Some(DirectoryWatcher::Polling(_))));
-        assert!(state.pending_native.is_some());
-        assert!(state.snapshot_ticket_for(temp.path()).is_some());
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !state.is_active() || state.pending_install.is_some() {
+            assert!(Instant::now() < deadline, "watcher did not install");
+            state.ensure_binding(temp.path());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let ticket = state.snapshot_ticket();
+        state.acknowledge_snapshot(ticket, temp.path());
+        std::fs::write(temp.path().join("created.txt"), "payload").unwrap();
+        loop {
+            let outcome = state.poll(temp.path());
+            if outcome.ticket.is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "subscription lost the child event"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

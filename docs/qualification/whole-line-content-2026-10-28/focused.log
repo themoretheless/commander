@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.04s
+     Running unittests src/main.rs (target/debug/build/commander/ba6f6c66670d433b/out/commander-ba6f6c66670d433b)
+
+running 4 tests
+test search::tests::content_line_query_handles_terminators_spaces_empty_lines_and_prefixes ... ok
+test search::tests::content_line_query_agrees_across_native_index_zip_and_tar ... ok
+test search::tests::content_line_query_proves_eof_or_known_line_terminators_in_bounded_text ... ok
+test query::tests::content_line_query_preserves_empty_literals_spaces_and_saved_conditions ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2566 filtered out; finished in 0.95s
+

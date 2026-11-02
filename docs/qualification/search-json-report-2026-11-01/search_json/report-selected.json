@@ -1,0 +1,103 @@
+{
+  "format": "commander.search-report",
+  "version": 1,
+  "snapshot": "retained search observations",
+  "scope": "visible_selected_results",
+  "partial": false,
+  "root": {
+    "encoding": "utf8",
+    "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-89686-search_json/left"
+  },
+  "context": {
+    "expression": "report-",
+    "mode": "Exact",
+    "generation": 3,
+    "source": "Live + archives",
+    "completed": true,
+    "running": false,
+    "pending_rerun": false,
+    "draft_differs": false,
+    "scanned": 11,
+    "matched": 5,
+    "skipped": 0,
+    "truncated": false,
+    "archive_error": null,
+    "received_rows": 5,
+    "visible_rows": 4,
+    "visible_selected_rows": 2,
+    "pivot": "None",
+    "selected_only": true,
+    "ordered_at_utc": "2026-11-01T09:10:44.140036Z"
+  },
+  "exported_rows": 2,
+  "rows": [
+    {
+      "row": 1,
+      "display_name": "report-a.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-89686-search_json/left/report-a.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777234,
+        "file_id": 252450531
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "modified_utc": "2026-11-01T09:10:42.495040620Z",
+      "accessed_utc": "2026-11-01T09:10:42.494962371Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "display_name": "report-archive.txt",
+      "location": {
+        "kind": "archive_member",
+        "archive": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-89686-search_json/left/search.zip"
+        },
+        "member": {
+          "encoding": "utf8",
+          "text": "report-archive.txt"
+        },
+        "index": 0
+      },
+      "native_id": null,
+      "is_directory": false,
+      "listed_size_bytes": 16,
+      "modified_utc": "2026-11-01T09:10:42.498694513Z",
+      "accessed_utc": "2026-11-01T09:10:42.496307320Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

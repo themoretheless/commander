@@ -1,0 +1,18 @@
+{
+  "expression": "name:status- changed-after:2026-11-02T02:07:57.706526364+00:00 changed-before:2026-11-02T02:07:57.748790272+00:00",
+  "matched": 1,
+  "root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-77074-changed_search/left",
+  "rows": [
+    {
+      "changed_ns": 1793585277727612089,
+      "explanations": [
+        "literal \"status-\"",
+        "changed-after:2026-11-02T02:07:57.706526364+00:00",
+        "changed-before:2026-11-02T02:07:57.748790272+00:00"
+      ],
+      "name": "status-middle.txt"
+    }
+  ],
+  "skipped": 1,
+  "source": "Live + archives"
+}

@@ -1,0 +1,4 @@
+2026-10-30T23:42:44 INFO  commander::logging: logging initialized
+2026-10-30T23:42:44 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: archive_browser
+2026-10-30T23:42:44 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: /tmp/commander-native-archive-dotfiles-1793389358251743000
+2026-10-30T23:42:44 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

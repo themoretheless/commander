@@ -1,0 +1,13 @@
+{
+  "Cargo.toml": "6b05fd17d1ef8cd89a09fc7300fc3f2d5171654962171e1e7298949989d5c193",
+  "Cargo.lock": "32f6ef04c772725e3be36390d73a1cce28659cf99c724ff5f1ebbd8894c8a612",
+  "README.md": "bf3cd38b57486bdfc8181ebf38c07bfbba185ca56233a3c18369fa4257e63533",
+  "src/main.rs": "d0c5650fa4449ec2397ef3462deaa758e9d2912253cabf005b22b0bed809482e",
+  "src/office_preview.rs": "39135430aaf347646063e4dee99d4ab31df16da21220fbc02b234d931314a8b5",
+  "src/spreadsheet_preview.rs": "33de483d4c4ef9358ccee3ebc6e47c85deb89bc54a565dbcac0a478517316bda",
+  "src/image_cache.rs": "67644fa30f0d637610628ac29fd0cff3af47f105b78d13cb03fd2a108b7dc245",
+  "src/app/render.rs": "d4c612892c5abc3b129465a0ea7589400f62625ed583a0c479b9b9862c955da6",
+  "src/visual_qa.rs": "aab72f038164dea2c37d7a3c41b6c48179c01aba4de03203ed2b44585e1831cc",
+  "docs/strata-parity.md": "db58d6d6837711233dd70af2dc23232fb6e440bb6f0ba2ec366d21e65eefb9eb",
+  "docs/research/feature-transfers-2026-10-27.md": "011ede004b6fc958041c029d22916ca68e34be5ca8d225830847bf61b89113ba"
+}

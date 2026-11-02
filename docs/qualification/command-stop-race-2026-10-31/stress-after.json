@@ -1,0 +1,1034 @@
+{
+  "attempts": 256,
+  "parallel": 8,
+  "elapsed": 0.5895695420040283,
+  "failed": 0,
+  "results": [
+    {
+      "attempt": 0,
+      "exit_code": 0
+    },
+    {
+      "attempt": 4,
+      "exit_code": 0
+    },
+    {
+      "attempt": 2,
+      "exit_code": 0
+    },
+    {
+      "attempt": 6,
+      "exit_code": 0
+    },
+    {
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "attempt": 5,
+      "exit_code": 0
+    },
+    {
+      "attempt": 3,
+      "exit_code": 0
+    },
+    {
+      "attempt": 7,
+      "exit_code": 0
+    },
+    {
+      "attempt": 9,
+      "exit_code": 0
+    },
+    {
+      "attempt": 11,
+      "exit_code": 0
+    },
+    {
+      "attempt": 10,
+      "exit_code": 0
+    },
+    {
+      "attempt": 8,
+      "exit_code": 0
+    },
+    {
+      "attempt": 14,
+      "exit_code": 0
+    },
+    {
+      "attempt": 13,
+      "exit_code": 0
+    },
+    {
+      "attempt": 15,
+      "exit_code": 0
+    },
+    {
+      "attempt": 12,
+      "exit_code": 0
+    },
+    {
+      "attempt": 18,
+      "exit_code": 0
+    },
+    {
+      "attempt": 16,
+      "exit_code": 0
+    },
+    {
+      "attempt": 17,
+      "exit_code": 0
+    },
+    {
+      "attempt": 20,
+      "exit_code": 0
+    },
+    {
+      "attempt": 21,
+      "exit_code": 0
+    },
+    {
+      "attempt": 19,
+      "exit_code": 0
+    },
+    {
+      "attempt": 22,
+      "exit_code": 0
+    },
+    {
+      "attempt": 23,
+      "exit_code": 0
+    },
+    {
+      "attempt": 24,
+      "exit_code": 0
+    },
+    {
+      "attempt": 25,
+      "exit_code": 0
+    },
+    {
+      "attempt": 27,
+      "exit_code": 0
+    },
+    {
+      "attempt": 26,
+      "exit_code": 0
+    },
+    {
+      "attempt": 29,
+      "exit_code": 0
+    },
+    {
+      "attempt": 28,
+      "exit_code": 0
+    },
+    {
+      "attempt": 31,
+      "exit_code": 0
+    },
+    {
+      "attempt": 30,
+      "exit_code": 0
+    },
+    {
+      "attempt": 32,
+      "exit_code": 0
+    },
+    {
+      "attempt": 34,
+      "exit_code": 0
+    },
+    {
+      "attempt": 33,
+      "exit_code": 0
+    },
+    {
+      "attempt": 35,
+      "exit_code": 0
+    },
+    {
+      "attempt": 36,
+      "exit_code": 0
+    },
+    {
+      "attempt": 37,
+      "exit_code": 0
+    },
+    {
+      "attempt": 38,
+      "exit_code": 0
+    },
+    {
+      "attempt": 39,
+      "exit_code": 0
+    },
+    {
+      "attempt": 40,
+      "exit_code": 0
+    },
+    {
+      "attempt": 41,
+      "exit_code": 0
+    },
+    {
+      "attempt": 42,
+      "exit_code": 0
+    },
+    {
+      "attempt": 43,
+      "exit_code": 0
+    },
+    {
+      "attempt": 44,
+      "exit_code": 0
+    },
+    {
+      "attempt": 45,
+      "exit_code": 0
+    },
+    {
+      "attempt": 46,
+      "exit_code": 0
+    },
+    {
+      "attempt": 47,
+      "exit_code": 0
+    },
+    {
+      "attempt": 48,
+      "exit_code": 0
+    },
+    {
+      "attempt": 49,
+      "exit_code": 0
+    },
+    {
+      "attempt": 51,
+      "exit_code": 0
+    },
+    {
+      "attempt": 52,
+      "exit_code": 0
+    },
+    {
+      "attempt": 53,
+      "exit_code": 0
+    },
+    {
+      "attempt": 50,
+      "exit_code": 0
+    },
+    {
+      "attempt": 55,
+      "exit_code": 0
+    },
+    {
+      "attempt": 56,
+      "exit_code": 0
+    },
+    {
+      "attempt": 57,
+      "exit_code": 0
+    },
+    {
+      "attempt": 58,
+      "exit_code": 0
+    },
+    {
+      "attempt": 59,
+      "exit_code": 0
+    },
+    {
+      "attempt": 61,
+      "exit_code": 0
+    },
+    {
+      "attempt": 60,
+      "exit_code": 0
+    },
+    {
+      "attempt": 62,
+      "exit_code": 0
+    },
+    {
+      "attempt": 63,
+      "exit_code": 0
+    },
+    {
+      "attempt": 64,
+      "exit_code": 0
+    },
+    {
+      "attempt": 65,
+      "exit_code": 0
+    },
+    {
+      "attempt": 66,
+      "exit_code": 0
+    },
+    {
+      "attempt": 67,
+      "exit_code": 0
+    },
+    {
+      "attempt": 68,
+      "exit_code": 0
+    },
+    {
+      "attempt": 69,
+      "exit_code": 0
+    },
+    {
+      "attempt": 54,
+      "exit_code": 0
+    },
+    {
+      "attempt": 70,
+      "exit_code": 0
+    },
+    {
+      "attempt": 71,
+      "exit_code": 0
+    },
+    {
+      "attempt": 72,
+      "exit_code": 0
+    },
+    {
+      "attempt": 73,
+      "exit_code": 0
+    },
+    {
+      "attempt": 75,
+      "exit_code": 0
+    },
+    {
+      "attempt": 74,
+      "exit_code": 0
+    },
+    {
+      "attempt": 77,
+      "exit_code": 0
+    },
+    {
+      "attempt": 76,
+      "exit_code": 0
+    },
+    {
+      "attempt": 79,
+      "exit_code": 0
+    },
+    {
+      "attempt": 78,
+      "exit_code": 0
+    },
+    {
+      "attempt": 80,
+      "exit_code": 0
+    },
+    {
+      "attempt": 81,
+      "exit_code": 0
+    },
+    {
+      "attempt": 82,
+      "exit_code": 0
+    },
+    {
+      "attempt": 83,
+      "exit_code": 0
+    },
+    {
+      "attempt": 84,
+      "exit_code": 0
+    },
+    {
+      "attempt": 85,
+      "exit_code": 0
+    },
+    {
+      "attempt": 87,
+      "exit_code": 0
+    },
+    {
+      "attempt": 86,
+      "exit_code": 0
+    },
+    {
+      "attempt": 89,
+      "exit_code": 0
+    },
+    {
+      "attempt": 88,
+      "exit_code": 0
+    },
+    {
+      "attempt": 90,
+      "exit_code": 0
+    },
+    {
+      "attempt": 91,
+      "exit_code": 0
+    },
+    {
+      "attempt": 92,
+      "exit_code": 0
+    },
+    {
+      "attempt": 93,
+      "exit_code": 0
+    },
+    {
+      "attempt": 94,
+      "exit_code": 0
+    },
+    {
+      "attempt": 97,
+      "exit_code": 0
+    },
+    {
+      "attempt": 95,
+      "exit_code": 0
+    },
+    {
+      "attempt": 98,
+      "exit_code": 0
+    },
+    {
+      "attempt": 99,
+      "exit_code": 0
+    },
+    {
+      "attempt": 101,
+      "exit_code": 0
+    },
+    {
+      "attempt": 100,
+      "exit_code": 0
+    },
+    {
+      "attempt": 102,
+      "exit_code": 0
+    },
+    {
+      "attempt": 103,
+      "exit_code": 0
+    },
+    {
+      "attempt": 104,
+      "exit_code": 0
+    },
+    {
+      "attempt": 105,
+      "exit_code": 0
+    },
+    {
+      "attempt": 106,
+      "exit_code": 0
+    },
+    {
+      "attempt": 108,
+      "exit_code": 0
+    },
+    {
+      "attempt": 107,
+      "exit_code": 0
+    },
+    {
+      "attempt": 109,
+      "exit_code": 0
+    },
+    {
+      "attempt": 96,
+      "exit_code": 0
+    },
+    {
+      "attempt": 110,
+      "exit_code": 0
+    },
+    {
+      "attempt": 111,
+      "exit_code": 0
+    },
+    {
+      "attempt": 113,
+      "exit_code": 0
+    },
+    {
+      "attempt": 114,
+      "exit_code": 0
+    },
+    {
+      "attempt": 115,
+      "exit_code": 0
+    },
+    {
+      "attempt": 116,
+      "exit_code": 0
+    },
+    {
+      "attempt": 117,
+      "exit_code": 0
+    },
+    {
+      "attempt": 118,
+      "exit_code": 0
+    },
+    {
+      "attempt": 119,
+      "exit_code": 0
+    },
+    {
+      "attempt": 120,
+      "exit_code": 0
+    },
+    {
+      "attempt": 121,
+      "exit_code": 0
+    },
+    {
+      "attempt": 122,
+      "exit_code": 0
+    },
+    {
+      "attempt": 123,
+      "exit_code": 0
+    },
+    {
+      "attempt": 124,
+      "exit_code": 0
+    },
+    {
+      "attempt": 125,
+      "exit_code": 0
+    },
+    {
+      "attempt": 126,
+      "exit_code": 0
+    },
+    {
+      "attempt": 112,
+      "exit_code": 0
+    },
+    {
+      "attempt": 127,
+      "exit_code": 0
+    },
+    {
+      "attempt": 128,
+      "exit_code": 0
+    },
+    {
+      "attempt": 129,
+      "exit_code": 0
+    },
+    {
+      "attempt": 131,
+      "exit_code": 0
+    },
+    {
+      "attempt": 133,
+      "exit_code": 0
+    },
+    {
+      "attempt": 132,
+      "exit_code": 0
+    },
+    {
+      "attempt": 134,
+      "exit_code": 0
+    },
+    {
+      "attempt": 135,
+      "exit_code": 0
+    },
+    {
+      "attempt": 136,
+      "exit_code": 0
+    },
+    {
+      "attempt": 137,
+      "exit_code": 0
+    },
+    {
+      "attempt": 139,
+      "exit_code": 0
+    },
+    {
+      "attempt": 138,
+      "exit_code": 0
+    },
+    {
+      "attempt": 140,
+      "exit_code": 0
+    },
+    {
+      "attempt": 141,
+      "exit_code": 0
+    },
+    {
+      "attempt": 142,
+      "exit_code": 0
+    },
+    {
+      "attempt": 143,
+      "exit_code": 0
+    },
+    {
+      "attempt": 144,
+      "exit_code": 0
+    },
+    {
+      "attempt": 146,
+      "exit_code": 0
+    },
+    {
+      "attempt": 145,
+      "exit_code": 0
+    },
+    {
+      "attempt": 147,
+      "exit_code": 0
+    },
+    {
+      "attempt": 130,
+      "exit_code": 0
+    },
+    {
+      "attempt": 148,
+      "exit_code": 0
+    },
+    {
+      "attempt": 149,
+      "exit_code": 0
+    },
+    {
+      "attempt": 150,
+      "exit_code": 0
+    },
+    {
+      "attempt": 151,
+      "exit_code": 0
+    },
+    {
+      "attempt": 152,
+      "exit_code": 0
+    },
+    {
+      "attempt": 155,
+      "exit_code": 0
+    },
+    {
+      "attempt": 153,
+      "exit_code": 0
+    },
+    {
+      "attempt": 154,
+      "exit_code": 0
+    },
+    {
+      "attempt": 157,
+      "exit_code": 0
+    },
+    {
+      "attempt": 156,
+      "exit_code": 0
+    },
+    {
+      "attempt": 159,
+      "exit_code": 0
+    },
+    {
+      "attempt": 158,
+      "exit_code": 0
+    },
+    {
+      "attempt": 161,
+      "exit_code": 0
+    },
+    {
+      "attempt": 163,
+      "exit_code": 0
+    },
+    {
+      "attempt": 165,
+      "exit_code": 0
+    },
+    {
+      "attempt": 164,
+      "exit_code": 0
+    },
+    {
+      "attempt": 166,
+      "exit_code": 0
+    },
+    {
+      "attempt": 167,
+      "exit_code": 0
+    },
+    {
+      "attempt": 168,
+      "exit_code": 0
+    },
+    {
+      "attempt": 169,
+      "exit_code": 0
+    },
+    {
+      "attempt": 170,
+      "exit_code": 0
+    },
+    {
+      "attempt": 171,
+      "exit_code": 0
+    },
+    {
+      "attempt": 172,
+      "exit_code": 0
+    },
+    {
+      "attempt": 173,
+      "exit_code": 0
+    },
+    {
+      "attempt": 160,
+      "exit_code": 0
+    },
+    {
+      "attempt": 174,
+      "exit_code": 0
+    },
+    {
+      "attempt": 175,
+      "exit_code": 0
+    },
+    {
+      "attempt": 162,
+      "exit_code": 0
+    },
+    {
+      "attempt": 176,
+      "exit_code": 0
+    },
+    {
+      "attempt": 178,
+      "exit_code": 0
+    },
+    {
+      "attempt": 180,
+      "exit_code": 0
+    },
+    {
+      "attempt": 185,
+      "exit_code": 0
+    },
+    {
+      "attempt": 186,
+      "exit_code": 0
+    },
+    {
+      "attempt": 177,
+      "exit_code": 0
+    },
+    {
+      "attempt": 181,
+      "exit_code": 0
+    },
+    {
+      "attempt": 179,
+      "exit_code": 0
+    },
+    {
+      "attempt": 182,
+      "exit_code": 0
+    },
+    {
+      "attempt": 183,
+      "exit_code": 0
+    },
+    {
+      "attempt": 184,
+      "exit_code": 0
+    },
+    {
+      "attempt": 189,
+      "exit_code": 0
+    },
+    {
+      "attempt": 190,
+      "exit_code": 0
+    },
+    {
+      "attempt": 191,
+      "exit_code": 0
+    },
+    {
+      "attempt": 192,
+      "exit_code": 0
+    },
+    {
+      "attempt": 193,
+      "exit_code": 0
+    },
+    {
+      "attempt": 194,
+      "exit_code": 0
+    },
+    {
+      "attempt": 187,
+      "exit_code": 0
+    },
+    {
+      "attempt": 195,
+      "exit_code": 0
+    },
+    {
+      "attempt": 196,
+      "exit_code": 0
+    },
+    {
+      "attempt": 188,
+      "exit_code": 0
+    },
+    {
+      "attempt": 197,
+      "exit_code": 0
+    },
+    {
+      "attempt": 198,
+      "exit_code": 0
+    },
+    {
+      "attempt": 199,
+      "exit_code": 0
+    },
+    {
+      "attempt": 200,
+      "exit_code": 0
+    },
+    {
+      "attempt": 201,
+      "exit_code": 0
+    },
+    {
+      "attempt": 202,
+      "exit_code": 0
+    },
+    {
+      "attempt": 204,
+      "exit_code": 0
+    },
+    {
+      "attempt": 205,
+      "exit_code": 0
+    },
+    {
+      "attempt": 203,
+      "exit_code": 0
+    },
+    {
+      "attempt": 206,
+      "exit_code": 0
+    },
+    {
+      "attempt": 207,
+      "exit_code": 0
+    },
+    {
+      "attempt": 209,
+      "exit_code": 0
+    },
+    {
+      "attempt": 210,
+      "exit_code": 0
+    },
+    {
+      "attempt": 211,
+      "exit_code": 0
+    },
+    {
+      "attempt": 213,
+      "exit_code": 0
+    },
+    {
+      "attempt": 212,
+      "exit_code": 0
+    },
+    {
+      "attempt": 214,
+      "exit_code": 0
+    },
+    {
+      "attempt": 215,
+      "exit_code": 0
+    },
+    {
+      "attempt": 216,
+      "exit_code": 0
+    },
+    {
+      "attempt": 217,
+      "exit_code": 0
+    },
+    {
+      "attempt": 219,
+      "exit_code": 0
+    },
+    {
+      "attempt": 218,
+      "exit_code": 0
+    },
+    {
+      "attempt": 220,
+      "exit_code": 0
+    },
+    {
+      "attempt": 221,
+      "exit_code": 0
+    },
+    {
+      "attempt": 222,
+      "exit_code": 0
+    },
+    {
+      "attempt": 208,
+      "exit_code": 0
+    },
+    {
+      "attempt": 223,
+      "exit_code": 0
+    },
+    {
+      "attempt": 224,
+      "exit_code": 0
+    },
+    {
+      "attempt": 226,
+      "exit_code": 0
+    },
+    {
+      "attempt": 227,
+      "exit_code": 0
+    },
+    {
+      "attempt": 225,
+      "exit_code": 0
+    },
+    {
+      "attempt": 228,
+      "exit_code": 0
+    },
+    {
+      "attempt": 231,
+      "exit_code": 0
+    },
+    {
+      "attempt": 232,
+      "exit_code": 0
+    },
+    {
+      "attempt": 230,
+      "exit_code": 0
+    },
+    {
+      "attempt": 229,
+      "exit_code": 0
+    },
+    {
+      "attempt": 233,
+      "exit_code": 0
+    },
+    {
+      "attempt": 234,
+      "exit_code": 0
+    },
+    {
+      "attempt": 235,
+      "exit_code": 0
+    },
+    {
+      "attempt": 236,
+      "exit_code": 0
+    },
+    {
+      "attempt": 239,
+      "exit_code": 0
+    },
+    {
+      "attempt": 240,
+      "exit_code": 0
+    },
+    {
+      "attempt": 238,
+      "exit_code": 0
+    },
+    {
+      "attempt": 243,
+      "exit_code": 0
+    },
+    {
+      "attempt": 244,
+      "exit_code": 0
+    },
+    {
+      "attempt": 242,
+      "exit_code": 0
+    },
+    {
+      "attempt": 241,
+      "exit_code": 0
+    },
+    {
+      "attempt": 245,
+      "exit_code": 0
+    },
+    {
+      "attempt": 246,
+      "exit_code": 0
+    },
+    {
+      "attempt": 247,
+      "exit_code": 0
+    },
+    {
+      "attempt": 237,
+      "exit_code": 0
+    },
+    {
+      "attempt": 249,
+      "exit_code": 0
+    },
+    {
+      "attempt": 248,
+      "exit_code": 0
+    },
+    {
+      "attempt": 250,
+      "exit_code": 0
+    },
+    {
+      "attempt": 252,
+      "exit_code": 0
+    },
+    {
+      "attempt": 251,
+      "exit_code": 0
+    },
+    {
+      "attempt": 253,
+      "exit_code": 0
+    },
+    {
+      "attempt": 254,
+      "exit_code": 0
+    },
+    {
+      "attempt": 255,
+      "exit_code": 0
+    }
+  ],
+  "test_binary_sha256": "80f7013bc3d96d1ced591100b604a499d9b5d6089c32bf2b74bc5a9290883058",
+  "case": "app::run_command_dialog::per_item_process_tests::stopping_live_per_item_run_kills_current_group_and_leaves_later_paths_untouched"
+}

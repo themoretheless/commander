@@ -1,0 +1,30 @@
+[
+  {
+    "device": 16777230,
+    "inode": 254298851,
+    "links": 2,
+    "name": "hard-original.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254298851,
+    "links": 2,
+    "name": "hard-alias.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254298854,
+    "links": 1,
+    "name": "hard-copy.txt",
+    "symlink": false
+  },
+  {
+    "device": 16777230,
+    "inode": 254298855,
+    "links": 1,
+    "name": "hard-link.txt",
+    "symlink": true
+  }
+]

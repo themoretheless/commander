@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: prefix `foreign` is unknown
+   --> src/route_preview.rs:616:74
+    |
+616 |         let foreign=kml_fixture().replace("<when>","<x:when xmlns:x="urn:foreign">").replace("</when>","</x:when>");
+    |                                                                          ^^^^^^^ unknown prefix
+    |
+    = note: prefixed identifiers and literals are reserved since Rust 2021
+help: consider inserting whitespace here
+    |
+616 |         let foreign=kml_fixture().replace("<when>","<x:when xmlns:x="urn:foreign ">").replace("</when>","</x:when>");
+    |                                                                                 +
+
+error: expected one of `)`, `,`, `.`, `?`, or an operator, found `:`
+   --> src/route_preview.rs:616:73
+    |
+616 |         let foreign=kml_fixture().replace("<when>","<x:when xmlns:x="urn:foreign">").replace("</when>","</x:when>");
+    |                                                                         ^ expected one of `)`, `,`, `.`, `?`, or an operator
+    |
+help: maybe write a path separator here
+    |
+616 |         let foreign=kml_fixture().replace("<when>","<x:when xmlns:x="urn::foreign">").replace("</when>","</x:when>");
+    |                                                                          +
+
+error: could not compile `commander` (bin "commander") due to 2 previous errors

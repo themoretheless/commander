@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `character_encoding_is_auto` is never used
+    --> src/hex_preview.rs:1997:12
+     |
+ 808 | impl HexViewer {
+     | -------------- method in this implementation
+...
+1997 |     pub fn character_encoding_is_auto(&self) -> bool {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 55.05s
+     Running unittests src/main.rs (target/debug/build/commander/3c0af5b78a6857f5/out/commander-3c0af5b78a6857f5)
+
+running 3 tests
+test hex_preview::tests::unicode_bom_recognition_requires_byte_zero_and_rejects_utf32_prefix_confusion ... ok
+test hex_preview::tests::unicode_bom_menu_restores_cached_snapshot_choice_away_from_header_without_io ... ok
+test hex_preview::tests::unicode_bom_auto_selection_respects_manual_choices_busy_keys_and_reload ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2875 filtered out; finished in 0.24s
+

@@ -1,0 +1,64 @@
+{
+  "allow_large_plan": false,
+  "directions": [
+    {
+      "direction": "ToRight",
+      "name": "Design"
+    },
+    {
+      "direction": "ToRight",
+      "name": "README.txt"
+    },
+    {
+      "direction": "ToRight",
+      "name": "notes.md"
+    },
+    {
+      "direction": "ToRight",
+      "name": "photo.png"
+    },
+    {
+      "direction": "ToRight",
+      "name": "quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "Archive"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "invoice.pdf"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "release.zip"
+    },
+    {
+      "direction": "ToLeft",
+      "name": "source.rs"
+    }
+  ],
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-99961-sync_review/left",
+  "phase": 97,
+  "query": "",
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-99961-sync_review/right",
+  "sort": "plan_order",
+  "stamp": {
+    "compare_contents": false,
+    "left_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-99961-sync_review/left",
+    "left_show_hidden": false,
+    "left_volume": {
+      "generation": 1,
+      "mount_point": "/System/Volumes/Data",
+      "volume_id": 16777230
+    },
+    "right_root": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-99961-sync_review/right",
+    "right_show_hidden": false,
+    "right_volume": {
+      "generation": 1,
+      "mount_point": "/System/Volumes/Data",
+      "volume_id": 16777230
+    },
+    "source_fingerprint": 11715749915026825856
+  }
+}

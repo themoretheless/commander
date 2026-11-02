@@ -1,0 +1,10 @@
+{
+  "format": "commander.shortcuts",
+  "version": 1,
+  "bindings": [
+    {
+      "keys": "F5",
+      "command": "Reverse sort order"
+    }
+  ]
+}

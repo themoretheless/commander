@@ -1,0 +1,20 @@
+{
+  "bindings": [
+    {
+      "command": "Reverse sort order",
+      "keys": "F5"
+    },
+    {
+      "command": "Toggle hidden files",
+      "keys": "Alt+G H"
+    }
+  ],
+  "copy_keybar_hint": "",
+  "hint": "F5",
+  "label": "Reverse sort order",
+  "query": ">F5",
+  "visible": [
+    "Reverse sort order",
+    "Go to folder tab 5"
+  ]
+}
