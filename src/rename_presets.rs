@@ -24,6 +24,13 @@ fn name(name: &str) -> Result<String, String> {
     Ok(name)
 }
 fn validate(rule: &RenameRule) -> Result<(), String> {
+    if let Some(error) = rule
+        .date_stamp
+        .as_ref()
+        .and_then(|stamp| stamp.format_error())
+    {
+        return Err(error.into());
+    }
     if [
         &rule.find,
         &rule.replace,
@@ -135,6 +142,38 @@ impl<'de> Deserialize<'de> for Presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn captured_date_policy_round_trips_without_saving_file_timestamps() {
+        let mut presets = Presets::default();
+        for (name, position) in [
+            ("prefix", crate::rename::DatePosition::Prefix),
+            ("suffix", crate::rename::DatePosition::Suffix),
+        ] {
+            presets
+                .add(
+                    name,
+                    RenameRule {
+                        date_stamp: Some(crate::rename::DateStamp {
+                            format: "%Y-%m-%d_".into(),
+                            position,
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let json = serde_json::to_string(&presets).unwrap();
+        let restored: Presets = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, presets);
+        let mut invalid = RenameRule {
+            date_stamp: Some(crate::rename::DateStamp::default()),
+            ..Default::default()
+        };
+        invalid.date_stamp.as_mut().unwrap().format = "%#z".into();
+        assert!(presets.add("bad", invalid).is_err());
+        assert!(!json.contains("modified"));
+    }
+
     #[test]
     fn keep_and_remove_range_actions_round_trip_in_presets() {
         let mut presets = Presets::default();

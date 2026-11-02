@@ -1,0 +1,11 @@
+{
+  "src/rename.rs": "bd122bd7a3ead5d61af899e1c0423c68476d14e096a66d1e24b4cd6e10b7a5c0",
+  "src/app/mod.rs": "35dc8bdc7b3c9e134741f68ad352fe04e4138ff9dbe89d9eeec738676683243f",
+  "src/app/batch_rename_dialog.rs": "082abf8bee6cb8034160e368c9a80be8d79345b5c7054e3dbb2b42b91bdd1603",
+  "src/listing_export.rs": "24fc4bd794a12876770858086b43a84020ef51ca30ec783ecb5d0024b89071bf",
+  "src/rename_presets.rs": "faf1d213bf4d28787436a6c98d31415578f6ba94800f469e35452f72fdc43b4d",
+  "src/workspace.rs": "9ed1fa23494d4b974d5982b10ce4398501add1425a116cfec807c3c89602dcf2",
+  "src/workspace/fileops/batch_rename.rs": "1034a9a616ae6b86c308fb917511f2cd783c653f2eba3c2747ab5ca35a2fb480",
+  "src/workspace/tests.rs": "0455dfcb77460605f34344e1e7121ef9b0480ed8ebb80ce7b931a1ee47246ffc",
+  "Cargo.lock": "5f28d8632f3714ed5a59ada4ba93c390c6ead6de3efede1eda48bbb4e578df57"
+}

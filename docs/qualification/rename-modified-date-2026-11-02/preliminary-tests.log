@@ -1,0 +1,37 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 29.71s
+     Running unittests src/main.rs (target/debug/build/commander/ae736cd21cb52eff/out/commander-ae736cd21cb52eff)
+
+running 29 tests
+test accessibility::tests::overlays_defer_when_every_safe_candidate_is_obscured ... ok
+test benchmark_fixture::tests::validate_rejects_each_malformed_field ... ok
+test dedup_scan::tests::depth_drafts_validate_zero_unlimited_boundaries_and_reject_nonintegers ... ok
+test dedup_scan::tests::minimum_copy_counts_validate_defaults_bounds_and_reject_unique_mode ... ok
+test feature_flags::tests::blocked_store_update_neither_changes_memory_nor_commits ... ok
+test app::batch_rename_dialog::tests::date_preview_is_source_bound_and_blocks_missing_dates_before_submission ... ok
+test cmdtemplate::tests::selection_limits_update_metadata_in_place_and_roundtrip_with_legacy_defaults ... ok
+test app::batch_rename_dialog::tests::reordered_targets_invalidate_cached_numbering_without_changing_membership ... ok
+test feature_flags::tests::failed_update_rolls_back_memory_and_weak_commit_applies_once ... ok
+test jumplist::tests::pruning_with_every_candidate_rejected_collapses_to_the_current_entry ... ok
+test panel::tests::preview_identity_goes_stale_when_size_or_date_changes ... ok
+test panel::preview::alternate_date_tests::alternate_dates_snapshot_formats_unknowns_and_survives_source_removal ... ok
+test panel::preview::alternate_date_tests::alternate_dates_link_card_uses_lexical_observation_instead_of_target ... ok
+test query::tests::date_units_reject_overflow_and_treat_m_as_months ... ok
+test rename::tests::captured_date_affixes_follow_original_names_when_reordered ... ok
+test path_probe::tests::stale_a_b_a_result_cannot_validate_the_new_a ... ok
+test rename::tests::date_rules_refuse_missing_bad_and_unsafe_formats_and_keep_pre_epoch_precision ... ok
+test rename_presets::tests::presets_round_trip_and_update_only_when_explicitly_requested ... ok
+test rename_presets::tests::captured_date_policy_round_trips_without_saving_file_timestamps ... ok
+test rename_presets::tests::replacement_chain_presets_validate_bounds_and_round_trip ... ok
+test route_preview::tests::segments_distance_elevation_and_date_line ... ok
+test scan::tests::followed_target_changes_invalidate_the_transfer_source_proof ... ok
+test sync_content::tests::unavailable_pairs_never_allow_copy_and_identity_replacements_invalidate_the_stamp ... ok
+test query::tests::type_alternatives_parse_validate_and_preserve_conjunctions ... ok
+test template_browser::tests::count_limit_changes_and_selection_size_invalidate_projection_without_bypassing_run_policy ... ok
+test template_browser::tests::kind_policy_changes_invalidate_same_length_store_and_all_scope_never_bypasses_it ... ok
+test template_browser::tests::strict_policy_and_same_name_directory_changes_invalidate_cached_applicability ... ok
+test workspace::tests::bulk_favorites_invalid_label_rejects_the_entire_candidate_without_save ... ok
+test hex_search::tests::cyclic_search_agrees_with_naive_candidate_order_including_empty_edges ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 3289 filtered out; finished in 0.05s
+

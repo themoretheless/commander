@@ -53,6 +53,8 @@ impl ActivePanel {
 /// click in the other panel from silently retargeting the operation.
 #[derive(Clone)]
 pub struct BatchRenameContext {
+    /// Modification dates from the opening listing, keyed by original name.
+    pub modified: std::collections::HashMap<String, std::time::SystemTime>,
     pub panel: ActivePanel,
     pub dir: PathBuf,
     pub folding: crate::rename_order::NameFolding,

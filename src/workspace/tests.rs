@@ -2007,6 +2007,59 @@ fn select_same_named_adds_common_names_keeping_prior_picks() {
 }
 
 #[test]
+fn dated_batch_rename_uses_the_reviewed_snapshot_and_refuses_partial_unknown_dates() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let a = l.file("a.txt", "first");
+    let b = l.file("b.txt", "second");
+    std::fs::File::options()
+        .write(true)
+        .open(&a)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&b)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(86400)),
+        )
+        .unwrap();
+    let mut ws = workspace(&l, &r);
+    ws.left.select_path(a.clone());
+    ws.left.select_path(b.clone());
+    let mut context = ws.batch_rename_context().unwrap();
+    let known = context.modified.remove("a.txt").unwrap();
+    let rule = crate::rename::RenameRule {
+        date_stamp: Some(crate::rename::DateStamp::default()),
+        ..Default::default()
+    };
+    assert!(ws.apply_batch_rename_in(&context, &rule).is_err());
+    assert!(a.exists() && b.exists());
+    context.modified.insert("a.txt".into(), known);
+    std::fs::File::options()
+        .write(true)
+        .open(&a)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(172800)),
+        )
+        .unwrap();
+    assert_eq!(ws.apply_batch_rename_in(&context, &rule).unwrap(), 2);
+    assert_eq!(
+        std::fs::read_to_string(l.path().join("1970-01-01_a.txt")).unwrap(),
+        "first"
+    );
+    assert_eq!(
+        std::fs::read_to_string(l.path().join("1970-01-02_b.txt")).unwrap(),
+        "second"
+    );
+    assert!(!l.path().join("1970-01-03_a.txt").exists());
+}
+
+#[test]
 fn apply_batch_rename_renames_only_the_selection() {
     let (l, r) = (TempDir::new(), TempDir::new());
     l.file("a.txt", "1");

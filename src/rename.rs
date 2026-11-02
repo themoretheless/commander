@@ -6,6 +6,78 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DatePosition {
+    #[default]
+    Prefix,
+    Suffix,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DateStamp {
+    pub format: String,
+    pub position: DatePosition,
+}
+impl Default for DateStamp {
+    fn default() -> Self {
+        Self {
+            format: "%Y-%m-%d_".into(),
+            position: DatePosition::Prefix,
+        }
+    }
+}
+impl DateStamp {
+    pub fn format_error(&self) -> Option<&'static str> {
+        if self.format.is_empty() || self.format.len() > 64 {
+            return Some("Date format needs 1–64 bytes");
+        }
+        if chrono::format::StrftimeItems::new(&self.format)
+            .any(|item| matches!(item, chrono::format::Item::Error))
+        {
+            return Some("Invalid strftime date format");
+        }
+        use std::fmt::Write;
+        let mut probe = String::new();
+        let epoch =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).expect("epoch is representable");
+        if write!(&mut probe, "{}", epoch.format(&self.format)).is_err() || probe.len() > 512 {
+            return Some("Date format cannot be rendered within 512 bytes");
+        }
+        None
+    }
+    fn render(&self, time: std::time::SystemTime) -> Result<String, ()> {
+        use std::fmt::Write;
+        if self.format_error().is_some() {
+            return Err(());
+        }
+        let (seconds, nanos) = match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(delta) => (
+                i64::try_from(delta.as_secs()).map_err(|_| ())?,
+                delta.subsec_nanos(),
+            ),
+            Err(error) => {
+                let delta = error.duration();
+                let seconds = i64::try_from(delta.as_secs()).map_err(|_| ())?;
+                if delta.subsec_nanos() == 0 {
+                    (-seconds, 0)
+                } else {
+                    (
+                        -seconds.checked_add(1).ok_or(())?,
+                        1_000_000_000 - delta.subsec_nanos(),
+                    )
+                }
+            }
+        };
+        let date = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, nanos).ok_or(())?;
+        let mut out = String::new();
+        write!(&mut out, "{}", date.format(&self.format)).map_err(|_| ())?;
+        if out.len() > 512 {
+            return Err(());
+        }
+        Ok(out)
+    }
+}
+
 /// Case transform applied to the stem; `ExtensionCase` controls the suffix independently.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum CaseMode {
@@ -298,6 +370,8 @@ impl InsertText {
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenameRule {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_stamp: Option<DateStamp>,
     #[serde(skip_serializing_if = "CharacterTarget::is_stem")]
     pub character_target: CharacterTarget,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -417,6 +491,8 @@ pub enum PlanStatus {
     Unchanged,
     /// Empty, contains '/', or is "." / "..".
     Invalid,
+    /// Captured modification time or its requested format is unavailable.
+    DateUnavailable,
     /// Two entries map to the same target, or the target collides with a
     /// sibling that is not itself being renamed away.
     Collision,
@@ -817,6 +893,7 @@ pub fn plan_batch_rename(
     )
 }
 
+#[cfg(test)]
 pub fn plan_batch_rename_with(
     names: &[String],
     existing: &HashSet<String>,
@@ -824,17 +901,52 @@ pub fn plan_batch_rename_with(
     dirs: &HashSet<String>,
     folding: crate::rename_order::NameFolding,
 ) -> Vec<RenamePlan> {
+    plan_batch_rename_with_dates(names, existing, rule, dirs, folding, &HashMap::new())
+}
+pub fn plan_batch_rename_with_dates(
+    names: &[String],
+    existing: &HashSet<String>,
+    rule: &RenameRule,
+    dirs: &HashSet<String>,
+    folding: crate::rename_order::NameFolding,
+    modified: &HashMap<String, std::time::SystemTime>,
+) -> Vec<RenamePlan> {
     let batch_lower: HashSet<String> = names.iter().map(|name| folding.key(name)).collect();
     let existing_lower: HashSet<String> = existing.iter().map(|name| folding.key(name)).collect();
 
     // Compiled once for the whole batch, not per name.
     let compiled = compile_find(rule).ok();
     let mut exceeded = Vec::with_capacity(names.len());
+    let mut date_errors = Vec::with_capacity(names.len());
     let targets: Vec<String> = names
         .iter()
         .enumerate()
         .map(|(index, name)| {
-            match rename_one_checked(name, dirs.contains(name), index, rule, compiled.as_deref()) {
+            let mut stamped;
+            let effective = if let Some(stamp) = &rule.date_stamp {
+                let date = modified.get(name).and_then(|time| stamp.render(*time).ok());
+                let Some(date) = date else {
+                    date_errors.push(true);
+                    exceeded.push(false);
+                    return name.clone();
+                };
+                stamped = rule.clone();
+                match stamp.position {
+                    DatePosition::Prefix => stamped.prefix = format!("{date}{}", rule.prefix),
+                    DatePosition::Suffix => stamped.suffix = format!("{}{date}", rule.suffix),
+                }
+                &stamped
+            } else {
+                rule
+            };
+            date_errors.push(false);
+            match rename_one_checked(
+                name,
+                dirs.contains(name),
+                index,
+                effective,
+                compiled.as_deref(),
+            ) {
                 Ok(target) => {
                     exceeded.push(false);
                     target
@@ -857,9 +969,12 @@ pub fn plan_batch_rename_with(
         .iter()
         .zip(targets.iter())
         .zip(exceeded.iter())
-        .map(|((from, to), exceeded)| {
+        .zip(date_errors.iter())
+        .map(|(((from, to), exceeded), date_error)| {
             let to_lower = folding.key(to);
-            let status = if *exceeded {
+            let status = if *date_error {
+                PlanStatus::DateUnavailable
+            } else if *exceeded {
                 PlanStatus::ExpansionLimit
             } else if !is_valid_name(to) {
                 PlanStatus::Invalid
@@ -889,7 +1004,10 @@ pub fn plan_is_applicable(plans: &[RenamePlan]) -> bool {
     let any_bad = plans.iter().any(|p| {
         matches!(
             p.status,
-            PlanStatus::ExpansionLimit | PlanStatus::Invalid | PlanStatus::Collision
+            PlanStatus::ExpansionLimit
+                | PlanStatus::Invalid
+                | PlanStatus::DateUnavailable
+                | PlanStatus::Collision
         )
     });
     any_change && !any_bad
@@ -914,6 +1032,147 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn captured_date_affixes_follow_original_names_when_reordered() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let names = vec!["a.JPG".into(), "b.JPG".into(), "folder.old".into()];
+        let existing = names.iter().cloned().collect();
+        let dirs = HashSet::from(["folder.old".into()]);
+        let modified = HashMap::from([
+            ("a.JPG".into(), UNIX_EPOCH),
+            ("b.JPG".into(), UNIX_EPOCH + Duration::from_secs(86400)),
+            (
+                "folder.old".into(),
+                UNIX_EPOCH + Duration::from_secs(172800),
+            ),
+        ]);
+        let mut rule = RenameRule {
+            date_stamp: Some(DateStamp::default()),
+            prefix: "pre-".into(),
+            suffix: "-post".into(),
+            case: CaseMode::Upper,
+            extension_case: ExtensionCase::Lower,
+            ..Default::default()
+        };
+        let plan = plan_batch_rename_with_dates(
+            &names,
+            &existing,
+            &rule,
+            &dirs,
+            crate::rename_order::NameFolding::Exact,
+            &modified,
+        );
+        assert_eq!(
+            plan.iter().map(|p| p.to.as_str()).collect::<Vec<_>>(),
+            [
+                "1970-01-01_pre-A-post.jpg",
+                "1970-01-02_pre-B-post.jpg",
+                "1970-01-03_pre-FOLDER.OLD-post"
+            ]
+        );
+        assert!(plan_is_applicable(&plan));
+        rule.date_stamp = Some(DateStamp {
+            format: "_%Y%m%d".into(),
+            position: DatePosition::Suffix,
+        });
+        let reordered = vec![names[1].clone(), names[0].clone()];
+        let plan = plan_batch_rename_with_dates(
+            &reordered,
+            &existing,
+            &rule,
+            &dirs,
+            crate::rename_order::NameFolding::Exact,
+            &modified,
+        );
+        assert_eq!(plan[0].to, "pre-B-post_19700102.jpg");
+        assert_eq!(plan[1].to, "pre-A-post_19700101.jpg");
+    }
+
+    #[test]
+    fn date_rules_refuse_missing_bad_and_unsafe_formats_and_keep_pre_epoch_precision() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let names = vec!["ёж.txt".into()];
+        let existing = names.iter().cloned().collect();
+        let dirs = HashSet::new();
+        let modified = HashMap::from([("ёж.txt".into(), UNIX_EPOCH - Duration::from_millis(1))]);
+        let mut rule = RenameRule {
+            date_stamp: Some(DateStamp {
+                format: "%s_%f_".into(),
+                position: DatePosition::Prefix,
+            }),
+            ..Default::default()
+        };
+        let plan = plan_batch_rename_with_dates(
+            &names,
+            &existing,
+            &rule,
+            &dirs,
+            crate::rename_order::NameFolding::Exact,
+            &modified,
+        );
+        assert_eq!(plan[0].to, "-1_999000000_ёж.txt");
+        let missing = plan_batch_rename_with_dates(
+            &names,
+            &existing,
+            &rule,
+            &dirs,
+            crate::rename_order::NameFolding::Exact,
+            &HashMap::new(),
+        );
+        assert_eq!(missing[0].status, PlanStatus::DateUnavailable);
+        assert!(!plan_is_applicable(&missing));
+        for format in ["".to_owned(), "%Q".into(), "%#z".into(), "x".repeat(65)] {
+            rule.date_stamp.as_mut().unwrap().format = format;
+            let plan = plan_batch_rename_with_dates(
+                &names,
+                &existing,
+                &rule,
+                &dirs,
+                crate::rename_order::NameFolding::Exact,
+                &modified,
+            );
+            assert_eq!(plan[0].status, PlanStatus::DateUnavailable);
+            assert!(!plan_is_applicable(&plan));
+        }
+        rule.date_stamp.as_mut().unwrap().format = "%Y/%m/%d_".into();
+        let plan = plan_batch_rename_with_dates(
+            &names,
+            &existing,
+            &rule,
+            &dirs,
+            crate::rename_order::NameFolding::Exact,
+            &modified,
+        );
+        assert_eq!(plan[0].status, PlanStatus::Invalid);
+        let legacy: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(legacy.date_stamp.is_none());
+    }
+
+    #[test]
+    fn dated_targets_still_use_shared_collision_detection() {
+        let names: Vec<String> = vec!["A.txt".into(), "a.txt".into()];
+        let existing = names.iter().cloned().collect();
+        let modified = names
+            .iter()
+            .map(|name| (name.clone(), std::time::UNIX_EPOCH))
+            .collect();
+        let rule = RenameRule {
+            date_stamp: Some(DateStamp::default()),
+            case: CaseMode::Lower,
+            ..Default::default()
+        };
+        let plan = plan_batch_rename_with_dates(
+            &names,
+            &existing,
+            &rule,
+            &HashSet::new(),
+            crate::rename_order::NameFolding::Exact,
+            &modified,
+        );
+        assert!(plan.iter().all(|row| row.status == PlanStatus::Collision));
+        assert!(!plan_is_applicable(&plan));
     }
 
     #[test]

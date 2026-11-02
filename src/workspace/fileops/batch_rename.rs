@@ -114,11 +114,16 @@ pub fn batch_rename_context(workspace: &Workspace) -> Option<BatchRenameContext>
         .filter(|e| e.is_dir)
         .map(|e| e.name.clone())
         .collect();
+    let modified = entries
+        .iter()
+        .filter_map(|entry| entry.modified.map(|time| (entry.name.clone(), time)))
+        .collect();
     let targets: Vec<String> = entries.into_iter().map(|e| e.name).collect();
     if targets.is_empty() {
         return None;
     }
     Some(BatchRenameContext {
+        modified,
         panel: workspace.active,
         dir: panel.current_path.clone(),
         folding: crate::rename_order::NameFolding::from_case_sensitive(
@@ -158,18 +163,28 @@ pub fn apply_batch_rename_in(
             "\"{name}\" is not valid UTF-8 and cannot be batch renamed; rename it on its own first"
         ));
     }
-    let plans = crate::rename::plan_batch_rename_with(
+    let plans = crate::rename::plan_batch_rename_with_dates(
         &context.targets,
         &existing,
         rule,
         &context.dirs,
         context.folding,
+        &context.modified,
     );
     if plans
         .iter()
         .any(|plan| plan.status == crate::rename::PlanStatus::ExpansionLimit)
     {
         return Err("Replacement output exceeds 64 KiB; no names were changed".into());
+    }
+    if plans
+        .iter()
+        .any(|p| p.status == crate::rename::PlanStatus::DateUnavailable)
+    {
+        return Err(
+            "Date format or captured modification times are unavailable; no names were changed"
+                .into(),
+        );
     }
     if plans
         .iter()

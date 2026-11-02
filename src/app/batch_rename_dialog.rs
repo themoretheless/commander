@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::rename::{
-    PlanStatus, RenamePlan, RenameRule, plan_batch_rename_with, plan_is_applicable,
+    PlanStatus, RenamePlan, RenameRule, plan_batch_rename_with_dates, plan_is_applicable,
 };
 use crate::rename_order::{RenameOrder, safe_rename_order_with};
 use crate::workspace::BatchRenameContext;
@@ -17,6 +17,9 @@ fn status_hint(status: PlanStatus) -> Option<&'static str> {
         PlanStatus::Ok | PlanStatus::Unchanged => None,
         PlanStatus::ExpansionLimit => Some("Replacement output exceeds 64 KiB"),
         PlanStatus::Invalid => Some("Name is not valid"),
+        PlanStatus::DateUnavailable => {
+            Some("Captured modification time is missing or the UTC date format is invalid")
+        }
         PlanStatus::Collision => Some("Name already exists or repeats another row"),
     }
 }
@@ -118,12 +121,13 @@ impl ValidatedBatchRename {
 
     fn build(context: &BatchRenameContext, rule: RenameRule) -> Self {
         let regex_err = crate::rename::regex_error(&rule);
-        let plans = plan_batch_rename_with(
+        let plans = plan_batch_rename_with_dates(
             &context.targets,
             &context.existing,
             &rule,
             &context.dirs,
             context.folding,
+            &context.modified,
         );
         let changes: Vec<(String, String)> = plans
             .iter()
@@ -144,6 +148,14 @@ impl ValidatedBatchRename {
             (
                 false,
                 Some("Reduce the replacement expansion (64 KiB per stage)".into()),
+            )
+        } else if plans
+            .iter()
+            .any(|plan| plan.status == PlanStatus::DateUnavailable)
+        {
+            (
+                false,
+                Some("Fix the date format or reopen with available modification times".into()),
             )
         } else if plans.iter().any(|plan| plan.status == PlanStatus::Invalid) {
             (false, Some("Fix the invalid names to continue".to_string()))
@@ -213,6 +225,7 @@ fn exclude_target(
     }
     let name = context.targets.remove(index);
     context.dirs.remove(&name);
+    context.modified.remove(&name);
     // This sibling stays on disk: retain it in existing to detect collisions
     // with a target that previously could have relied on its vacated name.
     *validation = None;
@@ -228,6 +241,9 @@ impl App {
         let listing_generation = self.ws.active_panel_ref().entries_gen();
         let scroll_nonce = self.issue_transient_nonce();
         self.ui.modals.batch_rename = Some(BatchRenameState {
+            date_on: false,
+            date_format: crate::rename::DateStamp::default().format,
+            date_position: crate::rename::DatePosition::Prefix,
             context,
             listing_generation,
             remove_prefix: String::new(),
@@ -692,6 +708,22 @@ impl App {
                         });
                     });
 
+                    ui.horizontal_wrapped(|ui| {
+                        let enabled=ui.checkbox(&mut state.date_on,"Modified date (UTC)");
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-date-on"),enabled.rect));
+                        preset_interaction|=enabled.changed();
+                        ui.add_enabled_ui(state.date_on,|ui| {
+                            let input=ui.add(egui::TextEdit::singleline(&mut state.date_format).char_limit(64).desired_width(180.0)).on_hover_text("strftime: %Y-%m-%d_, %H-%M-%S. Uses each item's modification time from the opening listing, always UTC; does not reread metadata.");
+                            text_fields.push(input.id);
+                            #[cfg(feature="visual-qa")]
+                            ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("rename-date-format"),input.rect));
+                            preset_interaction|=input.changed();
+                            for (position,label) in [(crate::rename::DatePosition::Prefix,"Date prefix"),(crate::rename::DatePosition::Suffix,"Date suffix")] {
+                                preset_interaction|=ui.selectable_value(&mut state.date_position,position,label).changed();
+                            }
+                        });
+                    });
                     // ── Case + numbering ────────────────────────────────────
                     ui.horizontal_wrapped(|ui| {
                         use crate::rename::CaseMode;
@@ -801,7 +833,7 @@ impl App {
                                     PlanStatus::Ok => (t.accent, "->"),
                                     PlanStatus::Unchanged => (t.text_muted, "="),
                                     PlanStatus::ExpansionLimit => (t.accent_red, "x"),
-                                    PlanStatus::Invalid => (t.accent_red, "x"),
+                                    PlanStatus::Invalid | PlanStatus::DateUnavailable => (t.accent_red, "x"),
                                     PlanStatus::Collision => (t.accent_warning, "!"),
                                 };
                                 ui.horizontal(|ui| {
@@ -1029,8 +1061,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn date_preview_is_source_bound_and_blocks_missing_dates_before_submission() {
+        let mut context = context(&["a.txt", "b.txt"], &[]);
+        context
+            .modified
+            .insert("a.txt".into(), std::time::UNIX_EPOCH);
+        context.modified.insert(
+            "b.txt".into(),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(86400),
+        );
+        let rule = RenameRule {
+            date_stamp: Some(crate::rename::DateStamp::default()),
+            ..Default::default()
+        };
+        let mut cached = None;
+        let mut error = None;
+        assert_eq!(
+            ValidatedBatchRename::cached(&mut cached, &context, rule.clone()).plans[0].to,
+            "1970-01-01_a.txt"
+        );
+        assert!(reorder_targets(&mut context, &mut cached, &mut error, 0, 1));
+        assert_eq!(
+            ValidatedBatchRename::cached(&mut cached, &context, rule.clone()).plans[0].to,
+            "1970-01-02_b.txt"
+        );
+        context.modified.remove("a.txt");
+        cached = None;
+        let validation = ValidatedBatchRename::cached(&mut cached, &context, rule);
+        assert!(validation.rule_for_submit(true).is_none());
+        assert!(
+            validation
+                .block_reason
+                .as_ref()
+                .unwrap()
+                .contains("date format")
+        );
+    }
+
+    #[test]
     fn reset_rule_clears_edits_and_stale_validation_but_keeps_context_identity() {
         let mut state = BatchRenameState {
+            date_on: false,
+            date_format: crate::rename::DateStamp::default().format,
+            date_position: crate::rename::DatePosition::Prefix,
             context: context(&["Photo.JPG"], &[]),
             listing_generation: 42,
             remove_prefix: "backup_".into(),
@@ -1682,6 +1755,7 @@ mod tests {
     #[test]
     fn regex_error_is_reported_separately_from_the_summary() {
         let context = BatchRenameContext {
+            modified: Default::default(),
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             folding: crate::rename_order::NameFolding::CaseFolded,
@@ -1707,6 +1781,7 @@ mod tests {
 
     fn context(targets: &[&str], siblings: &[&str]) -> BatchRenameContext {
         BatchRenameContext {
+            modified: Default::default(),
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             folding: crate::rename_order::NameFolding::CaseFolded,
@@ -1811,6 +1886,7 @@ mod tests {
     #[test]
     fn validation_is_rebuilt_only_when_the_rule_changes() {
         let context = BatchRenameContext {
+            modified: Default::default(),
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             folding: crate::rename_order::NameFolding::CaseFolded,
@@ -1886,6 +1962,7 @@ mod tests {
     #[test]
     fn same_frame_invalid_edit_cannot_submit_under_previous_validation() {
         let context = BatchRenameContext {
+            modified: Default::default(),
             panel: ActivePanel::Left,
             dir: PathBuf::from("/fixture"),
             folding: crate::rename_order::NameFolding::CaseFolded,

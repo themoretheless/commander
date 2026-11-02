@@ -1,5 +1,11 @@
 # Commander
 
+Batch rename can add a **Modified date (UTC)** prefix or suffix, using a
+strftime format such as `%Y-%m-%d_`. Dates come from the listing captured when
+the dialog opens and stay attached to each original file when rows are reordered.
+Missing dates or invalid formats block the batch. Saved rename presets retain
+the format and position, without storing file timestamps.
+
 Panels offer **Columns** alongside List and Icons: scroll through parent folders
 beside the current folder, descend with one click, or bring an ancestor file
 into the current action column. Selection and keyboard actions stay with that
