@@ -2534,3 +2534,7 @@ Actual egui pointer input now checks enabling, disabled-click refusal/choice ret
 ## Adler-32 file checks and lists (2026-11-02)
 
 Independent adaptation of [PeaZip file checks](https://peazip.github.io/verify-checksum-hash.html), cohort entry 96: streaming Adler-32 joins the existing guarded hash pass, explicit comparison/copy/report/export and checksum-list verification. SHA-256 stays default; tagged/hinted/GNU lists retain separate CRC32 SFV semantics. [Qualification and native scope](../qualification/adler32-checksum-2026-11-02/README.md).
+
+## Native Adler-32 exports and checksum row spacing (2026-11-02)
+
+Native 143-phase checksum workflow selects Adler-32, compares uppercase expected text and copies digest plus relative/absolute lists: 14/14 checks, 19 isolated clipboard calls. Excessive per-newline item spacing in virtual result rows was corrected after live inspection revealed clipped copy buttons. Python zlib independently verifies actual new payloads. [Evidence, retained failures and scope](../qualification/adler32-native-2026-11-02/README.md).

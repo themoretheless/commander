@@ -1782,7 +1782,7 @@ impl App {
                 if let Some(report) = &self.checksum_report {
                     ui.label(report.summary_line());
                     let digest_lines = (crate::checksum::Algorithm::ALL.len() + 1) as f32;
-                    let row_height = ui.text_style_height(&egui::TextStyle::Body) + digest_lines * ui.text_style_height(&egui::TextStyle::Monospace) + digest_lines * ui.spacing().item_spacing.y + 8.0;
+                    let row_height = ui.text_style_height(&egui::TextStyle::Body) + digest_lines * ui.text_style_height(&egui::TextStyle::Monospace) + 2.0 * ui.spacing().item_spacing.y + 8.0;
                     egui::ScrollArea::both().max_height(320.0).show_rows(ui, row_height, report.rows.len(), |ui, range| {
                         ui.set_min_width(550.0);
                         for row in &report.rows[range] {

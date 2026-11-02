@@ -1,0 +1,8 @@
+{
+  "scenario": "checksums",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/adler32-native-2026-11-02/native-captures/1793647743757373000",
+  "binary_sha256": "f5cfe2d8da17c5118d974e88480e118c47c4e09c7e33f212b9f75a6da96adcae",
+  "core_sha256": "f5cfe2d8da17c5118d974e88480e118c47c4e09c7e33f212b9f75a6da96adcae",
+  "wrapper_sha256": "f349bb21debc9645ff650ef8219646ce14138d3de2bb62f047d78692ee9619bc",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

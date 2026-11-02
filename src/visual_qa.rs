@@ -2944,6 +2944,7 @@ struct VisualQaApp {
     pdf_click_phase: u8,
     image_click_phase: u8,
     checksum_click_phase: u8,
+    checksum_input_pending: bool,
     checksum_list_phase: u8,
     favorite_phase: u8,
     favorite_import_phase: u8,
@@ -3224,6 +3225,7 @@ impl VisualQaApp {
             pdf_click_phase: 0,
             image_click_phase: 0,
             checksum_click_phase: 0,
+            checksum_input_pending: false,
             checksum_list_phase: 0,
             favorite_phase: 0,
             favorite_import_phase: 0,
@@ -4572,6 +4574,7 @@ impl eframe::App for VisualQaApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         self.preset_input_pending = false;
         self.table_input_pending = false;
+        self.checksum_input_pending = false;
         // Script waits and capture deadlines must advance even when the app
         // has no background work or user events requesting another frame.
         ctx.request_repaint_after(Duration::from_millis(16));
@@ -4629,7 +4632,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::RtfPreview
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
-            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 123)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 143)
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -14320,6 +14323,22 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
+        if self.scenario == Scenario::Checksums {
+            let clipboard = self
+                .counters
+                .clipboard_text
+                .lock()
+                .ok()
+                .and_then(|v| v.clone());
+            let snapshot = serde_json::json!({"phase":self.checksum_click_phase,"clipboard_calls":self.counters.clipboard.load(Ordering::Relaxed),"clipboard":clipboard,"relative":self.inner.checksum_relative_mode_is(true),"adler_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match)});
+            if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
+                let _ = std::fs::write(
+                    self.scenario_dir
+                        .join(format!("checksum-phase-{}.json", self.checksum_click_phase)),
+                    bytes,
+                );
+            }
+        }
         if self.scenario == Scenario::Checksums && self.checksum_click_phase < 12 {
             let phase = self.checksum_click_phase;
             if phase == 4
@@ -14372,7 +14391,7 @@ impl eframe::App for VisualQaApp {
                     }),
                     _ => {}
                 }
-                self.checksum_click_phase += 1;
+                self.checksum_input_pending = true;
             }
         }
         if self.scenario == Scenario::Checksums && (12..40).contains(&self.checksum_click_phase) {
@@ -14473,7 +14492,7 @@ impl eframe::App for VisualQaApp {
                         modifiers: Default::default(),
                     });
                 }
-                self.checksum_click_phase += 1;
+                self.checksum_input_pending = true;
                 return;
             }
         }
@@ -14537,7 +14556,7 @@ impl eframe::App for VisualQaApp {
                         modifiers: Default::default(),
                     });
                 }
-                self.checksum_click_phase += 1;
+                self.checksum_input_pending = true;
                 return;
             }
         }
@@ -14620,7 +14639,7 @@ impl eframe::App for VisualQaApp {
                         modifiers: Default::default(),
                     });
                 }
-                self.checksum_click_phase += 1;
+                self.checksum_input_pending = true;
                 return;
             }
         }
@@ -14672,7 +14691,7 @@ impl eframe::App for VisualQaApp {
                         modifiers: Default::default(),
                     });
                 }
-                self.checksum_click_phase += 1;
+                self.checksum_input_pending = true;
                 return;
             }
         }
@@ -14775,7 +14794,7 @@ impl eframe::App for VisualQaApp {
                         modifiers: Default::default(),
                     });
                 }
-                self.checksum_click_phase += 1;
+                self.checksum_input_pending = true;
                 return;
             }
         }
@@ -14838,7 +14857,71 @@ impl eframe::App for VisualQaApp {
                     modifiers: Default::default(),
                 });
             }
-            self.checksum_click_phase += 1;
+            self.checksum_input_pending = true;
+            return;
+        }
+        if self.scenario == Scenario::Checksums && (123..143).contains(&self.checksum_click_phase) {
+            let phase = self.checksum_click_phase;
+            if phase == 123
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 16
+                    || !self.recorded_clipboard_dump("sha1-relative.sha1"))
+            {
+                return;
+            }
+            if phase == 134
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 17
+                    || !self.recorded_clipboard_dump("adler32-digest.txt"))
+            {
+                return;
+            }
+            if phase == 137
+                && (self.counters.clipboard.load(Ordering::Relaxed) != 18
+                    || !self.recorded_clipboard_dump("adler32-relative.adler32"))
+            {
+                return;
+            }
+            if phase == 140 && self.inner.checksum_relative_mode_is(true) {
+                return;
+            }
+            let (id, local) = match phase {
+                123..=125 => (
+                    egui::Id::new(("checksum-algorithm", "Adler-32")),
+                    phase - 123,
+                ),
+                126..=130 => (egui::Id::new("checksum-expected"), phase - 126),
+                131..=133 => (egui::Id::new("checksum-copy-digest"), phase - 131),
+                134..=136 => (egui::Id::new("checksum-copy-list"), phase - 134),
+                137..=139 => (egui::Id::new("checksum-relative-paths"), phase - 137),
+                _ => (egui::Id::new("checksum-copy-list"), phase - 140),
+            };
+            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if phase == 129 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        command: true,
+                        mac_cmd: true,
+                        ..Default::default()
+                    },
+                });
+            } else if phase == 130 {
+                input.events.push(egui::Event::Text("024D0127".into()));
+            } else if local > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: local == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.checksum_input_pending = true;
             return;
         }
         if self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6 {
@@ -17272,7 +17355,7 @@ impl eframe::App for VisualQaApp {
             Duration::from_secs(30)
         } else if matches!(
             self.scenario,
-            Scenario::TableDialect | Scenario::TableAmbiguous
+            Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::Checksums
         ) {
             // These scenes deliberately wait for the last copy toast to expire
             // before requesting an unobscured frame; retain the capture budget.
@@ -17299,6 +17382,10 @@ impl eframe::App for VisualQaApp {
         }
 
         eframe::App::ui(&mut self.inner, ui, frame);
+        if self.scenario == Scenario::Checksums && self.checksum_input_pending {
+            self.checksum_click_phase += 1;
+            self.checksum_input_pending = false;
+        }
         if matches!(
             self.scenario,
             Scenario::TablePreview | Scenario::TableDialect | Scenario::TableAmbiguous
@@ -19514,12 +19601,13 @@ impl eframe::App for VisualQaApp {
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
             Scenario::Checksums => {
-                let expected="a9993e364706816aba3e25717850c26c9cd0d89d *./checksum.txt\n";
-                self.checksum_click_phase==123 && self.counters.clipboard.load(Ordering::Relaxed)==16
-                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected)
-                    && self.inner.checksum_relative_mode_is(true)
-                    && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha1,crate::checksum::ExpectedMatch::Match)
-                    && self.recorded_clipboard_dump("sha1-relative.sha1")
+                let expected=format!("024d0127 *{}\n", self.fixture.left.join("checksum.txt").display());
+                self.checksum_click_phase==143 && self.counters.clipboard.load(Ordering::Relaxed)==19
+                    && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected.as_str())
+                    && !self.inner.checksum_relative_mode_is(true)
+                    && self.inner.toasts.is_empty()
+                    && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match)
+                    && self.recorded_clipboard_dump("adler32-absolute.adler32")
                     && std::fs::copy(self.fixture.left.join("checksum.txt"),self.scenario_dir.join("checksum.txt")).is_ok()
             }
             Scenario::RenameOptions => {
@@ -20205,7 +20293,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         | Scenario::DiskCount => 3,
         Scenario::DuplicateCross => 6,
         Scenario::SyncReview => 6,
-        Scenario::Checksums => 16,
+        Scenario::Checksums => 19,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
         Scenario::TablePreview => 5,
         Scenario::TableDialect | Scenario::TableAmbiguous => 2,
@@ -20632,7 +20720,7 @@ mod tests {
                 | Scenario::DiskCount => 3,
                 Scenario::DuplicateCross => 6,
                 Scenario::SyncReview => 6,
-                Scenario::Checksums => 16,
+                Scenario::Checksums => 19,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
                 Scenario::TablePreview => 5,
                 Scenario::TableDialect | Scenario::TableAmbiguous => 2,

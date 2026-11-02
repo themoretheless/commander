@@ -1,0 +1,6 @@
+{
+  "src/app/update.rs": "a531070cfdb965a4f25daaa1f40de69fd9500733d4d7903c3059cd9d99bb6dbe",
+  "src/visual_qa.rs": "a500e600b8b7c048dff3d61f89d53edea92e0ef88abffbaa70190b5ecce5258f",
+  "src/checksum.rs": "8418e7cef50199516184a083a73219e5ec7c762a26627aa22315d7d636a7789b",
+  "Cargo.lock": "0dd5aa06bfd26f39916f42dfe17634552e9cdfd1c5c14badb814f87700c3e9d1"
+}
