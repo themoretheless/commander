@@ -8973,3 +8973,30 @@ fn named_profile_refuses_corrupt_layout_and_protected_tabs_before_any_change() {
     assert_eq!(ws.tab_snapshot(ActivePanel::Left), protected);
     assert_eq!(ws.right.current_path, b);
 }
+
+#[test]
+fn literal_regex_batch_rename_preserves_content_and_undo_redo() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    left.file("old.txt", "payload");
+    let mut ws = workspace(&left, &right);
+    ws.left.select_path(left.path().join("old.txt"));
+    let rule = crate::rename::RenameRule {
+        find: "(old)".into(),
+        replace: "$1".into(),
+        regex: true,
+        literal_replacement: true,
+        ..Default::default()
+    };
+    assert_eq!(apply_batch_rename(&mut ws, &rule).unwrap(), 1);
+    assert_eq!(
+        std::fs::read(left.path().join("$1.txt")).unwrap(),
+        b"payload"
+    );
+    let _ = ws.perform_undo(|| {});
+    assert!(left.path().join("old.txt").is_file());
+    let _ = ws.perform_redo(|| {});
+    assert_eq!(
+        std::fs::read(left.path().join("$1.txt")).unwrap(),
+        b"payload"
+    );
+}

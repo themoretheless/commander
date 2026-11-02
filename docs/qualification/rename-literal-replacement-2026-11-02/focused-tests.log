@@ -1,0 +1,45 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 27.26s
+     Running unittests src/main.rs (target/debug/build/commander/ae736cd21cb52eff/out/commander-ae736cd21cb52eff)
+
+running 37 tests
+test app::archive_dialog::tests::literal_archive_filter_preserves_visible_cursor_but_clears_a_filtered_one ... ok
+test app::archive_dialog::tests::archive_extensions_match_literal_suffixes_and_reject_invalid_queries ... ok
+test app::batch_rename_dialog::tests::literal_replacement_rebuilds_preview_and_submission ... ok
+test app::find_dialog::tests::find_copy_formats_preserve_names_and_parse_as_literal_shell_arguments ... ok
+test archive_filter::tests::literal_defaults_keep_whitespace_trimming_metacharacters_and_unicode_lowercasing ... ok
+test archive_tree::tests::typed_folder_resolution_preserves_literal_spaces_and_empty_archive_root ... ok
+test dedup::tests::name_and_depth_policies_keep_distinct_stable_literal_winners_without_io ... ok
+test diff_find::tests::literal_unicode_case_words_regex_errors_and_cached_navigation ... ok
+test duplicate_name_group::tests::relative_path_grouping_uses_captured_longest_root_and_literal_boundaries ... ok
+test listing_export::tests::literal_backslash_n_stays_distinct_from_a_real_newline ... ok
+test name_filter::tests::literal_prefix_preserves_spaces_punctuation_and_apostrophes ... ok
+test name_filter::tests::negated_literal_and_anchor_rules_complement_their_positive_matches ... ok
+test name_list::tests::literal_names_preserve_spaces_globs_unicode_and_deduplicate ... ok
+test panel::listing::tests::literal_filter_cache_tracks_prefix_and_significant_trailing_spaces ... ok
+test panel::listing::tests::quoted_alternative_cache_does_not_split_literal_pipes ... ok
+test panel::tests::exact_names_still_select_literal_mask_delimiters ... ok
+test panel::tests::literal_name_filter_composes_with_facets_and_keeps_excluded_picks ... ok
+test panel::tests::name_list_preview_and_apply_are_literal_filtered_and_atomic_on_error ... ok
+test pdf_search::tests::literal_unicode_search_reports_only_matching_pages_and_uses_page_local_bounds ... ok
+test preview_find::tests::literal_unicode_search_uses_character_offsets ... ok
+test archive::tests::plain_tar_extraction_keeps_existing_files_and_extracts_literal_names ... ok
+test query::tests::extension_alternatives_preserve_literal_boundaries_case_and_legacy_queries ... ok
+test query::tests::extension_query_matches_literal_file_suffixes_in_every_mode ... ok
+test query::tests::literal_panel_filter_exports_its_original_matching_semantics ... ok
+test query::tests::parent_filter_is_literal_immediate_and_roundtrips ... ok
+test rename::tests::first_only_and_ignore_case_compose_without_expanding_literal_replacements ... ok
+test rename::tests::literal_replacement_preserves_dollars_in_regex_and_sequential_pairs ... ok
+test rename::tests::replacement_chain_preserves_regex_capture_and_literal_semantics ... ok
+test archive::tests::tar_extracts_glob_metacharacters_as_literal_member_names ... ok
+test search::tests::any_content_query_reports_first_matching_pattern_and_preserves_literal_delimiters ... ok
+test spreadsheet_preview::tests::sparse_coordinates_preserve_gaps_precision_errors_dates_and_literal_formulas ... ok
+test table_preview::tests::row_filter_composes_with_heading_sort_unicode_and_literal_cell_boundaries ... ok
+test table_preview::tests::visible_record_export_round_trips_csv_tsv_headings_ragged_and_literal_values ... ok
+test workspace::tests::literal_regex_batch_rename_preserves_content_and_undo_redo ... ok
+test archive::tests::new_tar_formats_extract_selected_literal_names_metadata_and_skip_existing ... ok
+test query::tests::exact_name_query_is_literal_and_mode_independent ... ok
+test search::tests::oversized_literal_query_is_an_error_not_a_panic ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 3301 filtered out; finished in 0.57s
+

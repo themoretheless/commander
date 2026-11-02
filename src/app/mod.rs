@@ -786,6 +786,7 @@ pub struct BatchRenameState {
     pub regex_mode: bool,
     pub ignore_case: bool,
     pub first_only: bool,
+    pub literal_replacement: bool,
     pub trim_spaces: bool,
     pub collapse_repeats: bool,
     pub normalization: crate::rename::NameNormalization,
@@ -886,6 +887,7 @@ impl BatchRenameState {
         self.regex_mode = rule.regex;
         self.ignore_case = rule.ignore_case;
         self.first_only = rule.first_only;
+        self.literal_replacement = rule.literal_replacement;
         self.trim_spaces = rule.trim_spaces;
         self.collapse_repeats = rule.collapse_repeats;
         self.normalization = rule.normalization;
@@ -941,6 +943,7 @@ impl BatchRenameState {
             regex: self.regex_mode,
             ignore_case: self.ignore_case,
             first_only: self.first_only,
+            literal_replacement: self.literal_replacement,
             trim_spaces: self.trim_spaces,
             collapse_repeats: self.collapse_repeats,
             normalization: self.normalization,

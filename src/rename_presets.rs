@@ -806,6 +806,7 @@ mod tests {
             replace: "$1".into(),
             ignore_case: true,
             first_only: true,
+            literal_replacement: true,
             replace_target: crate::rename::ReplaceTarget::Stem,
             ..Default::default()
         };

@@ -341,6 +341,7 @@ impl App {
             regex_mode: false,
             ignore_case: false,
             first_only: false,
+            literal_replacement: false,
             trim_spaces: false,
             collapse_repeats: false,
             normalization: crate::rename::NameNormalization::Keep,
@@ -728,7 +729,11 @@ impl App {
                         let regex = ui.checkbox(&mut state.regex_mode, "Find is a regex");
                         let case = ui.checkbox(&mut state.ignore_case, "Ignore case");
                         let first = ui.checkbox(&mut state.first_only, "First match only");
-                        preset_interaction |= regex.changed() || case.changed() || first.changed();
+                        let literal = ui.add_enabled(state.regex_mode, egui::Checkbox::new(&mut state.literal_replacement, "Literal replacement"))
+                            .on_hover_text("With regex search, insert replacement text exactly: $1, ${name} and $$ stay literal. Applies to every replacement pair. Disable to expand capture groups.");
+                        preset_interaction |= regex.changed() || case.changed() || first.changed() || literal.changed();
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("rename-literal-replacement"), literal.rect));
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| {
                             data.insert_temp(egui::Id::new("rename-ignore-case"), case.rect);
@@ -1251,6 +1256,26 @@ mod tests {
 
     #[cfg(feature = "visual-qa")]
     #[test]
+    fn literal_replacement_rebuilds_preview_and_submission() {
+        let context = context(&["old.txt"], &[]);
+        let mut cache = None;
+        let mut rule = RenameRule {
+            find: "(old)".into(),
+            replace: "$1".into(),
+            regex: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            ValidatedBatchRename::cached(&mut cache, &context, rule.clone()).plans[0].to,
+            "old.txt"
+        );
+        rule.literal_replacement = true;
+        let plan = ValidatedBatchRename::cached(&mut cache, &context, rule.clone());
+        assert_eq!(plan.plans[0].to, "$1.txt");
+        assert_eq!(plan.rule_for_submit(true), Some(rule));
+    }
+
+    #[test]
     fn preset_order_buttons_use_pointer_input_and_retain_launch_identity() {
         let ctx = egui::Context::default();
         let mut presets = crate::rename_presets::Presets::default();
@@ -1393,6 +1418,7 @@ mod tests {
             regex_mode: true,
             ignore_case: true,
             first_only: true,
+            literal_replacement: true,
             trim_spaces: true,
             collapse_repeats: true,
             normalization: crate::rename::NameNormalization::Nfkd,

@@ -445,6 +445,9 @@ pub struct RenameRule {
     /// Replace only the leftmost occurrence in the selected name component.
     #[serde(skip_serializing_if = "is_false")]
     pub first_only: bool,
+    /// In regex mode, insert replacement text literally instead of expanding captures.
+    #[serde(skip_serializing_if = "is_false")]
+    pub literal_replacement: bool,
     /// Trim Unicode whitespace from the final complete name.
     #[serde(skip_serializing_if = "is_false")]
     pub trim_spaces: bool,
@@ -616,7 +619,7 @@ fn bounded_replace(
         for captures in regex.captures_iter(part) {
             let found = captures.get(0).ok_or(())?;
             append(&mut output, &part[last..found.start()])?;
-            if rule.regex {
+            if rule.regex && !rule.literal_replacement {
                 // Reuse the regex engine's exact $name/${name}/$$ grammar.
                 // Literal replacement text is bounded at compile time; capture
                 // appends are checked before allocation, avoiding expanding bombs.
@@ -702,7 +705,7 @@ fn rename_one_checked(
                 matcher.map_or_else(
                     || part.to_string(),
                     |regex| {
-                        if rule.regex {
+                        if rule.regex && !rule.literal_replacement {
                             if rule.first_only {
                                 regex.replace(part, replacement).into_owned()
                             } else {
@@ -1108,6 +1111,64 @@ mod tests {
         rule: &RenameRule,
     ) -> Vec<RenamePlan> {
         plan_batch_rename(names, existing, rule, &HashSet::new())
+    }
+
+    #[test]
+    fn literal_replacement_preserves_dollars_in_regex_and_sequential_pairs() {
+        let mut rule = RenameRule {
+            find: "(?P<word>old)".into(),
+            replace: "$1-${word}-$$".into(),
+            regex: true,
+            literal_replacement: true,
+            replace_target: ReplaceTarget::Stem,
+            ..Default::default()
+        };
+        for (first_only, expected) in [
+            (false, "$1-${word}-$$-$1-${word}-$$.txt"),
+            (true, "$1-${word}-$$-old.txt"),
+        ] {
+            rule.first_only = first_only;
+            let compiled = compile_find(&rule).unwrap();
+            assert_eq!(
+                rename_one("old-old.txt", false, 0, &rule, Some(&compiled)),
+                expected
+            );
+        }
+        rule.extra_replacements.push(ReplacementPair {
+            find: "\\$1".into(),
+            replace: "${other}".into(),
+        });
+        let compiled = compile_find(&rule).unwrap();
+        assert_eq!(
+            rename_one("old.txt", false, 0, &rule, Some(&compiled)),
+            "${other}-${word}-$$.txt"
+        );
+        let encoded = serde_json::to_string(&rule).unwrap();
+        assert_eq!(serde_json::from_str::<RenameRule>(&encoded).unwrap(), rule);
+        let old: RenameRule = serde_json::from_str("{}").unwrap();
+        assert!(!old.literal_replacement);
+        assert!(
+            serde_json::to_value(old)
+                .unwrap()
+                .get("literal_replacement")
+                .is_none()
+        );
+        rule.extra_replacements.clear();
+        rule.literal_replacement = false;
+        let compiled = compile_find(&rule).unwrap();
+        assert_eq!(
+            rename_one("old.txt", false, 0, &rule, Some(&compiled)),
+            "old-old-$.txt"
+        );
+        // Sequential replacement still refuses outputs larger than its existing bound.
+        rule.literal_replacement = true;
+        rule.replace = "x".repeat(MAX_REPLACEMENT_OUTPUT_BYTES + 1);
+        rule.extra_replacements.push(ReplacementPair {
+            find: "x".into(),
+            replace: "y".into(),
+        });
+        let compiled = compile_find(&rule).unwrap();
+        assert!(rename_one_checked("old.txt", false, 0, &rule, Some(&compiled)).is_err());
     }
 
     #[test]

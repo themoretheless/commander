@@ -2522,3 +2522,7 @@ Commander extension of the Strata-inspired table workflow: Detect delimiter uses
 ## Native delimiter detection and manual recovery (2026-11-02)
 
 Two native scenarios now qualify a real semicolon file with quoted/multiline data and an ambiguous comma/semicolon file: detect, numeric sort, exact export, manual reset/override, refusal retaining current state and reselecting the same manual delimiter to clear the message. Final captures each 14/14; four isolated clipboard payloads independently checked with Python csv/Decimal. Toast-free final frames inspected; explicit toast-expiry wait is included in these scenes' capture budget. [Receipts, timeout evidence and remaining alternate/native scope](../qualification/table-delimiter-native-2026-11-02/README.md).
+
+## Literal replacement in regex rename (2026-11-02)
+
+Independent adaptation of [Double Commander regex substitution control](https://doublecmd.github.io/doc/en/multirename.html): the regex finder can now insert replacement strings literally, including dollar/capture syntax. The option composes with sequential replacements, persists in presets, and reaches the shared preview/apply planner. Existing rules retain capture expansion. [Qualification and native limits](../qualification/rename-literal-replacement-2026-11-02/README.md).
