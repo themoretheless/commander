@@ -328,6 +328,7 @@ enum Scenario {
     TablePreview,
     TableDialect,
     TableAmbiguous,
+    ArchiveMetadata,
     ArchiveBrowser,
     ArchiveFuzzy,
     ArchiveExport,
@@ -362,6 +363,7 @@ impl Scenario {
             Self::ArchiveBrowser | Self::ArchiveFuzzy | Self::ArchiveExport => {
                 Some(ArchiveKind::Tar)
             }
+            Self::ArchiveMetadata => Some(ArchiveKind::Zip),
             Self::ArchiveBzip2 => Some(ArchiveKind::TarBz2),
             Self::ArchiveXz => Some(ArchiveKind::TarXz),
             Self::ArchiveZstd => Some(ArchiveKind::TarZstd),
@@ -370,6 +372,7 @@ impl Scenario {
     }
     fn archive_name(self) -> &'static str {
         match self {
+            Self::ArchiveMetadata => "metadata.zip",
             Self::ArchiveBzip2 => "sample.tar.bz2",
             Self::ArchiveXz => "sample.tar.xz",
             Self::ArchiveZstd => "sample.tar.zst",
@@ -393,7 +396,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 136] = [
+    const ALL: [Self; 137] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -520,6 +523,7 @@ impl Scenario {
         Self::TablePreview,
         Self::TableDialect,
         Self::TableAmbiguous,
+        Self::ArchiveMetadata,
         Self::ArchiveBrowser,
         Self::ArchiveFuzzy,
         Self::ArchiveExport,
@@ -667,6 +671,7 @@ impl Scenario {
             Self::TablePreview => "table_preview",
             Self::TableDialect => "table_dialect",
             Self::TableAmbiguous => "table_ambiguous",
+            Self::ArchiveMetadata => "archive_metadata",
             Self::ArchiveBrowser => "archive_browser",
             Self::ArchiveFuzzy => "archive_fuzzy",
             Self::ArchiveExport => "archive_export",
@@ -809,6 +814,7 @@ impl Scenario {
             | Self::TablePreview
             | Self::TableDialect
             | Self::TableAmbiguous
+            | Self::ArchiveMetadata
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -961,6 +967,7 @@ impl Scenario {
             | Self::TablePreview
             | Self::TableDialect
             | Self::TableAmbiguous
+            | Self::ArchiveMetadata
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -2554,7 +2561,43 @@ fn main() {
             std::fs::write(left.join("preview.rs"), code)
                 .map_err(|error| format!("could not create code fixture: {error}"))?;
         }
-        if scenario.archive_kind().is_some() {
+        if scenario == Scenario::ArchiveMetadata {
+            let create = || -> Result<(), Box<dyn std::error::Error>> {
+                use std::io::Write;
+                let path = left.join("metadata.zip");
+                let mut writer = zip::ZipWriter::new(std::fs::File::create(&path)?);
+                for (name, method) in [
+                    ("a-stored.txt", zip::CompressionMethod::Stored),
+                    ("b-deflated.txt", zip::CompressionMethod::Deflated),
+                    ("c-encrypted.txt", zip::CompressionMethod::Stored),
+                ] {
+                    writer.start_file(
+                        name,
+                        zip::write::SimpleFileOptions::default().compression_method(method),
+                    )?;
+                    writer.write_all(b"Native metadata fixture\n")?;
+                }
+                writer.finish()?;
+                let mut bytes = std::fs::read(&path)?;
+                for offset in 0..bytes.len().saturating_sub(46) {
+                    let (flags, method, name) = if bytes[offset..].starts_with(b"PK\x03\x04") {
+                        (offset + 6, offset + 8, offset + 30)
+                    } else if bytes[offset..].starts_with(b"PK\x01\x02") {
+                        (offset + 8, offset + 10, offset + 46)
+                    } else {
+                        continue;
+                    };
+                    if bytes[name..].starts_with(b"c-encrypted.txt") {
+                        bytes[flags] |= 1;
+                        bytes[method..method + 2].copy_from_slice(&222u16.to_le_bytes());
+                    }
+                }
+                std::fs::write(path, bytes)?;
+                Ok(())
+            };
+            create().map_err(|e| e.to_string())?;
+        }
+        if scenario.archive_kind().is_some() && scenario != Scenario::ArchiveMetadata {
             let create_archive = || -> std::io::Result<()> {
                 let mut builder = tar::Builder::new(Vec::new());
                 for (name, bytes) in [
@@ -4857,6 +4900,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveExport && self.archive_copy_phase < 43)
             && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
+            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 12)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -16576,6 +16620,125 @@ impl eframe::App for VisualQaApp {
                 }
             }
         }
+        if self.scenario == Scenario::ArchiveMetadata
+            && self.archive_copy_phase == 12
+            && ctx
+                .data(|d| {
+                    d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
+                        "archive-rendered-details",
+                    ))
+                })
+                .is_some_and(|(_, rows)| rows.iter().any(|(_, _, v)| !v))
+            && let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+        {
+            input.events.push(egui::Event::PointerMoved(
+                clip.right_bottom() - egui::vec2(25.0, 25.0),
+            ));
+            input.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                phase: egui::TouchPhase::Move,
+                delta: egui::vec2(0.0, -80.0),
+                modifiers: Default::default(),
+            });
+        }
+        if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 12 {
+            let phase = self.archive_copy_phase;
+            let observed = ctx.data(|d| {
+                d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
+                    "archive-rendered-details",
+                ))
+            });
+            if matches!(phase, 6 | 9) {
+                let expected = if phase == 6 {
+                    "a-stored.txt"
+                } else {
+                    "b-deflated.txt"
+                };
+                if !self
+                    .scenario_dir
+                    .join(format!("metadata-{expected}.json"))
+                    .is_file()
+                {
+                    if !observed.as_ref().is_some_and(|(path, rows)| {
+                        path == Path::new(expected)
+                            && rows.len() == 8
+                            && rows.iter().all(|(_, _, visible)| *visible)
+                    }) {
+                        if let Some(clip) = ctx
+                            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                        {
+                            input.events.push(egui::Event::PointerMoved(
+                                clip.right_bottom() - egui::vec2(25.0, 25.0),
+                            ));
+                            input.events.push(egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                phase: egui::TouchPhase::Move,
+                                delta: egui::vec2(0.0, -80.0),
+                                modifiers: Default::default(),
+                            });
+                        }
+                        return;
+                    }
+                    let _ = std::fs::write(
+                        self.scenario_dir.join(format!("metadata-{expected}.json")),
+                        serde_json::to_vec_pretty(&observed).unwrap(),
+                    );
+                }
+            }
+            let (id, step) = match phase {
+                0..=2 => (
+                    egui::Id::new(("archive-member-row", PathBuf::from("a-stored.txt"))),
+                    phase,
+                ),
+                3..=5 => (egui::Id::new("archive-details-header"), phase - 3),
+                6..=8 => (
+                    egui::Id::new(("archive-member-row", PathBuf::from("b-deflated.txt"))),
+                    phase - 6,
+                ),
+                _ => (
+                    egui::Id::new(("archive-member-row", PathBuf::from("c-encrypted.txt"))),
+                    phase - 9,
+                ),
+            };
+            if let (Some(rect), Some(clip)) = (
+                ctx.data(|d| d.get_temp::<egui::Rect>(id)),
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip"))),
+            ) {
+                if !clip.contains_rect(rect.shrink(0.5)) {
+                    input.events.push(egui::Event::PointerMoved(
+                        clip.right_bottom() - egui::vec2(25.0, 25.0),
+                    ));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(
+                            0.0,
+                            if rect.center().y < clip.center().y {
+                                80.0
+                            } else {
+                                -80.0
+                            },
+                        ),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                if step == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                if step != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: step == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.archive_copy_phase += 1;
+            }
+        }
         if self.scenario == Scenario::ArchiveFuzzy
             && self.archive_copy_phase < 7
             && self.inner.ui.tools.archive.as_ref().is_some_and(|state| {
@@ -18868,6 +19031,7 @@ impl eframe::App for VisualQaApp {
         }
 
         if self.scenario.archive_kind().is_some()
+            && self.scenario != Scenario::ArchiveMetadata
             && let Some(state) = self.inner.ui.tools.archive.as_mut()
             && state.listing.is_some()
             && state.member_filter.order.field != crate::archive_order::Field::Size
@@ -20647,6 +20811,12 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
+            Scenario::ArchiveMetadata => {
+                let observed = ctx.data(|d| d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")));
+                let ready = self.archive_copy_phase == 12 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("c-encrypted.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Unsupported(222)" && rows[7].1 == "Yes (password extraction unavailable)");
+                if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-c-encrypted.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
+                ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file()
+            }
             Scenario::ArchiveFuzzy => {
                 self.archive_copy_phase == 7
                     && self.hex_verified_before_close
@@ -21762,6 +21932,7 @@ mod tests {
                 "table_preview",
                 "table_dialect",
                 "table_ambiguous",
+                "archive_metadata",
                 "archive_browser",
                 "archive_fuzzy",
                 "archive_export",

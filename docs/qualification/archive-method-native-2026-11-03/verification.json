@@ -1,0 +1,28 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "a087a5b45e8e4af006ab8d6c78076acd430e4de361bece5c2d6ff2ea9cc8c12d",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-method-native-2026-11-03/native-captures/1793660800503800000/archive_metadata"
+  },
+  "archive_export": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 5,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "2d50cdc9cc8e3a7e7a993c3e812665f5e98292a1e8b22b963a3c1a3ef22b943c",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-method-native-2026-11-03/native-captures/1793660827670610000/archive_export"
+  }
+}

@@ -1624,6 +1624,8 @@ impl App {
                 .min_scrolled_height(0.0)
                 .max_height(sheet_height)
                 .show(ui, |ui| {
+                #[cfg(feature = "visual-qa")]
+                ui.ctx().data_mut(|d| { d.insert_temp(egui::Id::new("archive-sheet-clip"), ui.clip_rect()); d.remove::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")); });
                 ui.label(
                     egui::RichText::new(title)
                         .size(13.0)
@@ -2284,6 +2286,8 @@ impl App {
                                     })
                                     .response
                                     .interact(Sense::click());
+                                #[cfg(feature = "visual-qa")]
+                                if !synthetic { ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("archive-member-row", member.path.clone())), response.rect)); }
                                 response.widget_info(|| {
                                     if synthetic {
                                         return egui::WidgetInfo::labeled(
@@ -2348,18 +2352,30 @@ impl App {
                             .size(10.0)
                             .color(t.text_muted),
                         );
-                        egui::CollapsingHeader::new("Member details")
+                        let details = egui::CollapsingHeader::new("Member details")
                             .id_salt("archive-member-details")
                             .show(ui, |ui| {
+                                #[cfg(feature = "visual-qa")]
+                                let mut observed = Vec::new();
                                 egui::Grid::new("archive-member-metadata").num_columns(2).show(ui, |ui| {
                                     for (label, value) in member_details(listing.kind, member) {
-                                        ui.label(label);
-                                        ui.label(value);
+                                        let name = ui.label(label);
+                                        let text = ui.label(&value);
+                                        #[cfg(feature = "visual-qa")]
+                                        observed.push((label.to_owned(), value.clone(), ui.clip_rect().contains_rect(name.rect.shrink(0.5)) && ui.clip_rect().contains_rect(text.rect.shrink(0.5))));
+                                        #[cfg(not(feature = "visual-qa"))]
+                                        let _ = (name, text);
                                         ui.end_row();
                                     }
                                 });
+                                #[cfg(feature = "visual-qa")]
+                                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-rendered-details"), (member.path.clone(), observed)));
                                 ui.small("Declared archive metadata; not verified file contents or extraction permissions.");
                             });
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-details-header"), details.header_response.rect));
+                        #[cfg(not(feature = "visual-qa"))]
+                        let _ = details;
                     }
 
                     ui.add_space(8.0);

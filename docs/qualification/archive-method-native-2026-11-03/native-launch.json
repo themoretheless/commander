@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-method-native-2026-11-03/native-captures/1793660800503800000",
+  "binary_sha256": "a8e9f46be1de0aec47c13725fb3003d5c60fb54b93e2ef8380a06e00239e59ef",
+  "core_sha256": "a8e9f46be1de0aec47c13725fb3003d5c60fb54b93e2ef8380a06e00239e59ef",
+  "wrapper_sha256": "3421616fa8972a06e36cc37dcd1c93bc37de4b1f629df6dab0f31a8e44579bc5",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

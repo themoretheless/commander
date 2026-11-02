@@ -2646,3 +2646,7 @@ Actual Cmd+P, scope pointer toggles, Escape and pane switching verify filtering 
 ### ZIP member compression and encryption metadata — 2026-11-03
 
 Independent adaptation of [PeaZip per-item method display](https://sourceforge.net/p/peazip/news/2021/09/peazip-820---free-open-source-file-archiver-utility/), cohort #96. Raw ZIP listing now carries compression method (including unsupported numeric identifiers) and encrypted flag without decoding payloads. Member details exposes both and explains unavailable password extraction. CSV appends both fields, distinguishing false from absent metadata. TAR and synthetic folder metadata remain unavailable. Password extraction/encryption-method identification and native visual acceptance remain open. [Qualification](../qualification/archive-method-metadata-2026-11-03/README.md).
+
+### ZIP metadata native acceptance and CSV regression — 2026-11-03
+
+Native ArchiveMetadata now clicks real Stored/Deflated/encrypted unsupported-method ZIP rows, opens Member details and requires all eight rendered fields visible before recording each state. Final encrypted framebuffer inspected; 14/14 common checks and zero native effects. Fresh ArchiveExport retains its five exact recording clipboard writes with two appended CSV columns blank for TAR; 14/14 common checks. Password extraction and encryption-method identification remain open. [Qualification](../qualification/archive-method-native-2026-11-03/README.md).
