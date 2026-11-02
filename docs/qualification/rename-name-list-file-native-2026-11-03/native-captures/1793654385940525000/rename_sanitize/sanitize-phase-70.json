@@ -1,0 +1,41 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "name_list": "final.txt",
+    "numbering": null,
+    "prefix": "",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "import": {
+    "busy": false,
+    "error": null,
+    "path": "../wrong-names.txt",
+    "ready": "one.txt\ntwo.txt\n"
+  },
+  "phase": 70,
+  "preview": {
+    "applicable": true,
+    "block_reason": null,
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Ok",
+        "to": "final.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "name_list": "final.txt",
+      "numbering": null,
+      "prefix": "",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": null
+  }
+}

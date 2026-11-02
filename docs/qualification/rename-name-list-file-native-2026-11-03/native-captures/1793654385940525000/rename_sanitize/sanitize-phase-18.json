@@ -1,0 +1,41 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "invalid_char_replacement": "/",
+    "numbering": null,
+    "prefix": "folder/",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "import": {
+    "busy": false,
+    "error": null,
+    "path": "",
+    "ready": null
+  },
+  "phase": 18,
+  "preview": {
+    "applicable": false,
+    "block_reason": "Fix the rename rule to continue",
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Invalid",
+        "to": "folder/sanitize.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "invalid_char_replacement": "/",
+      "numbering": null,
+      "prefix": "folder/",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": "Invalid find pattern: Invalid-character replacement needs at most 32 bytes without slash or NUL"
+  }
+}

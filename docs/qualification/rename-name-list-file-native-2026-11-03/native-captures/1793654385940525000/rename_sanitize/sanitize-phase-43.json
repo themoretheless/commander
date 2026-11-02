@@ -1,0 +1,41 @@
+{
+  "editor": {
+    "case": "Keep",
+    "find": "",
+    "name_list": "edited.txt\nextra.txt",
+    "numbering": null,
+    "prefix": "",
+    "regex": false,
+    "replace": "",
+    "suffix": ""
+  },
+  "import": {
+    "busy": false,
+    "error": null,
+    "path": "",
+    "ready": null
+  },
+  "phase": 43,
+  "preview": {
+    "applicable": false,
+    "block_reason": "Fix the rename rule to continue",
+    "plans": [
+      {
+        "from": "sanitize.txt",
+        "status": "Invalid",
+        "to": "edited.txt"
+      }
+    ],
+    "rule": {
+      "case": "Keep",
+      "find": "",
+      "name_list": "edited.txt\nextra.txt",
+      "numbering": null,
+      "prefix": "",
+      "regex": false,
+      "replace": "",
+      "suffix": ""
+    },
+    "rule_error": "Invalid name list or rule: Name list has 2 rows; this batch needs 1"
+  }
+}

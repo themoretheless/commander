@@ -128,6 +128,10 @@ impl Drop for NameListTask {
     }
 }
 impl NameListImport {
+    #[cfg(feature = "visual-qa")]
+    pub fn metadata_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"path":self.path,"busy":self.task.is_some(),"ready":self.ready,"error":self.error})
+    }
     fn controls(
         &mut self,
         ui: &mut egui::Ui,
@@ -163,6 +167,10 @@ impl NameListImport {
                     .char_limit(4096)
                     .hint_text("UTF-8 list file path"),
             );
+            #[cfg(feature = "visual-qa")]
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new("rename-list-file-path"), path.rect)
+            });
             interaction |= path.has_focus() || path.lost_focus() || path.changed();
             if path.changed() {
                 self.ready = None;

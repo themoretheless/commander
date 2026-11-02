@@ -2590,3 +2590,7 @@ Native pointer/text flow now exercises preview promotion without repeated modifi
 ## Load rename names from a file (2026-11-03)
 
 Independent adaptation of [Double Commander existing name lists, section 5.1](https://doublecmd.github.io/doc/en/multirename.html): bounded cancellable background UTF-8 file loading, then explicit adoption into the list editor with current batch-count checking. Existing modifiers and preview/apply semantics remain active. [Reader, workload/pointer regression evidence and native capture limits](../qualification/rename-name-list-file-2026-11-03/README.md).
+
+## Native name-list file loading (2026-11-03)
+
+Real native pointer/text actions load a wrong-count file, demonstrate disabled adoption without changing the editor, load a valid UTF-8 BOM/CRLF file and adopt it only with a separate click. Read-only snapshots and byte-exact artifacts are independently checked. [Receipts, source hashes and remaining native scope](../qualification/rename-name-list-file-native-2026-11-03/README.md).

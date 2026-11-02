@@ -2083,6 +2083,10 @@ impl Fixture {
         }
         if scenario == Scenario::RenameSanitize {
             std::fs::write(left.join("sanitize.txt"), "rename payload")
+                .and_then(|()| std::fs::write(root.join("wrong-names.txt"), "one.txt\ntwo.txt\n"))
+                .and_then(|()| {
+                    std::fs::write(root.join("correct-names.txt"), "\u{feff}imported.txt\r\n")
+                })
                 .map_err(|error| error.to_string())?;
         }
         if scenario == Scenario::RenameTarget {
@@ -4639,7 +4643,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::CustomNavigation && self.json_mode_phase < 20)
             && !(self.scenario == Scenario::ShortcutHints && self.json_mode_phase < 10)
             && !(self.scenario == Scenario::CopyDetails && self.details_phase < 14)
-            && !(self.scenario == Scenario::RenameSanitize && self.sanitize_phase < 55)
+            && !(self.scenario == Scenario::RenameSanitize && self.sanitize_phase < 77)
             && !(matches!(
                 self.scenario,
                 Scenario::NameListActions | Scenario::MaskActions
@@ -17096,14 +17100,28 @@ impl eframe::App for VisualQaApp {
         if self.scenario == Scenario::RenameSanitize && self.pane_tool_opened {
             let phase = self.sanitize_phase;
             if let Some(state) = self.inner.ui.modals.batch_rename.as_ref() {
-                let snapshot = serde_json::json!({"phase":phase,"editor":state.rule(),"preview":state.validation.as_ref().map(|v|v.metadata_snapshot())});
+                let snapshot = serde_json::json!({"phase":phase,"editor":state.rule(),"import":state.name_list_import.metadata_snapshot(),"preview":state.validation.as_ref().map(|v|v.metadata_snapshot())});
                 let _ = std::fs::write(
                     self.scenario_dir
                         .join(format!("sanitize-phase-{phase}.json")),
                     serde_json::to_vec_pretty(&snapshot).unwrap(),
                 );
             }
-            if phase < 55 {
+            if phase < 77 {
+                if matches!(phase, 63 | 74)
+                    && !self
+                        .inner
+                        .ui
+                        .modals
+                        .batch_rename
+                        .as_ref()
+                        .is_some_and(|state| {
+                            state.name_list_import.metadata_snapshot()["ready"].is_string()
+                        })
+                {
+                    ctx.request_repaint();
+                    return;
+                }
                 let (key, local, text) = match phase {
                     0..=4 => ("rename-prefix", phase, Some("folder/")),
                     5..=7 => ("rename-invalid-characters", phase - 5, None),
@@ -17121,7 +17139,21 @@ impl eframe::App for VisualQaApp {
                     ),
                     42..=46 => ("rename-name-list", phase - 42, Some("edited.txt")),
                     47..=49 => ("rename-original-list", phase - 47, None),
-                    _ => ("rename-name-list", phase - 50, Some("final.txt")),
+                    50..=54 => ("rename-name-list", phase - 50, Some("final.txt")),
+                    55..=59 => (
+                        "rename-list-file-path",
+                        phase - 55,
+                        Some("../wrong-names.txt"),
+                    ),
+                    60..=62 => ("rename-load-list-file", phase - 60, None),
+                    63..=65 => ("rename-use-loaded-list", phase - 63, None),
+                    66..=70 => (
+                        "rename-list-file-path",
+                        phase - 66,
+                        Some("../correct-names.txt"),
+                    ),
+                    71..=73 => ("rename-load-list-file", phase - 71, None),
+                    _ => ("rename-use-loaded-list", phase - 74, None),
                 };
                 if let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key))) {
                     if let Some(clip) =
@@ -19095,7 +19127,7 @@ impl eframe::App for VisualQaApp {
                 .get(&self.fixture.left.join("photo.png"))
                 .is_some();
         let scenario_state_ready = match self.scenario {
-            Scenario::RenameSanitize => self.sanitize_phase==55 && self.sanitize_input_at.elapsed()>=Duration::from_millis(300) && self.inner.ui.modals.batch_rename.as_ref().and_then(|state|state.validation.as_ref()).is_some_and(|v|v.targets_preview(&[("sanitize.txt","final.txt")])) && std::fs::read(self.fixture.left.join("sanitize.txt")).is_ok_and(|data|data==b"rename payload") && !self.fixture.left.join("folder_sanitize.txt").exists() && !self.fixture.left.join("final.txt").exists() && std::fs::copy(self.fixture.left.join("sanitize.txt"),self.scenario_dir.join("source.txt")).is_ok(),
+            Scenario::RenameSanitize => self.sanitize_phase==77 && self.sanitize_input_at.elapsed()>=Duration::from_millis(300) && self.inner.ui.modals.batch_rename.as_ref().and_then(|state|state.validation.as_ref()).is_some_and(|v|v.targets_preview(&[("sanitize.txt","imported.txt")])) && std::fs::read(self.fixture.left.join("sanitize.txt")).is_ok_and(|data|data==b"rename payload") && !self.fixture.left.join("folder_sanitize.txt").exists() && !self.fixture.left.join("final.txt").exists() && !self.fixture.left.join("imported.txt").exists() && std::fs::copy(self.fixture.root.join("correct-names.txt"),self.scenario_dir.join("correct-names.txt")).is_ok() && std::fs::copy(self.fixture.root.join("wrong-names.txt"),self.scenario_dir.join("wrong-names.txt")).is_ok() && std::fs::copy(self.fixture.left.join("sanitize.txt"),self.scenario_dir.join("source.txt")).is_ok(),
             Scenario::CopyDetails => self.details_phase==14 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.modals.palette_input.is_none() && self.inner.toasts.is_empty() && self.recorded_clipboard_dump("many.tsv"),
             Scenario::SearchJson => {
                 std::fs::copy(self.fixture.root.join("path-capability.json"),self.scenario_dir.join("path-capability.json")).is_ok() && self.search_json_phase==45 && self.counters.clipboard.load(Ordering::Relaxed)==5 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && state.error.is_none() && state.results.is_empty() && state.expression=="name:does-not-exist" && state.result_copy_format==crate::app::FindCopyFormat::DetailsJson)
