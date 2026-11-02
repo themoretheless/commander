@@ -9,10 +9,15 @@ const MAX_FIELD: usize = 4096;
 pub struct Preset {
     pub name: String,
     pub rule: RenameRule,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub at_launch: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct Presets(Vec<Preset>);
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 fn key(name: &str) -> String {
     name.trim().to_lowercase().nfc().collect()
 }
@@ -83,6 +88,24 @@ fn validate(rule: &RenameRule) -> Result<(), String> {
     Ok(())
 }
 impl Presets {
+    pub fn launch_preset(&self) -> Option<&Preset> {
+        self.0.iter().find(|preset| preset.at_launch)
+    }
+    pub fn set_launch(&mut self, label: Option<&str>) -> Result<(), String> {
+        let selected = match label {
+            Some(label) => Some(
+                self.0
+                    .iter()
+                    .position(|preset| key(&preset.name) == key(label))
+                    .ok_or("Select a saved preset first")?,
+            ),
+            None => None,
+        };
+        for (index, preset) in self.0.iter_mut().enumerate() {
+            preset.at_launch = selected == Some(index);
+        }
+        Ok(())
+    }
     pub fn items(&self) -> &[Preset] {
         &self.0
     }
@@ -102,6 +125,7 @@ impl Presets {
         self.0.push(Preset {
             name: label.clone(),
             rule,
+            at_launch: false,
         });
         Ok(label)
     }
@@ -160,9 +184,17 @@ impl<'de> Deserialize<'de> for Presets {
         }
         let mut presets = Self::default();
         for entry in entries {
-            presets
+            if entry.at_launch && presets.launch_preset().is_some() {
+                return Err(serde::de::Error::custom("multiple rename launch presets"));
+            }
+            let label = presets
                 .add(&entry.name, entry.rule)
                 .map_err(serde::de::Error::custom)?;
+            if entry.at_launch {
+                presets
+                    .set_launch(Some(&label))
+                    .map_err(serde::de::Error::custom)?;
+            }
         }
         Ok(presets)
     }
@@ -171,6 +203,53 @@ impl<'de> Deserialize<'de> for Presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launch_selection_survives_rename_update_and_roundtrip_but_not_copy_or_removal() {
+        let mut presets = Presets::default();
+        presets.add("First", RenameRule::default()).unwrap();
+        presets.add("Second", RenameRule::default()).unwrap();
+        assert!(presets.launch_preset().is_none());
+        assert!(
+            !serde_json::to_string(&presets)
+                .unwrap()
+                .contains("at_launch")
+        );
+        presets.set_launch(Some("FIRST")).unwrap();
+        presets.rename("First", "Renamed").unwrap();
+        presets
+            .update(
+                "Renamed",
+                RenameRule {
+                    prefix: "new_".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        presets.duplicate("Renamed", "Copy").unwrap();
+        assert!(!presets.get("Copy").unwrap().at_launch);
+        let restored: Presets =
+            serde_json::from_str(&serde_json::to_string(&presets).unwrap()).unwrap();
+        assert_eq!(restored, presets);
+        assert_eq!(restored.launch_preset().unwrap().rule.prefix, "new_");
+        let before = presets.clone();
+        assert!(presets.set_launch(Some("missing")).is_err());
+        assert_eq!(presets, before);
+        presets.set_launch(Some("Second")).unwrap();
+        assert!(!presets.get("Renamed").unwrap().at_launch);
+        presets.remove("Second");
+        assert!(presets.launch_preset().is_none());
+        presets.set_launch(Some("Copy")).unwrap();
+        presets.set_launch(None).unwrap();
+        assert!(presets.launch_preset().is_none());
+    }
+
+    #[test]
+    fn launch_deserialization_accepts_legacy_and_rejects_ambiguous_defaults() {
+        let legacy: Presets = serde_json::from_str(r#"[{"name":"Old","rule":{}}]"#).unwrap();
+        assert!(legacy.launch_preset().is_none());
+        assert!(serde_json::from_str::<Presets>(r#"[{"name":"A","rule":{},"at_launch":true},{"name":"B","rule":{},"at_launch":true}]"#).is_err());
+    }
+
     #[test]
     fn rename_and_duplicate_preserve_saved_rules_and_reject_collisions_atomically() {
         let mut presets = Presets::default();
@@ -719,6 +798,7 @@ mod tests {
         ] {
             let encoded = serde_json::to_string(&vec![Preset {
                 name: "unsafe".into(),
+                at_launch: false,
                 rule,
             }])
             .unwrap();

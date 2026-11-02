@@ -288,6 +288,12 @@ impl App {
             scroll_nonce,
             validation: None,
         });
+        if let (Some(state), Some(preset)) = (
+            self.ui.modals.batch_rename.as_mut(),
+            self.rename_presets.launch_preset(),
+        ) {
+            state.load_launch_preset(preset);
+        }
         Self::mark_modal_opened(ctx, UiModal::BatchRename);
     }
 
@@ -504,6 +510,22 @@ impl App {
                                 }
                                 state.preset_status = Some(result.map(|_| if duplicate { "Saved rule duplicated; current editor retained".into() } else { "Preset renamed; current editor retained".into() }));
                             }
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("At launch: {}", presets.launch_preset().map(|preset| preset.name.as_str()).unwrap_or("Empty rule")));
+                        let set = ui.add_enabled(state.preset_selected.is_some(), egui::Button::new("Use selected at launch"));
+                        let clear = ui.add_enabled(presets.launch_preset().is_some(), egui::Button::new("Start empty"));
+                        preset_interaction |= set.has_focus() || set.lost_focus() || set.clicked() || clear.has_focus() || clear.lost_focus() || clear.clicked();
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(egui::Id::new("rename-preset-launch"), set.rect);
+                            data.insert_temp(egui::Id::new("rename-preset-launch-clear"), clear.rect);
+                        });
+                        if set.clicked() || clear.clicked() {
+                            let result = presets.set_launch(if clear.clicked() { None } else { state.preset_selected.as_deref() });
+                            presets_changed |= result.is_ok();
+                            state.preset_status = Some(result.map(|()| "Launch preference saved; current editor retained".into()));
                         }
                     });
                     if let Some(status) = &state.preset_status {
@@ -1216,6 +1238,25 @@ mod tests {
         let validation = ValidatedBatchRename::cached(&mut state.validation, &state.context, rule);
         assert_eq!(validation.plans[0].to, "Photo.JPG");
         assert!(validation.rule_for_submit(true).is_none());
+        let preset = crate::rename_presets::Preset {
+            name: "Opening".into(),
+            rule: RenameRule {
+                prefix: "auto_".into(),
+                ..Default::default()
+            },
+            at_launch: true,
+        };
+        state.error = Some("stale".into());
+        state.load_launch_preset(&preset);
+        assert_eq!(state.rule(), preset.rule);
+        assert_eq!(state.context.targets, vec!["Photo.JPG"]);
+        assert_eq!(state.preset_selected.as_deref(), Some("Opening"));
+        assert!(state.validation.is_none() && state.error.is_none());
+        let rule = state.rule();
+        let validation = ValidatedBatchRename::cached(&mut state.validation, &state.context, rule);
+        assert_eq!(validation.plans[0].to, "auto_Photo.JPG");
+        state.reset_rule();
+        assert_eq!(state.rule(), RenameRule::default());
     }
 
     #[test]

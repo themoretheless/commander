@@ -2474,3 +2474,7 @@ Formats are limited to 64 bytes and formatted output to 512 bytes; unrenderable 
 ## Rename and duplicate saved rename presets (2026-11-02)
 
 Independent adaptation of [Double Commander preset management](https://doublecmd.github.io/doc/en/multirename.html): rename a saved label without rewriting its rule, or duplicate a saved rule under a new name. Editor changes remain intact; duplication retains source selection. Canonical name collisions and capacity errors fail atomically. Existing session format is unchanged. [Qualification and interaction limits](../qualification/rename-preset-management-2026-11-02/README.md).
+
+## Saved rename rule at launch (2026-11-02)
+
+Independent adaptation of [Double Commander Preset at launch](https://doublecmd.github.io/doc/en/multirename.html): choose one saved rule for subsequent dialog openings or restore empty-rule startup. The choice survives session save/load and follows rename/update; copies do not inherit it and deletion clears it. Old preset JSON remains readable; ambiguous multi-default JSON is rejected. No automatic filesystem action. [Evidence and native interaction limits](../qualification/rename-launch-preset-2026-11-02/README.md).

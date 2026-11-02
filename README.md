@@ -8,6 +8,8 @@ the format and position, without storing file timestamps.
 Saved rename rules also support **Rename selected** and **Duplicate saved** using
 the name field. Duplication copies the saved rule and keeps the source selected;
 load the copy to edit it. Current unsaved editor changes are retained.
+**Use selected at launch** loads that saved rule when the next rename dialog
+opens; **Start empty** restores the empty-rule default. Loading never renames files.
 
 Panels offer **Columns** alongside List and Icons: scroll through parent folders
 beside the current folder, descend with one click, or bring an ancestor file

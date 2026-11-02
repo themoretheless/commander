@@ -838,6 +838,15 @@ impl BatchRenameState {
         self.error = None;
     }
 
+    fn load_launch_preset(&mut self, preset: &crate::rename_presets::Preset) {
+        self.load_rule(&preset.rule);
+        self.preset_name = preset.name.clone();
+        self.preset_selected = Some(preset.name.clone());
+        self.preset_status = Some(Ok("Launch preset loaded; review before applying".into()));
+        self.validation = None;
+        self.error = None;
+    }
+
     fn load_rule(&mut self, rule: &crate::rename::RenameRule) {
         self.date_on = rule.date_stamp.is_some();
         let date = rule.date_stamp.clone().unwrap_or_default();
