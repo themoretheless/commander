@@ -88,3 +88,11 @@ Mathijs van de Nes and contributors, under the
 - `hmac-0.13.0`: [MIT licence](data/licenses/hmac-0.13.0-MIT.txt).
 - `inout-0.2.5`: [MIT licence](data/licenses/inout-0.2.5-MIT.txt).
 - `pbkdf2-0.13.0`: [MIT licence](data/licenses/pbkdf2-0.13.0-MIT.txt).
+
+## XXH3 file checksums
+
+XXH3-64 and XXH3-128 use `xxhash-rust` 0.8.19, a Rust implementation of
+[xxHash](https://github.com/Cyan4973/xxHash), under the Boost Software License 1.0.
+See the complete [license](data/licenses/xxhash-rust-0.8.19-BSL-1.0.txt).
+The C reference is used only to generate qualification vectors and is not linked
+into Commander.

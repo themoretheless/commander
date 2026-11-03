@@ -184,6 +184,10 @@ fn checksum_input_rect(
     Some(rect)
 }
 
+const ABC_XXH3_64: &str = "78af5f94892f3950";
+const ABC_XXH3_64_BASE64: &str = "eK9flIkvOVA=";
+const ABC_XXH3_128: &str = "06b05ab6733a618578af5f94892f3950";
+const ABC_XXH3_128_BASE64: &str = "BrBatnM6YYV4r1+UiS85UA==";
 const ABC_BLAKE2S: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
 const ABC_BLAKE2S_BASE64: &str = "UIxejDJ8FOLhpyujTutFLzdFiyCe1jopTZmbTIZnWYI=";
 const ABC_BLAKE2B: &str = "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923";
@@ -4967,7 +4971,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::RtfPreview
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
-            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 316)
+            && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 392)
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -15211,7 +15215,7 @@ impl eframe::App for VisualQaApp {
                 ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
                     .map(|r| [r.min.x, r.min.y, r.max.x, r.max.y])
             };
-            let snapshot = serde_json::json!({"clip":geometry("checksum-sheet-clip"),"copy_rect":geometry("checksum-copy-digest"),"phase":self.checksum_click_phase,"clipboard_calls":self.counters.clipboard.load(Ordering::Relaxed),"clipboard":clipboard,"relative":self.inner.checksum_relative_mode_is(true),"adler_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match),"sha3_256_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_256,crate::checksum::ExpectedMatch::Match),"sha3_256_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_256,crate::checksum::ExpectedMatch::Invalid),"sha3_512_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_512,crate::checksum::ExpectedMatch::Match),"sha3_512_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_512,crate::checksum::ExpectedMatch::Invalid),"blake2s_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2s,crate::checksum::ExpectedMatch::Match),"blake2s_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2s,crate::checksum::ExpectedMatch::Invalid),"blake2b_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2b,crate::checksum::ExpectedMatch::Match),"blake2b_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2b,crate::checksum::ExpectedMatch::Invalid)});
+            let snapshot = serde_json::json!({"clip":geometry("checksum-sheet-clip"),"copy_rect":geometry("checksum-copy-digest"),"phase":self.checksum_click_phase,"clipboard_calls":self.counters.clipboard.load(Ordering::Relaxed),"clipboard":clipboard,"relative":self.inner.checksum_relative_mode_is(true),"adler_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Adler32,crate::checksum::ExpectedMatch::Match),"sha3_256_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_256,crate::checksum::ExpectedMatch::Match),"sha3_256_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_256,crate::checksum::ExpectedMatch::Invalid),"sha3_512_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_512,crate::checksum::ExpectedMatch::Match),"sha3_512_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Sha3_512,crate::checksum::ExpectedMatch::Invalid),"blake2s_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2s,crate::checksum::ExpectedMatch::Match),"blake2s_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2s,crate::checksum::ExpectedMatch::Invalid),"blake2b_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2b,crate::checksum::ExpectedMatch::Match),"xxh3_64_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Xxh3_64,crate::checksum::ExpectedMatch::Match),"xxh3_64_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Xxh3_64,crate::checksum::ExpectedMatch::Invalid),"xxh3_128_match":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Xxh3_128,crate::checksum::ExpectedMatch::Match),"xxh3_128_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Xxh3_128,crate::checksum::ExpectedMatch::Invalid),"blake2b_invalid":self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2b,crate::checksum::ExpectedMatch::Invalid)});
             if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
                 let _ = std::fs::write(
                     self.scenario_dir
@@ -15881,7 +15885,7 @@ impl eframe::App for VisualQaApp {
             }
             return;
         }
-        if self.scenario == Scenario::Checksums && (164..316).contains(&self.checksum_click_phase) {
+        if self.scenario == Scenario::Checksums && (164..392).contains(&self.checksum_click_phase) {
             let phase = self.checksum_click_phase;
             let offset = (phase - 164) % 38;
             let (algorithm, hex, encoded, stem) = match (phase - 164) / 38 {
@@ -15903,11 +15907,23 @@ impl eframe::App for VisualQaApp {
                     ABC_BLAKE2S_BASE64,
                     "blake2s",
                 ),
-                _ => (
+                3 => (
                     crate::checksum::Algorithm::Blake2b,
                     ABC_BLAKE2B,
                     ABC_BLAKE2B_BASE64,
                     "blake2b",
+                ),
+                4 => (
+                    crate::checksum::Algorithm::Xxh3_64,
+                    ABC_XXH3_64,
+                    ABC_XXH3_64_BASE64,
+                    "xxh3-64",
+                ),
+                _ => (
+                    crate::checksum::Algorithm::Xxh3_128,
+                    ABC_XXH3_128,
+                    ABC_XXH3_128_BASE64,
+                    "xxh3-128",
                 ),
             };
             if matches!(offset, 11 | 28 | 33)
@@ -22170,13 +22186,13 @@ impl eframe::App for VisualQaApp {
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
             Scenario::Checksums => {
-                let expected=ABC_BLAKE2B_BASE64;
-                self.checksum_click_phase==316 && self.counters.clipboard.load(Ordering::Relaxed)==32
+                let expected=ABC_XXH3_128_BASE64;
+                self.checksum_click_phase==392 && self.counters.clipboard.load(Ordering::Relaxed)==38
                     && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).as_deref()==Some(expected)
                     && !self.inner.checksum_relative_mode_is(true)
                     && self.inner.toasts.is_empty()
-                    && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Blake2b,crate::checksum::ExpectedMatch::Match)
-                    && self.recorded_clipboard_dump("blake2b-base64.txt")
+                    && self.inner.checksum_comparison_is(crate::checksum::Algorithm::Xxh3_128,crate::checksum::ExpectedMatch::Match)
+                    && self.recorded_clipboard_dump("xxh3-128-base64.txt")
                     && std::fs::copy(self.fixture.left.join("checksum.txt"),self.scenario_dir.join("checksum.txt")).is_ok()
             }
             Scenario::RenameOptions => {
@@ -22917,7 +22933,7 @@ const fn expected_clipboard_writes(scenario: Scenario) -> usize {
         | Scenario::DiskCount => 3,
         Scenario::DuplicateCross => 6,
         Scenario::SyncReview => 6,
-        Scenario::Checksums => 32,
+        Scenario::Checksums => 38,
         Scenario::GpxPreview | Scenario::KmlPreview => 1,
         Scenario::TablePreview => 5,
         Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::CopyDetails => 2,
@@ -23347,7 +23363,7 @@ mod tests {
                 | Scenario::DiskCount => 3,
                 Scenario::DuplicateCross => 6,
                 Scenario::SyncReview => 6,
-                Scenario::Checksums => 32,
+                Scenario::Checksums => 38,
                 Scenario::GpxPreview | Scenario::KmlPreview => 1,
                 Scenario::TablePreview => 5,
                 Scenario::TableDialect | Scenario::TableAmbiguous | Scenario::CopyDetails => 2,

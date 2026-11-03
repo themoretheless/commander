@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 39.34s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 2 tests
+test checksum_list::tests::xxh3_lists_keep_width_identity_tags_hints_and_mismatch ... ok
+test checksum::tests::xxh3_streams_c_reference_vectors_compares_encodings_and_exports_lists ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3474 filtered out; finished in 0.31s
+

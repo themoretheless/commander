@@ -23,6 +23,8 @@ pub struct ChecksumRow {
     pub md5_hex: Option<String>,
     pub sha1_hex: Option<String>,
     pub adler32_hex: Option<String>,
+    pub xxh3_64_hex: Option<String>,
+    pub xxh3_128_hex: Option<String>,
     pub error: Option<String>,
     pub skipped: Option<String>,
 }
@@ -81,9 +83,11 @@ pub enum Algorithm {
     Md5,
     Sha1,
     Adler32,
+    Xxh3_64,
+    Xxh3_128,
 }
 impl Algorithm {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::Sha256,
         Self::Sha384,
         Self::Sha512,
@@ -96,6 +100,8 @@ impl Algorithm {
         Self::Md5,
         Self::Sha1,
         Self::Adler32,
+        Self::Xxh3_64,
+        Self::Xxh3_128,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -111,6 +117,8 @@ impl Algorithm {
             Self::Md5 => "MD5",
             Self::Sha1 => "SHA-1",
             Self::Adler32 => "Adler-32",
+            Self::Xxh3_64 => "XXH3-64",
+            Self::Xxh3_128 => "XXH3-128",
         }
     }
     pub const fn hex_len(self) -> usize {
@@ -119,7 +127,8 @@ impl Algorithm {
             Self::Sha384 => 96,
             Self::Sha512 | Self::Sha3_512 | Self::Blake2b => 128,
             Self::Crc32 | Self::Adler32 => 8,
-            Self::Md5 => 32,
+            Self::Md5 | Self::Xxh3_128 => 32,
+            Self::Xxh3_64 => 16,
             Self::Sha1 => 40,
         }
     }
@@ -137,6 +146,8 @@ impl Algorithm {
             Self::Md5 => row.md5_hex.as_deref(),
             Self::Sha1 => row.sha1_hex.as_deref(),
             Self::Adler32 => row.adler32_hex.as_deref(),
+            Self::Xxh3_64 => row.xxh3_64_hex.as_deref(),
+            Self::Xxh3_128 => row.xxh3_128_hex.as_deref(),
         };
         value.filter(|value| valid_digest(value, self.hex_len()))
     }
@@ -216,7 +227,7 @@ impl ChecksumReport {
                     return format!("{path}: skipped ({reason})");
                 }
                 format!(
-                    "{path}: content={} blake3={} sha256={} sha384={} sha512={} sha3_256={} sha3_512={} blake2s={} blake2b={} crc32={} md5={} sha1={} adler32={}",
+                    "{path}: content={} blake3={} sha256={} sha384={} sha512={} sha3_256={} sha3_512={} blake2s={} blake2b={} crc32={} md5={} sha1={} adler32={} xxh3_64={} xxh3_128={}",
                     row.content_hash
                         .map(|hash| format!("{hash:016x}"))
                         .unwrap_or_else(|| "-".into()),
@@ -231,7 +242,9 @@ impl ChecksumReport {
                     row.crc32_hex.as_deref().unwrap_or("-"),
                     row.md5_hex.as_deref().unwrap_or("-"),
                     row.sha1_hex.as_deref().unwrap_or("-"),
-                    row.adler32_hex.as_deref().unwrap_or("-")
+                    row.adler32_hex.as_deref().unwrap_or("-"),
+                    row.xxh3_64_hex.as_deref().unwrap_or("-"),
+                    row.xxh3_128_hex.as_deref().unwrap_or("-")
                 )
             })
             .collect::<Vec<_>>()
@@ -521,6 +534,8 @@ pub fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
             row.md5_hex = Some(digests.md5);
             row.sha1_hex = Some(digests.sha1);
             row.adler32_hex = Some(digests.adler32);
+            row.xxh3_64_hex = Some(digests.xxh3_64);
+            row.xxh3_128_hex = Some(digests.xxh3_128);
         }
         Err(error) => row.error = Some(error.to_string()),
     }
@@ -545,6 +560,8 @@ struct FileDigests {
     md5: String,
     sha1: String,
     adler32: String,
+    xxh3_64: String,
+    xxh3_128: String,
 }
 fn digests(
     path: &Path,
@@ -593,6 +610,7 @@ fn digests(
     let mut md5 = md5::Md5::new();
     let mut sha1 = sha1::Sha1::new();
     let mut adler32 = adler2::Adler32::new();
+    let mut xxh3 = xxhash_rust::xxh3::Xxh3::new();
     loop {
         cancel()?;
         let limit = remaining.saturating_add(1).min(buffer.len() as u64) as usize;
@@ -619,6 +637,7 @@ fn digests(
         md5.update(&buffer[..count]);
         sha1.update(&buffer[..count]);
         adler32.write_slice(&buffer[..count]);
+        xxh3.update(&buffer[..count]);
     }
     let after = file.metadata()?;
     if remaining != 0
@@ -641,6 +660,8 @@ fn digests(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     Ok(FileDigests {
+        xxh3_64: format!("{:016x}", xxh3.digest()),
+        xxh3_128: format!("{:032x}", xxh3.digest128()),
         adler32: format!("{:08x}", adler32.checksum()),
         sha1: sha1
             .finalize()
@@ -693,6 +714,78 @@ mod tests {
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
     const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn xxh3_streams_c_reference_vectors_compares_encodings_and_exports_lists() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../docs/qualification/xxh3-checksums-2026-11-03/vectors.json"
+        ))
+        .unwrap();
+        let temp = TempDir::new();
+        for vector in vectors.as_array().unwrap() {
+            let size = vector["size"].as_u64().unwrap() as usize;
+            let data = if size == 3 {
+                b"abc".to_vec()
+            } else {
+                (0..size).map(|i| ((i * 131 + 17) % 256) as u8).collect()
+            };
+            let path = temp.file("data.bin", "");
+            std::fs::write(&path, &data).unwrap();
+            let report = verify_paths([path]);
+            for (algorithm, key, encoded) in [
+                (Algorithm::Xxh3_64, "xxh3_64", "base64_64"),
+                (Algorithm::Xxh3_128, "xxh3_128", "base64_128"),
+            ] {
+                let expected = vector[key].as_str().unwrap();
+                assert_eq!(report.single_digest(algorithm), Some(expected));
+                assert!(report.rows[0].display_digests().lines().any(|line| {
+                    line.strip_prefix(algorithm.label())
+                        .is_some_and(|value| value.trim_start() == expected)
+                }));
+                assert_eq!(
+                    report.single_digest_base64(algorithm).as_deref(),
+                    vector[encoded].as_str()
+                );
+                assert_eq!(
+                    report.compare_expected_algorithm(&expected.to_uppercase(), algorithm),
+                    ExpectedMatch::Match
+                );
+                assert_eq!(
+                    report.compare_expected_encoded(
+                        vector[encoded].as_str().unwrap(),
+                        algorithm,
+                        DigestEncoding::Base64
+                    ),
+                    ExpectedMatch::Match
+                );
+                assert_eq!(
+                    report.compare_expected_algorithm(&"0".repeat(algorithm.hex_len()), algorithm),
+                    ExpectedMatch::Mismatch
+                );
+                let list = report
+                    .checksum_list_at(algorithm, Some(temp.path()))
+                    .unwrap();
+                assert!(list.contains(expected));
+                let manifest = temp.file("list", &list);
+                let checked = crate::checksum_list::verify(
+                    &manifest,
+                    Some(algorithm),
+                    &|| false,
+                    &std::sync::atomic::AtomicUsize::new(0),
+                    &std::sync::atomic::AtomicUsize::new(0),
+                );
+                assert_eq!(checked.rows[0].status, crate::checksum_list::Status::Match);
+                assert!(
+                    report
+                        .detailed_text()
+                        .contains(&format!("{key}={expected}"))
+                );
+                let mut cancelled = report.clone();
+                cancelled.cancelled = true;
+                assert!(cancelled.single_digest(algorithm).is_none());
+            }
+        }
+    }
 
     #[test]
     fn sha3_streams_python_vectors_compares_encodings_and_exports_lists() {
@@ -1367,6 +1460,8 @@ mod tests {
                         command.arg("--check");
                         command
                     }),
+                    // XXH3 is independently qualified against the official C oracle.
+                    Algorithm::Xxh3_64 | Algorithm::Xxh3_128 => None,
                     #[cfg(not(target_os = "macos"))]
                     _ => None,
                 };
@@ -1830,6 +1925,8 @@ mod tests {
                 && row.sha512_hex.is_none()
                 && row.sha3_256_hex.is_none()
                 && row.sha3_512_hex.is_none()
+                && row.xxh3_64_hex.is_none()
+                && row.xxh3_128_hex.is_none()
                 && row.blake2s_hex.is_none()
                 && row.blake2b_hex.is_none()
                 && row.crc32_hex.is_none()
@@ -1851,6 +1948,8 @@ mod tests {
                 && row.sha512_hex.is_none()
                 && row.sha3_256_hex.is_none()
                 && row.sha3_512_hex.is_none()
+                && row.xxh3_64_hex.is_none()
+                && row.xxh3_128_hex.is_none()
                 && row.blake2s_hex.is_none()
                 && row.blake2b_hex.is_none()
                 && row.crc32_hex.is_none()
@@ -1896,6 +1995,8 @@ mod tests {
                     && row.sha512_hex.is_none()
                     && row.sha3_256_hex.is_none()
                     && row.sha3_512_hex.is_none()
+                    && row.xxh3_64_hex.is_none()
+                    && row.xxh3_128_hex.is_none()
                     && row.blake2s_hex.is_none()
                     && row.blake2b_hex.is_none()
                     && row.crc32_hex.is_none()
@@ -2055,6 +2156,8 @@ mod tests {
             md5_hex: None,
             sha1_hex: None,
             adler32_hex: None,
+            xxh3_64_hex: None,
+            xxh3_128_hex: None,
             error: None,
             skipped: None,
         }
@@ -2085,10 +2188,10 @@ mod tests {
         };
         assert_eq!(
             report.detailed_text(),
-            "/data/ok.bin: content=00000000000000ab blake3=cafe sha256=- sha384=- sha512=- sha3_256=- sha3_512=- blake2s=- blake2b=- crc32=- md5=- sha1=- adler32=-\n\
+            "/data/ok.bin: content=00000000000000ab blake3=cafe sha256=- sha384=- sha512=- sha3_256=- sha3_512=- blake2s=- blake2b=- crc32=- md5=- sha1=- adler32=- xxh3_64=- xxh3_128=-\n\
              /data/bad.bin: ERROR permission denied\n\
              /data/link: skipped (symlinks are not hashed)\n\
-             /data/unknown.bin: content=- blake3=- sha256=- sha384=- sha512=- sha3_256=- sha3_512=- blake2s=- blake2b=- crc32=- md5=- sha1=- adler32=-"
+             /data/unknown.bin: content=- blake3=- sha256=- sha384=- sha512=- sha3_256=- sha3_512=- blake2s=- blake2b=- crc32=- md5=- sha1=- adler32=- xxh3_64=- xxh3_128=-"
         );
         // A path without a file name (the root) falls back to the full path.
         let root = ChecksumReport {
@@ -2097,7 +2200,7 @@ mod tests {
         };
         assert_eq!(
             root.detailed_text(),
-            "/: content=- blake3=- sha256=- sha384=- sha512=- sha3_256=- sha3_512=- blake2s=- blake2b=- crc32=- md5=- sha1=- adler32=-"
+            "/: content=- blake3=- sha256=- sha384=- sha512=- sha3_256=- sha3_512=- blake2s=- blake2b=- crc32=- md5=- sha1=- adler32=- xxh3_64=- xxh3_128=-"
         );
     }
 

@@ -1,0 +1,9 @@
+{
+  "cohort": 85,
+  "repository": "https://github.com/pkolaczk/fclones",
+  "reference": "https://github.com/pkolaczk/fclones/blob/main/fclones/Cargo.toml",
+  "behavior": "fclones enables the optional xxhash-rust xxh3 implementation by default. Commander independently integrates seeded-zero XXH3-64/128 into its own checksum/checksum-list workflow.",
+  "library": "xxhash-rust 0.8.19",
+  "reference_implementation": "Official xxHash C v0.8.3",
+  "performance_claim": "No speedup or benchmark claim: all algorithms share the existing read pass."
+}

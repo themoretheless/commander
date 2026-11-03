@@ -1814,6 +1814,7 @@ impl App {
                         }
                     });
                     if self.checksum_algorithm == crate::checksum::Algorithm::Sha1 { ui.small("SHA-1: legacy checksum compatibility; use SHA-256 for new security-sensitive checks."); }
+                    if matches!(self.checksum_algorithm,crate::checksum::Algorithm::Xxh3_64|crate::checksum::Algorithm::Xxh3_128) {ui.small("XXH3: non-cryptographic checksum; use SHA-256 for security-sensitive checks.");}
                     let algorithm = self.checksum_algorithm;
                     let comparable = report.single_digest(algorithm).is_some();
                     let expected_label = format!("Expected {}", algorithm.label());

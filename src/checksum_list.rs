@@ -182,6 +182,8 @@ fn tagged_algorithm(tag: &str) -> Option<Algorithm> {
         "BLAKE3" => Some(Algorithm::Blake3),
         "CRC32" => Some(Algorithm::Crc32),
         "ADLER32" | "ADLER-32" => Some(Algorithm::Adler32),
+        "XXH3" | "XXH3-64" | "XXH3_64" => Some(Algorithm::Xxh3_64),
+        "XXH128" | "XXH3-128" | "XXH3_128" => Some(Algorithm::Xxh3_128),
         _ => None,
     }
 }
@@ -223,6 +225,8 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
         "md5sums" => return Some(Algorithm::Md5),
         "sha1sums" => return Some(Algorithm::Sha1),
         "adler32sums" => return Some(Algorithm::Adler32),
+        "xxh3-64sums" | "xxh3_64sums" => return Some(Algorithm::Xxh3_64),
+        "xxh3-128sums" | "xxh3_128sums" => return Some(Algorithm::Xxh3_128),
         "sha256sums" => return Some(Algorithm::Sha256),
         "sha384sums" => return Some(Algorithm::Sha384),
         "sha512sums" => return Some(Algorithm::Sha512),
@@ -240,6 +244,8 @@ fn filename_algorithm(path: &Path) -> Option<Algorithm> {
         "md5" | "md5sum" => Some(Algorithm::Md5),
         "sha1" | "sha1sum" => Some(Algorithm::Sha1),
         "adler32" | "adler32sum" => Some(Algorithm::Adler32),
+        "xxh3" | "xxh3-64" | "xxh3_64" => Some(Algorithm::Xxh3_64),
+        "xxh128" | "xxh3-128" | "xxh3_128" => Some(Algorithm::Xxh3_128),
         "b3" | "blake3" => Some(Algorithm::Blake3),
         "sfv" | "crc32" => Some(Algorithm::Crc32),
         _ => None,
@@ -262,7 +268,7 @@ fn detect(
     for algorithm in Algorithm::ALL {
         if let Ok(rows) = parse(text, algorithm) {
             if detected.is_some() {
-                return Err("Ambiguous checksum algorithm or record layout: choose explicitly (64/128-digit hashes match multiple SHA-2, SHA-3 and BLAKE variants), or use a tagged list / recognized filename".into());
+                return Err("Ambiguous checksum algorithm or record layout: same-width hashes can match different algorithms. Choose explicitly, or use a tagged list / recognized filename".into());
             }
             detected = Some((algorithm, rows));
         }
@@ -444,6 +450,68 @@ mod tests {
             &AtomicUsize::new(0),
             &AtomicUsize::new(0),
         )
+    }
+
+    #[test]
+    fn xxh3_lists_keep_width_identity_tags_hints_and_mismatch() {
+        let dir = TempDir::new();
+        dir.file("data", "abc");
+        for (algorithm, hex, tag, extension, sums) in [
+            (
+                Algorithm::Xxh3_64,
+                "78af5f94892f3950",
+                "XXH3_64",
+                "xxh3-64",
+                "XXH3-64SUMS",
+            ),
+            (
+                Algorithm::Xxh3_128,
+                "06b05ab6733a618578af5f94892f3950",
+                "XXH3_128",
+                "xxh3-128",
+                "XXH3-128SUMS",
+            ),
+        ] {
+            for (name, text) in [
+                (format!("list.{extension}"), format!("{hex} *data\n")),
+                (sums.into(), format!("{hex}  data\n")),
+                ("tagged.txt".into(), format!("{tag} (data) = {hex}\n")),
+            ] {
+                let path = dir.file(&name, &text);
+                let report = verify(
+                    &path,
+                    None,
+                    &|| false,
+                    &AtomicUsize::new(0),
+                    &AtomicUsize::new(0),
+                );
+                assert_eq!(report.algorithm, Some(algorithm), "{:?}", report.error);
+                assert_eq!(report.rows[0].status, Status::Match);
+            }
+            assert!(
+                parse(
+                    &format!("{}  data\n", "0".repeat(algorithm.hex_len() - 1)),
+                    algorithm
+                )
+                .is_err()
+            );
+            let path = dir.file(
+                &format!("wrong.{extension}"),
+                &format!("{}  data\n", "0".repeat(algorithm.hex_len())),
+            );
+            assert_eq!(
+                verify(
+                    &path,
+                    None,
+                    &|| false,
+                    &AtomicUsize::new(0),
+                    &AtomicUsize::new(0)
+                )
+                .rows[0]
+                    .status,
+                Status::Mismatch
+            );
+        }
     }
 
     #[test]
@@ -740,7 +808,7 @@ mod tests {
             .is_err()
         );
         for (algorithm, width) in [
-            (Algorithm::Md5, 32),
+            (Algorithm::Xxh3_64, 16),
             (Algorithm::Sha1, 40),
             (Algorithm::Sha384, 96),
         ] {
@@ -752,6 +820,20 @@ mod tests {
                 )
                 .unwrap()
                 .0,
+                algorithm
+            );
+        }
+        let shared = format!("{} *a", "0".repeat(32));
+        assert!(
+            detect(Path::new("list"), &shared, None)
+                .unwrap_err()
+                .contains("Ambiguous")
+        );
+        for algorithm in [Algorithm::Md5, Algorithm::Xxh3_128] {
+            assert_eq!(
+                detect(Path::new("list"), &shared, Some(algorithm))
+                    .unwrap()
+                    .0,
                 algorithm
             );
         }

@@ -1,0 +1,31 @@
+{
+  "adler_match": false,
+  "blake2b_invalid": false,
+  "blake2b_match": false,
+  "blake2s_invalid": false,
+  "blake2s_match": false,
+  "clip": [
+    661.0,
+    118.6875,
+    1249.0,
+    515.0
+  ],
+  "clipboard": "a9993e364706816aba3e25717850c26c9cd0d89d",
+  "clipboard_calls": 14,
+  "copy_rect": [
+    756.21875,
+    490.84375,
+    882.25,
+    514.84375
+  ],
+  "phase": 116,
+  "relative": false,
+  "sha3_256_invalid": false,
+  "sha3_256_match": false,
+  "sha3_512_invalid": false,
+  "sha3_512_match": false,
+  "xxh3_128_invalid": false,
+  "xxh3_128_match": false,
+  "xxh3_64_invalid": false,
+  "xxh3_64_match": false
+}

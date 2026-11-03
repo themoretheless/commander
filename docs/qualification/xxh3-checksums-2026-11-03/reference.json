@@ -1,0 +1,6 @@
+{
+  "header_url": "https://raw.githubusercontent.com/Cyan4973/xxHash/v0.8.3/xxhash.h",
+  "header_sha256": "17973c0dc49d9854ca26caa191f0e12f7a424b68858d9a78de3860d959d85e4b",
+  "wrapper_sha256": "49bab382d507f3af2ef1801aacddeb2b702a388512ba9154091d684debbff9e8",
+  "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)"
+}

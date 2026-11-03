@@ -38,6 +38,8 @@ exceptions = [
   { allow = ["bzip2-1.0.6"], crate = "libbz2-rs-sys@0.2.5" },
   { allow = ["BSL-1.0"], crate = "clipboard-win@5.4.3" },
   { allow = ["BSL-1.0"], crate = "error-code@3.4.0" },
+  # Boost Software License 1.0; complete notice retained under data/licenses.
+  { allow = ["BSL-1.0"], crate = "xxhash-rust@0.8.19" },
   { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts@0.36.2" },
   { allow = ["MPL-2.0"], crate = "option-ext@0.2.0" },
 ]
