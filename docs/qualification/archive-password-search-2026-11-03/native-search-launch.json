@@ -1,0 +1,8 @@
+{
+  "scenario": "search_password",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-password-search-2026-11-03/native-captures/1793675512925998000",
+  "binary_sha256": "e9e7e2131d58133fcccb02f1a355088feed58352bfe3dea0e3178d2cac5439ab",
+  "core_sha256": "e9e7e2131d58133fcccb02f1a355088feed58352bfe3dea0e3178d2cac5439ab",
+  "wrapper_sha256": "db3c18a5731d393802ebac4cbba235a508db315ac64f786812073ab474a5e9a8",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

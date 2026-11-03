@@ -335,6 +335,7 @@ impl App {
             }
         };
         let root = state.root.clone();
+        let with_archive_password = state.use_archive_password;
         if let Some(error) = search_root_error(&root) {
             if let Some(state) = self.ui.modals.find.as_mut() {
                 // The old hits, counters and status belong to a different
@@ -381,7 +382,7 @@ impl App {
         {
             if self.start_index_build(ctx, root.clone()) {
                 if let Some(state) = self.ui.modals.find.as_mut() {
-                    state.index_rerun_after_build = true;
+                    state.index_rerun_after_build = !with_archive_password;
                 }
             } else {
                 index_refusal = Some(index_build_refusal(
@@ -397,14 +398,38 @@ impl App {
             .flatten();
         let repaint = ctx.clone();
         let notify = std::sync::Arc::new(move || repaint.request_repaint());
-        let run_result = match index {
-            Some(index) => self.search_engine.start_indexed(
+        let password = self.ui.modals.find.as_mut().and_then(|state| {
+            if !with_archive_password {
+                return None;
+            }
+            state.use_archive_password = false;
+            state.index_rerun_after_build = false;
+            Some(std::mem::take(&mut state.archive_password))
+        });
+        let run_result = match (index, password) {
+            (Some(index), Some(password)) => {
+                self.search_engine.start_indexed_with_archive_password(
+                    index,
+                    query,
+                    crate::search::DEFAULT_RESULT_CAP,
+                    notify,
+                    Some(password),
+                )
+            }
+            (None, Some(password)) => self.search_engine.start_with_archive_password(
+                root,
+                query,
+                crate::search::DEFAULT_RESULT_CAP,
+                notify,
+                Some(password),
+            ),
+            (Some(index), None) => self.search_engine.start_indexed(
                 index,
                 query,
                 crate::search::DEFAULT_RESULT_CAP,
                 notify,
             ),
-            None => {
+            (None, None) => {
                 self.search_engine
                     .start(root, query, crate::search::DEFAULT_RESULT_CAP, notify)
             }
@@ -508,7 +533,9 @@ impl App {
 
         let now_seconds = ctx.input(|input| input.time);
         let auto_run = self.ui.modals.find.as_ref().is_some_and(|state| {
-            state.pending_rerun && now_seconds - state.last_edit_at >= AUTO_RUN_DELAY
+            state.pending_rerun
+                && !state.use_archive_password
+                && now_seconds - state.last_edit_at >= AUTO_RUN_DELAY
         });
         if auto_run {
             self.begin_find_search(ctx);
@@ -528,6 +555,7 @@ impl App {
         let index_status = self.content_index.status(&index_root);
         let rerun_on_fresh_index = self.ui.modals.find.as_ref().is_some_and(|state| {
             state.index_rerun_after_build
+                && !state.use_archive_password
                 && index_status.phase == crate::content_index::IndexPhase::Ready
         });
         let index_build_failed = self.ui.modals.find.as_ref().is_some_and(|state| {
@@ -728,7 +756,7 @@ impl App {
                             state.index_details_open = !state.index_details_open;
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
+                            let search_button = ui
                                 .add(super::dialog_button(
                                     t,
                                     super::ButtonRole::Primary,
@@ -738,12 +766,34 @@ impl App {
                                         "Search"
                                     }),
                                 ))
-                                .clicked()
-                            {
+;
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("find-search-button"), search_button.rect));
+                            if search_button.clicked() {
                                 run_now = true;
                             }
                         });
                     });
+
+                    ui.horizontal_wrapped(|ui| {
+                        let toggle = ui.checkbox(&mut state.use_archive_password, "ZIP password for next search");
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("find-password-toggle"), toggle.rect));
+                        if toggle.changed() {
+                            state.pending_rerun = false;
+                            if !state.use_archive_password { state.archive_password = zeroize::Zeroizing::new(String::new()); }
+                        }
+                        if state.use_archive_password {
+                            let mut output = egui::TextEdit::singleline(&mut *state.archive_password)
+                                .id_salt("find-archive-password").password(true).desired_width(180.0)
+                                .hint_text("For this search only").show(ui);
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("find-password-input"), (output.response.rect, output.response.id)));
+                            output.state.clear_undoer();
+                            output.state.store(ui.ctx(), output.response.id);
+                            ui.label("Press Search to use it");
+                        }
+                    }).response.on_hover_text("One password for encrypted ZIP/ZIPX content in this search. Empty passwords are allowed. Cleared on launch or close; never saved in history or the content index. Automatic search is paused while enabled.");
 
                     if let Ok(query) = state.build_query()
                         && !query.predicates.is_empty()

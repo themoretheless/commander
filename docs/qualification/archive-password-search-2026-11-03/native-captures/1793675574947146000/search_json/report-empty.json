@@ -1,0 +1,38 @@
+{
+  "format": "commander.search-report",
+  "version": 1,
+  "snapshot": "retained search observations",
+  "scope": "visible_results",
+  "partial": false,
+  "root": {
+    "encoding": "utf8",
+    "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88573-search_json/left"
+  },
+  "context": {
+    "expression": "does-not-exist",
+    "mode": "Exact",
+    "generation": 6,
+    "source": "Live + archives",
+    "completed": true,
+    "running": false,
+    "pending_rerun": false,
+    "draft_differs": false,
+    "scanned": 11,
+    "matched": 0,
+    "skipped": 0,
+    "truncated": false,
+    "archive_error": null,
+    "received_rows": 0,
+    "visible_rows": 0,
+    "visible_selected_rows": 0,
+    "pivot": "None",
+    "result_sort": {
+      "field": "rank",
+      "descending": false
+    },
+    "selected_only": false,
+    "ordered_at_utc": "2026-11-03T03:13:06.710324Z"
+  },
+  "exported_rows": 0,
+  "rows": []
+}

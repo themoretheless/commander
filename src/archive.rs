@@ -159,6 +159,17 @@ pub fn visit_members(
     needs_content: bool,
     budget: &mut SearchBudget,
     cancelled: impl Fn() -> bool,
+    emit: impl FnMut(SearchMember) -> bool,
+) -> Result<VisitSummary, String> {
+    visit_members_with_password(archive_path, needs_content, budget, None, cancelled, emit)
+}
+
+pub fn visit_members_with_password(
+    archive_path: &Path,
+    needs_content: bool,
+    budget: &mut SearchBudget,
+    password: Option<&[u8]>,
+    cancelled: impl Fn() -> bool,
     mut emit: impl FnMut(SearchMember) -> bool,
 ) -> Result<VisitSummary, String> {
     if cancelled() {
@@ -201,8 +212,11 @@ pub fn visit_members(
 
     let file = fs::File::open(archive_path)
         .map_err(|error| format!("Could not open archive {}: {error}", archive_path.display()))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|error| format!("Could not read archive {}: {error}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(SearchZipInput {
+        file,
+        cancelled: &cancelled,
+    })
+    .map_err(|error| format!("Could not read archive {}: {error}", archive_path.display()))?;
     if archive.has_overlapping_files().map_err(|error| {
         format!(
             "Could not validate archive {}: {error}",
@@ -293,7 +307,7 @@ pub fn visit_members(
         };
 
         let content = if needs_content && !member.is_dir {
-            match read_member_text(&mut archive, &member, budget) {
+            match read_member_text(&mut archive, &member, budget, password) {
                 Ok(Some(content)) => Some(content),
                 Ok(None) | Err(_) => {
                     summary.content_skipped += 1;
@@ -303,6 +317,10 @@ pub fn visit_members(
         } else {
             None
         };
+        if cancelled() {
+            summary.cancelled = true;
+            break;
+        }
         if !emit(SearchMember { member, content }) {
             break;
         }
@@ -653,10 +671,36 @@ fn parse_tar_verbose_line(line: &str) -> Option<(&str, u64)> {
     Some((name, size))
 }
 
-fn read_member_text(
-    archive: &mut zip::ZipArchive<fs::File>,
+struct SearchZipInput<'a> {
+    file: fs::File,
+    cancelled: &'a dyn Fn() -> bool,
+}
+impl Read for SearchZipInput<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if (self.cancelled)() {
+            return Err(std::io::Error::other("Archive search cancelled"));
+        }
+        let count = bytes.len().min(64 * 1024);
+        self.file.read(&mut bytes[..count])
+    }
+}
+impl std::io::Seek for SearchZipInput<'_> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        if (self.cancelled)() {
+            return Err(std::io::Error::other("Archive search cancelled"));
+        }
+        std::io::Seek::seek(&mut self.file, position)
+    }
+}
+
+fn read_member_text<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
     member: &ArchiveMember,
     budget: &mut SearchBudget,
+    password: Option<&[u8]>,
 ) -> Result<Option<Arc<str>>, String> {
     if matches!(
         member.file_type_bits,
@@ -667,7 +711,7 @@ fn read_member_text(
     {
         return Ok(None);
     }
-    let file = crate::zip_reader::open(archive, member.index)
+    let file = crate::zip_reader::open_with_password(archive, member.index, password)
         .map_err(|error| format!("Could not read archive member: {error}"))?;
     let remaining = MAX_TOTAL_TEXT_BYTES.saturating_sub(budget.content_bytes);
     let read_limit = MAX_MEMBER_TEXT_BYTES.min(remaining);
@@ -3403,6 +3447,120 @@ mod tests {
             listing.members[0].zip_info.as_ref().unwrap().encryption,
             "Unknown (strong-encryption flag)"
         );
+    }
+
+    #[test]
+    fn password_content_search_preserves_authentication_limits_and_cancellation() {
+        let temp = TempDir::new();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/qualification/zip-password-2026-11-03/fixtures");
+        for codec in ["lzma", "xz", "zstd", "legacy", "ppmd"] {
+            for strength in 1..=3 {
+                for version in 1..=2 {
+                    let stem = format!("aes-{codec}-{strength}-v{version}");
+                    let path = fixtures.join(format!("{stem}.zipx"));
+                    let expected =
+                        fs::read_to_string(fixtures.join(format!("{stem}.txt"))).unwrap();
+                    let mut texts = Vec::new();
+                    let summary = visit_members_with_password(
+                        &path,
+                        true,
+                        &mut SearchBudget::default(),
+                        Some(b"fixture-password"),
+                        || false,
+                        |m| {
+                            if let Some(text) = m.content {
+                                texts.push(text);
+                            }
+                            true
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(summary.content_skipped, 0, "{stem}");
+                    assert_eq!(texts.len(), 1, "{stem}");
+                    assert_eq!(&*texts[0], expected, "{stem}");
+                }
+            }
+        }
+        for (stem, password) in [
+            ("aes-empty-password", ""),
+            ("lzma", "fixture-password"),
+            ("ppmd", "fixture-password"),
+        ] {
+            let path = fixtures.join(format!("{stem}.zipx"));
+            let mut texts = Vec::new();
+            let summary = visit_members_with_password(
+                &path,
+                true,
+                &mut SearchBudget::default(),
+                Some(password.as_bytes()),
+                || false,
+                |m| {
+                    if let Some(text) = m.content {
+                        texts.push(text);
+                    }
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(summary.content_skipped, 0, "{stem}");
+            assert_eq!(texts.len(), 1, "{stem}");
+            assert_eq!(
+                &*texts[0],
+                fs::read_to_string(fixtures.join(format!("{stem}.txt"))).unwrap()
+            );
+        }
+        for (name, password, expected) in [
+            ("aes-utf8-password.zipx", "fixture-пароль-ёж", true),
+            ("aes-stored-bad-tag.zip", "fixture-password", false),
+            ("aes-ae1-bad-crc.zipx", "fixture-password", false),
+        ] {
+            let path = temp.path().join(name);
+            fs::copy(fixtures.join(name), &path).unwrap();
+            let mut budget = SearchBudget::default();
+            let mut contents = Vec::new();
+            let summary = visit_members_with_password(
+                &path,
+                true,
+                &mut budget,
+                Some(password.as_bytes()),
+                || false,
+                |m| {
+                    contents.push(m.content);
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(contents.iter().any(Option::is_some), expected, "{name}");
+            assert_eq!(summary.content_skipped, usize::from(!expected));
+            let summary = visit_members_with_password(
+                &path,
+                true,
+                &mut SearchBudget::default(),
+                Some(password.as_bytes()),
+                || true,
+                |_| panic!("cancelled search emitted"),
+            )
+            .unwrap();
+            assert!(summary.cancelled);
+            let mut capped = SearchBudget {
+                content_bytes: MAX_TOTAL_TEXT_BYTES,
+                ..Default::default()
+            };
+            let summary = visit_members_with_password(
+                &path,
+                true,
+                &mut capped,
+                Some(password.as_bytes()),
+                || false,
+                |m| {
+                    assert!(m.content.is_none());
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(summary.content_skipped, 1);
+        }
     }
 
     #[test]

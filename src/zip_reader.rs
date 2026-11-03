@@ -265,6 +265,7 @@ fn ppmd_parameters(header: [u8; 2]) -> io::Result<(u32, u32, ppmd_rust::RestoreM
 }
 /// LZMA/XZ enforce a liblzma memory budget, including probability tables.
 /// Zstandard enforces a maximum back-reference window separately.
+#[cfg(test)]
 pub fn open<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     index: usize,

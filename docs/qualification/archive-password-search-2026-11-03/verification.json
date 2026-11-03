@@ -1,0 +1,41 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "77cdd3c4865e3a611b5306a41172c64d337a6a4f5edfb3c0961c2b0867790650",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-password-search-2026-11-03/native-captures/1793675540717308000/archive_metadata"
+  },
+  "search_password": {
+    "checks": 16,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "b69af9ce92ddda508c7622aab515ed23e1bbb47f43bcb9489a6147300a011831",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-password-search-2026-11-03/native-captures/1793675512925998000/search_password"
+  },
+  "search_json": {
+    "checks": 16,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 5,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "85c3ab57db779df31177840c8f73cc892abe2d8ddd5ac86d2f8d58072ebf41a3",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-password-search-2026-11-03/native-captures/1793675574947146000/search_json"
+  }
+}

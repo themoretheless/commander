@@ -511,6 +511,8 @@ pub struct FindResultSelection {
 /// UI state for the recursive-find sheet. The matching lives in `crate::query`;
 /// this holds the editable fields, the search root, and the results.
 pub struct FindState {
+    pub use_archive_password: bool,
+    pub archive_password: zeroize::Zeroizing<String>,
     pub expression: String,
     pub mode: crate::query::MatchMode,
     pub root: PathBuf,
@@ -590,6 +592,8 @@ impl Default for CollectionsDialogState {
 impl Default for FindState {
     fn default() -> Self {
         Self {
+            use_archive_password: false,
+            archive_password: zeroize::Zeroizing::new(String::new()),
             expression: String::new(),
             mode: crate::query::MatchMode::Exact,
             root: PathBuf::new(),

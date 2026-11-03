@@ -1,0 +1,189 @@
+{
+  "format": "commander.search-report",
+  "version": 1,
+  "snapshot": "retained search observations",
+  "scope": "visible_results",
+  "partial": false,
+  "root": {
+    "encoding": "utf8",
+    "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88573-search_json/left"
+  },
+  "context": {
+    "expression": "report-",
+    "mode": "Exact",
+    "generation": 3,
+    "source": "Live + archives",
+    "completed": true,
+    "running": false,
+    "pending_rerun": false,
+    "draft_differs": false,
+    "scanned": 11,
+    "matched": 5,
+    "skipped": 0,
+    "truncated": false,
+    "archive_error": null,
+    "received_rows": 5,
+    "visible_rows": 4,
+    "visible_selected_rows": 2,
+    "pivot": "None",
+    "result_sort": {
+      "field": "rank",
+      "descending": false
+    },
+    "selected_only": false,
+    "ordered_at_utc": "2026-11-03T03:13:04.950930Z"
+  },
+  "exported_rows": 4,
+  "rows": [
+    {
+      "row": 1,
+      "display_name": "report-\n.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88573-search_json/left/report-\n.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 265104949
+      },
+      "is_directory": false,
+      "listed_size_bytes": 9,
+      "allocated_bytes": 4096,
+      "hard_links": 1,
+      "modified_utc": "2026-11-03T03:13:02.072159956Z",
+      "accessed_utc": "2026-11-03T03:13:02.072074371Z",
+      "created_utc": "2026-11-03T03:13:02.072074371Z",
+      "changed_utc": "2026-11-03T03:13:02.072159956Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "display_name": "report-a.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88573-search_json/left/report-a.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 265104946
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "allocated_bytes": 4096,
+      "hard_links": 1,
+      "modified_utc": "2026-11-03T03:13:02.071336984Z",
+      "accessed_utc": "2026-11-03T03:13:02.071142272Z",
+      "created_utc": "2026-11-03T03:13:02.071142272Z",
+      "changed_utc": "2026-11-03T03:13:02.071336984Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "display_name": "report-b.txt",
+      "location": {
+        "kind": "native",
+        "path": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88573-search_json/left/report-b.txt"
+        }
+      },
+      "native_id": {
+        "device_id": 16777230,
+        "file_id": 265104947
+      },
+      "is_directory": false,
+      "listed_size_bytes": 7,
+      "allocated_bytes": 4096,
+      "hard_links": 1,
+      "modified_utc": "2026-11-03T03:13:02.071615405Z",
+      "accessed_utc": "2026-11-03T03:13:02.071513445Z",
+      "created_utc": "2026-11-03T03:13:02.071513445Z",
+      "changed_utc": "2026-11-03T03:13:02.071615405Z",
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "row": 4,
+      "display_name": "report-archive.txt",
+      "location": {
+        "kind": "archive_member",
+        "archive": {
+          "encoding": "utf8",
+          "text": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88573-search_json/left/search.zip"
+        },
+        "member": {
+          "encoding": "utf8",
+          "text": "report-archive.txt"
+        },
+        "index": 0
+      },
+      "native_id": null,
+      "is_directory": false,
+      "listed_size_bytes": 16,
+      "allocated_bytes": null,
+      "hard_links": null,
+      "modified_utc": "2026-11-03T03:13:02.075058879Z",
+      "accessed_utc": "2026-11-03T03:13:02.072810425Z",
+      "created_utc": null,
+      "changed_utc": null,
+      "score": 120,
+      "explanation": [
+        {
+          "field": "name",
+          "detail": "literal \"report-\"",
+          "score": 120,
+          "matched_character_ranges": [
+            [
+              0,
+              7
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

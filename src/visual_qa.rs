@@ -292,6 +292,7 @@ enum Scenario {
     PerItemStop,
     SearchResults,
     SearchJson,
+    SearchPassword,
     BrokenLinkSearch,
     OwnerSearch,
     IdentityFind,
@@ -398,7 +399,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 138] = [
+    const ALL: [Self; 139] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -489,6 +490,7 @@ impl Scenario {
         Self::PerItemStop,
         Self::SearchResults,
         Self::SearchJson,
+        Self::SearchPassword,
         Self::BrokenLinkSearch,
         Self::OwnerSearch,
         Self::IdentityFind,
@@ -638,6 +640,7 @@ impl Scenario {
             Self::PerItemStop => "per_item_stop",
             Self::SearchResults => "search_results",
             Self::SearchJson => "search_json",
+            Self::SearchPassword => "search_password",
             Self::BrokenLinkSearch => "broken_link_search",
             Self::OwnerSearch => "owner_search",
             Self::IdentityFind => "identity_find",
@@ -782,6 +785,7 @@ impl Scenario {
             | Self::PerItemStop
             | Self::SearchResults
             | Self::SearchJson
+            | Self::SearchPassword
             | Self::BrokenLinkSearch
             | Self::IdentityFind
             | Self::LinksSearch
@@ -936,6 +940,7 @@ impl Scenario {
             | Self::PerItemStop
             | Self::SearchResults
             | Self::SearchJson
+            | Self::SearchPassword
             | Self::BrokenLinkSearch
             | Self::IdentityFind
             | Self::LinksSearch
@@ -1012,6 +1017,7 @@ impl Scenario {
             Self::ProfileNames | Self::ProfileExchange => Some("WorkspaceProfiles"),
             Self::SearchResults
             | Self::SearchJson
+            | Self::SearchPassword
             | Self::BrokenLinkSearch
             | Self::IdentityFind
             | Self::LinksSearch
@@ -1326,6 +1332,15 @@ impl Fixture {
             .map_err(|e| e.to_string())?;
         }
 
+        if scenario == Scenario::SearchPassword {
+            std::fs::write(
+                left.join("secret.zipx"),
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.zipx"
+                ),
+            )
+            .map_err(|e| e.to_string())?;
+        }
         if scenario == Scenario::SearchJson {
             for name in ["report-a.txt", "report-b.txt", "report-hidden.txt"] {
                 std::fs::write(left.join(name), b"report\n").map_err(|e| e.to_string())?;
@@ -4902,6 +4917,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::ChangedSearch
             ) && self.allocation_search_phase < 10)
             && !(self.scenario == Scenario::SearchJson && self.search_json_phase < 45)
+            && !(self.scenario == Scenario::SearchPassword && self.search_json_phase < 42)
             && !(self.scenario == Scenario::Timestamps && self.timestamp_phase < 27)
             && !(self.scenario == Scenario::SymlinkWorkflow && self.symlink_phase < 48)
             && !(self.scenario == Scenario::AllocatedSort && self.symlink_phase < 24)
@@ -6477,6 +6493,111 @@ impl eframe::App for VisualQaApp {
             self.timestamp_phase += 1;
             self.timestamp_input_at = Instant::now();
             return;
+        }
+        if self.scenario == Scenario::SearchPassword && self.search_json_phase < 42 {
+            let phase = self.search_json_phase;
+            let Some(state) = self.inner.ui.modals.find.as_ref() else {
+                return;
+            };
+            if matches!(phase, 4 | 15 | 26 | 30 | 41) {
+                let success = matches!(phase, 26 | 41);
+                if state.run.is_some()
+                    || state.pending_rerun
+                    || !state.result_complete
+                    || state.error.is_some()
+                    || state.use_archive_password
+                    || !state.archive_password.is_empty()
+                    || state.results.len() != usize::from(success)
+                    || state.content_skipped != usize::from(!success)
+                {
+                    return;
+                }
+                if success && !state.results.iter().any(|h| matches!(&h.location, crate::search::SearchLocation::ArchiveMember { archive, member, .. } if archive == &self.fixture.left.join("secret.zipx") && member == Path::new("payload.txt"))) { return; }
+                let observation = serde_json::json!({"phase":phase,"expression":state.expression,"password_empty":state.archive_password.is_empty(),"password_enabled":state.use_archive_password,"matched":state.matched,"skipped":state.content_skipped,"paths":state.results.iter().map(|h|&h.entry.path).collect::<Vec<_>>(),"source":state.search_source});
+                if std::fs::write(
+                    self.scenario_dir
+                        .join(format!("password-search-{phase}.json")),
+                    serde_json::to_vec_pretty(&observation).unwrap(),
+                )
+                .is_err()
+                {
+                    return;
+                }
+                self.search_json_phase += 1;
+                return;
+            }
+            if matches!(phase, 3 | 11 | 22 | 37) {
+                let (id, text) = if phase == 3 {
+                    (
+                        ctx.data(|d| d.get_temp::<egui::Id>(egui::Id::new("find-query-input-id"))),
+                        "path:payload.txt content:needle archives:on",
+                    )
+                } else {
+                    (
+                        ctx.data(|d| {
+                            d.get_temp::<(egui::Rect, egui::Id)>(egui::Id::new(
+                                "find-password-input",
+                            ))
+                        })
+                        .map(|p| p.1),
+                        if phase == 11 {
+                            "wrong-password"
+                        } else {
+                            "fixture-пароль-ёж"
+                        },
+                    )
+                };
+                // The query is focused by the preceding pointer sequence.
+                if let Some(id) = id
+                    && !ctx.memory(|m| m.has_focus(id))
+                {
+                    return;
+                }
+                input.events.push(egui::Event::Text(text.into()));
+                self.search_json_phase += 1;
+                return;
+            }
+            let (name, step) = match phase {
+                0..=2 => ("find-query-input", phase),
+                5..=7 => ("find-password-toggle", phase - 5),
+                8..=10 => ("find-password-input", phase - 8),
+                12..=14 => ("find-search-button", phase - 12),
+                16..=18 => ("find-password-toggle", phase - 16),
+                19..=21 => ("find-password-input", phase - 19),
+                23..=25 => ("find-search-button", phase - 23),
+                27..=29 => ("find-search-button", phase - 27),
+                31..=33 => ("find-password-toggle", phase - 31),
+                _ => {
+                    if phase < 37 {
+                        ("find-password-input", phase - 34)
+                    } else {
+                        ("find-search-button", phase - 38)
+                    }
+                }
+            };
+            let id = egui::Id::new(name);
+            let rect = if name == "find-password-input" {
+                ctx.data(|d| d.get_temp::<(egui::Rect, egui::Id)>(id))
+                    .map(|p| p.0)
+            } else {
+                ctx.data(|d| d.get_temp::<egui::Rect>(id))
+            };
+            let Some(rect) = rect else {
+                return;
+            };
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.search_json_phase += 1;
         }
         if self.scenario == Scenario::SearchJson && self.search_json_phase < 45 {
             if self.timestamp_input_at.elapsed() < Duration::from_millis(60) {
@@ -18685,6 +18806,7 @@ impl eframe::App for VisualQaApp {
         if matches!(
             self.scenario,
             Scenario::SearchJson
+                | Scenario::SearchPassword
                 | Scenario::AllocationSearch
                 | Scenario::AccessedSearch
                 | Scenario::CreatedSearch
@@ -19600,6 +19722,23 @@ impl eframe::App for VisualQaApp {
             ctx.request_repaint();
             return;
         }
+        if self.scenario == Scenario::SearchPassword
+            && !self.pane_tool_opened
+            && self
+                .inner
+                .ws
+                .left
+                .entries()
+                .iter()
+                .any(|e| e.name == "secret.zipx")
+        {
+            self.inner.ws.active = crate::workspace::ActivePanel::Left;
+            self.inner.open_find(&ctx);
+            self.pane_tool_opened = true;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+            return;
+        }
         if self.scenario == Scenario::SearchJson
             && !self.pane_tool_opened
             && self
@@ -20215,6 +20354,7 @@ impl eframe::App for VisualQaApp {
         let scenario_state_ready = match self.scenario {
             Scenario::RenameSanitize => self.sanitize_phase==77 && self.sanitize_input_at.elapsed()>=Duration::from_millis(300) && self.inner.ui.modals.batch_rename.as_ref().and_then(|state|state.validation.as_ref()).is_some_and(|v|v.targets_preview(&[("sanitize.txt","imported.txt")])) && std::fs::read(self.fixture.left.join("sanitize.txt")).is_ok_and(|data|data==b"rename payload") && !self.fixture.left.join("folder_sanitize.txt").exists() && !self.fixture.left.join("final.txt").exists() && !self.fixture.left.join("imported.txt").exists() && std::fs::copy(self.fixture.root.join("correct-names.txt"),self.scenario_dir.join("correct-names.txt")).is_ok() && std::fs::copy(self.fixture.root.join("wrong-names.txt"),self.scenario_dir.join("wrong-names.txt")).is_ok() && std::fs::copy(self.fixture.left.join("sanitize.txt"),self.scenario_dir.join("source.txt")).is_ok(),
             Scenario::CopyDetails => self.details_phase==14 && self.counters.clipboard.load(Ordering::Relaxed)==2 && self.inner.ui.modals.palette_input.is_none() && self.inner.toasts.is_empty() && self.recorded_clipboard_dump("many.tsv"),
+            Scenario::SearchPassword => self.search_json_phase == 42 && [4,15,26,30,41].into_iter().all(|phase| self.scenario_dir.join(format!("password-search-{phase}.json")).is_file()) && self.inner.ui.modals.find.as_ref().is_some_and(|state| state.run.is_none() && state.result_complete && state.results.len()==1 && !state.use_archive_password && state.archive_password.is_empty()),
             Scenario::SearchJson => {
                 std::fs::copy(self.fixture.root.join("path-capability.json"),self.scenario_dir.join("path-capability.json")).is_ok() && self.search_json_phase==45 && self.counters.clipboard.load(Ordering::Relaxed)==5 && self.inner.ui.modals.find.as_ref().is_some_and(|state|state.result_complete && state.error.is_none() && state.results.is_empty() && state.expression=="name:does-not-exist" && state.result_copy_format==crate::app::FindCopyFormat::DetailsJson)
                     && self.counters.clipboard_text.lock().ok().and_then(|v|v.clone()).is_some_and(|text|serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|r|r["exported_rows"]==0 && r["context"]["completed"]==true) && std::fs::write(self.scenario_dir.join("report-empty.json"),text).is_ok())
@@ -22367,6 +22507,7 @@ mod tests {
                 "per_item_stop",
                 "search_results",
                 "search_json",
+                "search_password",
                 "broken_link_search",
                 "owner_search",
                 "identity_find",

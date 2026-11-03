@@ -201,6 +201,7 @@ pub struct ProviderRequest {
     exclusions: Arc<Vec<regex::Regex>>,
     directory_exclusions: Arc<Vec<crate::query::DirectoryMask>>,
     search_archives: bool,
+    archive_password: Option<zeroize::Zeroizing<String>>,
     hidden_mode: crate::query::HiddenMode,
     /// Folders and archives a provider could not read; reported with
     /// `content_skipped` so a partial walk does not look complete.
@@ -564,10 +565,11 @@ impl ArchiveProvider {
             let mut directories = Vec::new();
             let mut topology = EmptyDirectoryTracker::new(8 * 1024 * 1024);
             let mut stopped = false;
-            let result = crate::archive::visit_members(
+            let result = crate::archive::visit_members_with_password(
                 archive_path,
                 request.requires_content,
                 budget,
+                request.archive_password.as_ref().map(|p| p.as_bytes()),
                 || request.cancelled(),
                 |member| {
                     if request.requires_empty {
@@ -758,7 +760,7 @@ impl SearchEngine {
         cap: usize,
         notify: Notify,
     ) -> Result<SearchRun, QueryError> {
-        self.start_provider(query, cap, notify, Box::new(FilesystemProvider::new(root)))
+        self.start_with_archive_password(root, query, cap, notify, None)
     }
 
     pub fn start_indexed(
@@ -768,7 +770,40 @@ impl SearchEngine {
         cap: usize,
         notify: Notify,
     ) -> Result<SearchRun, QueryError> {
-        self.start_provider(query, cap, notify, Box::new(IndexedProvider { index }))
+        self.start_indexed_with_archive_password(index, query, cap, notify, None)
+    }
+
+    pub fn start_with_archive_password(
+        &self,
+        root: PathBuf,
+        query: Query,
+        cap: usize,
+        notify: Notify,
+        password: Option<zeroize::Zeroizing<String>>,
+    ) -> Result<SearchRun, QueryError> {
+        self.start_provider(
+            query,
+            cap,
+            notify,
+            Box::new(FilesystemProvider::new(root)),
+            password,
+        )
+    }
+    pub fn start_indexed_with_archive_password(
+        &self,
+        index: Arc<crate::content_index::RootIndex>,
+        query: Query,
+        cap: usize,
+        notify: Notify,
+        password: Option<zeroize::Zeroizing<String>>,
+    ) -> Result<SearchRun, QueryError> {
+        self.start_provider(
+            query,
+            cap,
+            notify,
+            Box::new(IndexedProvider { index }),
+            password,
+        )
     }
 
     fn start_provider(
@@ -777,6 +812,7 @@ impl SearchEngine {
         cap: usize,
         notify: Notify,
         provider: Box<dyn SearchProvider>,
+        archive_password: Option<zeroize::Zeroizing<String>>,
     ) -> Result<SearchRun, QueryError> {
         let compiled = CompiledQuery::new(query)?;
         let provider_id = provider.id();
@@ -836,6 +872,7 @@ impl SearchEngine {
                         exclusions: Arc::clone(&compiled.exclusions),
                         directory_exclusions: Arc::clone(&compiled.directory_exclusions),
                         search_archives: compiled.search_archives,
+                        archive_password,
                         hidden_mode: compiled.hidden_mode,
                         unsearched: Cell::new(0),
                         archives_capped: Cell::new(false),
@@ -2108,6 +2145,7 @@ fn run_worker(
         }
         notify();
     }
+    drop(request.archive_password);
     let summary = SearchSummary {
         scanned,
         matched,
@@ -6054,6 +6092,7 @@ mod tests {
             exclusions: Arc::new(Vec::new()),
             directory_exclusions: Arc::new(Vec::new()),
             search_archives: true,
+            archive_password: None,
             hidden_mode: crate::query::HiddenMode::Include,
             unsearched: Cell::new(0),
             archives_capped: Cell::new(false),
@@ -7759,6 +7798,7 @@ mod tests {
                 exclusions: Arc::new(Vec::new()),
                 directory_exclusions: Arc::new(Vec::new()),
                 search_archives: true,
+                archive_password: None,
                 hidden_mode: crate::query::HiddenMode::Include,
                 unsearched: Cell::new(0),
                 archives_capped: Cell::new(false),
@@ -7891,6 +7931,66 @@ mod tests {
         assert!(!summary.truncated);
         assert_eq!(summary.content_skipped, 0);
         assert!(hits.iter().all(|hit| matches!(&hit.location, SearchLocation::ArchiveMember { member, .. } if member == Path::new("docs/inside.txt"))));
+    }
+
+    #[test]
+    fn password_archive_content_search_is_ephemeral_for_live_and_indexed_providers() {
+        let tmp = TempDir::new();
+        let path = tmp.path().join("secret.zipx");
+        std::fs::write(
+            &path,
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.zipx"
+            ),
+        )
+        .unwrap();
+        let index = Arc::new(crate::content_index::build_test_index(tmp.path()));
+        let index_before = serde_json::to_vec(&*index).unwrap();
+        for indexed in [false, true] {
+            for (password, count) in [
+                (None, 0),
+                (Some("wrong"), 0),
+                (Some("fixture-пароль-ёж"), 1),
+                (None, 0),
+            ] {
+                let engine = SearchEngine::default();
+                let query = Query::parse(
+                    "path:payload.txt content:needle archives:on",
+                    MatchMode::Exact,
+                )
+                .unwrap();
+                let password = password.map(|p| zeroize::Zeroizing::new(p.to_owned()));
+                let run = if indexed {
+                    engine.start_indexed_with_archive_password(
+                        Arc::clone(&index),
+                        query,
+                        100,
+                        Arc::new(|| {}),
+                        password,
+                    )
+                } else {
+                    engine.start_with_archive_password(
+                        tmp.path().to_path_buf(),
+                        query,
+                        100,
+                        Arc::new(|| {}),
+                        password,
+                    )
+                }
+                .unwrap();
+                let (hits, summary) = collect_run(&run);
+                assert_eq!(hits.len(), count, "indexed={indexed}");
+                assert_eq!(summary.content_skipped, usize::from(count == 0));
+                assert!(!summary.truncated && !summary.cancelled);
+                if count == 1 {
+                    assert!(
+                        matches!(&hits[0].location, SearchLocation::ArchiveMember { member, .. } if member == Path::new("payload.txt"))
+                    );
+                }
+            }
+        }
+        assert_eq!(serde_json::to_vec(&*index).unwrap(), index_before);
+        assert!(!tmp.path().join("payload.txt").exists());
     }
 
     #[test]
