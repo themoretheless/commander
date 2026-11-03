@@ -1,0 +1,9 @@
+{
+  "src/app/archive_dialog.rs": "076b8a126dad95867650c45bfe9f1961dc0b3ef3b89e9acb98ff5b694a279574",
+  "src/visual_qa.rs": "b3ad05817bd6fdb30c74d546d04b939c0fab4f3b11e4de7a8fb3794dba61d83f",
+  "src/archive.rs": "a66dbeb7e7df287bb55bad3b1e257a127b227274a3f37f6ae760ed33d70182da",
+  "src/archive_order.rs": "744b8d342793aa01cf8995f22c5312ac568efccad6a0c6f409c869252fd0ae0c",
+  "src/zip_reader.rs": "8c91f57b9b71a60290ce96f6a22803aaac8fcccde631b527c167551d0ad68197",
+  "Cargo.toml": "31849c33a854be13849630880d2ea12cec69c83573d896476d2efb4637f87045",
+  "Cargo.lock": "04a0f3e352461b6e04a2f164f118bbc72e1e028fa841b64c9650ee8920ac84b6"
+}

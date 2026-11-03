@@ -1,0 +1,122 @@
+{
+  "rows": [
+    {
+      "crc32": 3299279930,
+      "directory": false,
+      "id": 7,
+      "path": "h-zstd93.txt",
+      "position": 0,
+      "regular": true,
+      "size": 30,
+      "symlink": false
+    },
+    {
+      "crc32": 3299279930,
+      "directory": false,
+      "id": 8,
+      "path": "i-zstd20.txt",
+      "position": 1,
+      "regular": true,
+      "size": 30,
+      "symlink": false
+    },
+    {
+      "crc32": 1983354931,
+      "directory": false,
+      "id": 0,
+      "path": "a-stored.txt",
+      "position": 2,
+      "regular": true,
+      "size": 24,
+      "symlink": false
+    },
+    {
+      "crc32": 1983354931,
+      "directory": false,
+      "id": 1,
+      "path": "b-deflated.txt",
+      "position": 3,
+      "regular": true,
+      "size": 24,
+      "symlink": false
+    },
+    {
+      "crc32": 1983354931,
+      "directory": false,
+      "id": 2,
+      "path": "c-encrypted.txt",
+      "position": 4,
+      "regular": true,
+      "size": 24,
+      "symlink": false
+    },
+    {
+      "crc32": 1983354931,
+      "directory": false,
+      "id": 3,
+      "path": "d-bzip2.txt",
+      "position": 5,
+      "regular": true,
+      "size": 24,
+      "symlink": false
+    },
+    {
+      "crc32": 1896173514,
+      "directory": false,
+      "id": 4,
+      "path": "e-deflate64.txt",
+      "position": 6,
+      "regular": true,
+      "size": 301,
+      "symlink": false
+    },
+    {
+      "crc32": 1445909711,
+      "directory": false,
+      "id": 6,
+      "path": "g-xz.txt",
+      "position": 7,
+      "regular": true,
+      "size": 28,
+      "symlink": false
+    },
+    {
+      "crc32": 601510039,
+      "directory": false,
+      "id": 5,
+      "path": "f-lzma.txt",
+      "position": 8,
+      "regular": true,
+      "size": 30,
+      "symlink": false
+    },
+    {
+      "crc32": 217803391,
+      "directory": false,
+      "id": 9,
+      "path": "j-ppmd.txt",
+      "position": 9,
+      "regular": true,
+      "size": 4352,
+      "symlink": false
+    },
+    {
+      "crc32": null,
+      "directory": false,
+      "id": 10,
+      "path": "k-aes.txt",
+      "position": 10,
+      "regular": true,
+      "size": 4352,
+      "symlink": false
+    }
+  ],
+  "selected": [
+    0,
+    1,
+    2,
+    3,
+    7,
+    8
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-crc-candidates-2026-11-03/native-captures/1793676516764170000",
+  "binary_sha256": "5f572b532655b2032b7e4e7b9e2dacdc9b2fd6104adbcaa686c1f8994e15ae96",
+  "core_sha256": "5f572b532655b2032b7e4e7b9e2dacdc9b2fd6104adbcaa686c1f8994e15ae96",
+  "wrapper_sha256": "08fcf48b0ef7e29e9a2d76a8bea5bd6a716915442ebab24007c3cf8a3564ba0f",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

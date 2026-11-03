@@ -1143,6 +1143,37 @@ fn change_visible_selection(
     }
 }
 
+/// Visible regular-file candidates only; declared CRC/size is not byte equality.
+fn repeated_crc_rows(listing: &crate::archive::ArchiveListing, visible: &[usize]) -> Vec<usize> {
+    if listing.kind != crate::archive::ArchiveKind::Zip {
+        return Vec::new();
+    }
+    let mut counts = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    for &id in visible {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(member) = listing
+            .members
+            .get(id)
+            .filter(|m| m.is_regular && !m.is_dir && !m.is_symlink)
+        else {
+            continue;
+        };
+        let Some(crc) = member.zip_info.as_ref().and_then(|info| info.crc32) else {
+            continue;
+        };
+        let key = (member.size, crc);
+        *counts.entry(key).or_insert(0usize) += 1;
+        rows.push((id, key));
+    }
+    rows.into_iter()
+        .filter_map(|(id, key)| (counts[&key] > 1).then_some(id))
+        .collect()
+}
+
 fn same_extension_rows(
     listing: &crate::archive::ArchiveListing,
     lower_paths: &[String],
@@ -2460,12 +2491,16 @@ impl App {
                                 change_visible_selection(visible_set, &mut state.selected, invert);
                             }
                         }
-                        if ui
-                            .add_enabled(!state.selected.is_empty(), egui::Button::new("Clear"))
-                            .on_hover_text("Clear the selection")
-                            .clicked()
-                        {
-                            state.selected.clear();
+                        let clear = ui.add_enabled(!state.selected.is_empty(), egui::Button::new("Clear")).on_hover_text("Clear the selection");
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-clear-selection"), clear.rect));
+                        if clear.clicked() { state.selected.clear(); }
+                        if listing.kind == crate::archive::ArchiveKind::Zip {
+                            let repeated = ui.add_enabled(!visible_set.is_empty(), egui::Button::new("Select repeated CRC + size"))
+                                .on_hover_text("Add visible regular files sharing the same declared CRC-32 and size with another visible entry. Keep hidden selections; ignore unavailable CRCs and navigation folders. Candidates only: this does not verify equal file contents or read payloads.");
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-repeated-crc"), repeated.rect));
+                            if repeated.clicked() { state.selected.extend(repeated_crc_rows(listing, visible)); }
                         }
                         if ui.button("Save selection")
                             .on_hover_text("Replace the saved set with all selected archive members, including hidden ones; an empty set can be saved")
@@ -3491,6 +3526,42 @@ mod tests {
         filter.navigate(None);
         assert_eq!(filter.visible(&listing, "").len(), 2);
         assert!(MemberFilter::default().narrowed.is_none());
+    }
+
+    #[test]
+    fn archive_repeated_crc_candidates_preserve_distinct_ids_zero_and_visible_scope() {
+        let mut listing = listing(&[
+            "dup", "dup", "zero1", "zero2", "size", "unknown", "link", "folder", "other",
+        ]);
+        listing.kind = crate::archive::ArchiveKind::Zip;
+        for member in &mut listing.members {
+            member.size = 10;
+            member.zip_info = Some(crate::archive::ZipMemberInfo {
+                compression: "Stored".into(),
+                encrypted: false,
+                encryption: "None".into(),
+                crc32: Some(7),
+            });
+        }
+        for id in [2, 3] {
+            listing.members[id].size = 0;
+            listing.members[id].zip_info.as_mut().unwrap().crc32 = Some(0);
+        }
+        listing.members[4].size = 11;
+        listing.members[5].zip_info.as_mut().unwrap().crc32 = None;
+        listing.members[6].is_symlink = true;
+        listing.members[7].is_dir = true;
+        listing.members[8].is_regular = false;
+        assert_eq!(
+            super::repeated_crc_rows(&listing, &[3, 2, 1, 0, 4, 5, 6, 7, 8, 99, 0]),
+            [3, 2, 1, 0]
+        );
+        assert!(super::repeated_crc_rows(&listing, &[0, 0, 4, 5, 6, 7, 8, 99]).is_empty());
+        let mut selected = std::collections::BTreeSet::from([5]);
+        selected.extend(super::repeated_crc_rows(&listing, &[0, 1]));
+        assert_eq!(selected, std::collections::BTreeSet::from([0, 1, 5]));
+        listing.kind = crate::archive::ArchiveKind::Tar;
+        assert!(super::repeated_crc_rows(&listing, &[0, 1, 2, 3]).is_empty());
     }
 
     #[test]

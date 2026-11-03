@@ -1,0 +1,50 @@
+[
+  "j-ppmd.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "4352 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "51 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "Unavailable",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Ppmd",
+      true
+    ],
+    [
+      "Encrypted",
+      "No",
+      true
+    ],
+    [
+      "Declared CRC-32",
+      "0CFB6A7F",
+      true
+    ]
+  ]
+]
