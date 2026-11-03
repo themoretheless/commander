@@ -469,6 +469,7 @@ pub struct DiskUsageState {
 
 pub struct ArchiveState {
     pub content_group_page: usize,
+    pub content_member_pages: std::collections::BTreeMap<usize, usize>,
     pub strict_zip_headers: bool,
     /// Runtime only; moved into the archive operation worker and cleared on start.
     pub password: zeroize::Zeroizing<String>,

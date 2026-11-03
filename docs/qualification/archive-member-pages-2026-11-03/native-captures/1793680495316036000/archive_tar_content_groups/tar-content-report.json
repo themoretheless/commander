@@ -1,0 +1,61 @@
+{
+  "schema": "commander.archive-check/v1",
+  "archive": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-46069-archive_tar_content_groups/left/groups.tar.gz",
+  "archive_format": "tar.gz",
+  "recorded_at": "2026-11-03T04:35:01Z",
+  "status": "complete",
+  "strict_headers": false,
+  "members": 11,
+  "decoded_bytes": 20480,
+  "error": null,
+  "content_comparison": "sha256_and_size",
+  "content_groups": [
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "members": [
+        {
+          "index": 4,
+          "path": "empty-one",
+          "size": 0
+        },
+        {
+          "index": 5,
+          "path": "empty-two",
+          "size": 0
+        }
+      ]
+    },
+    {
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17",
+      "size": 33,
+      "members": [
+        {
+          "index": 0,
+          "path": "z-same.txt",
+          "size": 33
+        },
+        {
+          "index": 2,
+          "path": "a-same.txt",
+          "size": 33
+        },
+        {
+          "index": 8,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 9,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 10,
+          "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt",
+          "size": 33
+        }
+      ]
+    }
+  ]
+}

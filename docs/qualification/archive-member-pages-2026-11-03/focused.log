@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 37.56s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 1 test
+test app::archive_dialog::tests::content_member_pages_are_independent_and_keep_original_entry_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3465 filtered out; finished in 0.02s
+

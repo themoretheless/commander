@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_tar_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-member-pages-2026-11-03/native-captures/1793680495316036000",
+  "binary_sha256": "3f0bffea28e865a46e6068de6f110bbc887c319c033d2e95245b5abf27e33373",
+  "core_sha256": "3f0bffea28e865a46e6068de6f110bbc887c319c033d2e95245b5abf27e33373",
+  "wrapper_sha256": "63f87cce76240a10446f7e91027ff0f1c37749bf83c270a6293fea0aaeb25386",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
