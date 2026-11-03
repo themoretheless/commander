@@ -1,0 +1,13 @@
+# Multiple archive protection patterns — 2026-11-03
+
+Independent adaptation of cohort #85 [fclones multiple keep-name/keep-path patterns](https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs). Archive copy protection now accepts one glob per line. A member matching any nonempty line is protected; all protected members remain keepers even when they exceed the minimum replica count. Shared filename-only and case options apply to every pattern. Editing the list preserves selection until Select copies.
+
+The list accepts at most 16 nonempty patterns, 256 characters each and 8192 total characters. Empty lines are ignored, CRLF is supported and spaces remain literal. Every line must compile before group/global application; invalid lines report their one-based line number and leave selection untouched. Existing identity, overlap, UTF-8 and minimum-total keeper rules remain shared. This is a runtime-only setting.
+
+The Rust matrix covers OR matching, overlapping patterns, protected counts above/below the minimum, CRLF/blank lines, literal spaces, filename/case modes, both group scopes and atomic refusal for malformed/oversized lines and count/total limits. The existing native mode scenario retains its fourteen checkpoints and adds nine list checkpoints: typed multiline pending state, union application, invalid second line disabling application, recovery, clearing, reapplication and restoring the list. The existing TAR and ZIP integration scenes retain their selections and export checks. verify.py independently derives keepers from the captured fixture with Python tarfile, PurePosixPath and fnmatch; it verifies exact source/binary hashes and native effects.
+
+Reproduce with run_checks.py, then prepare_capture.py and CUA launch separately for archive_protection_modes, archive_tar_content_groups and archive_content_groups, then verify.py. Persistent presets and broader native qualification remain open.
+
+Unsuccessful development captures are retained: one exposed an incorrect expected keeper for a single protected empty member; another exposed that an empty text event does not clear a multiline field. The final vector protects both empty members with empty-* and clears via Backspace. No timeout or result assertion was weakened.
+
+Final qualification: all seven gates passed (3485 tests, 0 failed, 3 ignored); all three native scenes passed 14/14 on the exact final binary. The mode scene runs 116 phases and verifies all fourteen previous mode receipts plus nine new list receipts. TAR retains 149 phases; clipboard effects remain 0/4/2 for modes/TAR/ZIP. Independent verify.py passed, and all three final frames were visually inspected.

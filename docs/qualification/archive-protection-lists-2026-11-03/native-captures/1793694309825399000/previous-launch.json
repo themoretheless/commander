@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_protection_modes",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-protection-lists-2026-11-03/native-captures/1793694158059938000",
+  "binary_sha256": "1f7b5b9482063ee9a0b62e7aa34f00735dc55a6b5b7edd189b6182ed166c8c98",
+  "core_sha256": "1f7b5b9482063ee9a0b62e7aa34f00735dc55a6b5b7edd189b6182ed166c8c98",
+  "wrapper_sha256": "a12b70a50bd7e584728bd3ed4115805b25a993f5dac77dd5b8a90c98667a7a75",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

@@ -1,0 +1,41 @@
+{
+  "archive_tar_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 4,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "662ab3eb3497766d99ceb46058e9aa8388ddb1ba0bef1959b92388141dc5d643",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-protection-lists-2026-11-03/native-captures/1793694336034751000/archive_tar_content_groups"
+  },
+  "archive_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 2,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "254f25e81ae1ea13703f73fa82617c3f73a526cd0b3e1bb360ad1918eccc728b",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-protection-lists-2026-11-03/native-captures/1793694368409636000/archive_content_groups"
+  },
+  "archive_protection_modes": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "f8b205ca4490c40ba5bd090488881ae6313c49efcc143ec0b11eb87f332244e2",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-protection-lists-2026-11-03/native-captures/1793694309825399000/archive_protection_modes"
+  }
+}

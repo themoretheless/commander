@@ -1341,7 +1341,7 @@ impl ContentKeep {
     fn label(&self) -> String {
         format!(
             "{}{} {}",
-            if self.protected_glob.is_empty() {
+            if self.protected_glob.lines().all(str::is_empty) {
                 ""
             } else {
                 "at least "
@@ -1350,20 +1350,32 @@ impl ContentKeep {
             self.order.short_label()
         )
     }
-    fn protection(&self) -> Result<Option<crate::archive_filter::Pattern>, String> {
-        if self.protected_glob.is_empty() {
-            return Ok(None);
+    fn protection(&self) -> Result<Vec<crate::archive_filter::Pattern>, String> {
+        if self.protected_glob.chars().count() > 8192 {
+            return Err("Protection list exceeds 8192 characters.".into());
         }
-        crate::archive_filter::Pattern::compile(
-            &self.protected_glob,
-            crate::archive_filter::Options {
-                glob: true,
-                basename_only: self.protect_basename,
-                case_sensitive: self.protect_case_sensitive,
-                ..Default::default()
-            },
-        )
-        .map(Some)
+        let mut patterns = Vec::new();
+        for (line, glob) in self.protected_glob.lines().enumerate() {
+            if glob.is_empty() {
+                continue;
+            }
+            if patterns.len() == 16 {
+                return Err("Use at most 16 nonempty protection patterns.".into());
+            }
+            patterns.push(
+                crate::archive_filter::Pattern::compile(
+                    glob,
+                    crate::archive_filter::Options {
+                        glob: true,
+                        basename_only: self.protect_basename,
+                        case_sensitive: self.protect_case_sensitive,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| format!("Protection line {}: {error}", line + 1))?,
+            );
+        }
+        Ok(patterns)
     }
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         ui.horizontal_wrapped(|ui| {
@@ -1378,13 +1390,14 @@ impl ContentKeep {
             }
         });
         ui.horizontal_wrapped(|ui| {
-            ui.label("Protect paths (glob):");
+            ui.label("Protect paths (globs):");
             let input = ui.add(
-                egui::TextEdit::singleline(&mut self.protected_glob)
+                egui::TextEdit::multiline(&mut self.protected_glob)
+                    .desired_rows(2)
                     .id(egui::Id::new("archive-protected-path-glob"))
                     .desired_width(260.0)
-                    .char_limit(1024)
-                    .hint_text("originals/**"),
+                    .char_limit(8192)
+                    .hint_text("originals/**\n*.bak"),
             );
             #[cfg(feature = "visual-qa")]
             ui.ctx()
@@ -1396,7 +1409,7 @@ impl ContentKeep {
             ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new("archive-protect-basename"),basename.rect);d.insert_temp(egui::Id::new("archive-protect-case"),case.rect);});
             let _=(basename,case);
         });
-        ui.add(egui::Label::new(egui::RichText::new("All matching paths are kept; copy count is a minimum.").small()).wrap()).on_hover_text("Archive-relative glob, up to 256 characters. Filename only matches the final name at any depth; Match case controls letter case. In full-path mode, * stays within a folder and ** crosses folders. Empty disables protection. Editing the pattern leaves selection unchanged until Select copies.");
+        ui.add(egui::Label::new(egui::RichText::new("One glob per line; all matches are kept; copy count is a minimum.").small()).wrap()).on_hover_text("One archive-relative glob per line; up to 16 nonempty patterns, 256 characters each. Any matching pattern protects the member. Empty lines are ignored; spaces are literal. Filename only matches the final name at any depth; Match case controls letter case. In full-path mode, * stays within a folder and ** crosses folders. Empty disables protection. Editing the pattern leaves selection unchanged until Select copies.");
         let error = self.protection().err();
         if let Some(error) = &error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -1478,7 +1491,7 @@ fn select_redundant_content_groups(
             }
         });
         let mut protected = vec![false; group.members.len()];
-        if let Some(pattern) = &protection {
+        if !protection.is_empty() {
             for (rank, member) in group.members.iter().enumerate() {
                 let path=member.path.to_str().ok_or("Protected path matching requires UTF-8 member paths; selection was not changed.")?;
                 let lowercase = if keep.protect_case_sensitive {
@@ -1486,7 +1499,10 @@ fn select_redundant_content_groups(
                 } else {
                     std::borrow::Cow::Owned(path.to_lowercase())
                 };
-                if pattern.matches(path, &lowercase) {
+                if protection
+                    .iter()
+                    .any(|pattern| pattern.matches(path, &lowercase))
+                {
                     protected[rank] = true;
                     keepers.push(rows[offset + rank]);
                 }
@@ -3278,6 +3294,88 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn archive_protection_lists_union_matches_and_refuse_invalid_lines_atomically() {
+        use super::{ContentKeep, select_redundant_content_groups};
+        use std::collections::BTreeSet;
+        let mut listing = listing(&["a.txt", "b.bak", "nested/a.txt", "other", "unrelated"]);
+        for (index, member) in listing.members.iter_mut().enumerate() {
+            member.index = index;
+            member.size = 3;
+        }
+        let report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 5,
+            decoded: 15,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..4]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        for group in [None, Some(0)] {
+            for (glob, basename, case_sensitive, count, wanted) in [
+                ("*.txt\n*.bak", false, true, 1, vec![2, 3, 4]),
+                ("*.txt\r\n\r\n*.bak\r\n", false, true, 1, vec![2, 3, 4]),
+                ("*.TXT\n*.BAK", true, false, 1, vec![3, 4]),
+                ("*.TXT\n*.BAK", true, true, 1, vec![1, 2, 3, 4]),
+                ("*.txt\n*.txt", false, true, 2, vec![2, 3, 4]),
+                ("*.txt\n*.bak", false, true, 3, vec![3, 4]),
+                ("\n\r\n", false, true, 1, vec![1, 2, 3, 4]),
+                (" a.txt\n b.bak", false, true, 1, vec![1, 2, 3, 4]),
+            ] {
+                let keep = ContentKeep {
+                    protected_glob: glob.into(),
+                    protect_basename: basename,
+                    protect_case_sensitive: case_sensitive,
+                    count,
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([4]);
+                select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                    .unwrap();
+                assert_eq!(selected.into_iter().collect::<Vec<_>>(), wanted, "{glob:?}");
+            }
+            for (glob, error) in [
+                ("*.txt\n[".to_owned(), "Protection line 2:"),
+                (format!("*.txt\n{}", "x".repeat(257)), "Protection line 2:"),
+                (
+                    std::iter::repeat_n("*.txt", 17)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    "at most 16",
+                ),
+                ("\n".repeat(8193), "8192"),
+            ] {
+                let keep = ContentKeep {
+                    protected_glob: glob,
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([2, 4]);
+                let actual =
+                    select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                        .unwrap_err();
+                assert!(actual.contains(error), "{actual}");
+                assert_eq!(selected, BTreeSet::from([2, 4]));
+            }
+        }
+        let keep = ContentKeep {
+            protected_glob: std::iter::repeat_n("x".repeat(256), 16)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            ..Default::default()
+        };
+        assert_eq!(keep.protection().unwrap().len(), 16);
+    }
+
     #[test]
     fn archive_protection_can_match_names_at_any_depth_with_explicit_letter_case() {
         use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};

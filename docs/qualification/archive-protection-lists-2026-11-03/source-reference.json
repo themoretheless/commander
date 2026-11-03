@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "url": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "feature": "keep_name_patterns / keep_path_patterns accept multiple patterns",
+  "adaptation": "Any matching newline-separated bounded archive glob protects the scanned member; shared filename/case options"
+}
