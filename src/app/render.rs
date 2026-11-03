@@ -7,6 +7,7 @@ pub struct PanelRenderOutcome {
     /// A row asked for its context menu: the request, or why it has none.
     pub context_menu_request: Option<Result<ui_state::ContextMenuCandidate, String>>,
     pub copy_preview_text: Option<std::sync::Arc<str>>,
+    pub(crate) miller_background_tab: Option<super::miller_browser::MillerTabRequest>,
 }
 
 fn file_name_of(path: &std::path::Path) -> String {
@@ -1014,6 +1015,7 @@ impl App {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
         let mut context_menu_request = None;
+        let mut miller_background_tab = None;
         let mut copy_preview_text = None;
 
         // The mouse's side buttons step through this pane's history while
@@ -1605,6 +1607,7 @@ impl App {
                         dragged,
                         metrics,
                         reduced_motion,
+                        &mut miller_background_tab,
                     );
                 });
             });
@@ -1613,6 +1616,7 @@ impl App {
             tree_toggle,
             context_menu_request,
             copy_preview_text,
+            miller_background_tab,
         }
     }
 }

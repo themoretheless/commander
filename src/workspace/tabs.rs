@@ -549,6 +549,34 @@ impl Workspace {
         true
     }
 
+    /// Only a currently displayed Miller ancestor directory may request a lazy tab.
+    pub(crate) fn open_miller_background_tab(
+        &mut self,
+        side: ActivePanel,
+        owner: &std::path::Path,
+        generation: u64,
+        folder: PathBuf,
+    ) -> bool {
+        let panel = match side {
+            ActivePanel::Left => &self.left,
+            ActivePanel::Right => &self.right,
+        };
+        if panel.current_path != owner
+            || panel.entries_gen() != generation
+            || panel.browser_mode() != crate::panel::BrowserMode::Miller
+            || !panel.miller.columns.iter().any(|column| {
+                column.current_path == folder
+                    || column
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.is_dir && entry.path == folder)
+            })
+        {
+            return false;
+        }
+        self.new_background_tab(side, folder)
+    }
+
     /// Insert beside the current tab, leaving its listing, watcher and preview live.
     pub fn new_background_tab(&mut self, side: ActivePanel, path: PathBuf) -> bool {
         self.insert_background_tab(side, path, None)
@@ -987,6 +1015,61 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    #[test]
+    fn miller_background_tabs_validate_displayed_owner_and_preserve_live_state() {
+        let temp = TempDir::new();
+        let a = temp.dir("A");
+        let b = temp.dir("B");
+        let file = temp.file("A/a.txt", "keep");
+        let control = temp.file("control.txt", "control");
+        let mut ws = Workspace::new(a.clone(), temp.path().into());
+        ws.left.refresh();
+        ws.left.focus_child("a.txt".into());
+        ws.left.select_cursor();
+        ws.left.set_browser_mode(crate::panel::BrowserMode::Miller);
+        let mut column = PanelState::new(temp.path().into());
+        column.refresh();
+        ws.left.miller.columns.push(column);
+        let generation = ws.left.entries_gen();
+        let cursor = ws.left.cursor_entry().unwrap().path.clone();
+        for (owner, revision, folder) in [
+            (temp.path().to_path_buf(), generation, b.clone()),
+            (a.clone(), generation.wrapping_add(1), b.clone()),
+            (a.clone(), generation, control),
+            (a.clone(), generation, temp.path().join("unlisted")),
+        ] {
+            assert!(!ws.open_miller_background_tab(ActivePanel::Left, &owner, revision, folder));
+            assert_eq!(ws.tab_count(ActivePanel::Left), 1);
+        }
+        assert!(ws.open_miller_background_tab(ActivePanel::Left, &a, generation, b.clone()));
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left).entries[1].path, b);
+        assert_eq!(ws.active_tab_index(ActivePanel::Left), 0);
+        assert_eq!(ws.left.current_path, a);
+        assert_eq!(ws.left.entries_gen(), generation);
+        assert_eq!(ws.left.cursor_entry().unwrap().path, cursor);
+        assert_eq!(ws.left.selected_entries()[0].path, file);
+        assert_eq!(ws.right.current_path, temp.path());
+        assert_eq!(ws.left.miller.columns.len(), 1);
+        assert!(ws.open_miller_background_tab(
+            ActivePanel::Left,
+            &a,
+            generation,
+            temp.path().into()
+        ));
+        while ws.tab_count(ActivePanel::Left) < MAX_TABS {
+            assert!(ws.new_background_tab(ActivePanel::Left, b.clone()));
+        }
+        assert!(!ws.open_miller_background_tab(ActivePanel::Left, &a, generation, b));
+        assert_eq!(ws.active_tab_index(ActivePanel::Left), 0);
+        assert_eq!(ws.left.current_path, a);
+        ws.left.set_browser_mode(crate::panel::BrowserMode::List);
+        assert!(!ws.open_miller_background_tab(
+            ActivePanel::Left,
+            &a,
+            generation,
+            temp.path().into()
+        ));
+    }
     #[test]
     fn favorite_picker_binding_uses_its_opening_panel_and_revalidates_removed_paths() {
         use crate::workspace::FavoriteTarget;

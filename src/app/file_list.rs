@@ -2460,6 +2460,7 @@ mod tests {
                 &[],
                 crate::density::metrics(crate::density::Density::default()),
                 true,
+                &mut None,
             );
         });
         crate::testutil::discard_egui_output(output);

@@ -1,0 +1,81 @@
+2026-11-03T15:54:19 INFO  commander::logging: logging initialized
+2026-11-03T15:54:19 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: miller_browser
+2026-11-03T15:54:19 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
+2026-11-03T15:54:19 INFO  commander::visual_qa: Miller QA phase 0
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 1
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 2
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 3
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 4
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 5
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 6
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 7
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 8
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 9
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 10
+2026-11-03T15:54:20 INFO  commander::visual_qa: Miller QA phase 11
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 12
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 13
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 14
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 15
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 16
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 17
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 18
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 19
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 20
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 21
+2026-11-03T15:54:21 INFO  commander::visual_qa: Miller QA phase 22
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller QA phase 23
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller QA phase 24
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller QA phase 25
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller QA phase 26
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller QA phase 27
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller QA phase 28
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller QA phase 29
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller resize QA phase 30
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller resize QA phase 31
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller resize QA phase 32
+2026-11-03T15:54:22 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left time=2.948471334 click=false double=false triple=false start=true stop=false pos=Some([324.0 492.2])
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller resize QA phase 33
+2026-11-03T15:54:22 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left time=3.015323959 click=false double=false triple=false start=false stop=true pos=Some([324.0 492.2])
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller resize QA phase 34
+2026-11-03T15:54:22 INFO  commander::visual_qa: Miller resize QA phase 35
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 36
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 37
+2026-11-03T15:54:23 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left/column-A time=3.348586167 click=false double=false triple=false start=true stop=false pos=Some([572.0 492.2])
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 38
+2026-11-03T15:54:23 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left/column-A time=3.41482425 click=false double=false triple=false start=false stop=true pos=Some([572.0 492.2])
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 39
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 40
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 41
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 42
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 43
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 44
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 45
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 46
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller reset pointer phase=47 time=4.139852584 pos=[632.0 492.2]
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 47
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller reset pointer phase=48 time=4.206861834 pos=[632.0 492.2]
+2026-11-03T15:54:23 INFO  commander::visual_qa: Miller resize QA phase 48
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller reset pointer phase=49 time=4.2734235 pos=[632.0 492.2]
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 49
+2026-11-03T15:54:24 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left/column-A time=4.281379959 click=true double=false triple=false start=false stop=false pos=Some([632.0 492.2])
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller reset pointer phase=50 time=4.339573875 pos=[632.0 492.2]
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 50
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller reset pointer phase=51 time=4.406320584 pos=[632.0 492.2]
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 51
+2026-11-03T15:54:24 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left/column-A time=4.414503667 click=true double=false triple=true start=false stop=false pos=Some([632.0 492.2])
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 52
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 53
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 54
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 55
+2026-11-03T15:54:24 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left/column-A time=4.789473542 click=false double=false triple=false start=true stop=false pos=Some([572.0 492.2])
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 56
+2026-11-03T15:54:24 INFO  commander::app::miller_browser: Miller divider event path=/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-88801-miller_browser/left/column-A time=4.856720625 click=false double=false triple=false start=false stop=true pos=Some([572.0 492.2])
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller resize QA phase 57
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller keyboard QA phase 58
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller keyboard QA phase 59
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller keyboard QA phase 60
+2026-11-03T15:54:24 INFO  commander::visual_qa: Miller keyboard QA phase 61
+2026-11-03T15:54:25 INFO  commander::visual_qa: Miller keyboard QA phase 62
+2026-11-03T15:54:25 INFO  commander::visual_qa: Miller keyboard QA phase 63
+2026-11-03T15:54:25 INFO  commander::visual_qa: Miller keyboard QA phase 64

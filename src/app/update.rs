@@ -2663,6 +2663,22 @@ impl App {
             self.write_clipboard(text, "displayed preview text", &ctx);
         }
 
+        for (side, request) in [
+            (ActivePanel::Left, left_outcome.miller_background_tab),
+            (ActivePanel::Right, right_outcome.miller_background_tab),
+        ] {
+            if let Some(request) = request
+                && !self.ws.open_miller_background_tab(
+                    side,
+                    &request.owner,
+                    request.generation,
+                    request.folder,
+                )
+            {
+                self.toast(&ctx, crate::toasts::ToastKind::Info, "Could not open column folder: view changed, operation pending or tab limit reached", false);
+            }
+        }
+
         let pending_external_opens = external_open.into_inner();
         for (panel, request) in [
             (ActivePanel::Left, left_outcome.context_menu_request),

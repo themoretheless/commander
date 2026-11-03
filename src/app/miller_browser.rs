@@ -1,6 +1,13 @@
 //! Miller columns: context listings are separate cancellable owners; file
 //! operations always target the main panel's current actionable column.
 use super::*;
+#[derive(Clone, Debug)]
+pub struct MillerTabRequest {
+    pub owner: PathBuf,
+    pub generation: u64,
+    pub folder: PathBuf,
+}
+
 fn column_divider(
     ui: &mut egui::Ui,
     panel: &mut PanelState,
@@ -94,7 +101,9 @@ impl App {
         dragged: &[PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
+        background_tab: &mut Option<MillerTabRequest>,
     ) -> Option<Result<ui_state::ContextMenuCandidate, String>> {
+        *background_tab = None;
         if panel.browser_mode() != crate::panel::BrowserMode::Miller {
             panel.miller = Default::default();
             return Self::render_file_list_plain(
@@ -115,6 +124,7 @@ impl App {
         }
         let changed = panel.prepare_miller();
         let current = panel.current_path.clone();
+        let generation = panel.entries_gen();
         let columns = std::mem::take(&mut panel.miller.columns);
         let height = (ui.available_height() - 22.0).max(0.0);
         let viewport_width = ui.available_width();
@@ -154,7 +164,10 @@ impl App {
                     let ancestor_column=ui.allocate_ui_with_layout(egui::vec2(width,height),Layout::top_down(Align::Min),|ui| {
                         ui.set_min_size(egui::vec2(width,height));ui.set_max_size(egui::vec2(width,height));
                         let label=col.current_path.file_name().map_or_else(||col.current_path.display().to_string(),|n|n.to_string_lossy().into_owned());
-                        if ui.add_sized([width,24.0],egui::Button::new(label).truncate().sense(Sense::CLICK)).on_hover_text(col.current_path.display().to_string()).clicked() {navigation=Some((col.current_path.clone(),None));}
+                        let header=ui.add_sized([width,24.0],egui::Button::new(label).truncate().sense(Sense::CLICK)).on_hover_text(format!("{}\nMiddle-click to open in a background tab",col.current_path.display()));
+                        if header.clicked_by(egui::PointerButton::Middle) {
+                            *background_tab=Some(MillerTabRequest {owner:current.clone(),generation,folder:col.current_path.clone()});
+                        } else if header.clicked() {navigation=Some((col.current_path.clone(),None));}
                         ui.separator();
                         let row_h=(metrics.name_pt+2.0*metrics.row_pad_y+6.0).max(24.0);
                         if col.entries().is_empty() {ui.label(format!("{:?}",col.dir_status()));}
@@ -162,10 +175,12 @@ impl App {
                             for row in range {
                                 let Some(entry)=col.filtered_get(row) else {continue;};
                                 let label=format!("{} {}",if entry.is_dir {"›"} else {"·"},entry.name);
-                                let response=ui.add_sized([ui.available_width(),row_h],egui::Button::selectable(entry.path==child,label).truncate().sense(Sense::CLICK)).on_hover_text(entry.path.display().to_string());
-                                #[cfg(feature="visual-qa")]
+                                let response=ui.add_sized([ui.available_width(),row_h],egui::Button::selectable(entry.path==child,label).truncate().sense(Sense::CLICK)).on_hover_text(if entry.is_dir { format!("{}\nMiddle-click to open in a background tab",entry.path.display()) } else { entry.path.display().to_string() });
+                                #[cfg(any(test,feature="visual-qa"))]
                                 ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("miller-context",panel_side,&col.current_path,&entry.path)),response.rect));
-                                if response.clicked() {
+                                if response.clicked_by(egui::PointerButton::Middle) && entry.is_dir {
+                                    *background_tab=Some(MillerTabRequest {owner:current.clone(),generation,folder:entry.path.clone()});
+                                } else if response.clicked() {
                                     navigation=Some(if entry.is_dir {(entry.path.clone(),None)} else {(col.current_path.clone(),Some(entry.path.clone()))});
                                 }
                             }
@@ -200,6 +215,105 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn middle_click_ancestor_folder_requests_tab_without_promoting_the_action_owner() {
+        let temp = crate::testutil::TempDir::new();
+        let a = temp.dir("A");
+        let b = temp.dir("B");
+        let file = temp.file("A/a.txt", "owner");
+        let plain = temp.file("plain.txt", "plain");
+        let mut panel = PanelState::new(a.clone());
+        panel.refresh();
+        panel.focus_child("a.txt".into());
+        panel.select_cursor();
+        panel.set_browser_mode(crate::panel::BrowserMode::Miller);
+        let workload = crate::workload::DeterministicWorkload::new(
+            crate::workload::SchedulerLimits::default(),
+        );
+        panel.set_workload(workload.handle());
+        panel.set_notify(std::sync::Arc::new(|| {}));
+        let ctx = egui::Context::default();
+        let mut images = crate::image_cache::ImageCache::new();
+        let mut tick = 0.0;
+        let mut render = |panel: &mut PanelState, events| {
+            tick += 0.1;
+            let mut request = None;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(637.0, 500.0),
+                    )),
+                    time: Some(tick),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    App::render_file_list(
+                        ui,
+                        panel,
+                        &mut images,
+                        true,
+                        &ThemeColors::dark(),
+                        "left",
+                        false,
+                        None,
+                        &|_| {},
+                        false,
+                        &[],
+                        crate::density::metrics(crate::density::Density::default()),
+                        true,
+                        &mut request,
+                    );
+                },
+            ));
+            request
+        };
+        for _ in 0..8 {
+            while workload.run_next() {}
+            panel.poll_listing();
+            assert!(render(&mut panel, vec![]).is_none());
+        }
+        let generation = panel.entries_gen();
+        for (target, expected) in [(&b, true), (&plain, false)] {
+            let rect = ctx
+                .data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new((
+                        "miller-context",
+                        "left",
+                        temp.path(),
+                        target,
+                    )))
+                })
+                .unwrap();
+            let pos = rect.center();
+            let mut request = None;
+            for pressed in [true, false] {
+                request = render(
+                    &mut panel,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Middle,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                )
+                .or(request);
+            }
+            assert_eq!(request.is_some(), expected);
+            if let Some(request) = request {
+                assert_eq!(request.owner, a);
+                assert_eq!(request.generation, generation);
+                assert_eq!(request.folder, b);
+            }
+            assert_eq!(panel.current_path, a);
+            assert_eq!(panel.entries_gen(), generation);
+            assert_eq!(panel.selected_entries()[0].path, file);
+        }
+    }
     #[test]
     fn pointer_resize_and_double_click_reset_keep_the_action_owner() {
         let root = crate::testutil::TempDir::new();
@@ -245,6 +359,7 @@ mod tests {
                         &[],
                         crate::density::metrics(crate::density::Density::default()),
                         true,
+                        &mut None,
                     );
                 },
             );
@@ -355,6 +470,7 @@ mod tests {
                             &[],
                             crate::density::metrics(crate::density::Density::default()),
                             true,
+                            &mut None,
                         );
                     },
                 );

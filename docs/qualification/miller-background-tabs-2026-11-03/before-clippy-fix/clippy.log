@@ -1,0 +1,40 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: pub(crate) struct inside private module
+ --> src/app/miller_browser.rs:5:1
+  |
+5 | pub(crate) struct MillerTabRequest {
+  | ----------^^^^^^^^^^^^^^^^^^^^^^^^
+  | |
+  | help: consider using: `pub`
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+  = note: `-D clippy::redundant-pub-crate` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(clippy::redundant_pub_crate)]`
+
+error: this `if` statement can be collapsed
+    --> src/app/update.rs:2670:13
+     |
+2670 | /             if let Some(request) = request {
+2671 | |                 if !self.ws.open_miller_background_tab(
+2672 | |                     side,
+2673 | |                     &request.owner,
+...    |
+2679 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+2670 ~             if let Some(request) = request
+2671 ~                 && !self.ws.open_miller_background_tab(
+2672 |                     side,
+ ...
+2677 |                     self.toast(&ctx, crate::toasts::ToastKind::Info, "Could not open column folder: view changed, operation pending or tab limit reached", false);
+2678 ~                 }
+     |
+
+error: could not compile `commander` (bin "commander") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 2 previous errors

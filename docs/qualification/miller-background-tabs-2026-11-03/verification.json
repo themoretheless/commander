@@ -1,0 +1,9 @@
+{
+  "checks": 7,
+  "tests_passed": 3519,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "background_tab_owner_preserved": true,
+  "keyboard_checkpoints": 4,
+  "source_hashes_verified": true
+}
