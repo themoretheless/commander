@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-ppmd-2026-11-03/native-captures/1793665616875802000",
+  "binary_sha256": "881bb01c259ffe841da82eb365880b7752258f7c39e60f6651c8c1d261ecab47",
+  "core_sha256": "881bb01c259ffe841da82eb365880b7752258f7c39e60f6651c8c1d261ecab47",
+  "wrapper_sha256": "1d76164d42f05f2e003d056204ea17a48dee23e1f81bb4acc8cafed2ef4780fe",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

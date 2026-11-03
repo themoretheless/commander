@@ -1,0 +1,11 @@
+{
+  "Cargo.toml": "21d51bb8b4a51e0c700ea96eda352cb604c9c1af4941cc3eef05891115e9b889",
+  "Cargo.lock": "8e292d26432f7366390230bcfe40b9b14e7be2ee80e4390a06d06be5194cedd4",
+  "THIRD_PARTY_LICENSES.md": "87e9f7ee4fce89f6c92e751ce8733853a8ec84c89617741c07a13a0389b967d2",
+  "data/licenses/ppmd-rust-1.5.2-CC0.txt": "c2c14e64a5798ecd6e5332ed6139d950522352fb82ddfd1d620524db890712ec",
+  "src/zip_reader.rs": "a078f59a2da892a98d1f1a6ac7352faa06de9e7d62d11a9df6c1038369b63b5b",
+  "src/archive.rs": "850dc60c0c9cf0b87670fea58983f8b477e835212ba5bfa31a66b7dd1a5dfc3c",
+  "src/archive_check.rs": "83e035a1675761104e282e63bad60bc44cffd8b2659c72061c48e4ffa63ad581",
+  "src/search.rs": "49174b843b71f60e30f0c554d773ac480309d1eb86f4f4ecb169f38756b8168a",
+  "src/visual_qa.rs": "8f373c536c16e776d1bdf63f0bbdc83c621d0a0e0bfbc3c3a0f9977136f7398f"
+}

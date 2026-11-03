@@ -1,0 +1,22 @@
+normal.zipx verified
+missing-eos.zipx verified
+limit-arena.zipx verified
+cutoff.zipx verified
+large-arena.zipx verified
+bad-restore.zipx verified
+freeze.zipx verified
+bad-order.zipx verified
+bad-crc.zipx verified
+bad-size.zipx verified
+truncated.zipx verified
+short-header.zipx verified
+encrypted.zipx verified
+ratio.zipx verified
+unsafe.zipx verified
+symlinks.zipx verified
+
+7-Zip (z) 26.05 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21
+ 64-bit arm_v:8-A locale=C.UTF-8 Threads:16 OPEN_MAX:1048575, ASM
+
+
+

@@ -1,0 +1,6 @@
+{
+  "source": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-mac.tar.xz",
+  "binary": "/tmp/commander-ppmd-7zip.v55AaN/7zz",
+  "binary_sha256": "8e495531e1b2b8cb169ca583493922d4ab386007756418c15b95f07f642c35fb",
+  "version": "\n7-Zip (z) 26.05 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21\n 64-bit arm_v:8-A locale=C.UTF-8 Threads:16 OPEN_MAX:1048575, ASM\n\n\n"
+}

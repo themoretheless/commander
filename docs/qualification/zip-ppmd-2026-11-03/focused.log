@@ -1,0 +1,16 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling ppmd-rust v1.5.2
+    Finished `test` profile [unoptimized] target(s) in 31.64s
+     Running unittests src/main.rs (target/debug/build/commander/71462e936fdee0e9/out/commander-71462e936fdee0e9)
+
+running 7 tests
+test archive::tests::ppmd_zipx_keeps_path_ratio_and_cancellation_guards ... ok
+test archive::tests::ppmd_zipx_extracts_only_symlinks_that_stay_inside_destination ... ok
+test archive_check::tests::ppmd_integrity_keeps_decoded_byte_limit_and_cancellation ... ok
+test zip_reader::tests::ppmd_parameters_bound_model_arena_before_decoder_creation ... ok
+test archive::tests::ppmd_zipx_refuses_bad_streams_and_later_dictionary_requests ... ok
+test search::tests::ppmd_content_search_agrees_for_live_and_indexed_zipx ... ok
+test archive::tests::ppmd_zipx_reads_checks_and_concatenated_streams ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 3410 filtered out; finished in 0.65s
+

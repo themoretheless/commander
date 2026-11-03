@@ -1,17 +1,39 @@
-//! ZIP LZMA/XZ/Zstandard decoding with bounded decoder memory and verified payloads.
+//! ZIP LZMA/XZ/Zstandard/PPMd decoding with bounded decoder memory and verified payloads.
 //! Other codecs retain zip-rs decoding. Never reread an untrusted LZMA header
 //! after validating it: the exact properties consumed here feed liblzma.
 use std::io::{self, Cursor, Read, Seek};
 
 const MAX_DECODER_MEMORY: u64 = 64 * 1024 * 1024;
 type BoundedInput<'a, R> = std::io::Chain<Cursor<[u8; 13]>, zip::read::ZipFile<'a, R>>;
+// ppmd-rust treats UnexpectedEof as a successful partial read. ZIP PPMd
+// requires its end marker: preserve premature input exhaustion as an error.
+struct PpmdInput<'a, R: Read>(zip::read::ZipFile<'a, R>);
+impl<R: Read> Read for PpmdInput<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        match self.0.read(bytes) {
+            Ok(0) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ZIP PPMd compressed data ended before the end marker",
+            )),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                Err(io::Error::new(io::ErrorKind::InvalidData, e))
+            }
+            result => result,
+        }
+    }
+}
 enum Decoder<'a, R: Read> {
+    Ppmd(Box<ppmd_rust::Ppmd8Decoder<PpmdInput<'a, R>>>),
     LzmaXz(xz2::read::XzDecoder<BoundedInput<'a, R>>),
     Zstd(zstd::stream::read::Decoder<'static, std::io::BufReader<zip::read::ZipFile<'a, R>>>),
 }
 impl<R: Read> Read for Decoder<'_, R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         match self {
+            Self::Ppmd(d) => d.read(bytes),
             Self::LzmaXz(d) => d.read(bytes),
             Self::Zstd(d) => d.read(bytes).map_err(|error| {
                 io::Error::new(
@@ -25,6 +47,7 @@ impl<R: Read> Read for Decoder<'_, R> {
 impl<'a, R: Read> Decoder<'a, R> {
     fn entry(&self) -> &zip::read::ZipFile<'a, R> {
         match self {
+            Self::Ppmd(d) => &d.get_ref().0,
             Self::LzmaXz(d) => d.get_ref().get_ref().1,
             Self::Zstd(d) => d.get_ref().get_ref(),
         }
@@ -105,6 +128,23 @@ fn validate_properties(header: &[u8; 9]) -> io::Result<()> {
     }
     Ok(())
 }
+fn ppmd_parameters(header: [u8; 2]) -> io::Result<(u32, u32, ppmd_rust::RestoreMethod)> {
+    let value = u16::from_le_bytes(header);
+    let order = u32::from((value & 15) + 1);
+    let arena = (u32::from((value >> 4) & 255) + 1) * 1024 * 1024;
+    let restoration = (value >> 12) & 15;
+    if !(2..=16).contains(&order) || restoration > 1 {
+        return Err(io::Error::other(
+            "Unsupported ZIP PPMd order or restoration method",
+        ));
+    }
+    if u64::from(arena) > MAX_DECODER_MEMORY {
+        return Err(io::Error::other(
+            "ZIP PPMd model arena exceeds 64 MiB limit",
+        ));
+    }
+    Ok((order, arena, restoration.into()))
+}
 /// LZMA/XZ enforce a liblzma memory budget, including probability tables.
 /// Zstandard enforces a maximum back-reference window separately.
 pub fn open<R: Read + Seek>(
@@ -117,7 +157,12 @@ pub fn open<R: Read + Seek>(
         .compression();
     let zstd =
         method == zip::CompressionMethod::ZSTD || method == zip::CompressionMethod::ZSTD_DEPRECATED;
-    if method != zip::CompressionMethod::LZMA && method != zip::CompressionMethod::XZ && !zstd {
+    let ppmd = method == zip::CompressionMethod::PPMD;
+    if method != zip::CompressionMethod::LZMA
+        && method != zip::CompressionMethod::XZ
+        && !zstd
+        && !ppmd
+    {
         return Ok(Member {
             inner: Inner::Standard(archive.by_index(index).map_err(io::Error::other)?),
         });
@@ -125,6 +170,8 @@ pub fn open<R: Read + Seek>(
     let mut raw = archive.by_index_raw(index).map_err(io::Error::other)?;
     let codec = if method == zip::CompressionMethod::LZMA {
         "LZMA"
+    } else if ppmd {
+        "PPMd"
     } else if zstd {
         "Zstandard"
     } else {
@@ -137,7 +184,15 @@ pub fn open<R: Read + Seek>(
     }
     let expected_crc = raw.crc32();
     let size = raw.size();
-    let decoder = if zstd {
+    let decoder = if ppmd {
+        let mut header = [0; 2];
+        raw.read_exact(&mut header)?;
+        let (order, arena, restoration) = ppmd_parameters(header)?;
+        Decoder::Ppmd(Box::new(
+            ppmd_rust::Ppmd8Decoder::new(PpmdInput(raw), order, arena, restoration)
+                .map_err(io::Error::other)?,
+        ))
+    } else if zstd {
         let mut decoder = zstd::stream::read::Decoder::new(raw)?;
         // Cap each frame's back-reference window, including concatenated frames.
         // This is a window bound, not a claim about total process memory.
@@ -195,6 +250,26 @@ pub fn open<R: Read + Seek>(
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn ppmd_parameters_bound_model_arena_before_decoder_creation() {
+        for (order, mib, restore, valid) in [
+            (2, 1, 0, true),
+            (16, 64, 1, true),
+            (6, 65, 0, false),
+            (6, 256, 0, false),
+            (1, 1, 0, false),
+            (6, 1, 2, false),
+            (6, 1, 15, false),
+        ] {
+            let word = ((order - 1) as u16) | (((mib - 1) as u16) << 4) | ((restore as u16) << 12);
+            let result = ppmd_parameters(word.to_le_bytes());
+            assert_eq!(result.is_ok(), valid, "{order}/{mib}/{restore}");
+            if let Ok((actual_order, bytes, _)) = result {
+                assert_eq!(actual_order, order);
+                assert_eq!(bytes, mib * 1024 * 1024);
+            }
+        }
+    }
     #[test]
     fn lzma_cached_properties_cannot_be_replaced_before_first_decode() {
         let temp = crate::testutil::TempDir::new();

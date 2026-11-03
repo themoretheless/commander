@@ -287,6 +287,27 @@ mod tests {
     use crate::testutil::TempDir;
     use std::io::Write;
     #[test]
+    fn ppmd_integrity_keeps_decoded_byte_limit_and_cancellation() {
+        let temp = TempDir::new();
+        let path = temp.path().join("extended.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-ppmd-2026-11-03/fixtures/normal.zipx"),
+        )
+        .unwrap();
+        let progress = AtomicU64::new(0);
+        assert!(
+            check_with_limits(&path, &|| false, &progress, 1, 100)
+                .unwrap_err()
+                .contains("limit")
+        );
+        assert!(
+            check(&path, &|| true, &progress)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+    }
+    #[test]
     fn zstd_integrity_keeps_decoded_byte_limit_and_cancellation() {
         let temp = TempDir::new();
         let path = temp.path().join("extended.zipx");

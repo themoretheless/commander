@@ -1,0 +1,15 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "1e873dd17c760c565ccd96a88249171d28829b46c1745624a2063b4a2d1ab23b",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-ppmd-2026-11-03/native-captures/1793665647822750000/archive_metadata"
+  }
+}

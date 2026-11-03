@@ -1,0 +1,45 @@
+[
+  "g-xz.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "28 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "80 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "Unavailable",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Xz",
+      true
+    ],
+    [
+      "Encrypted",
+      "No",
+      true
+    ]
+  ]
+]

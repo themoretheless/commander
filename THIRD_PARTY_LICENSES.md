@@ -59,3 +59,7 @@ The checksum feature adds it as a direct dependency without changing its version
 ## Deflate64 ZIP decompression
 
 ZIP method 9 decoding uses `deflate64` 0.1.12, derived from the .NET implementation, copyright .NET Foundation and Contributors and anatawa12. See its complete [MIT license](data/licenses/deflate64-0.1.12-MIT.txt). Commander does not claim authorship of the decoder.
+
+## PPMd ZIP decompression
+
+ZIP method 98 uses ppmd-rust 1.5.2 under its [CC0 option](data/licenses/ppmd-rust-1.5.2-CC0.txt). The Rust port acknowledges Igor Pavlov, Dmitry Shkarin and Dmitry Subbotin, who placed the original algorithms in the public domain. Commander does not claim authorship of the decoder.
