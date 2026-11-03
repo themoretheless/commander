@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 1m 13s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 4 tests
+test workspace::tabs::tests::pinned_tab_identity_survives_duplicate_transfer_close_and_missing_home ... ok
+test workspace_profile::tests::pinned_tabs_round_trip_profile_exchange_and_reset_on_apply ... ok
+test session::tests::pinned_tabs_survive_atomic_session_reopen_and_respect_launch_override ... ok
+test workspace::tabs::tests::pinned_tabs_reset_lazily_on_reactivation_and_unpin_retains_temporary_navigation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3534 filtered out; finished in 0.05s
+

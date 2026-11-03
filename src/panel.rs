@@ -823,6 +823,7 @@ pub struct PanelState {
     pub(crate) tab_title: Option<String>,
     pub(crate) tab_close_protected: bool,
     pub(crate) tab_full_path_label: bool,
+    pub(crate) tab_pinned_path: Option<PathBuf>,
     listing: ListingState,
     selection: SelectionState,
     saved_selection: Option<(PathBuf, HashSet<PathBuf>)>,
@@ -869,6 +870,7 @@ impl PanelState {
             tab_title: None,
             tab_close_protected: false,
             tab_full_path_label: false,
+            tab_pinned_path: None,
             listing: ListingState::new(path.clone()),
             selection: SelectionState::new(path.clone()),
             saved_selection: None,
@@ -913,9 +915,34 @@ impl PanelState {
         // Retiring rows makes loading-frame cursor validation clamp to `..`.
         // Keep the path-owned landing intent in the listing controller so
         // the first refresh (and any repeated refresh) restores it on publish.
-        let focus = PendingFocus::Remembered {
-            cursor_path: self.focused_path(),
-            scroll_anchor: self.scroll_anchor(),
+        let focus = if let Some(path) = self
+            .tab_pinned_path
+            .clone()
+            .filter(|p| *p != self.current_path)
+        {
+            self.stash_view_settings();
+            self.history.push(path.clone());
+            self.pending_visit = Some(path.clone());
+            self.current_path = path;
+            let remembered = self.restore_view_settings();
+            if remembered.is_none() {
+                self.view.clear_filters();
+            }
+            let (cursor_path, scroll_anchor) = remembered.unwrap_or((None, 0));
+            self.selection.bind(&self.current_path);
+            self.selection.set_scroll_anchor(scroll_anchor);
+            self.miller = Default::default();
+            self.preview = None;
+            self.initial_focus_child = None;
+            PendingFocus::Remembered {
+                cursor_path,
+                scroll_anchor,
+            }
+        } else {
+            PendingFocus::Remembered {
+                cursor_path: self.focused_path(),
+                scroll_anchor: self.scroll_anchor(),
+            }
         };
         self.listing_job.request(
             self.current_path.clone(),

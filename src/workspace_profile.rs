@@ -120,6 +120,7 @@ impl WorkspaceProfile {
                             "title",
                             "close_protected",
                             "full_path_label",
+                            "pinned_path",
                             "view",
                             "miller_widths",
                         ]
@@ -473,6 +474,27 @@ fn save_notice(name: &str, saved: bool) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_tabs_round_trip_profile_exchange_and_reset_on_apply() {
+        use crate::workspace::{ActivePanel, Workspace};
+        let tmp = crate::testutil::TempDir::new();
+        let home = tmp.dir("home");
+        let away = tmp.dir("away");
+        let mut ws = Workspace::new(home.clone(), away.clone());
+        assert!(ws.set_tab_pinned(ActivePanel::Left, 0, true));
+        ws.left.navigate_to(away.clone());
+        let profile = ws.capture_named_profile("Pinned".into()).unwrap();
+        let encoded = encode_exchange(&profile).unwrap();
+        let decoded = decode_exchange(&encoded).unwrap();
+        let layout = decoded.layout().unwrap().unwrap();
+        assert_eq!(layout.left.entries[0].pinned_path, Some(home.clone()));
+        let mut fresh = Workspace::new(away.clone(), away);
+        fresh.apply_profile_tab_layout(&layout).unwrap();
+        assert_eq!(fresh.left.current_path, home);
+        assert!(fresh.left.entries().is_empty());
+        assert!(!fresh.left.has_notify());
+    }
 
     #[test]
     fn import_review_is_non_mutating_and_add_rechecks_draft_names_and_store() {

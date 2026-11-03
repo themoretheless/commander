@@ -247,6 +247,7 @@ impl App {
         let mut copy_path_at = None;
         let mut rename_title = None;
         let mut protection_change = None;
+        let mut pin_change = None;
         let mut path_label_change = None;
         let mut transfer_tab = None;
         let mut new_tab = false;
@@ -316,7 +317,8 @@ impl App {
                                 for (index, tab) in snapshot.entries.iter().enumerate() {
                                     let name = tab.display_title();
                                     let label = format!(
-                                        "{}{} {}",
+                                        "{}{}{} {}",
+                                        if tab.pinned_path.is_some() { "[P] " } else { "" },
                                         if tab.close_protected { "*" } else { "" },
                                         index + 1,
                                         if tab.full_path_label { crate::display_name::truncate_path(&name, 40) } else { crate::display_name::truncate_preserving_extension(&name, 18) }
@@ -347,6 +349,12 @@ impl App {
                                     egui::Popup::context_menu(&button)
                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                         .show(|ui| {
+                                        let mut pinned = tab.pinned_path.is_some();
+                                        let pin = ui.checkbox(&mut pinned, "Return to pinned folder on activation")
+                                            .on_hover_text(tab.pinned_path.as_ref().map_or_else(|| "Pin this tab's current folder. Navigation stays available; switching away and back returns here.".into(), |p| format!("Pinned folder: {}\nUnpin to keep the current location when switching tabs.",p.display())));
+                                        #[cfg(any(test, feature = "visual-qa"))]
+                                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("folder-tab-pin", side)), pin.rect));
+                                        if pin.changed() { pin_change = Some((index, pinned)); }
                                         let mut protected = tab.close_protected;
                                         let protect = ui.checkbox(&mut protected, "Protect from closing");
                                         #[cfg(feature = "visual-qa")]
@@ -533,6 +541,11 @@ impl App {
                 self.ui.cancel_context_menu();
                 ui.ctx().request_repaint();
             }
+            return false;
+        }
+        if let Some((index, pinned)) = pin_change {
+            self.ws.set_tab_pinned(side, index, pinned);
+            ui.ctx().request_repaint();
             return false;
         }
         if let Some((index, protected)) = protection_change {

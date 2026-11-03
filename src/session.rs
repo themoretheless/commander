@@ -905,6 +905,65 @@ mod tests {
         );
     }
     #[test]
+    fn pinned_tabs_survive_atomic_session_reopen_and_respect_launch_override() {
+        use crate::workspace::{ActivePanel, Workspace};
+        let tmp = crate::testutil::TempDir::new();
+        let home = tmp.dir("home");
+        let away = tmp.dir("away");
+        let mut ws = Workspace::new(home.clone(), home.clone());
+        assert!(ws.set_tab_pinned(ActivePanel::Left, 0, true));
+        assert!(ws.set_tab_pinned(ActivePanel::Right, 0, true));
+        ws.left.navigate_to(away.clone());
+        ws.right.navigate_to(away.clone());
+        let mut session = sample(away.clone(), away.clone());
+        session.left_tabs = ws.tab_snapshot(ActivePanel::Left);
+        session.right_tabs = ws.tab_snapshot(ActivePanel::Right);
+        let persist = crate::persistence::FsPersist::default();
+        let path = tmp.path().join("session.json");
+        let mut gate = crate::persistence::StoreGate::missing();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let restored = load_at(&persist, &path).value.unwrap();
+        let mut fresh = Workspace::new(away.clone(), tmp.path().into());
+        fresh.restore_tabs(&restored.left_tabs, &restored.right_tabs);
+        assert_eq!(fresh.left.current_path, home);
+        assert_eq!(fresh.left.tab_pinned_path, Some(home));
+        assert!(fresh.left.entries().is_empty());
+        assert_eq!(fresh.right.current_path, tmp.path());
+        assert!(fresh.right.tab_pinned_path.is_none());
+        let mut explicit = Workspace::new(away.clone(), away.clone());
+        explicit.restore_tabs_with_launch_overrides(
+            &restored.left_tabs,
+            &restored.right_tabs,
+            [true; 2],
+        );
+        assert_eq!(explicit.left.current_path, away);
+        assert_eq!(explicit.right.current_path, away);
+        assert_eq!(explicit.left.tab_pinned_path, fresh.left.tab_pinned_path);
+        // Startup may already have sanitized a deleted temporary location.
+        // With no explicit launch override, the pinned home still wins.
+        std::fs::remove_dir(&away).unwrap();
+        let sanitized = restored.sanitized_paths(tmp.path());
+        let mut recovered = Workspace::new(sanitized.0, sanitized.1);
+        recovered.restore_tabs_with_launch_overrides(
+            &restored.left_tabs,
+            &restored.right_tabs,
+            [false; 2],
+        );
+        assert_eq!(recovered.left.current_path, fresh.left.current_path);
+        assert_eq!(recovered.right.current_path, fresh.left.current_path);
+        let mut legacy = serde_json::to_value(&session).unwrap();
+        legacy["left_tabs"]["entries"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("pinned_path");
+        legacy["right_tabs"]["entries"][0]["pinned_path"] =
+            serde_json::json!({"platform":"alien","path":[47,97]});
+        let parsed: Session = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.left_tabs.entries[0].pinned_path.is_none());
+        assert!(parsed.right_tabs.entries[0].pinned_path.is_none());
+    }
+
+    #[test]
     fn closed_tab_histories_survive_atomic_session_save_and_reopen_independently() {
         use crate::panel::BrowserMode;
         use crate::workspace::{ActivePanel, Workspace};

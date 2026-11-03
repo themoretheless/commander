@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/tab-pinned-folder-2026-11-03/native-captures/1793715351811716000",
+  "binary_sha256": "5e0422046321f5f6ef2f665dab716a86b8a87eb19683d8f5fd348ea389c9378c",
+  "core_sha256": "5e0422046321f5f6ef2f665dab716a86b8a87eb19683d8f5fd348ea389c9378c",
+  "wrapper_sha256": "db32944612656a66a68145c023430ed7fb25e45e2d4c3e412ae11e2bd1697112",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

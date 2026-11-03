@@ -10,6 +10,8 @@ pub const MAX_CLOSED_TABS: usize = 8;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedTab {
     pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "pinned_path")]
+    pub pinned_path: Option<PathBuf>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -37,6 +39,67 @@ pub struct SavedTab {
         skip_serializing_if = "crate::selection_snapshot::Snapshot::is_none"
     )]
     pub selection_snapshot: crate::selection_snapshot::Snapshot,
+}
+
+// Optional pinned roots retain native identity and never trigger filesystem IO.
+mod pinned_path {
+    use super::*;
+    pub(super) fn valid(path: &std::path::Path) -> bool {
+        path.is_absolute()
+            && path.as_os_str().as_encoded_bytes().len() <= 16 * 1024
+            && !path.as_os_str().as_encoded_bytes().contains(&0)
+    }
+    pub fn serialize<S: serde::Serializer>(
+        path: &Option<PathBuf>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let value = path.as_ref().filter(|p| valid(p)).map(|path| {
+            #[cfg(unix)]
+            let native = {
+                use std::os::unix::ffi::OsStrExt;
+                path.as_os_str().as_bytes().to_vec()
+            };
+            #[cfg(windows)]
+            let native = {
+                use std::os::windows::ffi::OsStrExt;
+                path.as_os_str().encode_wide().collect::<Vec<_>>()
+            };
+            serde_json::json!({"platform":std::env::consts::FAMILY,"path":native})
+        });
+        value.serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<PathBuf>, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value["platform"].as_str() != Some(std::env::consts::FAMILY) {
+            return Ok(None);
+        }
+        let Some(units) = value["path"].as_array().filter(|a| a.len() <= 16 * 1024) else {
+            return Ok(None);
+        };
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::ffi::OsStringExt;
+            let Ok(bytes) =
+                serde_json::from_value::<Vec<u8>>(serde_json::Value::Array(units.clone()))
+            else {
+                return Ok(None);
+            };
+            PathBuf::from(std::ffi::OsString::from_vec(bytes))
+        };
+        #[cfg(windows)]
+        let path = {
+            use std::os::windows::ffi::OsStringExt;
+            let Ok(units) =
+                serde_json::from_value::<Vec<u16>>(serde_json::Value::Array(units.clone()))
+            else {
+                return Ok(None);
+            };
+            PathBuf::from(std::ffi::OsString::from_wide(&units))
+        };
+        Ok(valid(&path).then_some(path))
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -86,6 +149,7 @@ impl SavedTab {
     fn from_panel(panel: &PanelState) -> Self {
         Self {
             path: panel.current_path.clone(),
+            pinned_path: panel.tab_pinned_path.clone(),
             title: panel.tab_title.clone(),
             close_protected: panel.tab_close_protected,
             full_path_label: panel.tab_full_path_label,
@@ -99,6 +163,7 @@ impl SavedTab {
         let mut panel = PanelState::new_with_view(self.path.clone(), self.view);
         panel.restore_miller_widths(self.miller_widths.clone());
         panel.tab_selection = self.selection_snapshot.clone();
+        panel.tab_pinned_path = self.pinned_path.clone().filter(|p| pinned_path::valid(p));
         panel.tab_title = self.title.as_deref().and_then(clean_title);
         panel.tab_close_protected = self.close_protected;
         panel.tab_full_path_label = self.full_path_label;
@@ -341,8 +406,14 @@ impl Workspace {
         let mut right = layout.right.clone();
         left.closed = self.tab_snapshot(ActivePanel::Left).closed;
         right.closed = self.tab_snapshot(ActivePanel::Right).closed;
-        let new_left = left.entries[left.active].panel();
-        let new_right = right.entries[right.active].panel();
+        let mut new_left = left.entries[left.active].panel();
+        let mut new_right = right.entries[right.active].panel();
+        if new_left.tab_pinned_path.is_some() {
+            new_left.prepare_tab_activation();
+        }
+        if new_right.tab_pinned_path.is_some() {
+            new_right.prepare_tab_activation();
+        }
         self.tabs[0].restore(&left);
         self.tabs[1].restore(&right);
         self.left = new_left;
@@ -401,6 +472,24 @@ impl Workspace {
         true
     }
 
+    /// Pin the pointed tab's current native folder; ordinary navigation stays allowed.
+    pub fn set_tab_pinned(&mut self, side: ActivePanel, index: usize, pinned: bool) -> bool {
+        if !self.tabs_can_change() || index >= self.tab_count(side) {
+            return false;
+        }
+        let (tabs, visible) = self.tabs_and_panel(side);
+        let panel = tabs.slots[index].as_mut().unwrap_or(visible);
+        if pinned == panel.tab_pinned_path.is_some()
+            || (pinned && !pinned_path::valid(&panel.current_path))
+        {
+            return false;
+        }
+        panel.tab_pinned_path = pinned.then(|| panel.current_path.clone());
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        *self.command_capabilities.borrow_mut() = None;
+        true
+    }
+
     pub fn set_tab_close_protection(
         &mut self,
         side: ActivePanel,
@@ -432,35 +521,83 @@ impl Workspace {
     }
 
     pub fn restore_tabs(&mut self, left: &SavedTabs, right: &SavedTabs) {
+        let overridden = |saved: &SavedTabs, path: &std::path::Path| {
+            saved
+                .entries
+                .get(
+                    saved
+                        .active
+                        .min(saved.entries.len().saturating_sub(1))
+                        .min(MAX_TABS - 1),
+                )
+                .is_some_and(|tab| tab.path != path)
+        };
+        self.restore_tabs_with_launch_overrides(
+            left,
+            right,
+            [
+                overridden(left, &self.left.current_path),
+                overridden(right, &self.right.current_path),
+            ],
+        );
+    }
+
+    pub(crate) fn restore_tabs_with_launch_overrides(
+        &mut self,
+        left: &SavedTabs,
+        right: &SavedTabs,
+        launch_overrides: [bool; 2],
+    ) {
         // Visible paths have already been sanitized and may be overridden by CLI.
         self.tabs[0].restore(left);
         self.tabs[1].restore(right);
-        for (saved, panel) in [(left, &mut self.left), (right, &mut self.right)] {
+        for (side, (saved, panel)) in [(left, &mut self.left), (right, &mut self.right)]
+            .into_iter()
+            .enumerate()
+        {
             if saved.entries.is_empty() {
                 continue;
             }
             if let Some(tab) = saved
                 .entries
                 .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
-                .filter(|tab| tab.path == panel.current_path)
+                .filter(|tab| {
+                    tab.path == panel.current_path
+                        || (!launch_overrides[side] && tab.pinned_path.is_some())
+                })
             {
                 panel.restore_miller_widths(tab.miller_widths.clone());
                 panel.tab_selection = tab.selection_snapshot.clone();
+                panel.tab_pinned_path = tab.pinned_path.clone().filter(|p| pinned_path::valid(p));
             }
             panel.tab_title = saved
                 .entries
                 .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
-                .filter(|tab| tab.path == panel.current_path)
+                .filter(|tab| {
+                    tab.path == panel.current_path
+                        || (!launch_overrides[side] && tab.pinned_path.is_some())
+                })
                 .and_then(|tab| tab.title.as_deref())
                 .and_then(clean_title);
             panel.tab_close_protected = saved
                 .entries
                 .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
-                .is_some_and(|tab| tab.path == panel.current_path && tab.close_protected);
+                .is_some_and(|tab| {
+                    (tab.path == panel.current_path
+                        || (!launch_overrides[side] && tab.pinned_path.is_some()))
+                        && tab.close_protected
+                });
             panel.tab_full_path_label = saved
                 .entries
                 .get(saved.active.min(saved.entries.len() - 1).min(MAX_TABS - 1))
-                .is_some_and(|tab| tab.path == panel.current_path && tab.full_path_label);
+                .is_some_and(|tab| {
+                    (tab.path == panel.current_path
+                        || (!launch_overrides[side] && tab.pinned_path.is_some()))
+                        && tab.full_path_label
+                });
+            if panel.tab_pinned_path.is_some() && !launch_overrides[side] {
+                panel.prepare_tab_activation();
+            }
         }
     }
 
@@ -1936,6 +2073,7 @@ mod tests {
                             .enumerate()
                             .map(|(index, path)| SavedTab {
                                 path: path.clone(),
+                                pinned_path: None,
                                 title: None,
                                 close_protected: false,
                                 full_path_label: false,
@@ -1956,6 +2094,7 @@ mod tests {
                             .iter()
                             .map(|path| SavedTab {
                                 path: path.clone(),
+                                pinned_path: None,
                                 title: None,
                                 close_protected: false,
                                 full_path_label: false,
@@ -2526,6 +2665,133 @@ mod tests {
     }
 
     #[test]
+    fn pinned_tab_paths_are_native_bounded_and_optional_for_legacy_records() {
+        let tmp = TempDir::new();
+        let mut ws = Workspace::new(tmp.path().into(), tmp.path().into());
+        #[cfg(unix)]
+        let home = {
+            use std::os::unix::ffi::OsStringExt;
+            tmp.path()
+                .join(std::ffi::OsString::from_vec(vec![b'h', 255]))
+        };
+        #[cfg(windows)]
+        let home = tmp.path().join("native-home");
+        ws.left.current_path = home.clone();
+        assert!(ws.set_tab_pinned(ActivePanel::Left, 0, true));
+        ws.left.current_path = tmp.path().into();
+        let value = serde_json::to_value(ws.tab_snapshot(ActivePanel::Left)).unwrap();
+        let parsed: SavedTabs = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(parsed.entries[0].pinned_path, Some(home));
+        for malformed in [
+            serde_json::Value::Null,
+            serde_json::json!(123),
+            serde_json::json!({"platform":"alien","path":[47,97]}),
+            serde_json::json!({"platform":std::env::consts::FAMILY,"path":[97]}),
+            serde_json::json!({"platform":std::env::consts::FAMILY,"path":[47,0]}),
+            serde_json::json!({"platform":std::env::consts::FAMILY,"path":vec![47;16385]}),
+        ] {
+            let mut bad = value.clone();
+            bad["entries"][0]["pinned_path"] = malformed;
+            let parsed: SavedTabs = serde_json::from_value(bad).unwrap();
+            assert_eq!(parsed.entries.len(), 1);
+            assert!(parsed.entries[0].pinned_path.is_none());
+        }
+    }
+
+    #[test]
+    fn pinned_tabs_reset_lazily_on_reactivation_and_unpin_retains_temporary_navigation() {
+        use crate::command::{Command, availability};
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            let tmp = TempDir::new();
+            let home = tmp.dir("home");
+            let child = tmp.dir("home/child");
+            let picked = tmp.file("home/keep.txt", "kept");
+            let mut ws = Workspace::new(home.clone(), home.clone());
+            ws.active = side;
+            {
+                let (_, panel) = ws.tabs_and_panel(side);
+                panel.refresh();
+                panel.set_browser_mode(crate::panel::BrowserMode::Icons);
+                panel.set_search_query("keep");
+                panel.focus_child("keep.txt".into());
+                panel.select_path(picked.clone());
+            }
+            assert!(availability(Command::PinTab, &ws.command_context()).enabled);
+            ws.execute(Command::PinTab);
+            assert!(availability(Command::UnpinTab, &ws.command_context()).enabled);
+            assert!(!availability(Command::PinTab, &ws.command_context()).enabled);
+            assert!(!ws.set_tab_pinned(side, 0, true));
+            assert!(!ws.set_tab_pinned(side, 99, true));
+            assert!(ws.new_background_tab(side, tmp.path().into()));
+            ws.tabs_and_panel(side).1.navigate_to(child.clone());
+            assert_eq!(ws.tabs_and_panel(side).1.current_path, child);
+            assert!(ws.select_tab(side, 1));
+            assert!(ws.select_tab(side, 0));
+            {
+                let (_, panel) = ws.tabs_and_panel(side);
+                assert_eq!(panel.current_path, home);
+                assert!(panel.entries().is_empty());
+                assert!(!panel.has_notify());
+                let workload = crate::workload::DeterministicWorkload::new(
+                    crate::workload::SchedulerLimits::default(),
+                );
+                panel.set_workload(workload.handle());
+                panel.set_notify(std::sync::Arc::new(|| {}));
+                panel.refresh();
+                panel.ensure_cursor_valid();
+                assert!(workload.run_next());
+                assert!(panel.poll_listing());
+                assert_eq!(panel.cursor_entry().unwrap().path, picked);
+                assert!(panel.is_selected(&picked));
+                assert_eq!(panel.search_query(), "keep");
+                assert_eq!(panel.browser_mode(), crate::panel::BrowserMode::Icons);
+                // Suspend the test worker before a synchronous temporary navigation.
+                panel.suspend_for_tab();
+                panel.navigate_to(child.clone());
+            }
+            ws.execute(Command::UnpinTab);
+            assert!(ws.select_tab(side, 1));
+            assert!(ws.select_tab(side, 0));
+            assert_eq!(ws.tabs_and_panel(side).1.current_path, child);
+            ws.emit_ui_request(crate::ui_request::UiRequest::Rename(picked.clone()));
+            assert!(!ws.set_tab_pinned(side, 0, true));
+            ws.drain_ui_requests();
+            assert_eq!(std::fs::read(picked).unwrap(), b"kept");
+        }
+    }
+
+    #[test]
+    fn pinned_tab_identity_survives_duplicate_transfer_close_and_missing_home() {
+        let tmp = TempDir::new();
+        let home = tmp.dir("home");
+        let away = tmp.dir("away");
+        let mut ws = Workspace::new(home.clone(), away.clone());
+        assert!(ws.set_tab_pinned(ActivePanel::Left, 0, true));
+        ws.left.navigate_to(away.clone());
+        assert!(ws.duplicate_tab_at(ActivePanel::Left, 0));
+        assert!(ws.move_tab_to_other(ActivePanel::Left, 1));
+        assert!(ws.select_tab(ActivePanel::Right, 1));
+        assert_eq!(ws.right.current_path, home);
+        assert_eq!(ws.right.tab_pinned_path, Some(home.clone()));
+        assert!(ws.close_tab(ActivePanel::Right));
+        assert!(ws.reopen_closed_tab(ActivePanel::Right));
+        assert_eq!(ws.right.current_path, home);
+        assert!(ws.new_background_tab(ActivePanel::Right, away.clone()));
+        ws.right.navigate_to(away);
+        assert!(ws.select_tab(ActivePanel::Right, 2));
+        std::fs::remove_dir(&home).unwrap();
+        assert!(ws.select_tab(ActivePanel::Right, 1));
+        assert_eq!(ws.right.current_path, home);
+        ws.right.refresh();
+        assert!(ws.right.entries().is_empty());
+        assert!(!matches!(
+            ws.right.dir_status(),
+            crate::panel::DirStatus::Listed
+        ));
+        assert_eq!(ws.right.tab_pinned_path, Some(home));
+    }
+
+    #[test]
     fn captured_cross_pane_transfer_keeps_runtime_state_at_every_insertion_boundary() {
         for source in [ActivePanel::Left, ActivePanel::Right] {
             for move_visible in [false, true] {
@@ -3077,6 +3343,7 @@ mod tests {
             entries: (0..20)
                 .map(|n| SavedTab {
                     path: PathBuf::from(format!("/missing-{n}")),
+                    pinned_path: None,
                     title: None,
                     close_protected: false,
                     full_path_label: false,

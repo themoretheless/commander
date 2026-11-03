@@ -1007,6 +1007,7 @@ impl Workspace {
             active_panel_left: self.active == ActivePanel::Left,
             pane_folders_differ: active.current_path != inactive.current_path,
             active_tab_protected: self.active_panel_ref().tab_close_protected,
+            active_tab_pinned: self.active_panel_ref().tab_pinned_path.is_some(),
             other_tab_count: self.tab_count(self.active.other()),
             active_tab_index: self.active_tab_index(self.active),
             duplicate_tabs: self.duplicate_tab_count(self.active),
@@ -1158,6 +1159,10 @@ impl Workspace {
             cmd
         };
         match cmd {
+            Command::PinTab | Command::UnpinTab => {
+                let index = self.active_tab_index(self.active);
+                self.set_tab_pinned(self.active, index, cmd == Command::PinTab);
+            }
             Command::ProtectTab | Command::UnprotectTab => {
                 let index = self.active_tab_index(self.active);
                 self.set_tab_close_protection(self.active, index, cmd == Command::ProtectTab);

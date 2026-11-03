@@ -1,0 +1,7 @@
+{
+  "cohort": 4,
+  "repository": "KDE/krusader",
+  "source": "https://docs.kde.org/trunk_kf6/en/krusader/krusader/folder-tabs.html",
+  "observed_contract": "Pinned tabs allow temporary navigation and reset to pinned address on reactivation",
+  "adaptation": "Independent native Rust implementation; closing protection remains a separately controlled existing tab setting; active saved tabs reset unless launch path overrides their saved binding"
+}

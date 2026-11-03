@@ -1219,6 +1219,10 @@ impl App {
         apply_theme(&cc.egui_ctx, mode, accessibility_preferences);
         startup.checkpoint(crate::measurement::StartupPhase::Appearance);
 
+        let launch_overrides = [
+            launch.left.is_some(),
+            launch.left.is_some() || launch.right.is_some(),
+        ];
         let ((left, right), (left_focus, right_focus)) = resolve_start_paths(
             session
                 .as_ref()
@@ -1254,7 +1258,20 @@ impl App {
             } else {
                 ActivePanel::Right
             };
-            ws.restore_tabs(&s.left_tabs, &s.right_tabs);
+            let has_active_pin = [&s.left_tabs, &s.right_tabs].iter().any(|tabs| {
+                tabs.entries
+                    .get(tabs.active)
+                    .is_some_and(|tab| tab.pinned_path.is_some())
+            });
+            if launch_overrides == [false; 2] && !has_active_pin {
+                ws.restore_tabs(&s.left_tabs, &s.right_tabs);
+            } else {
+                ws.restore_tabs_with_launch_overrides(
+                    &s.left_tabs,
+                    &s.right_tabs,
+                    launch_overrides,
+                );
+            }
             ws.durability_profile = s.durability_profile;
             ws.version_retention = s.version_retention;
             ws.sync_guard_policy = s.sync_guard_policy.clone();

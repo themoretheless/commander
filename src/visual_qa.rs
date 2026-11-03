@@ -4960,12 +4960,18 @@ impl VisualQaApp {
                 request_id,
             },
         )));
+        if self.scenario == Scenario::MillerBrowser {
+            let _ = std::fs::write(self.scenario_dir.join("capture-request.json"), serde_json::to_vec_pretty(&serde_json::json!({"phase":self.disk_export_phase,"elapsed":self.started.elapsed().as_secs_f64(),"request_id":request_id,"attempt":self.capture_attempts})).unwrap());
+        }
         ctx.request_repaint();
     }
 }
 
 impl eframe::App for VisualQaApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        if self.result.lock().is_ok_and(|result| result.is_some()) {
+            return;
+        }
         self.preset_input_pending = false;
         self.table_input_pending = false;
         self.checksum_input_pending = false;
@@ -4988,7 +4994,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
-            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 148)
+            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 165)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -7259,6 +7265,31 @@ impl eframe::App for VisualQaApp {
                 return;
             }
             let phase = self.disk_export_phase;
+            // Native activation can consume the first pointer click. Verify its
+            // observed result before looking for Miller-only row probes, and
+            // retry only this initial click, with a strict two-retry bound.
+            if phase == 3
+                && self.inner.ws.left.current_path == self.fixture.left
+                && self.inner.ws.left.browser_mode() == crate::panel::BrowserMode::List
+                && self.timestamp_input_at.elapsed() >= Duration::from_millis(250)
+            {
+                let retries = ctx
+                    .data(|d| d.get_temp::<u8>(egui::Id::new("miller-initial-mode-retries")))
+                    .unwrap_or(0);
+                if retries < 2 {
+                    ctx.data_mut(|d| {
+                        d.insert_temp(egui::Id::new("miller-initial-mode-retries"), retries + 1)
+                    });
+                    let _ = std::fs::write(
+                        self.scenario_dir.join("initial-mode-retries.json"),
+                        format!("{}\n", retries + 1),
+                    );
+                    self.disk_export_phase = 0;
+                    self.hex_pointer_target = None;
+                    self.timestamp_input_at = Instant::now();
+                }
+                return;
+            }
             input.events.push(egui::Event::ModifiersChanged(
                 if (12..15).contains(&phase) {
                     egui::Modifiers::COMMAND
@@ -8089,6 +8120,126 @@ impl eframe::App for VisualQaApp {
                     pos,
                     button: egui::PointerButton::Primary,
                     pressed: local == 1,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && (148..165).contains(&self.disk_export_phase)
+        {
+            use crate::workspace::ActivePanel;
+            let phase = self.disk_export_phase;
+            if phase == 154 || phase == 158 || phase == 164 {
+                let panel = &self.inner.ws.right;
+                let tabs = self.inner.ws.tab_snapshot(ActivePanel::Right);
+                let expected = if phase == 158 {
+                    self.fixture.left.join("Design")
+                } else {
+                    self.fixture.left.clone()
+                };
+                if panel.current_path != expected
+                    || panel.tab_pinned_path.as_ref() != Some(&self.fixture.left)
+                    || matches!(panel.dir_status(), crate::panel::DirStatus::Loading)
+                    || tabs.active != 2
+                {
+                    return;
+                }
+                if phase != 158
+                    && (panel
+                        .cursor_entry()
+                        .is_none_or(|e| e.path != self.fixture.left.join("Design"))
+                        || panel.selected_entries().len() != 3)
+                {
+                    return;
+                }
+                let record = serde_json::json!({"tabs":tabs,"path":panel.current_path,"cursor":panel.cursor_entry().map(|e|&e.path),"selected":panel.selected_entries().iter().map(|e|&e.path).collect::<Vec<_>>(),"pin":panel.tab_pinned_path,"focus":format!("{:?}",self.inner.ws.active)});
+                if !serde_json::to_vec_pretty(&record).is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir.join(match phase {
+                            154 => "pin-before.json",
+                            158 => "pin-away.json",
+                            _ => "pin-restored.json",
+                        }),
+                        bytes,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+                if phase == 154 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                self.disk_export_phase += 1;
+                return;
+            }
+            if phase == 155 || phase == 156 || phase == 157 {
+                input.events.push(egui::Event::Key {
+                    key: if phase == 155 {
+                        egui::Key::Escape
+                    } else {
+                        egui::Key::Enter
+                    },
+                    physical_key: None,
+                    pressed: phase == 156,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                self.disk_export_phase += 1;
+                return;
+            }
+            let id = egui::Id::new(if (151..154).contains(&phase) {
+                ("folder-tab-pin", ActivePanel::Right, 0usize)
+            } else {
+                (
+                    "folder-tab-anchor",
+                    ActivePanel::Right,
+                    if phase == 159 || phase == 160 {
+                        1usize
+                    } else {
+                        2usize
+                    },
+                )
+            });
+            let rect = if (151..154).contains(&phase) {
+                ctx.data(|d| {
+                    d.get_temp::<egui::Rect>(egui::Id::new(("folder-tab-pin", ActivePanel::Right)))
+                })
+            } else {
+                ctx.data(|d| d.get_temp::<egui::Rect>(id))
+            };
+            let Some(rect) = rect else {
+                return;
+            };
+            if matches!(phase, 148 | 151 | 161) && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if phase == 161
+                && (self.inner.ws.right.current_path != self.fixture.right
+                    || matches!(
+                        self.inner.ws.right.dir_status(),
+                        crate::panel::DirStatus::Loading
+                    ))
+            {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if !matches!(phase, 148 | 151 | 161) {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: if phase == 149 || phase == 150 {
+                        egui::PointerButton::Secondary
+                    } else {
+                        egui::PointerButton::Primary
+                    },
+                    pressed: matches!(phase, 149 | 152 | 159 | 162),
                     modifiers: egui::Modifiers::NONE,
                 });
             }
@@ -23984,6 +24135,12 @@ impl eframe::App for VisualQaApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Native close is deferred. A later frame must never overwrite an
+        // already validated capture (or its original failure) with a timeout.
+        if self.result.lock().is_ok_and(|result| result.is_some()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         if matches!(self.scenario, Scenario::TimeGroups | Scenario::FindSort) {
             ctx.request_repaint();
         }
@@ -24095,6 +24252,12 @@ impl eframe::App for VisualQaApp {
                 ctx.data(
                     |d| d.get_temp::<egui::Rect>(egui::Id::new(("image-metadata-clip", "right")))
                 ),
+            );
+            let message = format!(
+                "{message}; script_phase={}; request_age={:?}; pending_probes={}",
+                self.disk_export_phase,
+                self.last_request_at.map(|at| at.elapsed().as_secs_f64()),
+                self.capture_probes.len()
             );
             self.fail(&ctx, "capture_timeout", message);
             return;
@@ -26744,7 +26907,7 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==148 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                self.disk_export_phase==165 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.left.current_path==self.fixture.left.join("column-B")
                     && self.inner.ws.left.preview.is_none()
                     && self.inner.ws.left.cursor_entry().is_some_and(|e|e.path==self.fixture.left.join("column-B/a.txt"))

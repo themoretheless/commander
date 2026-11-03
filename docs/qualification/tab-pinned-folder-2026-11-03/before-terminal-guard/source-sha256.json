@@ -1,0 +1,13 @@
+{
+  "src/app/tabs.rs": "4d26b60e5cbe5f3b7b52df5d8a23f0dd52df18376b70a10be5507494bda42a8c",
+  "src/command.rs": "2f844b6f0821ff2dafed485c9f709ee00e68ce2e5e0aee28abfc7697cc2ffbc3",
+  "src/panel.rs": "0547068a7c52c65e3099939a0936892d744a4c1e76439884b9c76fc34561b243",
+  "src/session.rs": "5c237c5728538deee45ee373b29d078bb45578cead4181791e02af82e7abce7b",
+  "src/visual_qa.rs": "4d6ada258852f360ec8d079fdc50b91072d351132e0c4433091ec712edbcc94b",
+  "src/workspace.rs": "a03999ea194b4c8edb72679ce15e7ed63e5fc00855d5f7c55ab2d32184aa4208",
+  "src/workspace/tabs.rs": "6fe34334d39185e98103962478b8dccb5e258567cee0f4e721749bcd15dbc16c",
+  "src/workspace_profile.rs": "60f13592c2feacaf4cbd8d00c6c88b028e0129dad5fe7579f3a5bcc6e14c6c16",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496",
+  "src/app/mod.rs": "d8c84ecf35939906086743b2a54eb006fd4bc96a42b80134c4af7ba382cad78d"
+}
