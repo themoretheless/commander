@@ -1,0 +1,10 @@
+{
+  "native_checks": 16,
+  "observations": 77,
+  "native_effects": 0,
+  "negative_terms_refusal_recovery_and_prior_workflow": true,
+  "independent_oracle": "Python ordered fragments and inverse full-path substrings",
+  "peer_rank_and_source_preserved": true,
+  "no_panel_navigation": true,
+  "source_and_binary_hashes_match": true
+}

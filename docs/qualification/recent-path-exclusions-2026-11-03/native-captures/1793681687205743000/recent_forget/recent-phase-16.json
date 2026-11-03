@@ -1,0 +1,52 @@
+{
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/left",
+  "match_error": null,
+  "match_mode": "Fuzzy",
+  "order": "Chronological",
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/ForgetMe",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/KeepMe"
+  ],
+  "phase": 16,
+  "query": "ForgetMe",
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/right",
+  "saved": {
+    "match_mode": "Fuzzy",
+    "order": "Chronological",
+    "paths": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/ForgetMe",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/KeepMe"
+    ],
+    "stats": {
+      "tick": 10,
+      "uses": {
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/ForgetMe": {
+          "count": 2,
+          "last": 10
+        },
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/KeepMe": {
+          "count": 8,
+          "last": 8
+        }
+      }
+    }
+  },
+  "selected": 0,
+  "stats": {
+    "tick": 10,
+    "uses": {
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/ForgetMe": {
+        "count": 2,
+        "last": 10
+      },
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/KeepMe": {
+        "count": 8,
+        "last": 8
+      }
+    }
+  },
+  "visible": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/ForgetMe",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-67093-recent_forget/KeepMe"
+  ]
+}

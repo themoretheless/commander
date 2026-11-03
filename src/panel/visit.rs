@@ -61,31 +61,49 @@ pub enum RecentMatchMode {
     OrderedTerms,
 }
 
-struct PathTerms(Vec<String>);
+struct PathTerms {
+    positive: Vec<String>,
+    negative: Vec<String>,
+}
 impl PathTerms {
     fn parse(query: &str) -> Option<Self> {
         if query.len() > 1024 {
             return None;
         }
-        let terms = query
-            .split_whitespace()
-            .take(33)
-            .map(str::to_lowercase)
-            .collect::<Vec<_>>();
-        (terms.len() <= 32).then_some(Self(terms))
+        let mut positive = Vec::new();
+        let mut negative = Vec::new();
+        for (index, term) in query.split_whitespace().enumerate() {
+            if index >= 32 {
+                return None;
+            }
+            if let Some(literal) = term.strip_prefix(r"\!") {
+                positive.push(format!("!{literal}").to_lowercase());
+            } else if let Some(excluded) = term.strip_prefix('!') {
+                if excluded.is_empty() {
+                    return None;
+                }
+                negative.push(excluded.to_lowercase());
+            } else {
+                positive.push(term.to_lowercase());
+            }
+        }
+        Some(Self { positive, negative })
     }
     fn matches(&self, path: &Path) -> bool {
         let label = path
             .to_string_lossy()
             .to_lowercase()
             .replace(std::path::MAIN_SEPARATOR, "/");
+        if self.negative.iter().any(|term| label.contains(term)) {
+            return false;
+        }
         let normalized = label.trim_end_matches('/');
         let mut prefix = if normalized.is_empty() {
             label.as_str()
         } else {
             normalized
         };
-        let Some((last, previous)) = self.0.split_last() else {
+        let Some((last, previous)) = self.positive.split_last() else {
             return true;
         };
         let Some(index) = prefix.rfind(last.as_str()) else {
@@ -125,7 +143,7 @@ pub fn recent_paths_within(paths: &[PathBuf], base: &Path) -> Vec<PathBuf> {
 
 pub fn recent_match_error(query: &str, mode: RecentMatchMode) -> Option<&'static str> {
     (mode == RecentMatchMode::OrderedTerms && PathTerms::parse(query).is_none())
-        .then_some("Use at most 32 path terms and 1024 UTF-8 bytes")
+        .then_some(r"Use at most 32 path terms and 1024 UTF-8 bytes; ! needs exclusion text (\! matches a literal !)")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,6 +289,42 @@ pub fn rank_visited_with_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_path_exclusions_filter_full_paths_without_changing_order_or_stats() {
+        let paths = vec![
+            PathBuf::from("/work/archive/src"),
+            PathBuf::from("/work/current/SRC"),
+            PathBuf::from("/work/ёж/src"),
+            PathBuf::from("/work/!literal"),
+        ];
+        let mut stats = VisitStats::default();
+        for path in &paths {
+            stats.record(path);
+        }
+        let before = stats.clone();
+        let ordered = RecentMatchMode::OrderedTerms;
+        let matches = |query: &str| {
+            rank_visited_with_mode(&paths, query, RecentOrder::Chronological, &stats, ordered)
+                .into_iter()
+                .map(|r| r.path)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(matches("work src !ARCHIVE !ёж"), [paths[1].clone()]);
+        assert_eq!(matches("!archive work !ёж src"), [paths[1].clone()]);
+        assert_eq!(matches("!src"), [paths[3].clone()]);
+        assert_eq!(matches(r"\!literal"), [paths[3].clone()]);
+        assert!(matches("!!").iter().all(|p| p != &paths[3]));
+        assert!(matches("src !work").is_empty());
+        assert!(matches("src work !missing").is_empty());
+        assert!(recent_match_error("!", ordered).is_some());
+        assert!(matches("!").is_empty());
+        assert!(PathTerms::parse(&vec!["!x"; 32].join(" ")).is_some());
+        assert!(PathTerms::parse(&vec!["!x"; 33].join(" ")).is_none());
+        assert!(PathTerms::parse(&format!("!{}", "é".repeat(512))).is_none());
+        assert!(recent_match_error("!", RecentMatchMode::Fuzzy).is_none());
+        assert_eq!(stats, before);
+    }
 
     #[test]
     fn recent_base_scope_uses_components_and_composes_with_matching_and_ordering() {

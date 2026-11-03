@@ -1,0 +1,7 @@
+{
+  "cohort": 75,
+  "repository": "https://github.com/junegunn/fzf",
+  "reference": "https://github.com/junegunn/fzf#search-syntax",
+  "observed": "2026-11-03",
+  "behavior": "The !text inverse-exact token excludes items containing text. Commander independently adapts this to its ordered recent-path terms; other fzf operators are not interpreted."
+}

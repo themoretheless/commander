@@ -1,0 +1,8 @@
+{
+  "scenario": "recent_forget",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/recent-path-exclusions-2026-11-03/native-captures/1793681687205743000",
+  "binary_sha256": "e261ad665b5ff11900574fa5804f26c954f8dc0cb7b0a059f430f4f0f47da54f",
+  "core_sha256": "e261ad665b5ff11900574fa5804f26c954f8dc0cb7b0a059f430f4f0f47da54f",
+  "wrapper_sha256": "0c3e64210732abb4e28bb55b47a2d9bbd69f95dfab38eb2e43a202b29867a9fe",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
