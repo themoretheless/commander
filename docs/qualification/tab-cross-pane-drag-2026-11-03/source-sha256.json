@@ -1,0 +1,9 @@
+{
+  "src/app/tabs.rs": "d0f48c4dd92f6510c92671ed757e9cf43345a2a74e22cb2d735b328dea7ebf8d",
+  "src/workspace/tabs.rs": "cb7ed6ed9c623ed29949d67005e1287ddb0028cb8bb80cf51ae14b5521ef9f23",
+  "src/visual_qa.rs": "a3d25a5bd6897d6b46a92a18c6082a23601944bc961fe5a5f19b7d5080d9a3b9",
+  "src/app/update.rs": "c4c18214bfa91aec0b740ffcd4a41465a68da03f29edb24f1f54f953acda190b",
+  "src/panel.rs": "82854379c37689fb9d55682b5fe2d6472d05595836c22b4a148624827109837f",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}

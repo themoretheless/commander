@@ -1,0 +1,10 @@
+{
+  "cohort": 6,
+  "repository": "files-community/Files",
+  "sources": [
+    "https://files.community/docs/features/tabs",
+    "https://files.community/docs/features/dual-pane"
+  ],
+  "contract": "Tab dragging combined with pane workflows",
+  "adaptation": "Move captured runtime tabs between Commander pane tab strips at explicit insertion boundaries; destination stays on its current folder"
+}

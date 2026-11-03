@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 25.85s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 1 test
+test panel::tests::async_tab_activation_restores_focus_after_loading_frame_clamps_cursor ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3533 filtered out; finished in 0.01s
+

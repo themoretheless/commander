@@ -6,7 +6,14 @@ struct FolderTabDrag {
     from: usize,
     revision: u64,
     path: PathBuf,
+    can_transfer: bool,
 }
+#[derive(Clone, Debug)]
+struct FolderTabTransfer {
+    binding: FolderTabDrag,
+    position: usize,
+}
+const TAB_TRANSFER: &str = "folder-tab-cross-pane-transfer";
 fn tab_drag_drop(
     ui: &egui::Ui,
     response: &egui::Response,
@@ -14,15 +21,17 @@ fn tab_drag_drop(
     index: usize,
     revision: u64,
     path: &std::path::Path,
+    can_transfer: bool,
 ) -> Option<(FolderTabDrag, usize)> {
     response.dnd_set_drag_payload(FolderTabDrag {
         side,
         from: index,
         revision,
         path: path.into(),
+        can_transfer,
     });
     let payload = response.dnd_hover_payload::<FolderTabDrag>()?;
-    if payload.side != side || payload.revision != revision {
+    if (payload.side != side && !payload.can_transfer) || payload.revision != revision {
         ui.ctx().set_cursor_icon(egui::CursorIcon::NotAllowed);
         return None;
     }
@@ -30,7 +39,7 @@ fn tab_drag_drop(
         .input(|input| input.pointer.interact_pos())
         .is_some_and(|pos| pos.x > response.rect.center().x);
     let boundary = index + usize::from(after);
-    let to = boundary.saturating_sub(usize::from(payload.from < boundary));
+    let to = boundary.saturating_sub(usize::from(payload.side == side && payload.from < boundary));
     let x = if after {
         response.rect.right()
     } else {
@@ -55,7 +64,7 @@ fn auto_scroll_tab_drag(
     let Some(payload) = egui::DragAndDrop::payload::<FolderTabDrag>(ui.ctx()) else {
         return;
     };
-    if payload.side != side || payload.revision != revision {
+    if (payload.side != side && !payload.can_transfer) || payload.revision != revision {
         return;
     }
     let Some(pos) = ui.input(|input| input.pointer.interact_pos()) else {
@@ -181,10 +190,43 @@ fn closed_tabs_menu(
 }
 
 impl App {
+    /// Both panes have rendered before a cross-pane move can replace either owner.
+    pub(super) fn apply_tab_drag_transfer(&mut self, ctx: &egui::Context) {
+        let Some(request) = ctx.data_mut(|data| {
+            let id = egui::Id::new(TAB_TRANSFER);
+            let request = data.get_temp::<FolderTabTransfer>(id);
+            data.remove::<FolderTabTransfer>(id);
+            request
+        }) else {
+            return;
+        };
+        let binding = request.binding;
+        let visible_changed = self.ws.active_tab_index(binding.side) == binding.from;
+        if self.ws.transfer_tab_captured(
+            binding.side,
+            binding.from,
+            request.position,
+            binding.revision,
+            &binding.path,
+        ) {
+            self.ui.cancel_context_menu();
+            if visible_changed {
+                self.compare_cache = None;
+                if self.ws.active == binding.side {
+                    self.ui.type_ahead = None;
+                    self.ui.chord = None;
+                }
+            }
+            ctx.request_repaint();
+        }
+    }
+
     /// Applies tab changes after rendering the strip so no row can retarget an action mid-loop.
     pub(super) fn render_folder_tabs(&mut self, ui: &mut egui::Ui, side: ActivePanel) -> bool {
         let snapshot = self.ws.tab_snapshot(side);
         let revision = self.ws.tab_revision();
+        let can_transfer = snapshot.entries.len() > 1
+            && self.ws.tab_count(side.other()) < crate::workspace::tabs::MAX_TABS;
         let mut drag_move = None;
         let reveal_key = egui::Id::new(("folder_tab_reveal", side));
         let active_binding = (
@@ -281,7 +323,7 @@ impl App {
                                     );
                                     let button =
                                         ui.add(egui::Button::selectable(index == snapshot.active, label).sense(egui::Sense::CLICK | egui::Sense::DRAG));
-                                    if let Some(request)=tab_drag_drop(ui,&button,side,index,revision,&tab.path) {drag_move=Some(request);}
+                                    if let Some(request)=tab_drag_drop(ui,&button,side,index,revision,&tab.path,can_transfer) {drag_move=Some(request);}
                                     button.widget_info(|| {
                                         egui::WidgetInfo::selected(
                                             egui::WidgetType::SelectableLabel,
@@ -416,7 +458,7 @@ impl App {
                                         button.scroll_to_me(Some(egui::Align::Center));
                                     }
                                     if button
-                                        .on_hover_text(format!("{}\n{}\nDrag to reorder within this pane\n{}", name, tab.path.display(), if tab.close_protected { "Protected from closing; change in this tab menu" } else { "Middle-click to close this tab" }))
+                                        .on_hover_text(format!("{}\n{}\nDrag to reorder or move to the other pane\n{}", name, tab.path.display(), if tab.close_protected { "Protected from closing; change in this tab menu" } else { "Middle-click to close this tab" }))
                                         .clicked()
                                     {
                                         select = Some(index);
@@ -428,6 +470,19 @@ impl App {
                 });
             });
         if let Some((binding, to)) = drag_move {
+            if binding.side != side {
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::new(TAB_TRANSFER),
+                        FolderTabTransfer {
+                            binding,
+                            position: to,
+                        },
+                    )
+                });
+                ui.ctx().request_repaint();
+                return false;
+            }
             if self
                 .ws
                 .move_tab_captured(side, binding.from, to, binding.revision, &binding.path)
@@ -634,8 +689,8 @@ mod closed_menu_tests {
         result
     }
     #[test]
-    fn tab_drag_payload_moves_between_boundaries_and_refuses_stale_cross_pane_or_outside_drops() {
-        for case in 0..4 {
+    fn tab_drag_payload_routes_permitted_panes_and_refuses_stale_or_outside_drops() {
+        for case in 0..5 {
             let ctx = egui::Context::default();
             let mut time = 0.0;
             let mut render = |events, revision| {
@@ -671,7 +726,13 @@ mod closed_menu_tests {
                                             )
                                         });
                                         dropped = tab_drag_drop(
-                                            ui, &response, side, index, revision, &path,
+                                            ui,
+                                            &response,
+                                            side,
+                                            index,
+                                            revision,
+                                            &path,
+                                            case == 4,
                                         )
                                         .or(dropped.take());
                                     }
@@ -698,7 +759,7 @@ mod closed_menu_tests {
             let destination = if case == 3 {
                 egui::pos2(650.0, 350.0)
             } else {
-                let side = if case == 1 {
+                let side = if case == 1 || case == 4 {
                     ActivePanel::Right
                 } else {
                     ActivePanel::Left
@@ -732,7 +793,7 @@ mod closed_menu_tests {
             let revision = if case == 2 { 2 } else { 1 };
             assert!(render(vec![egui::Event::PointerMoved(destination)], revision).is_none());
             let request = render(pointer(destination, false), revision);
-            if case == 0 {
+            if case == 0 || case == 4 {
                 let (binding, to) = request.unwrap();
                 assert_eq!(binding.from, 2);
                 assert_eq!(binding.path, PathBuf::from("/folder-2"));
@@ -746,12 +807,12 @@ mod closed_menu_tests {
         }
     }
     #[test]
-    fn tab_drag_edge_scroll_stays_in_the_captured_pane() {
+    fn tab_drag_edge_scroll_respects_transfer_permission() {
         let ctx = egui::Context::default();
         let mut id = None;
         let mut viewport = None;
         let mut time = 0.0;
-        let mut frame = |side, position: Option<egui::Pos2>| {
+        let mut frame = |side, can_transfer, position: Option<egui::Pos2>| {
             time += 0.1;
             crate::testutil::discard_egui_output(
                 ctx.run_ui(
@@ -786,6 +847,7 @@ mod closed_menu_tests {
                                 from: 0,
                                 revision: 1,
                                 path: "/folder".into(),
+                                can_transfer,
                             },
                         );
                         auto_scroll_tab_drag(ui, &output, ActivePanel::Left, 1);
@@ -794,21 +856,25 @@ mod closed_menu_tests {
             );
             (id.unwrap(), viewport.unwrap())
         };
-        let (id, rect) = frame(ActivePanel::Left, None);
+        let (id, rect) = frame(ActivePanel::Left, false, None);
         let right = egui::pos2(rect.right() - 2.0, rect.center().y);
-        frame(ActivePanel::Left, Some(right));
+        frame(ActivePanel::Left, false, Some(right));
         let offset = egui::scroll_area::State::load(&ctx, id).unwrap().offset.x;
         assert!(offset > 0.0);
-        frame(ActivePanel::Right, Some(right));
+        frame(ActivePanel::Right, false, Some(right));
         assert_eq!(
             egui::scroll_area::State::load(&ctx, id).unwrap().offset.x,
             offset
         );
+        frame(ActivePanel::Right, true, Some(right));
+        let allowed_offset = egui::scroll_area::State::load(&ctx, id).unwrap().offset.x;
+        assert!(allowed_offset > offset);
         frame(
             ActivePanel::Left,
+            false,
             Some(egui::pos2(rect.left() + 2.0, rect.center().y)),
         );
-        assert!(egui::scroll_area::State::load(&ctx, id).unwrap().offset.x < offset);
+        assert!(egui::scroll_area::State::load(&ctx, id).unwrap().offset.x < allowed_offset);
     }
     #[test]
     fn history_menu_remains_actionable_at_capacity_without_reopening() {

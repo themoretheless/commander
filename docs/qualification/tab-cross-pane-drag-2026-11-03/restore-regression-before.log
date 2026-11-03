@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 24.91s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 1 test
+test panel::tests::async_tab_activation_restores_focus_after_loading_frame_clamps_cursor ... FAILED
+
+failures:
+
+---- panel::tests::async_tab_activation_restores_focus_after_loading_frame_clamps_cursor stdout ----
+
+thread 'panel::tests::async_tab_activation_restores_focus_after_loading_frame_clamps_cursor' (25679804) panicked at src/panel.rs:7129:37:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    panel::tests::async_tab_activation_restores_focus_after_loading_frame_clamps_cursor
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3533 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

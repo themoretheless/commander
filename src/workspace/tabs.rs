@@ -769,10 +769,35 @@ impl Workspace {
 
     /// Move the owned runtime panel into the other pane's background tab group.
     pub fn move_tab_to_other(&mut self, source: ActivePanel, index: usize) -> bool {
+        let position = self.active_tab_index(source.other()) + 1;
+        self.move_tab_to_other_at(source, index, position)
+    }
+    /// Transfer the exact captured tab into a destination insertion boundary.
+    pub(crate) fn transfer_tab_captured(
+        &mut self,
+        source: ActivePanel,
+        index: usize,
+        position: usize,
+        revision: u64,
+        path: &std::path::Path,
+    ) -> bool {
+        if self.tab_revision() != revision
+            || self
+                .tab_snapshot(source)
+                .entries
+                .get(index)
+                .is_none_or(|tab| tab.path != path)
+        {
+            return false;
+        }
+        self.move_tab_to_other_at(source, index, position)
+    }
+    fn move_tab_to_other_at(&mut self, source: ActivePanel, index: usize, position: usize) -> bool {
         if !self.tabs_can_change()
             || self.tab_count(source) <= 1
             || index >= self.tab_count(source)
             || self.tab_count(source.other()) >= MAX_TABS
+            || position > self.tab_count(source.other())
         {
             return false;
         }
@@ -788,15 +813,19 @@ impl Workspace {
         }
         panel.suspend_for_tab();
         let (destination, _) = self.tabs_and_panel(source.other());
-        destination
-            .slots
-            .insert(destination.active + 1, Some(panel));
-        if visible_changed {
-            self.reset_tab_presentation();
-        } else {
-            self.tab_revision = self.tab_revision.wrapping_add(1);
-            *self.command_capabilities.borrow_mut() = None;
+        destination.slots.insert(position, Some(panel));
+        if position <= destination.active {
+            destination.active += 1;
         }
+        if visible_changed {
+            let (_, visible) = self.tabs_and_panel(source);
+            visible.preview = None;
+            self.preview_declined = None;
+            self.left.drag.clear();
+            self.right.drag.clear();
+        }
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        *self.command_capabilities.borrow_mut() = None;
         true
     }
 
@@ -2496,6 +2525,137 @@ mod tests {
         }
     }
 
+    #[test]
+    fn captured_cross_pane_transfer_keeps_runtime_state_at_every_insertion_boundary() {
+        for source in [ActivePanel::Left, ActivePanel::Right] {
+            for move_visible in [false, true] {
+                for position in 0..=2 {
+                    let temp = TempDir::new();
+                    let root = temp.dir("source");
+                    let b = temp.dir("B");
+                    let a = temp.dir("A");
+                    let dest = temp.dir("destination");
+                    let extra = temp.dir("extra");
+                    let keep = temp.file("B/keep.txt", "moved");
+                    let live = temp.file("destination/live.txt", "destination");
+                    let mut ws = Workspace::new(root.clone(), dest.clone());
+                    if source == ActivePanel::Right {
+                        ws = Workspace::new(dest.clone(), root.clone());
+                    }
+                    assert!(ws.new_background_tab(source, a));
+                    assert!(ws.new_background_tab(source, b.clone()));
+                    assert!(ws.select_tab(source, 1));
+                    {
+                        let (_, panel) = ws.tabs_and_panel(source);
+                        panel.refresh();
+                        panel.set_browser_mode(crate::panel::BrowserMode::Icons);
+                        panel.set_search_query("keep");
+                        panel.focus_child("keep.txt".into());
+                        panel.select_path(keep.clone());
+                    }
+                    assert!(ws.set_tab_title(source, 1, "Transfer me"));
+                    assert!(ws.set_tab_close_protection(source, 1, true));
+                    if !move_visible {
+                        assert!(ws.select_tab(source, 0));
+                    }
+                    assert!(ws.new_background_tab(source.other(), extra));
+                    let preview = crate::panel::PreviewContent::Image(live.clone());
+                    let destination_generation = {
+                        let (_, panel) = ws.tabs_and_panel(source.other());
+                        panel.refresh();
+                        panel.focus_child("live.txt".into());
+                        panel.select_path(live.clone());
+                        panel.preview = Some(preview.clone());
+                        panel.entries_gen()
+                    };
+                    ws.active = source;
+                    let before = ws.tab_snapshot(source);
+                    let destination_before = ws.tab_snapshot(source.other());
+                    let revision = ws.tab_revision();
+                    assert!(ws.transfer_tab_captured(source, 1, position, revision, &b));
+                    let mut expected = destination_before.entries.clone();
+                    expected.insert(position, before.entries[1].clone());
+                    let after = ws.tab_snapshot(source.other());
+                    assert_eq!(after.entries, expected);
+                    assert_eq!(after.active, usize::from(position == 0));
+                    assert_eq!(ws.tab_count(source), 2);
+                    assert_eq!(ws.active, source);
+                    assert_eq!(ws.closed_tab_count(source), before.closed.len());
+                    assert_eq!(
+                        ws.closed_tab_count(source.other()),
+                        destination_before.closed.len()
+                    );
+                    {
+                        let (tabs, panel) = ws.tabs_and_panel(source.other());
+                        assert_eq!(panel.current_path, dest);
+                        assert_eq!(panel.entries_gen(), destination_generation);
+                        assert_eq!(panel.preview, Some(preview));
+                        assert!(panel.is_selected(&live));
+                        let moved = tabs.slots[position].as_ref().unwrap();
+                        assert_eq!(moved.current_path, b);
+                        assert_eq!(moved.search_query(), "keep");
+                        assert!(moved.is_selected(&keep));
+                        assert!(!moved.has_notify());
+                    }
+                    assert!(ws.select_tab(source.other(), position));
+                    {
+                        let (_, panel) = ws.tabs_and_panel(source.other());
+                        let workload = crate::workload::DeterministicWorkload::new(
+                            crate::workload::SchedulerLimits::default(),
+                        );
+                        panel.set_workload(workload.handle());
+                        panel.set_notify(std::sync::Arc::new(|| {}));
+                        panel.refresh();
+                        panel.ensure_cursor_valid();
+                        assert!(workload.run_next());
+                        assert!(panel.poll_listing());
+                        assert!(panel.is_selected(&keep));
+                        assert_eq!(panel.cursor_entry().unwrap().path, keep);
+                    }
+                    assert_eq!(std::fs::read(&keep).unwrap(), b"moved");
+                    assert_eq!(std::fs::read(&live).unwrap(), b"destination");
+                }
+            }
+        }
+    }
+    #[test]
+    fn captured_cross_pane_transfer_refuses_stale_capacity_last_tab_and_pending_modal() {
+        let temp = TempDir::new();
+        let b = temp.dir("B");
+        let file = temp.file("keep.txt", "keep");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        let revision = ws.tab_revision();
+        assert!(!ws.transfer_tab_captured(ActivePanel::Left, 0, 0, revision, temp.path()));
+        assert!(ws.new_background_tab(ActivePanel::Left, b.clone()));
+        let revision = ws.tab_revision();
+        let left = ws.tab_snapshot(ActivePanel::Left);
+        let right = ws.tab_snapshot(ActivePanel::Right);
+        for (index, position, version, path) in [
+            (1, 0, revision.wrapping_add(1), b.clone()),
+            (1, 0, revision, temp.path().into()),
+            (9, 0, revision, b.clone()),
+            (1, 2, revision, b.clone()),
+        ] {
+            assert!(!ws.transfer_tab_captured(ActivePanel::Left, index, position, version, &path));
+            assert_eq!(ws.tab_snapshot(ActivePanel::Left), left);
+            assert_eq!(ws.tab_snapshot(ActivePanel::Right), right);
+            assert_eq!(ws.tab_revision(), revision);
+        }
+        ws.emit_ui_request(crate::ui_request::UiRequest::Rename(file));
+        assert!(!ws.transfer_tab_captured(ActivePanel::Left, 1, 0, revision, &b));
+        ws.drain_ui_requests();
+        ws.left.navigate_to(b.clone());
+        assert!(!ws.transfer_tab_captured(ActivePanel::Left, 0, 0, revision, temp.path()));
+        while ws.tab_count(ActivePanel::Right) < MAX_TABS {
+            assert!(ws.new_background_tab(ActivePanel::Right, b.clone()));
+        }
+        let revision = ws.tab_revision();
+        let left = ws.tab_snapshot(ActivePanel::Left);
+        let right = ws.tab_snapshot(ActivePanel::Right);
+        assert!(!ws.transfer_tab_captured(ActivePanel::Left, 1, 0, revision, &b));
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left), left);
+        assert_eq!(ws.tab_snapshot(ActivePanel::Right), right);
+    }
     #[test]
     fn captured_tab_reorder_keeps_both_previews_selection_and_rejects_changed_bindings() {
         let temp = TempDir::new();

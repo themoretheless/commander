@@ -2720,6 +2720,7 @@ impl App {
         if let (Some(lmap), Some(rmap)) = (left_compare, right_compare) {
             self.compare_cache = Some((cmp_right_gen, cmp_left_gen, lmap, rmap));
         }
+        self.apply_tab_drag_transfer(&ctx);
     }
 
     /// One pane's body: pointer activation, then the panel renderer.

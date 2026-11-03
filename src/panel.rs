@@ -910,6 +910,19 @@ impl PanelState {
     }
 
     pub(crate) fn prepare_tab_activation(&mut self) {
+        // Retiring rows makes loading-frame cursor validation clamp to `..`.
+        // Keep the path-owned landing intent in the listing controller so
+        // the first refresh (and any repeated refresh) restores it on publish.
+        let focus = PendingFocus::Remembered {
+            cursor_path: self.focused_path(),
+            scroll_anchor: self.scroll_anchor(),
+        };
+        self.listing_job.request(
+            self.current_path.clone(),
+            self.view.show_hidden(),
+            None,
+            focus,
+        );
         self.listing.begin_loading(self.current_path.clone());
         self.selection.set_scroll_to_cursor(true);
     }
@@ -7103,6 +7116,32 @@ mod tests {
         p.set_workload(workload.handle());
         p.set_notify(Arc::new(|| {}));
         workload
+    }
+
+    #[test]
+    fn async_tab_activation_restores_focus_after_loading_frame_clamps_cursor() {
+        let tmp = TempDir::new();
+        tmp.file("aaa.txt", "a");
+        let target = tmp.file("zzz.txt", "z");
+        let mut p = PanelState::new(tmp.path().to_path_buf());
+        p.refresh();
+        p.focus_child("zzz.txt".into());
+        p.select_path(target.clone());
+        p.set_scroll_anchor(1);
+        p.suspend_for_tab();
+        p.prepare_tab_activation();
+        let workload = deterministic_listings(&mut p);
+        p.refresh();
+        assert_eq!(p.dir_status(), DirStatus::Loading);
+        // The UI polls filesystem changes and validates cursor rows before
+        // the asynchronous listing finishes, while no rows are exposed.
+        p.ensure_cursor_valid();
+        assert!(p.cursor_entry().is_none());
+        assert!(workload.run_next());
+        assert!(p.poll_listing());
+        assert_eq!(p.cursor_entry().unwrap().path, target);
+        assert!(p.is_selected(&target));
+        assert_eq!(p.scroll_anchor(), 1);
     }
 
     #[test]

@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/tab-cross-pane-drag-2026-11-03/native-captures/1793711182220016000",
+  "binary_sha256": "06bda34b0b90ebc35ca004684678704b472101ec936151162b68650c477d6bf3",
+  "core_sha256": "06bda34b0b90ebc35ca004684678704b472101ec936151162b68650c477d6bf3",
+  "wrapper_sha256": "6838c31dbab8fe52c2a0d5ae7b72fe3cd7888aeb41e7122214d8a09025c447d5",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
