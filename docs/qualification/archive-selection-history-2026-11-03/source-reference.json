@@ -1,0 +1,6 @@
+{
+  "cohort": 1,
+  "url": "https://github.com/houqp/kiorg#key-features",
+  "feature": "Undo/redo file operations",
+  "adaptation": "Commander archive selection history only; no filesystem undo, independent bounded implementation"
+}

@@ -89,6 +89,79 @@ impl ArchiveLocation {
     }
 }
 
+/// Selection edits only, bound to one immutable listing; no filesystem undo.
+#[derive(Default)]
+pub struct SelectionHistory {
+    current: Option<Vec<usize>>,
+    members: usize,
+    undo: std::collections::VecDeque<Vec<usize>>,
+    redo: Vec<Vec<usize>>,
+}
+impl SelectionHistory {
+    const MAX_IDS: usize = 65_536;
+    const MAX_STEPS: usize = 32;
+    fn reset(&mut self, selected: &std::collections::BTreeSet<usize>, members: usize) {
+        *self = Self {
+            members,
+            ..Default::default()
+        };
+        if selected.len() <= Self::MAX_IDS && selected.iter().all(|&id| id < members) {
+            self.current = Some(selected.iter().copied().collect());
+        }
+    }
+    pub(crate) fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+    pub(crate) fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+    fn observe(&mut self, selected: &std::collections::BTreeSet<usize>, members: usize) {
+        if self.members != members
+            || self.current.is_none()
+            || selected.len() > Self::MAX_IDS
+            || selected.iter().any(|&id| id >= members)
+        {
+            self.reset(selected, members);
+            return;
+        }
+        let previous = self.current.as_ref().unwrap();
+        if previous.iter().copied().eq(selected.iter().copied()) {
+            return;
+        }
+        self.redo.clear();
+        self.undo.push_back(self.current.take().unwrap());
+        self.current = Some(selected.iter().copied().collect());
+        while self.undo.len() > Self::MAX_STEPS
+            || self.undo.iter().map(Vec::len).sum::<usize>() + selected.len() > Self::MAX_IDS
+        {
+            self.undo.pop_front();
+        }
+    }
+    fn restore(
+        &mut self,
+        selected: &mut std::collections::BTreeSet<usize>,
+        members: usize,
+        redo: bool,
+    ) {
+        self.observe(selected, members);
+        let next = if redo {
+            self.redo.pop()
+        } else {
+            self.undo.pop_back()
+        };
+        let Some(next) = next else {
+            return;
+        };
+        let current = self.current.replace(next.clone()).unwrap();
+        if redo {
+            self.undo.push_back(current);
+        } else {
+            self.redo.push(current);
+        }
+        *selected = next.into_iter().collect();
+    }
+}
+
 /// One explicit snapshot, owned by the immutable archive listing.
 #[derive(Default)]
 struct SelectionMemory(Option<Vec<usize>>);
@@ -2007,6 +2080,7 @@ impl App {
         );
         self.ui.tools.replace_on(side);
         self.ui.tools.archive = Some(ArchiveState {
+            selection_history: SelectionHistory::default(),
             content_group_page: 0,
             content_keep: ContentKeep::default(),
             content_member_pages: std::collections::BTreeMap::new(),
@@ -2056,6 +2130,9 @@ impl App {
             state.run = None;
             match result {
                 Ok(listing) => {
+                    state
+                        .selection_history
+                        .reset(&state.selected, listing.members.len());
                     state.listing = Some(listing);
                     state.member_filter = MemberFilter::default();
                     state.error = None;
@@ -2133,6 +2210,13 @@ impl App {
         }
         let now = ctx.input(|input| input.time);
         self.poll_archive(now);
+        if let Some(state) = self.ui.tools.archive.as_mut()
+            && let Some(listing) = &state.listing
+        {
+            state
+                .selection_history
+                .observe(&state.selected, listing.members.len());
+        }
 
         let sheet_height = ui.available_height().max(0.0);
         let rows_height = (sheet_height * 0.35).clamp(72.0, 280.0);
@@ -2172,6 +2256,17 @@ impl App {
                 .show(ui, |ui| {
                 #[cfg(feature = "visual-qa")]
                 ui.ctx().data_mut(|d| { d.insert_temp(egui::Id::new("archive-sheet-clip"), ui.clip_rect()); d.remove::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")); });
+                if let Some(listing)=&state.listing {
+                    ui.horizontal_wrapped(|ui| {
+                        for (redo,label,enabled) in [(false,"Undo selection",state.selection_history.can_undo()),(true,"Redo selection",state.selection_history.can_redo())] {
+                            let button=ui.add_enabled(enabled,egui::Button::new(label))
+                                .on_hover_text("Restore archive member selection in this listing only, including hidden members. Rules, filters, navigation and saved selection are unchanged. Up to 32 edits and 65,536 stored member IDs; reopening resets history. No filesystem undo.");
+                            #[cfg(feature="visual-qa")]
+                            ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new(label),button.rect);d.insert_temp(egui::Id::new((label,"enabled")),button.enabled());});
+                            if button.clicked() {state.selection_history.restore(&mut state.selected,listing.members.len(),redo);}
+                        }
+                    });
+                }
                 ui.label(
                     egui::RichText::new(title)
                         .size(13.0)
@@ -3270,6 +3365,13 @@ impl App {
         {
             state.error = Some(error);
         }
+        if let Some(state) = self.ui.tools.archive.as_mut()
+            && let Some(listing) = &state.listing
+        {
+            state
+                .selection_history
+                .observe(&state.selected, listing.members.len());
+        }
         if let Some(result) = copy_check_report {
             match result {
                 Ok(text) => self.write_clipboard(&text, "archive check report", ctx),
@@ -3395,6 +3497,66 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn archive_selection_history_round_trips_hidden_ids_noops_and_new_branches() {
+        use super::SelectionHistory;
+        use std::collections::BTreeSet;
+        let mut history = SelectionHistory::default();
+        let original = BTreeSet::from([0, 2, 4]);
+        let edited = BTreeSet::from([1, 5]);
+        history.reset(&original, 6);
+        history.observe(&edited, 6);
+        let mut selected = edited.clone();
+        history.restore(&mut selected, 6, false);
+        assert_eq!(selected, original);
+        assert!(history.can_redo());
+        history.observe(&selected, 6); // filtering, policy edits and refused/no-op actions
+        assert!(history.can_redo());
+        history.restore(&mut selected, 6, true);
+        assert_eq!(selected, edited);
+        history.restore(&mut selected, 6, false);
+        selected = BTreeSet::from([3]);
+        history.observe(&selected, 6);
+        assert!(!history.can_redo());
+        history.restore(&mut selected, 6, false);
+        assert_eq!(selected, original);
+        history.reset(&BTreeSet::from([1]), 6); // a new listing with the same row count
+        assert!(!history.can_undo() && !history.can_redo());
+    }
+
+    #[test]
+    fn archive_selection_history_bounds_total_ids_and_invalidates_listing_changes() {
+        use super::SelectionHistory;
+        use std::collections::BTreeSet;
+        let mut history = SelectionHistory::default();
+        history.reset(&BTreeSet::new(), 100);
+        for id in 0..40 {
+            history.observe(&BTreeSet::from([id]), 100);
+        }
+        assert_eq!(history.undo.len(), 32);
+        let mut selected = BTreeSet::from([39]);
+        for _ in 0..32 {
+            history.restore(&mut selected, 100, false);
+        }
+        assert!(!history.can_undo() && history.can_redo());
+        assert_eq!(history.redo.len(), 32);
+        history.observe(&selected, 101);
+        assert!(!history.can_undo() && !history.can_redo());
+        let large = (0..40_000).collect::<BTreeSet<_>>();
+        let other = (40_000..80_000).collect::<BTreeSet<_>>();
+        history.reset(&large, 100_000);
+        history.observe(&other, 100_000);
+        assert!(!history.can_undo());
+        let too_big = (0..SelectionHistory::MAX_IDS + 1).collect::<BTreeSet<_>>();
+        history.observe(&too_big, 100_000);
+        assert!(history.current.is_none() && !history.can_undo() && !history.can_redo());
+        history.observe(&BTreeSet::from([1]), 100_000);
+        history.observe(&BTreeSet::from([2]), 100_000);
+        assert!(history.can_undo());
+        history.observe(&BTreeSet::from([100_000]), 100_000);
+        assert!(history.current.is_none() && !history.can_undo());
+    }
+
     #[test]
     fn archive_candidate_patterns_limit_selection_and_count_other_members_as_keepers() {
         use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};

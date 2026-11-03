@@ -473,6 +473,7 @@ pub struct DiskUsageState {
 }
 
 pub struct ArchiveState {
+    pub selection_history: archive_dialog::SelectionHistory,
     pub content_keep: archive_dialog::ContentKeep,
     pub content_group_page: usize,
     pub content_member_pages: std::collections::BTreeMap<usize, usize>,
