@@ -1,0 +1,28 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "28de935160bd78dbb3a7bf027846ef4494301b590ffb29683c4ac337e6ad17ad",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-crc-order-2026-11-03/native-captures/1793676206843207000/archive_metadata"
+  },
+  "archive_export": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 5,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "77ec00f9868742a0b8a79a79e2ab93d733e871a8f0dbcdfaf4717556562d4260",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-crc-order-2026-11-03/native-captures/1793676244172800000/archive_export"
+  }
+}

@@ -10,16 +10,18 @@ pub enum Field {
     Packed,
     Ratio,
     Modified,
+    Crc32,
 }
 
 impl Field {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Name,
         Self::Extension,
         Self::Size,
         Self::Packed,
         Self::Ratio,
         Self::Modified,
+        Self::Crc32,
     ];
     pub const fn label(self) -> &'static str {
         match self {
@@ -29,13 +31,14 @@ impl Field {
             Self::Packed => "Packed",
             Self::Ratio => "Ratio",
             Self::Modified => "Modified",
+            Self::Crc32 => "CRC-32",
         }
     }
     pub fn available(self, kind: ArchiveKind) -> bool {
-        kind == ArchiveKind::Zip || !matches!(self, Self::Packed | Self::Ratio)
+        kind == ArchiveKind::Zip || !matches!(self, Self::Packed | Self::Ratio | Self::Crc32)
     }
     pub fn default_descending(self) -> bool {
-        !matches!(self, Self::Name | Self::Extension)
+        !matches!(self, Self::Name | Self::Extension | Self::Crc32)
     }
 }
 
@@ -84,6 +87,12 @@ impl Order {
             if self.folders_first && a.is_dir != b.is_dir {
                 return b.is_dir.cmp(&a.is_dir);
             }
+            let crc_a = a.zip_info.as_ref().and_then(|info| info.crc32);
+            let crc_b = b.zip_info.as_ref().and_then(|info| info.crc32);
+            // Unavailable checksums stay last in either direction. Zero is valid.
+            if self.field == Field::Crc32 && crc_a.is_some() != crc_b.is_some() {
+                return crc_b.is_some().cmp(&crc_a.is_some());
+            }
             let cmp = match self.field {
                 Field::Name => self.compare_names(&lower_paths[left], &lower_paths[right]),
                 Field::Extension => extension_key(&lower_paths[left], a.is_dir)
@@ -91,6 +100,7 @@ impl Order {
                 Field::Size => a.size.cmp(&b.size),
                 Field::Packed => a.compressed_size.cmp(&b.compressed_size),
                 Field::Modified => a.modified.cmp(&b.modified),
+                Field::Crc32 => crc_a.cmp(&crc_b),
                 Field::Ratio => match (a.compressed_size, b.compressed_size) {
                     (0, 0) => std::cmp::Ordering::Equal,
                     (0, _) => std::cmp::Ordering::Less,
@@ -382,6 +392,78 @@ mod tests {
             ),
             [1, 0]
         );
+    }
+
+    #[test]
+    fn crc_order_is_numeric_keeps_unknown_last_and_preserves_duplicate_identities() {
+        let mut listing = listing();
+        let template = listing.members[0].clone();
+        listing.members = [
+            ("file10", Some(7)),
+            ("file2", Some(7)),
+            ("zero", Some(0)),
+            ("unknown", None),
+            ("max", Some(u32::MAX)),
+            ("file2", Some(7)),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, crc32))| ArchiveMember {
+            index,
+            path: name.into(),
+            is_dir: false,
+            zip_info: Some(crate::archive::ZipMemberInfo {
+                compression: "Stored".into(),
+                encrypted: false,
+                encryption: "None".into(),
+                crc32,
+            }),
+            ..template.clone()
+        })
+        .collect();
+        let order = Order {
+            field: Field::Crc32,
+            ..Default::default()
+        };
+        assert_eq!(sorted(&listing, order), [2, 1, 5, 0, 4, 3]);
+        assert_eq!(
+            sorted(
+                &listing,
+                Order {
+                    descending: true,
+                    ..order
+                }
+            ),
+            [4, 1, 5, 0, 2, 3]
+        );
+        assert_eq!(
+            sorted(
+                &listing,
+                Order {
+                    natural: false,
+                    ..order
+                }
+            ),
+            [2, 0, 1, 5, 4, 3]
+        );
+        listing.members[3].is_dir = true;
+        assert_eq!(
+            sorted(
+                &listing,
+                Order {
+                    folders_first: true,
+                    ..order
+                }
+            ),
+            [3, 2, 1, 5, 0, 4]
+        );
+        let mut selected = Order::default();
+        selected.choose(Field::Crc32);
+        assert!(!selected.descending);
+        selected.choose(Field::Crc32);
+        assert!(selected.descending);
+        assert!(Field::Crc32.available(ArchiveKind::Zip));
+        assert!(!Field::Crc32.available(ArchiveKind::Tar));
     }
 
     #[test]

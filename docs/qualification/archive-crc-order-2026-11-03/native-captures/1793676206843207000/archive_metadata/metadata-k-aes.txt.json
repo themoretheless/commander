@@ -1,0 +1,50 @@
+[
+  "k-aes.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "4352 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "4380 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "2026-11-03T01:11:26Z",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Stored",
+      true
+    ],
+    [
+      "Encrypted",
+      "Yes (WinZip AES-256 (AE-2), password required)",
+      true
+    ],
+    [
+      "Declared CRC-32",
+      "Unavailable (not recorded per member)",
+      true
+    ]
+  ]
+]

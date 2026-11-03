@@ -1,0 +1,84 @@
+{
+  "descending": false,
+  "rows": [
+    {
+      "crc32": 217803391,
+      "id": 9,
+      "path": "j-ppmd.txt",
+      "position": 0
+    },
+    {
+      "crc32": 601510039,
+      "id": 5,
+      "path": "f-lzma.txt",
+      "position": 1
+    },
+    {
+      "crc32": 1445909711,
+      "id": 6,
+      "path": "g-xz.txt",
+      "position": 2
+    },
+    {
+      "crc32": 1896173514,
+      "id": 4,
+      "path": "e-deflate64.txt",
+      "position": 3
+    },
+    {
+      "crc32": 1983354931,
+      "id": 0,
+      "path": "a-stored.txt",
+      "position": 4
+    },
+    {
+      "crc32": 1983354931,
+      "id": 1,
+      "path": "b-deflated.txt",
+      "position": 5
+    },
+    {
+      "crc32": 1983354931,
+      "id": 2,
+      "path": "c-encrypted.txt",
+      "position": 6
+    },
+    {
+      "crc32": 1983354931,
+      "id": 3,
+      "path": "d-bzip2.txt",
+      "position": 7
+    },
+    {
+      "crc32": 3299279930,
+      "id": 7,
+      "path": "h-zstd93.txt",
+      "position": 8
+    },
+    {
+      "crc32": 3299279930,
+      "id": 8,
+      "path": "i-zstd20.txt",
+      "position": 9
+    },
+    {
+      "crc32": null,
+      "id": 10,
+      "path": "k-aes.txt",
+      "position": 10
+    }
+  ],
+  "selected": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ]
+}

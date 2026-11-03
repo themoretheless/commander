@@ -4986,7 +4986,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveExport && self.archive_copy_phase < 43)
             && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
-            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 36)
+            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 44)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
@@ -17097,7 +17097,7 @@ impl eframe::App for VisualQaApp {
             return;
         }
         if self.scenario == Scenario::ArchiveMetadata
-            && self.archive_copy_phase == 36
+            && matches!(self.archive_copy_phase, 36 | 44)
             && ctx
                 .data(|d| {
                     d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
@@ -17117,6 +17117,91 @@ impl eframe::App for VisualQaApp {
                 delta: egui::vec2(0.0, -80.0),
                 modifiers: Default::default(),
             });
+        }
+        if self.scenario == Scenario::ArchiveMetadata && (36..44).contains(&self.archive_copy_phase)
+        {
+            let phase = self.archive_copy_phase;
+            let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                return;
+            };
+            if phase == 36 && !self.scenario_dir.join("crc-sort-baseline.json").is_file() {
+                let observed = ctx.data(|d| {
+                    d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
+                        "archive-rendered-details",
+                    ))
+                });
+                if !observed.as_ref().is_some_and(|(path, rows)| {
+                    path == Path::new("k-aes.txt")
+                        && rows.len() == 9
+                        && rows.iter().all(|(_, _, v)| *v)
+                }) {
+                    return;
+                }
+                let _ = std::fs::write(
+                    self.scenario_dir.join("metadata-k-aes.txt.json"),
+                    serde_json::to_vec_pretty(&observed).unwrap(),
+                );
+                let _ = std::fs::write(
+                    self.scenario_dir.join("crc-sort-baseline.json"),
+                    serde_json::to_vec_pretty(&state.selected).unwrap(),
+                );
+            }
+            if matches!(phase, 39 | 43) {
+                if state.member_filter.order.field != crate::archive_order::Field::Crc32
+                    || state.member_filter.order.descending != (phase == 43)
+                    || !state.member_filter.applied_order_matches()
+                {
+                    return;
+                }
+                let Some(listing) = state.listing.as_ref() else {
+                    return;
+                };
+                let mut rows = listing
+                    .members
+                    .iter()
+                    .enumerate()
+                    .map(|(id, m)| (state.member_filter.row_position(id), id, m))
+                    .collect::<Vec<_>>();
+                rows.sort_by_key(|r| r.0);
+                let record = serde_json::json!({"descending":state.member_filter.order.descending,"selected":state.selected,"rows":rows.into_iter().map(|(position,id,m)|serde_json::json!({"position":position,"id":id,"path":m.path,"crc32":m.zip_info.as_ref().and_then(|info|info.crc32)})).collect::<Vec<_>>()});
+                let _ = std::fs::write(
+                    self.scenario_dir.join(format!("crc-sort-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                self.archive_copy_phase += 1;
+                return;
+            }
+            let id = egui::Id::new(("archive-sort-header", "CRC-32"));
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !clip.contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            let step = if phase < 39 { phase - 36 } else { phase - 40 };
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_copy_phase += 1;
         }
         if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 36 {
             let phase = self.archive_copy_phase;
@@ -21392,7 +21477,7 @@ impl eframe::App for VisualQaApp {
             }
             Scenario::ArchiveMetadata => {
                 let observed = ctx.data(|d| d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")));
-                let ready = self.archive_copy_phase == 36 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("k-aes.txt") && rows.len() == 9 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Stored" && rows[7].1 == "Yes (WinZip AES-256 (AE-2), password required)" && rows[8].1 == "Unavailable (not recorded per member)");
+                let ready = self.archive_copy_phase == 44 && self.scenario_dir.join("crc-sort-39.json").is_file() && self.scenario_dir.join("crc-sort-43.json").is_file() && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("k-aes.txt") && rows.len() == 9 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Stored" && rows[7].1 == "Yes (WinZip AES-256 (AE-2), password required)" && rows[8].1 == "Unavailable (not recorded per member)");
                 if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-k-aes.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
                 ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file() && self.scenario_dir.join("metadata-d-bzip2.txt.json").is_file() && self.scenario_dir.join("metadata-e-deflate64.txt.json").is_file() && self.scenario_dir.join("metadata-f-lzma.txt.json").is_file() && self.scenario_dir.join("metadata-g-xz.txt.json").is_file() && self.scenario_dir.join("metadata-h-zstd93.txt.json").is_file() && self.scenario_dir.join("metadata-i-zstd20.txt.json").is_file() && self.scenario_dir.join("metadata-j-ppmd.txt.json").is_file()
             }

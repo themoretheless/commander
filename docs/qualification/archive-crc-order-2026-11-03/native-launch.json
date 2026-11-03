@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-crc-order-2026-11-03/native-captures/1793676206843207000",
+  "binary_sha256": "57fe34fff4166826c71a494f16f6e43675a3734314a29caa0e5b805d1912c37c",
+  "core_sha256": "57fe34fff4166826c71a494f16f6e43675a3734314a29caa0e5b805d1912c37c",
+  "wrapper_sha256": "13e47108162a41fa10845d9cf0d15204216b059dcc96c903b45b49a390ee9b93",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

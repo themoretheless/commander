@@ -828,6 +828,10 @@ impl MemberFilter {
     }
 
     #[cfg(feature = "visual-qa")]
+    pub fn applied_order_matches(&self) -> bool {
+        self.applied_order == Some(self.order)
+    }
+    #[cfg(feature = "visual-qa")]
     pub fn current_folder(&self) -> Option<&std::path::Path> {
         self.folder.as_deref()
     }
@@ -2153,7 +2157,8 @@ impl App {
                     ui.add_space(4.0);
                     ui.separator();
                     let show_modified = ui.available_width() >= 560.0;
-                    let tail_width = 230.0 + if show_modified { 126.0 } else { 0.0 };
+                    let show_crc = listing.kind == crate::archive::ArchiveKind::Zip && ui.available_width() >= 500.0;
+                    let tail_width = 230.0 + if show_crc { 86.0 } else { 0.0 } + if show_modified { 126.0 } else { 0.0 };
                     let name_width = (ui.available_width() - 8.0 - tail_width).max(40.0);
                     let mut columns = vec![
                         (ArchiveField::Name, name_width),
@@ -2161,6 +2166,7 @@ impl App {
                         (ArchiveField::Packed, 72.0),
                         (ArchiveField::Ratio, 54.0),
                     ];
+                    if show_crc { columns.push((ArchiveField::Crc32, 80.0)); }
                     if show_modified {
                         columns.push((ArchiveField::Modified, 120.0));
                     }
@@ -2191,6 +2197,8 @@ impl App {
                                     format!("Sort archive by {}", field.label()),
                                 )
                             });
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("archive-sort-header", field.label())), header.rect));
                             if header
                                 .on_hover_text("Click to sort; click again to reverse")
                                 .clicked()
@@ -2314,6 +2322,7 @@ impl App {
                                                 crate::search::modified_label(member.modified);
                                             let mut values =
                                                 vec![(size, 72.0), (packed, 72.0), (ratio, 54.0)];
+                                            if show_crc { values.push((member.zip_info.as_ref().and_then(|info|info.crc32).map(|crc|format!("{crc:08X}")).unwrap_or_else(|| "—".into()),80.0)); }
                                             if show_modified {
                                                 values.push((modified, 120.0));
                                             }

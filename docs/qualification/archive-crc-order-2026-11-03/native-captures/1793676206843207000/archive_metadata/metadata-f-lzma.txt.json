@@ -1,0 +1,50 @@
+[
+  "f-lzma.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "30 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "51 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "Unavailable",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Lzma",
+      true
+    ],
+    [
+      "Encrypted",
+      "No",
+      true
+    ],
+    [
+      "Declared CRC-32",
+      "23DA5097",
+      true
+    ]
+  ]
+]
