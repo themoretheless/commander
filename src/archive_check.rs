@@ -33,6 +33,47 @@ pub struct ContentGroup {
     pub size: u64,
     pub members: Vec<ContentMember>,
 }
+/// Logical payload totals for the supplied complete groups, independent of policies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ContentGroupTotals {
+    pub groups: usize,
+    #[serde(serialize_with = "decimal_u128")]
+    pub members: u128,
+    #[serde(serialize_with = "decimal_u128")]
+    pub payload_bytes: u128,
+    #[serde(serialize_with = "decimal_u128")]
+    pub extra_members: u128,
+    #[serde(serialize_with = "decimal_u128")]
+    pub extra_payload_bytes: u128,
+}
+fn decimal_u128<S: serde::Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+impl ContentGroupTotals {
+    pub fn from_groups<'a>(groups: impl IntoIterator<Item = &'a ContentGroup>) -> Self {
+        let mut total = Self::default();
+        for group in groups {
+            let copies = group.members.len() as u128;
+            let extra = copies.saturating_sub(1);
+            total.groups += 1;
+            total.members += copies;
+            total.extra_members += extra;
+            total.payload_bytes += u128::from(group.size) * copies;
+            total.extra_payload_bytes += u128::from(group.size) * extra;
+        }
+        total
+    }
+    pub fn label(self, scope: &str) -> String {
+        format!(
+            "{scope}: {} groups · {} members · {} payload bytes · {} extra copies · {} extra payload bytes",
+            self.groups,
+            self.members,
+            self.payload_bytes,
+            self.extra_members,
+            self.extra_payload_bytes
+        )
+    }
+}
 #[derive(Clone, Copy)]
 struct ScanOptions {
     limit: u64,

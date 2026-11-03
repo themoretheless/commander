@@ -1,0 +1,67 @@
+{
+  "can_redo": false,
+  "can_undo": false,
+  "groups": [
+    {
+      "members": [
+        {
+          "index": 4,
+          "path": "empty-one",
+          "size": 0
+        },
+        {
+          "index": 5,
+          "path": "empty-two",
+          "size": 0
+        }
+      ],
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "members": [
+        {
+          "index": 0,
+          "path": "z-same.txt",
+          "size": 33
+        },
+        {
+          "index": 2,
+          "path": "a-same.txt",
+          "size": 33
+        },
+        {
+          "index": 8,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 9,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 10,
+          "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt",
+          "size": 33
+        }
+      ],
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17",
+      "size": 33
+    }
+  ],
+  "preferences": {
+    "policy": {
+      "candidate_globs": "*.TXT",
+      "count": 1,
+      "modified_before": "",
+      "order": "deepest",
+      "protect_basename": false,
+      "protect_case_sensitive": false,
+      "protected_glob": "",
+      "tie_breakers": []
+    },
+    "version": 1
+  },
+  "selected": []
+}

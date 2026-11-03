@@ -158,16 +158,24 @@ pub struct ContentGroupView {
     case_sensitive: bool,
     error: Option<String>,
     order: Vec<usize>,
+    scanned_totals: Option<crate::archive_check::ContentGroupTotals>,
+    shown_totals: Option<crate::archive_check::ContentGroupTotals>,
     ready: bool,
 }
 impl ContentGroupView {
     fn invalidate(&mut self) {
         self.order.clear();
+        self.scanned_totals = None;
+        self.shown_totals = None;
         self.error = None;
         self.ready = false;
     }
     fn indices(&mut self, groups: &[crate::archive_check::ContentGroup]) -> &[usize] {
         if !self.ready {
+            self.scanned_totals = Some(crate::archive_check::ContentGroupTotals::from_groups(
+                groups,
+            ));
+            self.shown_totals = None;
             let pattern = crate::archive_filter::Pattern::compile(
                 &self.query,
                 crate::archive_filter::Options {
@@ -204,7 +212,13 @@ impl ContentGroupView {
                 },
             );
             match filtered {
-                Ok(order) => self.order = order,
+                Ok(order) => {
+                    self.shown_totals =
+                        Some(crate::archive_check::ContentGroupTotals::from_groups(
+                            order.iter().map(|&rank| &groups[rank]),
+                        ));
+                    self.order = order;
+                }
                 Err(error) => {
                     self.order.clear();
                     self.error = Some(error);
@@ -310,6 +324,10 @@ impl ContentGroupView {
     #[cfg(feature = "visual-qa")]
     pub(crate) fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({"sort":content_group_sort_label(self.sort),"order":self.order})
+    }
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn totals_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"scanned":self.scanned_totals,"shown":self.shown_totals})
     }
     #[cfg(feature = "visual-qa")]
     pub(crate) fn copy_bounds_snapshot(&self) -> serde_json::Value {
@@ -2901,6 +2919,14 @@ impl App {
                             if let Some(error)=&state.content_group_view.error {ui.colored_label(ui.visuals().error_fg_color,error);}
                             let order=&state.content_group_view.order;
                             ui.label(format!("Showing {} of {} scanned groups; all members of matching groups remain visible.",order.len(),groups.len()));
+                            let totals_hint="Logical uncompressed payload, not archive size or disk savings. Extra copies/bytes assume one keeper per group, independent of selection, keep count, protections and candidate/date rules. Scanned totals cover only retained matching-content groups, not every archive entry.";
+                            for (total,scope) in [(state.content_group_view.scanned_totals,"Scanned groups"),(state.content_group_view.shown_totals,"Shown groups")] {
+                                let text=total.map(|total|total.label(scope)).unwrap_or_default();
+                                #[cfg(feature="visual-qa")]
+                                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-group-totals",scope)),text.clone()));
+                                if total.is_some(){ui.label(text).on_hover_text(totals_hint);}
+                            }
+                            ui.small("Extra payload assumes one keeper per group; not compressed disk savings.");
                             ui.horizontal_wrapped(|ui| {
                                 for (select,label) in [(true,"Select shown groups"),(false,"Deselect shown groups")] {
                                     let button=ui.add_enabled(!order.is_empty() && state.content_group_view.error.is_none(),egui::Button::new(label))
@@ -4003,6 +4029,55 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+    #[test]
+    fn archive_group_totals_track_filters_errors_and_cache_invalidation() {
+        use super::ContentGroupView;
+        let mut groups = vec![sort_group(10, 5), sort_group(0, 2)];
+        let mut view = ContentGroupView {
+            min_copies: "3".into(),
+            ..Default::default()
+        };
+        assert_eq!(view.indices(&groups), [0]);
+        let all = view.scanned_totals.unwrap();
+        let shown = view.shown_totals.unwrap();
+        assert_eq!(
+            (
+                all.groups,
+                all.members,
+                all.payload_bytes,
+                all.extra_members,
+                all.extra_payload_bytes
+            ),
+            (2, 7, 50, 5, 40)
+        );
+        assert_eq!(
+            (
+                shown.groups,
+                shown.members,
+                shown.payload_bytes,
+                shown.extra_members,
+                shown.extra_payload_bytes
+            ),
+            (1, 5, 50, 4, 40)
+        );
+        view.max_copies = "4".into();
+        view.invalidate();
+        view.indices(&groups);
+        assert_eq!(view.shown_totals, Some(Default::default()));
+        assert_eq!(view.scanned_totals, Some(all));
+        view.min_copies = "bad".into();
+        view.invalidate();
+        view.indices(&groups);
+        assert!(view.shown_totals.is_none() && view.error.is_some());
+        assert_eq!(view.scanned_totals, Some(all));
+        groups[0].size = 20;
+        view.min_copies.clear();
+        view.max_copies.clear();
+        view.invalidate();
+        view.indices(&groups);
+        assert_eq!(view.scanned_totals.unwrap().extra_payload_bytes, 80);
+        assert_eq!(view.scanned_totals, view.shown_totals);
     }
     #[test]
     fn archive_group_copy_bounds_validate_inclusive_platform_counts() {

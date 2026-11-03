@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 34.31s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 2 tests
+test app::archive_dialog::tests::archive_group_totals_track_filters_errors_and_cache_invalidation ... ok
+test archive_check_export::tests::group_totals_use_wide_exact_decimal_fields_and_export_scope ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3504 filtered out; finished in 0.00s
+

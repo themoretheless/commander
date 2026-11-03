@@ -1,0 +1,59 @@
+{
+  "archive_tar_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 4,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "e0cd794213912cc4dee613e3d95f321e0c90be74cb0f812e6cfd8412f39f150e",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-totals-2026-11-03/native-captures/1793700994839469000/archive_tar_content_groups"
+  },
+  "archive_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 2,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "d0121f50de59f23562186baee8737ea57d810b72438bb59e19d4f4e14d3343ee",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-totals-2026-11-03/native-captures/1793701035113256000/archive_content_groups"
+  },
+  "archive_protection_modes": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "2a6ae97e757d7d063433ea840f36577263b82ce5e3a62313500c0f6d99dc2af0",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-totals-2026-11-03/native-captures/1793700950603522000/archive_protection_modes"
+  },
+  "group_totals": {
+    "ui_checkpoints": 7,
+    "json_reports": 6,
+    "text_reports": 5
+  },
+  "archive_priority_chains": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 5,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "a13a19e83029253423ce66cf0a42b5d05973f8db1695b9031e04344c1c836a94",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-totals-2026-11-03/native-captures/1793700905021118000/archive_priority_chains"
+  }
+}

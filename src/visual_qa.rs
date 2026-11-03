@@ -18063,7 +18063,13 @@ impl eframe::App for VisualQaApp {
                         return;
                     }
                 }
-                let record = serde_json::json!({"phase":phase,"bounds":bounds,"view":view,"filter":filter,"shown_actions_enabled":enabled,"selected_indexes":indexes,"groups":state.check_result.as_ref().and_then(|r|r.as_ref().ok()).and_then(|r|r.content_groups.as_ref())});
+                let totals = state.content_group_view.totals_snapshot();
+                let labels = ctx.data(|d| {
+                    ["Scanned groups", "Shown groups"].map(|scope| {
+                        d.get_temp::<String>(egui::Id::new(("archive-group-totals", scope)))
+                    })
+                });
+                let record = serde_json::json!({"phase":phase,"bounds":bounds,"view":view,"filter":filter,"totals":totals,"total_labels":labels,"shown_actions_enabled":enabled,"selected_indexes":indexes,"groups":state.check_result.as_ref().and_then(|r|r.as_ref().ok()).and_then(|r|r.content_groups.as_ref())});
                 let _ = std::fs::write(
                     self.scenario_dir.join(format!("copy-bounds-{phase}.json")),
                     serde_json::to_vec_pretty(&record).unwrap(),

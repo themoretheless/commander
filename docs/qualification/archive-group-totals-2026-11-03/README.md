@@ -1,0 +1,13 @@
+# Archive group payload totals — 2026-11-03
+
+Independent adaptation of cohort #85 [fclones group and redundant-data totals](https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/README.md). Expanded archive groups display both scanned-group and shown-group totals: group count, all member count, logical payload bytes, extra copies and extra payload bytes assuming one keeper in every nonempty group. Scanned totals cover retained content groups, not every archive entry. Shown totals follow combined count/name filters across all pages; empty matches show zero, invalid search has unavailable shown totals. Cached totals rebuild with the view, not on every frame.
+
+Extra copies = max(members - 1, 0), extra payload = size × extra copies. These are logical uncompressed bytes, not compressed archive size, filesystem savings, selected data or a prediction of keeper/protection/candidate/date policy effects. No selection, scan or archive mutation occurs. Sort permutations do not change totals.
+
+Text and JSON reports include totals for exactly their exported group scope: full scan groups, one original group or shown groups. Existing complete-scan metadata stays complete-scan metadata. The additive JSON content_group_totals contains groups as a number and u128 counts/byte totals as exact decimal strings, preserving values beyond u64/JavaScript integer precision. Reports without requested content grouping omit this field. Existing output/UTF-8 bounds remain in force.
+
+Two Rust regressions cover cache invalidation, filtered/all/empty/error states and refreshed same-count scans, plus zero-member groups, wide arithmetic above u64, exact JSON decimal strings, scoped/full report presence and text semantics. Seven existing native count checkpoints now record the actual painted label text and cached scanned/shown totals through all count states. Independent verification recomputes totals from fixture sizes/member counts and checks every captured JSON report with the archive-check schema, along with previous identity/search/order/keeper/history/session/export receipts.
+
+Reproduce run_checks.py, prepare_capture.py with CUA launches for four archive scenes, then verify.py. New summary interactions are qualified on TAR; ZIP retains its report regression. Wider native platforms and large native pagination remain open.
+
+Final qualification: seven gates passed (3503 tests passed, 0 failed, 3 ignored). Four native scenes passed 14/14 on the exact final binary, with seven UI total checkpoints, 6 JSON reports and 5 text reports independently recomputed from exported/captured group metadata. Clipboard effects priority/modes/TAR/ZIP = 5/0/4/2. All four accepted frames were visually inspected.

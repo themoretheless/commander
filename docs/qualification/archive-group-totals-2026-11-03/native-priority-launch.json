@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_priority_chains",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-totals-2026-11-03/native-captures/1793700905021118000",
+  "binary_sha256": "48b0cdc13403f77dbc56bef7b4cd84a10ebda7689c63c3271ade2495269a21bc",
+  "core_sha256": "48b0cdc13403f77dbc56bef7b4cd84a10ebda7689c63c3271ade2495269a21bc",
+  "wrapper_sha256": "8bf6454ae235d64535c0c443f084bb14ba573f0291689282eca0d8f9dd581399",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_tar_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-totals-2026-11-03/native-captures/1793700994839469000",
+  "binary_sha256": "48b0cdc13403f77dbc56bef7b4cd84a10ebda7689c63c3271ade2495269a21bc",
+  "core_sha256": "48b0cdc13403f77dbc56bef7b4cd84a10ebda7689c63c3271ade2495269a21bc",
+  "wrapper_sha256": "08e004090ea5b0a1364bf8b2ecf3e53e4ab21393405faf50c678b0490017bbaa",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

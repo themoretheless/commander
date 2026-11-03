@@ -51,6 +51,8 @@ struct JsonReport<'a> {
     content_group_indices: Option<&'a [usize]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_group_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_group_totals: Option<crate::archive_check::ContentGroupTotals>,
 }
 
 /// Error-mode metadata is captured at operation start; a success uses its actual
@@ -197,6 +199,11 @@ fn format_scoped(
             }
         }
     }
+    let totals = groups.as_ref().map(|groups| {
+        crate::archive_check::ContentGroupTotals::from_groups(
+            groups.iter().map(|(_, group)| *group),
+        )
+    });
     let mut output = Output(Vec::new());
     match format {
         Format::Json => {
@@ -216,6 +223,7 @@ fn format_scoped(
                     .map(|groups| groups.iter().map(|(_, group)| *group).collect()),
                 content_group_indices: group_indices,
                 content_group_index: group_index,
+                content_group_totals: totals,
             };
             serde_json::to_writer_pretty(&mut output, &value).map_err(|e| e.to_string())?;
             output.write_all(b"\n").map_err(|e| e.to_string())?;
@@ -271,6 +279,9 @@ fn format_scoped(
                     }
                 }
             }
+            if let Some(total) = totals {
+                writeln!(&mut output,"{}\nExtra payload basis: one keeper per exported group; logical uncompressed bytes, not compressed disk savings or a selection/deletion estimate.",total.label("Exported group totals")).map_err(|e|e.to_string())?;
+            }
             if let Some(error) = error {
                 output.write_all(b"Error: ").map_err(|e| e.to_string())?;
                 serde_json::to_writer(&mut output, error).map_err(|e| e.to_string())?;
@@ -307,6 +318,71 @@ mod tests {
                 ],
             }]),
         })
+    }
+    #[test]
+    fn group_totals_use_wide_exact_decimal_fields_and_export_scope() {
+        let mut report = grouped_report();
+        let groups = report.as_mut().unwrap().content_groups.as_mut().unwrap();
+        groups[0].size = u64::MAX;
+        groups.insert(
+            0,
+            crate::archive_check::ContentGroup {
+                sha256: "zero".into(),
+                size: 0,
+                members: vec![],
+            },
+        );
+        let totals = crate::archive_check::ContentGroupTotals::from_groups(groups.iter());
+        assert_eq!(totals.payload_bytes, 2 * u128::from(u64::MAX));
+        assert_eq!(totals.extra_payload_bytes, u128::from(u64::MAX));
+        assert_eq!(
+            (totals.groups, totals.members, totals.extra_members),
+            (2, 2, 1)
+        );
+        for ranks in [vec![1], vec![0], vec![1, 0], vec![]] {
+            let text = format_shown_groups(
+                Path::new("archive.zip"),
+                &report,
+                None,
+                &ranks,
+                Format::Json,
+            )
+            .unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let expected = crate::archive_check::ContentGroupTotals::from_groups(
+                ranks
+                    .iter()
+                    .map(|&rank| &report.as_ref().unwrap().content_groups.as_ref().unwrap()[rank]),
+            );
+            assert_eq!(
+                value["content_group_totals"],
+                serde_json::to_value(expected).unwrap()
+            );
+            assert!(value["content_group_totals"]["payload_bytes"].is_string());
+            let text = format_shown_groups(
+                Path::new("archive.zip"),
+                &report,
+                None,
+                &ranks,
+                Format::Text,
+            )
+            .unwrap();
+            assert!(text.contains(&expected.label("Exported group totals")));
+            assert!(text.contains("not compressed disk savings"));
+        }
+        let json = format_group(Path::new("archive.zip"), &report, None, 1, Format::Json).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["content_group_totals"]["payload_bytes"],
+            "36893488147419103230"
+        );
+        report.as_mut().unwrap().content_groups = None;
+        let json = format(Path::new("archive.zip"), &report, None, None, Format::Json).unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&json)
+                .unwrap()
+                .get("content_group_totals")
+                .is_none()
+        );
     }
     #[test]
     fn shown_groups_preserve_display_order_original_ranks_and_complete_members() {
