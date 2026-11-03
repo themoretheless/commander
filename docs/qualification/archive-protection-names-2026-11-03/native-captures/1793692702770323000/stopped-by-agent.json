@@ -1,0 +1,4 @@
+{
+  "pid": 84111,
+  "reason": "Combined 211-step QA run remained asleep beyond its deadline; stopped after preserving diagnostics. Replaced by retained TAR/ZIP regressions plus a separate 70-step mode scene, each with the original timeout."
+}

@@ -1323,6 +1323,8 @@ pub struct ContentKeep {
     pub count: usize,
     pub order: ContentKeepOrder,
     pub protected_glob: String,
+    pub protect_basename: bool,
+    pub protect_case_sensitive: bool,
 }
 impl Default for ContentKeep {
     fn default() -> Self {
@@ -1330,6 +1332,8 @@ impl Default for ContentKeep {
             count: 1,
             order: ContentKeepOrder::First,
             protected_glob: String::new(),
+            protect_basename: false,
+            protect_case_sensitive: true,
         }
     }
 }
@@ -1354,7 +1358,8 @@ impl ContentKeep {
             &self.protected_glob,
             crate::archive_filter::Options {
                 glob: true,
-                case_sensitive: true,
+                basename_only: self.protect_basename,
+                case_sensitive: self.protect_case_sensitive,
                 ..Default::default()
             },
         )
@@ -1385,8 +1390,13 @@ impl ContentKeep {
             ui.ctx()
                 .data_mut(|d| d.insert_temp(egui::Id::new("archive-protect-glob"), input.rect));
             let _ = input;
+            let basename=ui.checkbox(&mut self.protect_basename,"Filename only").on_hover_text("Match the final filename at any folder depth instead of the complete archive-relative path. Editing this option leaves selection unchanged until Select copies.");
+            let case=ui.checkbox(&mut self.protect_case_sensitive,"Match case").on_hover_text("When off, use the archive filter's lowercase-based matching for both pattern and filenames. Editing this option leaves selection unchanged until Select copies.");
+            #[cfg(feature="visual-qa")]
+            ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new("archive-protect-basename"),basename.rect);d.insert_temp(egui::Id::new("archive-protect-case"),case.rect);});
+            let _=(basename,case);
         });
-        ui.add(egui::Label::new(egui::RichText::new("All matching paths are kept; copy count is a minimum.").small()).wrap()).on_hover_text("Case-sensitive archive-relative glob, up to 256 characters. * stays within a folder; ** crosses folders. Empty disables protection. Editing the pattern leaves selection unchanged until Select copies.");
+        ui.add(egui::Label::new(egui::RichText::new("All matching paths are kept; copy count is a minimum.").small()).wrap()).on_hover_text("Archive-relative glob, up to 256 characters. Filename only matches the final name at any depth; Match case controls letter case. In full-path mode, * stays within a folder and ** crosses folders. Empty disables protection. Editing the pattern leaves selection unchanged until Select copies.");
         let error = self.protection().err();
         if let Some(error) = &error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -1471,7 +1481,12 @@ fn select_redundant_content_groups(
         if let Some(pattern) = &protection {
             for (rank, member) in group.members.iter().enumerate() {
                 let path=member.path.to_str().ok_or("Protected path matching requires UTF-8 member paths; selection was not changed.")?;
-                if pattern.matches(path, path) {
+                let lowercase = if keep.protect_case_sensitive {
+                    std::borrow::Cow::Borrowed(path)
+                } else {
+                    std::borrow::Cow::Owned(path.to_lowercase())
+                };
+                if pattern.matches(path, &lowercase) {
                     protected[rank] = true;
                     keepers.push(rows[offset + rank]);
                 }
@@ -3264,6 +3279,74 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn archive_protection_can_match_names_at_any_depth_with_explicit_letter_case() {
+        use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};
+        use std::collections::BTreeSet;
+        let mut listing = listing(&[
+            "original.txt",
+            "folder/original.txt",
+            "folder/Original.TXT",
+            "ёж/КОПИЯ.txt",
+            "other",
+            "unrelated",
+        ]);
+        for (row, member) in listing.members.iter_mut().enumerate() {
+            member.index = [9, 2, 8, 4, 1, 99][row];
+            member.size = 3;
+        }
+        let report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 6,
+            decoded: 18,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..5]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        for (glob, basename, case_sensitive, wanted) in [
+            ("", true, false, vec![0, 1, 2, 3, 5]),
+            ("original.txt", false, true, vec![1, 2, 3, 4, 5]),
+            ("original.txt", true, true, vec![2, 3, 4, 5]),
+            ("original.txt", true, false, vec![3, 4, 5]),
+            ("original.txt", false, false, vec![1, 2, 3, 4, 5]),
+            ("копия.TXT", true, false, vec![0, 1, 2, 4, 5]),
+            ("копия.TXT", true, true, vec![0, 1, 2, 3, 5]),
+            ("*.txt", false, true, vec![1, 2, 3, 4, 5]),
+            ("*.txt", true, true, vec![2, 4, 5]),
+            ("*.txt", true, false, vec![4, 5]),
+            ("folder/*", false, true, vec![0, 3, 4, 5]),
+            ("folder/*", true, true, vec![0, 1, 2, 3, 5]),
+        ] {
+            for group in [None, Some(0)] {
+                let keep = ContentKeep {
+                    count: 1,
+                    order: ContentKeepOrder::First,
+                    protected_glob: glob.into(),
+                    protect_basename: basename,
+                    protect_case_sensitive: case_sensitive,
+                };
+                let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
+                select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                    .unwrap();
+                assert_eq!(
+                    selected.into_iter().collect::<Vec<_>>(),
+                    wanted,
+                    "{glob}, basename={basename}, case={case_sensitive}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn protected_archive_paths_are_always_kept_and_fill_the_total_minimum() {
         use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};
         use std::collections::BTreeSet;
@@ -3314,6 +3397,8 @@ mod tests {
                     count,
                     order: ContentKeepOrder::First,
                     protected_glob: glob.into(),
+                    protect_basename: false,
+                    protect_case_sensitive: true,
                 };
                 let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
                 select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
@@ -3335,7 +3420,9 @@ mod tests {
                     &ContentKeep {
                         count: 1,
                         order: ContentKeepOrder::First,
-                        protected_glob: glob
+                        protected_glob: glob,
+                        protect_basename: false,
+                        protect_case_sensitive: true,
                     },
                     &mut selected
                 )
@@ -3358,7 +3445,9 @@ mod tests {
                     &ContentKeep {
                         count: 1,
                         order: ContentKeepOrder::First,
-                        protected_glob: "**".into()
+                        protected_glob: "**".into(),
+                        protect_basename: false,
+                        protect_case_sensitive: true,
                     },
                     &mut selected
                 )
@@ -3376,7 +3465,9 @@ mod tests {
                 &ContentKeep {
                     count: 1,
                     order: ContentKeepOrder::First,
-                    protected_glob: "keep/*".into()
+                    protected_glob: "keep/*".into(),
+                    protect_basename: false,
+                    protect_case_sensitive: true,
                 },
                 &mut selected
             )
@@ -3444,6 +3535,8 @@ mod tests {
                         count,
                         order,
                         protected_glob: String::new(),
+                        protect_basename: false,
+                        protect_case_sensitive: true,
                     },
                     &mut selected,
                 )
@@ -3466,6 +3559,8 @@ mod tests {
                     count: 1,
                     order: ContentKeepOrder::Deepest,
                     protected_glob: String::new(),
+                    protect_basename: false,
+                    protect_case_sensitive: true,
                 },
                 &mut selected
             )
@@ -3523,6 +3618,8 @@ mod tests {
                         count,
                         order,
                         protected_glob: String::new(),
+                        protect_basename: false,
+                        protect_case_sensitive: true,
                     },
                     &mut selected,
                 )
@@ -3545,6 +3642,8 @@ mod tests {
                 count: 1,
                 order: ContentKeepOrder::Newest,
                 protected_glob: String::new(),
+                protect_basename: false,
+                protect_case_sensitive: true,
             },
             &mut selected,
         )
@@ -3560,6 +3659,8 @@ mod tests {
                 count: 1,
                 order: ContentKeepOrder::Oldest,
                 protected_glob: String::new(),
+                protect_basename: false,
+                protect_case_sensitive: true,
             },
             &mut selected,
         )
@@ -3578,6 +3679,8 @@ mod tests {
                     count: 1,
                     order,
                     protected_glob: String::new(),
+                    protect_basename: false,
+                    protect_case_sensitive: true,
                 },
                 &mut selected,
             )
@@ -3595,6 +3698,8 @@ mod tests {
                     count: 1,
                     order: ContentKeepOrder::Newest,
                     protected_glob: String::new(),
+                    protect_basename: false,
+                    protect_case_sensitive: true,
                 },
                 &mut selected
             )
@@ -3652,6 +3757,8 @@ mod tests {
                         super::ContentKeepOrder::First
                     },
                     protected_glob: String::new(),
+                    protect_basename: false,
+                    protect_case_sensitive: true,
                 },
                 &mut selected,
             )
@@ -3668,6 +3775,8 @@ mod tests {
                     count: 0,
                     order: super::ContentKeepOrder::First,
                     protected_glob: String::new(),
+                    protect_basename: false,
+                    protect_case_sensitive: true,
                 },
                 &mut selected
             )

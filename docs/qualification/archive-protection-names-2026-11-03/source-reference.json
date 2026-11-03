@@ -1,0 +1,5 @@
+{
+  "cohort": 85,
+  "reference": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "behavior": "fclones offers keep-name separately from keep-path. Commander independently adds basename-only protection and exposes its existing archive matcher case option for both scopes."
+}
