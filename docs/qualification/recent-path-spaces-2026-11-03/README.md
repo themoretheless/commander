@@ -1,0 +1,13 @@
+# Literal whitespace in recent-folder terms — 2026-11-03
+
+Independent adaptation of cohort #75 [fzf parseTerms escaped-space handling](https://github.com/junegunn/fzf/blob/master/src/pattern.go). Ordered path terms in Cmd+P now accepts a backslash before whitespace to retain that character inside one term. Example: `project\ alpha src$` matches src inside a path fragment containing the literal phrase project alpha. Exclusions such as `src !old\ project` use the same tokenizer.
+
+The bounded Rust character tokenizer consumes only whitespace escapes and preserves other backslashes for the existing operator parser and literal path fragments. It supports escaped Unicode whitespace as a core extension; native qualification covers ordinary spaces. Positive ordering/final-folder constraints, anchors, inverse anchors, operator escaping, history ranking and captured scope remain shared. The 32-term limit counts decoded terms; the 1024-byte cap still applies to original query bytes before decoding.
+
+Go-mode routing preserves escaped trailing whitespace so a term may match a folder name ending with a space. Ordinary trailing whitespace and the command/path/search/favorites/shell routing contracts keep their previous behavior. Fuzzy mode does not adopt this query tokenizer. No shell expansion, quote parser, filesystem reads or navigation are introduced.
+
+Two new Rust regressions qualify literal phrases versus separate path components, exclusions, anchors, operator escapes, one/two/trailing spaces, tabs/Unicode whitespace, literal trailing backslashes, term/raw-byte bounds and Omnibar trailing-space routing. All seven gates passed: audit, visual-qa build, 3471 tests passed / 0 failed / 3 ignored, strict clippy, ordinary check, fmt and diff.
+
+The native recent_forget fixture now has a real space in its parent path. Its prior 96 phases are retained; new phases type a matching escaped-space query, a two-space mismatch, an excluded literal phrase and an anchored recovery query. The scene passed 16/16 checks with zero native port effects. Independent Python tokenization/regex predicates verify all 117 snapshots, exact visible rows, earlier ranking/removal/limit/refusal behavior, unchanged usage statistics, source bytes, pane locations and source/binary hashes. The final frame was visually inspected. Trailing-space/Unicode cases are qualified in Rust tests rather than the native scene.
+
+Reproduce with run_checks.py, prepare_capture.py plus CUA launch, then verify.py. Source-reference and source-sha256 JSON files bind the evidence to upstream behavior and current code. OR alternatives and quoted whitespace remain open; escaped whitespace is available now.

@@ -1,0 +1,7 @@
+{
+  "cohort": 75,
+  "repository": "https://github.com/junegunn/fzf",
+  "reference": "https://github.com/junegunn/fzf/blob/master/src/pattern.go",
+  "observed": "2026-11-03",
+  "behavior": "fzf parseTerms treats backslash-space as a literal space within one search token. Commander independently adapts this with a bounded Rust character tokenizer, preserving other backslashes and accepting escaped Unicode whitespace."
+}

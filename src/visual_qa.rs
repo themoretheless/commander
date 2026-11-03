@@ -1313,9 +1313,14 @@ struct Fixture {
 impl Fixture {
     fn create(scenario: Scenario) -> Result<Self, String> {
         let root = std::env::temp_dir().join(format!(
-            "commander-visual-qa-{}-{}",
+            "commander-visual-qa-{}-{}{}",
             std::process::id(),
-            scenario.name()
+            scenario.name(),
+            if scenario == Scenario::RecentForget {
+                " path"
+            } else {
+                ""
+            }
         ));
         if root.exists() {
             std::fs::remove_dir_all(&root)
@@ -4920,7 +4925,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 65)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
-            && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 96)
+            && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 116)
             && !(self.scenario == Scenario::Favorites && self.favorite_phase < 41)
             && !(self.scenario == Scenario::FavoriteImport && self.favorite_import_phase < 17)
             && !(self.scenario == Scenario::CustomShortcuts && self.json_mode_phase < 17)
@@ -14525,7 +14530,7 @@ impl eframe::App for VisualQaApp {
                 self.scenario_dir.join(format!("recent-phase-{phase}.json")),
                 serde_json::to_vec_pretty(&snapshot).unwrap(),
             );
-            if phase < 96 {
+            if phase < 116 {
                 if phase == 0
                     && (self.frames < 3
                         || self.inner.ws.left.entries().is_empty()
@@ -14598,6 +14603,12 @@ impl eframe::App for VisualQaApp {
                     return;
                 }
                 let anchored = format!("^{} KEEPMe$ !ForgetMe", self.fixture.root.display());
+                if matches!(phase, 96 | 101) && visible != keep_only {
+                    return;
+                }
+                if matches!(phase, 106 | 111) && !visible.is_empty() {
+                    return;
+                }
                 let oversized = if (51..=55).contains(&phase) {
                     "x".repeat(1025)
                 } else {
@@ -14673,10 +14684,30 @@ impl eframe::App for VisualQaApp {
                         phase - 86,
                         Some("^/missing kee"),
                     ),
-                    _ => (
+                    91..=95 => (
                         egui::Id::new("omnibar-input"),
                         phase - 91,
                         Some(anchored.as_str()),
+                    ),
+                    96..=100 => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 96,
+                        Some(r"recent_forget\ path / kee"),
+                    ),
+                    101..=105 => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 101,
+                        Some(r"recent_forget\ \ path / kee"),
+                    ),
+                    106..=110 => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 106,
+                        Some(r"kee !recent_forget\ path"),
+                    ),
+                    _ => (
+                        egui::Id::new("omnibar-input"),
+                        phase - 111,
+                        Some(r"recent_forget\ path / KeepMe$ !unwanted\ path"),
                     ),
                 };
                 if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
@@ -22104,11 +22135,11 @@ impl eframe::App for VisualQaApp {
             Scenario::RecentForget => {
                 let (paths,stats)=crate::panel::visit_snapshot();
                 let keep=self.fixture.root.join("KeepMe");let forget=self.fixture.root.join("ForgetMe");
-                self.recent_forget_phase==96 && forget.is_dir() && paths.contains(&keep) && !paths.contains(&forget) && !stats.uses.contains_key(&forget)
+                self.recent_forget_phase==116 && forget.is_dir() && paths.contains(&keep) && !paths.contains(&forget) && !stats.uses.contains_key(&forget)
                     && stats.uses.get(&keep).is_some_and(|usage|usage.count==8 && usage.last==8)
                     && self.inner.recent_order==crate::panel::RecentOrder::Frecency
                     && self.inner.recent_match_mode==crate::panel::RecentMatchMode::OrderedTerms
-                    && self.inner.ui.modals.palette_input.as_ref().is_some_and(|state|state.input==format!("^{} KEEPMe$ !ForgetMe",self.fixture.root.display()))
+                    && self.inner.ui.modals.palette_input.as_ref().is_some_and(|state|state.input==r"recent_forget\ path / KeepMe$ !unwanted\ path")
                     && ctx.data(|data|data.get_temp::<Vec<PathBuf>>(egui::Id::new("omnibar-visible-recents"))).is_some_and(|visible|visible==[keep.clone()])
                     && self.inner.ws.left.current_path==self.fixture.left && self.inner.ws.right.current_path==self.fixture.right
                     && self.inner.ws.bookmarks.items.is_empty() && self.inner.toasts.is_empty()

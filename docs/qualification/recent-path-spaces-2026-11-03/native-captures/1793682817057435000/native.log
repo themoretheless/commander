@@ -1,0 +1,3 @@
+2026-11-03T09:14:02 INFO  commander::logging: logging initialized
+2026-11-03T09:14:02 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: recent_forget
+2026-11-03T09:14:02 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.

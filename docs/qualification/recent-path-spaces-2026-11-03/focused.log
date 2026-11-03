@@ -1,0 +1,16 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 26.48s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 8 tests
+test checksum_list::tests::parser_preserves_escaped_names_spaces_crlf_and_sfv_comments ... ok
+test checksum_list_view::tests::visible_copy_keeps_full_summary_partial_status_and_escaped_names_but_refuses_stale_views ... ok
+test omnibar::tests::jump_keeps_escaped_trailing_whitespace_without_changing_other_modes ... ok
+test panel::visit::tests::recent_path_terms_accept_escaped_whitespace_with_anchors_and_exclusions ... ok
+test table_preview::tests::tsv_preserves_empty_cells_and_escaped_quotes ... ok
+test checksum::tests::sha256_list_round_trips_through_system_shasum_with_escaped_names ... ok
+test checksum::tests::extended_sha_lists_verify_with_system_shasum_across_chunks_and_escaped_paths ... ok
+test archive_check_export::tests::oversized_escaped_reports_fail_without_truncation ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 3466 filtered out; finished in 0.16s
+

@@ -108,9 +108,30 @@ impl PathTerms {
         if query.len() > 1024 {
             return None;
         }
+        // Only escaped whitespace is consumed here; operator escapes remain for PathTerm.
+        let mut terms = Vec::new();
+        let mut token = String::new();
+        let mut chars = query.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' && chars.peek().is_some_and(|next| next.is_whitespace()) {
+                token.push(chars.next().expect("peeked whitespace"));
+            } else if ch.is_whitespace() {
+                if !token.is_empty() {
+                    terms.push(std::mem::take(&mut token));
+                    if terms.len() > 32 {
+                        return None;
+                    }
+                }
+            } else {
+                token.push(ch);
+            }
+        }
+        if !token.is_empty() {
+            terms.push(token);
+        }
         let mut positive = Vec::new();
         let mut negative = Vec::new();
-        for (index, term) in query.split_whitespace().enumerate() {
+        for (index, term) in terms.iter().enumerate() {
             if index >= 32 {
                 return None;
             }
@@ -338,6 +359,37 @@ pub fn rank_visited_with_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_path_terms_accept_escaped_whitespace_with_anchors_and_exclusions() {
+        for (query, path, expected) in [
+            (r"project\ alpha src$", "/work/project alpha/src", true),
+            (r"project\ alpha src$", "/work/project/alpha/src", false),
+            (r"src !old\ project", "/work/old project/src", false),
+            (r"^/my\ work src$", "/my work/src", true),
+            (r"src !old\ project$", "/work/old project/src", true),
+            (r"\!my\ folder$", "/work/!my folder", true),
+            (r"name\ ", "/work/name ", true),
+            (r"name\ $", "/work/name ", true),
+            (r"name\ $", "/work/name", false),
+            (r"name\ \ ", "/work/name  ", true),
+            ("ёж\\\tкафе$", "/work/ёж\tкафе", true),
+            ("ёж\\\u{2003}кафе$", "/work/ёж\u{2003}кафе", true),
+        ] {
+            assert_eq!(
+                PathTerms::parse(query).unwrap().matches(Path::new(path)),
+                expected,
+                "{query} :: {path}"
+            );
+        }
+        assert_eq!(
+            PathTerms::parse(r"folder\").unwrap().positive[0].text,
+            r"folder\"
+        );
+        assert!(PathTerms::parse(&vec![r"a\ b"; 32].join(" ")).is_some());
+        assert!(PathTerms::parse(&vec![r"a\ b"; 33].join(" ")).is_none());
+        assert!(PathTerms::parse(&format!(r"{}\ ", "x".repeat(1023))).is_none());
+    }
 
     #[test]
     fn anchored_recent_terms_bind_full_path_edges_and_preserve_order() {

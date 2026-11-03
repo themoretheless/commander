@@ -39,7 +39,13 @@ impl<'a> OmnibarMode<'a> {
         {
             Self::Path(path_input)
         } else {
-            Self::Jump(trimmed.trim())
+            // Preserve escaped trailing whitespace for literal recent-path terms.
+            let query = trimmed.trim_end();
+            Self::Jump(if query.len() < trimmed.len() && query.ends_with('\\') {
+                trimmed
+            } else {
+                query
+            })
         }
     }
 
@@ -108,6 +114,17 @@ pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  @ favorites  \u{0
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jump_keeps_escaped_trailing_whitespace_without_changing_other_modes() {
+        assert_eq!(OmnibarMode::parse(r" name\ "), OmnibarMode::Jump(r"name\ "));
+        assert_eq!(OmnibarMode::parse(" name "), OmnibarMode::Jump("name"));
+        assert_eq!(
+            OmnibarMode::parse(r"! name\ "),
+            OmnibarMode::Shell(r"name\")
+        );
+        assert_eq!(OmnibarMode::parse("/name "), OmnibarMode::Path("/name"));
+    }
 
     #[test]
     fn prefixes_select_modes() {

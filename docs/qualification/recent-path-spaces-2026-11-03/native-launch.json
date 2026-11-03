@@ -1,0 +1,8 @@
+{
+  "scenario": "recent_forget",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/recent-path-spaces-2026-11-03/native-captures/1793682817057435000",
+  "binary_sha256": "6ae1cffc4efec67ee58adb9abcee45a063995d1dbd5829e23d8303b530b59027",
+  "core_sha256": "6ae1cffc4efec67ee58adb9abcee45a063995d1dbd5829e23d8303b530b59027",
+  "wrapper_sha256": "ef4bd65ccfcc5d4a62db12281c54f1b0b88d3c4f532ec92587389a646b4ee502",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
