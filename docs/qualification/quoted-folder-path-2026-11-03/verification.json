@@ -1,0 +1,11 @@
+{
+  "checks": 7,
+  "tests_passed": 3542,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "unclosed_quote_refused": true,
+  "double_quoted_trailing_space_verified": true,
+  "single_quoted_relative_verified": true,
+  "source_hashes_verified": true,
+  "prior_receipts_verified": true
+}

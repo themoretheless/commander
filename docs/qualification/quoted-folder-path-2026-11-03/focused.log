@@ -1,0 +1,19 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 1m 07s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 11 tests
+test omnibar::tests::quoted_path_routing_and_relative_resolution_preserve_literal_native_identity ... ok
+test name_filter::tests::quoted_alternatives_keep_internal_pipes_spaces_and_operator_text_literal ... ok
+test cmdtemplate::tests::expands_paths_quoted_and_space_joined ... ok
+test panel::listing::tests::quoted_alternative_cache_does_not_split_literal_pipes ... ok
+test panel::listing::tests::anchored_cache_distinguishes_prefix_suffix_whole_and_quoted_marker ... ok
+test pathname::tests::quoted_folder_paths_keep_interior_spaces_and_literal_quotes_without_shell_parsing ... ok
+test query::tests::quoted_token_with_colon_is_name_text ... ok
+test table_preview::tests::quoted_multiline_unicode_and_ragged_rows ... ok
+test path_probe::tests::quoted_probe_keeps_raw_binding_and_native_opening_base_and_rejects_stale_completion ... ok
+test query::tests::quoted_alternative_export_survives_expression_json_and_search_matching ... ok
+test app::run_command_dialog::per_item_process_tests::real_shell_per_item_preserves_quoted_paths_order_and_error_policies ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 3534 filtered out; finished in 0.06s
+

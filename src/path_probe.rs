@@ -97,6 +97,7 @@ pub struct PathProbeController {
     dialog_id: u64,
     generation: u64,
     home: PathBuf,
+    base: Option<PathBuf>,
     raw_input: String,
     lexical_path: Option<PathBuf>,
     status: ProbeStatus,
@@ -115,12 +116,27 @@ impl PathProbeController {
             dialog_id,
             generation: 1,
             home,
+            base: None,
             raw_input,
             lexical_path,
             status,
             edited_at: now,
             in_flight: Vec::with_capacity(MAX_IN_FLIGHT_PROBES),
         }
+    }
+
+    /// Resolve relative user input from the folder captured when the dialog opened.
+    pub(crate) fn new_at(
+        dialog_id: u64,
+        raw_input: String,
+        home: PathBuf,
+        base: PathBuf,
+        now: f64,
+    ) -> Self {
+        let mut controller = Self::new(dialog_id, raw_input, home, now);
+        controller.base = Some(base);
+        controller.input_changed(now);
+        controller
     }
 
     #[cfg(test)]
@@ -144,7 +160,13 @@ impl PathProbeController {
         for in_flight in &mut self.in_flight {
             in_flight.cancel_once();
         }
-        match parse_dir_input(&self.raw_input, &self.home) {
+        let parsed = self
+            .base
+            .as_ref()
+            .and_then(|base| crate::omnibar::resolve_relative(&self.raw_input, base))
+            .map(Ok)
+            .unwrap_or_else(|| parse_dir_input(&self.raw_input, &self.home));
+        match parsed {
             Ok(path) => {
                 self.lexical_path = Some(path);
                 self.status = ProbeStatus::Waiting;
@@ -443,6 +465,47 @@ mod tests {
 
     fn controller(input: &str) -> PathProbeController {
         PathProbeController::new(41, input.to_string(), PathBuf::from("/home/test"), 0.0)
+    }
+
+    #[test]
+    fn quoted_probe_keeps_raw_binding_and_native_opening_base_and_rejects_stale_completion() {
+        let runtime = DeterministicWorkload::new(SchedulerLimits::default());
+        let probe = Arc::new(RecordingProbe::default());
+        #[cfg(unix)]
+        let base = {
+            use std::os::unix::ffi::OsStringExt;
+            PathBuf::from(std::ffi::OsString::from_vec(b"/base-\xff".to_vec()))
+        };
+        #[cfg(windows)]
+        let base = PathBuf::from("C:\\base");
+        let mut c = PathProbeController::new_at(
+            99,
+            "\"./old\"".into(),
+            PathBuf::from("/home/test"),
+            base.clone(),
+            0.0,
+        );
+        c.drive(0.2, &runtime.handle(), probe.clone(), silent_notify());
+        assert!(runtime.run_next());
+        c.replace_input("'./new '", 0.3);
+        assert!(c.validated_path("\"./old\"").is_none());
+        c.drive(0.51, &runtime.handle(), probe.clone(), silent_notify());
+        assert!(runtime.run_next());
+        c.drive(0.6, &runtime.handle(), probe.clone(), silent_notify());
+        assert_eq!(
+            c.validated_path("'./new '"),
+            Some(base.join("new ").as_path())
+        );
+        assert!(c.validated_path("./new ").is_none());
+        c.replace_input("\"./unfinished", 0.7);
+        c.drive(1.0, &runtime.handle(), probe.clone(), silent_notify());
+        assert_eq!(
+            c.status(),
+            &ProbeStatus::Error(DirInputError::UnclosedQuote)
+        );
+        assert!(c.validated_path("'./new '").is_none());
+        assert_eq!(runtime.stats().queued, 0);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

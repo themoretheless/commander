@@ -480,22 +480,19 @@ impl App {
         let state = self.ui.modals.palette_input.as_mut().unwrap();
         match mode {
             OmnibarMode::Path(typed) => {
-                // `./` and `../` input resolves from the active folder before
-                // probing, so the probe and Go see an absolute path.
-                let relative = crate::omnibar::resolve_relative(
-                    typed,
-                    &self.ws.active_panel_ref().current_path,
-                );
-                let path = relative.as_deref().unwrap_or(typed);
+                // Keep raw input as the async binding; relative resolution uses
+                // the native folder captured when this dialog opened.
+                let path = typed;
                 let state = self.ui.modals.palette_input.as_mut().unwrap();
                 if state.probe.is_none() {
                     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
                     let id = self.issue_transient_nonce();
                     let state = self.ui.modals.palette_input.as_mut().unwrap();
-                    state.probe = Some(crate::path_probe::PathProbeController::new(
+                    state.probe = Some(crate::path_probe::PathProbeController::new_at(
                         id,
                         path.to_string(),
                         home,
+                        state.recent_base.clone(),
                         now,
                     ));
                 }

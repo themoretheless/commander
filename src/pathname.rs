@@ -14,6 +14,7 @@ pub enum DirInputError {
     NotDirectory,
     Unavailable,
     UnsupportedTilde,
+    UnclosedQuote,
 }
 
 impl fmt::Display for DirInputError {
@@ -24,6 +25,7 @@ impl fmt::Display for DirInputError {
             Self::NotDirectory => "Not a folder",
             Self::Unavailable => "Path cannot be accessed",
             Self::UnsupportedTilde => "~user expansion is not supported",
+            Self::UnclosedQuote => "Close the path with the same quote character",
         })
     }
 }
@@ -53,15 +55,30 @@ impl fmt::Display for NewNameError {
 
 impl std::error::Error for NewNameError {}
 
-/// Parse go-to-path input without touching the filesystem or canonicalizing it.
-pub fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
+/// Strip one matching enclosure, retaining every character inside it. This is
+/// a path convenience, not shell parsing: embedded quotes/backslashes are literal.
+pub fn path_input_text(input: &str) -> Result<&str, DirInputError> {
+    let outer = input.trim();
+    let text = if let Some(quote) = outer.chars().next().filter(|c| matches!(c, '\'' | '"')) {
+        if outer.len() < 2 || !outer.ends_with(quote) {
+            return Err(DirInputError::UnclosedQuote);
+        }
+        &outer[1..outer.len() - 1]
+    } else {
+        outer
+    };
+    if text.is_empty() {
         return Err(DirInputError::Empty);
     }
-    if trimmed.contains('\0') {
+    if text.contains('\0') {
         return Err(DirInputError::Unavailable);
     }
+    Ok(text)
+}
+
+/// Parse go-to-path input without touching the filesystem or canonicalizing it.
+pub fn parse_dir_input(input: &str, home: &Path) -> Result<PathBuf, DirInputError> {
+    let trimmed = path_input_text(input)?;
     if trimmed.starts_with('~') && trimmed != "~" && !trimmed.starts_with("~/") {
         return Err(DirInputError::UnsupportedTilde);
     }
@@ -166,6 +183,55 @@ pub fn volume_is_case_insensitive(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn quoted_folder_paths_keep_interior_spaces_and_literal_quotes_without_shell_parsing() {
+        let home = Path::new("/home/test");
+        for raw in ["\"/tmp/My Folder\"", "'/tmp/My Folder'"] {
+            assert_eq!(
+                parse_dir_input(raw, home),
+                Ok(PathBuf::from("/tmp/My Folder"))
+            );
+        }
+        assert_eq!(
+            parse_dir_input("  \"/tmp/ trailing \"  ", home),
+            Ok(PathBuf::from("/tmp/ trailing "))
+        );
+        assert_eq!(parse_dir_input("' '", home), Ok(PathBuf::from(" ")));
+        assert_eq!(
+            parse_dir_input("\"~/My Folder\"", home),
+            Ok(home.join("My Folder"))
+        );
+        assert_eq!(
+            parse_dir_input("'/tmp/a\"b'", home),
+            Ok(PathBuf::from("/tmp/a\"b"))
+        );
+        assert_eq!(
+            parse_dir_input("/tmp/a'b", home),
+            Ok(PathBuf::from("/tmp/a'b"))
+        );
+        assert_eq!(
+            parse_dir_input("'$(touch marker)'", home),
+            Ok(PathBuf::from("$(touch marker)"))
+        );
+        for raw in ["'", "\"/tmp/open", "'/tmp/mismatch\""] {
+            assert_eq!(
+                parse_dir_input(raw, home),
+                Err(DirInputError::UnclosedQuote)
+            );
+        }
+        for raw in ["''", "\"\""] {
+            assert_eq!(parse_dir_input(raw, home), Err(DirInputError::Empty));
+        }
+        assert_eq!(
+            parse_dir_input("'a\0b'", home),
+            Err(DirInputError::Unavailable)
+        );
+        assert_eq!(
+            parse_dir_input("'~other/path'", home),
+            Err(DirInputError::UnsupportedTilde)
+        );
+    }
 
     #[test]
     fn dir_input_expands_only_exact_tilde_forms() {

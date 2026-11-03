@@ -31,7 +31,8 @@ impl<'a> OmnibarMode<'a> {
             Self::Search(rest.trim())
         } else if let Some(rest) = trimmed.strip_prefix('!') {
             Self::Shell(rest.trim())
-        } else if trimmed.starts_with('/')
+        } else if trimmed.starts_with(['\'', '"'])
+            || trimmed.starts_with('/')
             || trimmed.starts_with('~')
             || std::path::Path::new(path_input).is_absolute()
             || is_windows_absolute_path(path_input)
@@ -85,9 +86,16 @@ fn is_relative_path(input: &str) -> bool {
 /// For relative Path-mode input, the absolute path it names from `base` (the
 /// active folder), with `.` and `..` resolved lexically like a shell `cd`;
 /// `None` for absolute or `~` input, which the path probe handles as typed.
-pub fn resolve_relative(input: &str, base: &std::path::Path) -> Option<String> {
+/// Fully quoted bare names also resolve relative to `base`, preserving native bytes.
+pub fn resolve_relative(input: &str, base: &std::path::Path) -> Option<std::path::PathBuf> {
     use std::path::Component;
-    if !is_relative_path(input) {
+    let quoted = input.trim_start().starts_with(['\'', '"']);
+    let input = crate::pathname::path_input_text(input).ok()?;
+    let quoted_relative = quoted
+        && !std::path::Path::new(input).is_absolute()
+        && !input.starts_with('~')
+        && !is_windows_absolute_path(input);
+    if !is_relative_path(input) && !quoted_relative {
         return None;
     }
     let mut resolved = std::path::PathBuf::new();
@@ -105,15 +113,51 @@ pub fn resolve_relative(input: &str, base: &std::path::Path) -> Option<String> {
             other => resolved.push(other),
         }
     }
-    Some(resolved.to_string_lossy().into_owned())
+    Some(resolved)
 }
 
 /// Hint row shown under an empty omnibar.
-pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  @ favorites  \u{00b7}  /, ~ or ./ path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
+pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  @ favorites  \u{00b7}  /, ~, ./ or quoted path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_path_routing_and_relative_resolution_preserve_literal_native_identity() {
+        use std::path::Path;
+        for raw in [
+            "\"/tmp/a b\"",
+            "'./ a '",
+            "'bare folder'",
+            "'!echo literal'",
+            "\"unterminated",
+        ] {
+            assert_eq!(OmnibarMode::parse(raw), OmnibarMode::Path(raw));
+        }
+        assert_eq!(
+            resolve_relative("'bare folder '", Path::new("/base")),
+            Some(Path::new("/base/bare folder ").into())
+        );
+        assert_eq!(
+            resolve_relative("'../child'", Path::new("/base/here")),
+            Some(Path::new("/base/child").into())
+        );
+        assert!(resolve_relative("\"~/folder\"", Path::new("/base")).is_none());
+        assert!(resolve_relative("'C:\\Users\\user'", Path::new("/base")).is_none());
+        assert!(resolve_relative("\"./unfinished", Path::new("/base")).is_none());
+        assert!(resolve_relative("'./a\0b'", Path::new("/base")).is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let base =
+                std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/native-\xff".to_vec()));
+            assert_eq!(
+                resolve_relative("' child '", &base),
+                Some(base.join(" child "))
+            );
+        }
+    }
 
     #[test]
     fn jump_keeps_escaped_trailing_whitespace_without_changing_other_modes() {
@@ -157,13 +201,16 @@ mod tests {
         let base = std::path::Path::new("/home/me/project");
         assert_eq!(
             resolve_relative("./src/app", base).as_deref(),
-            Some("/home/me/project/src/app")
+            Some(std::path::Path::new("/home/me/project/src/app"))
         );
         assert_eq!(
             resolve_relative("../other/./x", base).as_deref(),
-            Some("/home/me/other/x")
+            Some(std::path::Path::new("/home/me/other/x"))
         );
-        assert_eq!(resolve_relative("..", base).as_deref(), Some("/home/me"));
+        assert_eq!(
+            resolve_relative("..", base).as_deref(),
+            Some(std::path::Path::new("/home/me"))
+        );
         assert_eq!(resolve_relative("~/Docs", base), None);
         assert_eq!(resolve_relative("/tmp", base), None);
     }

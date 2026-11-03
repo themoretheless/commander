@@ -2196,6 +2196,7 @@ impl Fixture {
                 .map_err(|error| error.to_string())?;
         }
         if scenario == Scenario::MillerBrowser {
+            std::fs::create_dir_all(left.join("Design/ space dir ")).map_err(|e| e.to_string())?;
             std::fs::create_dir_all(left.join("column-A/inner")).map_err(|e| e.to_string())?;
             std::fs::create_dir_all(left.join("column-B")).map_err(|e| e.to_string())?;
             std::fs::write(left.join("column-A/a.txt"), "Miller A owner\n")
@@ -4999,7 +5000,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
-            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 175)
+            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 197)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -8134,6 +8135,101 @@ impl eframe::App for VisualQaApp {
                     button: egui::PointerButton::Primary,
                     pressed: local == 1,
                     modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && (175..197).contains(&self.disk_export_phase)
+        {
+            use crate::workspace::ActivePanel;
+            let phase = self.disk_export_phase;
+            let target = self.fixture.left.join("Design/ space dir ");
+            let quoted = format!("\"{}\"", target.display());
+            if phase == 182 || phase == 188 || phase == 196 {
+                let expected = if phase == 182 {
+                    self.fixture.left.clone()
+                } else if phase == 188 {
+                    std::fs::canonicalize(&target).unwrap()
+                } else {
+                    std::fs::canonicalize(self.fixture.left.join("column-A")).unwrap()
+                };
+                if self.inner.ws.active != ActivePanel::Right
+                    || self.inner.ws.right.current_path != expected
+                {
+                    return;
+                }
+                if phase == 182 {
+                    if self
+                        .inner
+                        .ui
+                        .modals
+                        .palette_input
+                        .as_ref()
+                        .and_then(|s| s.probe.as_ref())
+                        .is_none_or(|p| {
+                            p.status()
+                                != &crate::path_probe::ProbeStatus::Error(
+                                    crate::pathname::DirInputError::UnclosedQuote,
+                                )
+                        })
+                    {
+                        return;
+                    }
+                } else if self.inner.ui.modals.palette_input.is_some()
+                    || matches!(
+                        self.inner.ws.right.dir_status(),
+                        crate::panel::DirStatus::Loading
+                    )
+                {
+                    return;
+                }
+                let record = serde_json::json!({"phase":phase,"path":self.inner.ws.right.current_path,"left":self.inner.ws.left.current_path,"focus":format!("{:?}",self.inner.ws.active),"input":self.inner.ui.modals.palette_input.as_ref().map(|s|&s.input),"probe_input":self.inner.ui.modals.palette_input.as_ref().and_then(|s|s.probe.as_ref()).map(|p|p.input()),"status":self.inner.ui.modals.palette_input.as_ref().and_then(|s|s.probe.as_ref()).map(|p|format!("{:?}",p.status())),"submitted":if phase==196 {"'../../column-A'".to_string()}else{quoted.clone()},"target_exists":target.is_dir(),"canonical_target":std::fs::canonicalize(&target).ok(),"canonical_relative":std::fs::canonicalize(self.fixture.left.join("column-A")).ok()});
+                if !serde_json::to_vec_pretty(&record).is_ok_and(|b| {
+                    std::fs::write(
+                        self.scenario_dir.join(match phase {
+                            182 => "quote-invalid.json",
+                            188 => "quote-double.json",
+                            _ => "quote-single-relative.json",
+                        }),
+                        b,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+                self.disk_export_phase += 1;
+                return;
+            }
+            let command = matches!(
+                phase,
+                175 | 176 | 177 | 178 | 183 | 184 | 189 | 190 | 191 | 192
+            );
+            let modifiers = if command {
+                egui::Modifiers::COMMAND
+            } else {
+                egui::Modifiers::NONE
+            };
+            input.events.push(egui::Event::ModifiersChanged(modifiers));
+            if matches!(phase, 179 | 185 | 193) {
+                input.events.push(egui::Event::Text(match phase {
+                    179 => format!("\"{}", target.display()),
+                    185 => quoted,
+                    _ => "'../../column-A'".to_string(),
+                }));
+            } else {
+                input.events.push(egui::Event::Key {
+                    key: if matches!(phase, 175 | 176 | 189 | 190) {
+                        egui::Key::L
+                    } else if command {
+                        egui::Key::A
+                    } else {
+                        egui::Key::Enter
+                    },
+                    physical_key: None,
+                    pressed: matches!(phase, 175 | 177 | 180 | 183 | 186 | 189 | 191 | 194),
+                    repeat: false,
+                    modifiers,
                 });
             }
             self.disk_export_phase += 1;
@@ -24357,7 +24453,7 @@ impl eframe::App for VisualQaApp {
         } else {
             TIMEOUT
         };
-        // The Miller regression now contains 175 observed interaction steps.
+        // The Miller regression now contains 197 observed interaction steps.
         // Bound a stalled step rather than the total duration of healthy
         // progress, retaining a separate hard cap for the complete scenario.
         let stalled_for = if self.scenario == Scenario::MillerBrowser {
@@ -27045,11 +27141,11 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==175 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                self.disk_export_phase==197 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.left.current_path==self.fixture.left.join("column-B")
                     && self.inner.ws.left.preview.is_none()
                     && self.fixture.left.join("column-B/Prepared destination").is_dir()
-                    && self.inner.ws.right.current_path==self.fixture.left
+                    && std::fs::canonicalize(self.fixture.left.join("column-A")).is_ok_and(|path|self.inner.ws.right.current_path==path)
                     && self.inner.ws.right.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.right.miller.columns.iter().all(|c|!matches!(c.dir_status(),crate::panel::DirStatus::Loading))
                     && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)==2

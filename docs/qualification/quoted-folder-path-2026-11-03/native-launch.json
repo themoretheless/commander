@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/quoted-folder-path-2026-11-03/native-captures/1793718263061447000",
+  "binary_sha256": "4f33101b98cc7bd5bf7d3b50f428b91e7f5d391a9400bf924d5cdfcc81781dd6",
+  "core_sha256": "4f33101b98cc7bd5bf7d3b50f428b91e7f5d391a9400bf924d5cdfcc81781dd6",
+  "wrapper_sha256": "50ddeaa0987c94d01037b13dae1f03ee47a1c027a4fa9fd6cfc85d837d6ea0d9",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

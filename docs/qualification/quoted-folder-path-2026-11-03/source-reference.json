@@ -1,0 +1,7 @@
+{
+  "cohort": 2,
+  "repository": "mikekazakov/nimble-commander",
+  "source": "https://magnumbytes.com/whats-new/",
+  "documented_feature": "Go To Folder accepts paths enclosed in quotes, release 1.9.0",
+  "adaptation": "One matching ASCII single/double enclosure; exact interior text, asynchronous validation, native relative base captured at dialog opening; no shell evaluation"
+}
