@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 31.52s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 4 tests
+test app::archive_dialog::tests::scanned_content_groups_match_original_index_path_size_before_selection ... ok
+test archive_check::tests::content_groups_hash_real_bytes_not_crc_collisions_and_keep_entry_ids ... ok
+test archive_check::tests::content_groups_refuse_source_mutation_before_publishing_groups ... ok
+test archive_check::tests::content_groups_support_passwords_and_fail_closed_on_auth_limits_and_cancel ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3452 filtered out; finished in 0.10s
+

@@ -1,5 +1,6 @@
 //! Read-only archive stream checks, distinct from extraction and content search.
 use crate::archive::{ArchiveKind, MAX_MEMBERS_PER_RUN};
+use sha2::Digest;
 use std::{
     fs,
     io::{Read, Seek},
@@ -18,11 +19,43 @@ pub struct Report {
     pub members: usize,
     pub decoded: u64,
     pub strict_headers: bool,
+    pub content_groups: Option<Vec<ContentGroup>>,
+}
+#[derive(Debug)]
+pub struct ContentMember {
+    pub index: usize,
+    pub path: std::path::PathBuf,
+    pub size: u64,
+}
+#[derive(Debug)]
+pub struct ContentGroup {
+    pub sha256: String,
+    pub size: u64,
+    pub members: Vec<ContentMember>,
+}
+#[derive(Clone, Copy)]
+struct ScanOptions {
+    limit: u64,
+    max_members: usize,
+    strict_headers: bool,
+    content_groups: bool,
+    metadata_limit: usize,
 }
 impl Report {
     pub fn summary(&self) -> String {
+        let groups = self
+            .content_groups
+            .as_ref()
+            .map(|groups| {
+                format!(
+                    " · {} SHA-256 groups ({} members)",
+                    groups.len(),
+                    groups.iter().map(|g| g.members.len()).sum::<usize>()
+                )
+            })
+            .unwrap_or_default();
         format!(
-            "Last {} check completed · {} members · {} decoded bytes · {}{}",
+            "Last {} check completed · {} members · {} decoded bytes · {}{}{}",
             self.kind.label(),
             self.members,
             self.decoded,
@@ -35,7 +68,8 @@ impl Report {
                 " · strict ZIP headers"
             } else {
                 ""
-            }
+            },
+            groups
         )
     }
 }
@@ -118,13 +152,19 @@ impl<R: Read> Read for BudgetReader<'_, R> {
     }
 }
 fn drain(reader: &mut impl Read) -> Result<u64, String> {
+    drain_hash(reader, None)
+}
+fn drain_hash(reader: &mut impl Read, mut hash: Option<&mut sha2::Sha256>) -> Result<u64, String> {
     let mut count = 0_u64;
     let mut bytes = [0; 64 * 1024];
     loop {
         match reader.read(&mut bytes) {
             Ok(0) => return Ok(count),
-            Ok(bytes) => {
-                count += bytes as u64;
+            Ok(length) => {
+                count += length as u64;
+                if let Some(hash) = hash.as_mut() {
+                    hash.update(&bytes[..length]);
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e.to_string()),
@@ -209,9 +249,45 @@ fn check_options(
     max_members: usize,
     strict_headers: bool,
 ) -> Result<Report, String> {
+    scan(
+        path,
+        cancelled,
+        progress,
+        password,
+        ScanOptions {
+            limit,
+            max_members,
+            strict_headers,
+            content_groups: false,
+            metadata_limit: 8 * 1024 * 1024,
+        },
+    )
+}
+fn scan(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &AtomicU64,
+    password: Option<&[u8]>,
+    options: ScanOptions,
+) -> Result<Report, String> {
+    let ScanOptions {
+        limit,
+        max_members,
+        strict_headers,
+        content_groups,
+        metadata_limit,
+    } = options;
+    // zip-rs coalesces duplicate names: strict identity validation is required
+    // before claiming a complete content scan.
+    let strict_headers = strict_headers || content_groups;
     cancel(cancelled)?;
     progress.store(0, Ordering::Relaxed);
     let kind = crate::archive::kind_of(path).ok_or("Unsupported archive format.")?;
+    if content_groups && kind != ArchiveKind::Zip {
+        return Err("Content-group scanning currently requires ZIP/ZIPX.".into());
+    }
+    let mut hashes = std::collections::BTreeMap::<(u64, [u8; 32]), Vec<ContentMember>>::new();
+    let mut metadata_bytes = 0usize;
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("Archive check accepts regular files without following symlinks.".into());
@@ -248,6 +324,39 @@ fn check_options(
         }
         for index in 0..zip.len() {
             cancel(cancelled)?;
+            let candidate = if content_groups {
+                let raw = zip
+                    .by_index_raw(index)
+                    .map_err(|e| format!("Member #{index}: {e}"))?;
+                if !raw.is_dir()
+                    && !raw.is_symlink()
+                    && raw
+                        .unix_mode()
+                        .is_none_or(|mode| matches!(mode & 0o170000, 0 | 0o100000))
+                {
+                    if let Some(path) = raw.enclosed_name() {
+                        metadata_bytes = metadata_bytes
+                            .saturating_add(path.as_os_str().as_encoded_bytes().len())
+                            .saturating_add(128);
+                        if metadata_bytes > metadata_limit {
+                            return Err(
+                                "Content-group metadata exceeds 8 MiB; no complete result.".into(),
+                            );
+                        }
+                        Some(ContentMember {
+                            index,
+                            path,
+                            size: raw.size(),
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let mut entry = crate::zip_reader::open_with_password(&mut zip, index, password)
                 .map_err(|e| format!("Member #{index}: {e}"))?;
             if entry.size() > limit.saturating_sub(progress.load(Ordering::Relaxed)) {
@@ -259,7 +368,17 @@ fn check_options(
                 progress,
                 limit,
             };
-            drain(&mut bounded).map_err(|e| format!("Member #{index}: {e}"))?;
+            let mut hash = candidate.as_ref().map(|_| sha2::Sha256::new());
+            drain_hash(&mut bounded, hash.as_mut()).map_err(|e| format!("Member #{index}: {e}"))?;
+            if let Some(candidate) = candidate {
+                hashes
+                    .entry((
+                        candidate.size,
+                        hash.expect("candidate has a hasher").finalize().into(),
+                    ))
+                    .or_default()
+                    .push(candidate);
+            }
             members += 1;
         }
     } else {
@@ -319,6 +438,18 @@ fn check_options(
         members,
         decoded: progress.load(Ordering::Relaxed),
         strict_headers: strict_headers && kind == ArchiveKind::Zip,
+        content_groups: content_groups.then(|| {
+            hashes
+                .into_iter()
+                .filter_map(|((size, sha256), members)| {
+                    (members.len() > 1).then_some(ContentGroup {
+                        sha256: sha256.iter().map(|b| format!("{b:02x}")).collect(),
+                        size,
+                        members,
+                    })
+                })
+                .collect()
+        }),
     })
 }
 
@@ -343,6 +474,23 @@ pub fn start(
     strict_headers: bool,
     notify: crate::archive::Notify,
 ) -> Run {
+    start_mode(path, password, strict_headers, false, notify)
+}
+pub fn start_content_groups(
+    path: std::path::PathBuf,
+    password: Option<zeroize::Zeroizing<String>>,
+    strict_headers: bool,
+    notify: crate::archive::Notify,
+) -> Run {
+    start_mode(path, password, strict_headers, true, notify)
+}
+fn start_mode(
+    path: std::path::PathBuf,
+    password: Option<zeroize::Zeroizing<String>>,
+    strict_headers: bool,
+    content_groups: bool,
+    notify: crate::archive::Notify,
+) -> Run {
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&cancelled);
     let progress = Arc::new(AtomicU64::new(0));
@@ -350,7 +498,21 @@ pub fn start(
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let cancelled = || flag.load(Ordering::Acquire);
-        let result = if strict_headers {
+        let result = if content_groups {
+            scan(
+                &path,
+                &cancelled,
+                &worker_progress,
+                password.as_ref().map(|p| p.as_bytes()),
+                ScanOptions {
+                    limit: MAX_DECODED,
+                    max_members: MAX_MEMBERS_PER_RUN,
+                    strict_headers,
+                    content_groups: true,
+                    metadata_limit: 8 * 1024 * 1024,
+                },
+            )
+        } else if strict_headers {
             check_strict(
                 &path,
                 &cancelled,
@@ -383,6 +545,270 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use std::io::Write;
+    fn group_options() -> ScanOptions {
+        ScanOptions {
+            limit: MAX_DECODED,
+            max_members: MAX_MEMBERS_PER_RUN,
+            strict_headers: false,
+            content_groups: true,
+            metadata_limit: 8 * 1024 * 1024,
+        }
+    }
+    #[test]
+    fn content_groups_hash_real_bytes_not_crc_collisions_and_keep_entry_ids() {
+        let temp = TempDir::new();
+        let path = temp.path().join("groups.zip");
+        assert_eq!(crc32fast::hash(b"plumless"), crc32fast::hash(b"buckeroo"));
+        let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        for (name, body) in [
+            ("same-a", b"abc".as_slice()),
+            ("same-b", b"abc".as_slice()),
+            ("empty-a", b"".as_slice()),
+            ("empty-b", b"".as_slice()),
+            ("collision-a", b"plumless".as_slice()),
+            ("collision-b", b"buckeroo".as_slice()),
+            ("../unsafe", b"abc".as_slice()),
+        ] {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body).unwrap();
+        }
+        writer
+            .add_directory("folder/", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer
+            .add_symlink("link", "abc", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.finish().unwrap();
+        let before = fs::read(&path).unwrap();
+        let report = scan(&path, &|| false, &AtomicU64::new(0), None, group_options()).unwrap();
+        let groups = report.content_groups.unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].size, 0);
+        assert_eq!(
+            groups[0]
+                .members
+                .iter()
+                .map(|m| m.index)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert_eq!(groups[1].size, 3);
+        assert_eq!(
+            groups[1].sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            groups[1]
+                .members
+                .iter()
+                .map(|m| m.index)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        let mut bytes = fs::read(&path).unwrap();
+        for offset in 0..bytes.len().saturating_sub(46) {
+            let name = if bytes[offset..].starts_with(b"PK\x03\x04") {
+                Some(offset + 30)
+            } else if bytes[offset..].starts_with(b"PK\x01\x02") {
+                Some(offset + 46)
+            } else {
+                None
+            };
+            if let Some(name) = name
+                && bytes[name..].starts_with(b"same-b")
+            {
+                bytes[name..name + 6].copy_from_slice(b"same-a");
+            }
+        }
+        fs::write(&path, bytes).unwrap();
+        let error = scan(&path, &|| false, &AtomicU64::new(0), None, group_options()).unwrap_err();
+        assert!(error.contains("duplicate"), "{error}");
+    }
+    #[test]
+    fn content_group_metadata_budget_charges_decoded_filename_bytes() {
+        let temp = TempDir::new();
+        let path = temp.path().join("name.zip");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        writer
+            .start_file("a", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.finish().unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        for offset in 0..bytes.len().saturating_sub(46) {
+            let name = if bytes[offset..].starts_with(b"PK\x03\x04") {
+                Some(offset + 30)
+            } else if bytes[offset..].starts_with(b"PK\x01\x02") {
+                Some(offset + 46)
+            } else {
+                None
+            };
+            if let Some(name) = name {
+                bytes[name] = 0x82;
+            }
+        }
+        fs::write(&path, bytes).unwrap();
+        assert!(
+            scan(
+                &path,
+                &|| false,
+                &AtomicU64::new(0),
+                None,
+                ScanOptions {
+                    metadata_limit: 129,
+                    ..group_options()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            scan(
+                &path,
+                &|| false,
+                &AtomicU64::new(0),
+                None,
+                ScanOptions {
+                    metadata_limit: 130,
+                    ..group_options()
+                }
+            )
+            .is_ok()
+        );
+    }
+
+    fn encrypted_group_fixture(path: &Path, corrupt: bool) {
+        let mut writer = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        let body = include_bytes!(
+            "../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.txt"
+        );
+        writer
+            .start_file("plain.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(body).unwrap();
+        let bytes: &[u8] = if corrupt {
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-ppmd-bad-tag.zipx"
+            )
+        } else {
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.zipx"
+            )
+        };
+        let mut encrypted = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        for name in ["enc-one.txt", "enc-two.txt"] {
+            writer
+                .raw_copy_file_rename(encrypted.by_index_raw(0).unwrap(), name)
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    #[test]
+    fn content_groups_support_passwords_and_fail_closed_on_auth_limits_and_cancel() {
+        let temp = TempDir::new();
+        let path = temp.path().join("groups.zipx");
+        encrypted_group_fixture(&path, false);
+        for password in [None, Some(b"wrong".as_slice())] {
+            assert!(
+                scan(
+                    &path,
+                    &|| false,
+                    &AtomicU64::new(0),
+                    password,
+                    group_options()
+                )
+                .is_err()
+            );
+        }
+        let password = Some("fixture-пароль-ёж".as_bytes());
+        let report = scan(
+            &path,
+            &|| false,
+            &AtomicU64::new(0),
+            password,
+            group_options(),
+        )
+        .unwrap();
+        assert_eq!(report.content_groups.as_ref().unwrap()[0].members.len(), 3);
+        for options in [
+            ScanOptions {
+                limit: 5000,
+                ..group_options()
+            },
+            ScanOptions {
+                max_members: 2,
+                ..group_options()
+            },
+            ScanOptions {
+                metadata_limit: 1,
+                ..group_options()
+            },
+        ] {
+            assert!(scan(&path, &|| false, &AtomicU64::new(0), password, options).is_err());
+        }
+        assert!(
+            scan(
+                &path,
+                &|| true,
+                &AtomicU64::new(0),
+                password,
+                group_options()
+            )
+            .is_err()
+        );
+        let run = start_content_groups(
+            path.clone(),
+            Some(zeroize::Zeroizing::new("fixture-пароль-ёж".into())),
+            false,
+            Arc::new(|| {}),
+        );
+        let report = run
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.content_groups.unwrap()[0].members.len(), 3);
+        encrypted_group_fixture(&path, true);
+        assert!(
+            scan(
+                &path,
+                &|| false,
+                &AtomicU64::new(0),
+                Some(b"fixture-password"),
+                group_options()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn content_groups_refuse_source_mutation_before_publishing_groups() {
+        let temp = TempDir::new();
+        let path = temp.path().join("groups.zipx");
+        encrypted_group_fixture(&path, false);
+        let progress = AtomicU64::new(0);
+        let changed = std::cell::Cell::new(false);
+        let cancelled = || {
+            if progress.load(Ordering::Relaxed) > 0 && !changed.replace(true) {
+                let mut bytes = fs::read(&path).unwrap();
+                bytes.push(0);
+                fs::write(&path, bytes).unwrap();
+            }
+            false
+        };
+        assert!(
+            scan(
+                &path,
+                &cancelled,
+                &progress,
+                Some("fixture-пароль-ёж".as_bytes()),
+                group_options()
+            )
+            .is_err()
+        );
+        assert!(changed.get());
+    }
     macro_rules! fixture {
         ($name:literal, $extension:literal) => {
             include_bytes!(concat!(

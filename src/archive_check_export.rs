@@ -103,6 +103,7 @@ mod tests {
             members: 2,
             decoded: 8704,
             strict_headers: true,
+            content_groups: None,
         });
         let at = chrono::DateTime::from_timestamp(0, 0).unwrap();
         let text = format(

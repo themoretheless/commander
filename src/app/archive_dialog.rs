@@ -1143,6 +1143,41 @@ fn change_visible_selection(
     }
 }
 
+fn content_group_rows(
+    report: &crate::archive_check::Report,
+    listing: &crate::archive::ArchiveListing,
+) -> Result<Vec<usize>, String> {
+    let mut by_index = std::collections::HashMap::new();
+    for (id, member) in listing.members.iter().enumerate() {
+        if by_index.insert(member.index, (id, member)).is_some() {
+            return Err(
+                "Archive listing has ambiguous entry indexes; reopen before selecting.".into(),
+            );
+        }
+    }
+    let mut rows = Vec::new();
+    for group in report.content_groups.as_deref().unwrap_or_default() {
+        for scanned in &group.members {
+            let &(id, member) = by_index.get(&scanned.index).ok_or(
+                "Archive listing differs from scanned identities; reopen before selecting.",
+            )?;
+            if member.path != scanned.path
+                || member.size != scanned.size
+                || !member.is_regular
+                || member.is_dir
+                || member.is_symlink
+            {
+                return Err(
+                    "Archive listing differs from scanned identities; reopen before selecting."
+                        .into(),
+                );
+            }
+            rows.push(id);
+        }
+    }
+    Ok(rows)
+}
+
 /// Visible regular-file candidates only; declared CRC/size is not byte equality.
 fn repeated_crc_rows(listing: &crate::archive::ArchiveListing, visible: &[usize]) -> Vec<usize> {
     if listing.kind != crate::archive::ArchiveKind::Zip {
@@ -1654,6 +1689,8 @@ impl App {
         let mut extract_all = false;
         let mut stop_extract = false;
         let mut start_check = false;
+        let mut start_content_groups = false;
+        let mut select_content_groups = false;
         let mut stop_check = false;
         let mut copy_members = None;
         let mut copy_check_report = None;
@@ -1798,6 +1835,14 @@ impl App {
                     #[cfg(feature = "visual-qa")]
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-test"), test.rect));
                     start_check = test.clicked();
+                    if state.listing.as_ref().is_some_and(|listing| listing.kind==crate::archive::ArchiveKind::Zip) {
+                        let groups=ui.add_enabled(state.run.is_none() && state.extract.is_none() && state.check.is_none(),egui::Button::new("Find matching contents"))
+                            .on_hover_text("Read and verify every ZIP member, then group safe regular files by actual size and SHA-256 of decompressed contents. Requires consistent headers and unique names. Uses the password below once; 128 MiB decoded and 8 MiB identity metadata limits. No extraction or deletion.");
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-content-groups"),groups.rect));
+                        if groups.clicked() {state.strict_zip_headers=true;start_check=true;start_content_groups=true;}
+                    }
+
                     if state.listing.as_ref().is_some_and(|listing| listing.kind == crate::archive::ArchiveKind::Zip) {
                         let strict = ui.add_enabled(state.check.is_none() && state.extract.is_none(), egui::Checkbox::new(&mut state.strict_zip_headers, "Strict ZIP headers"))
                             .on_hover_text("Also compare local and central headers and reject duplicate names. Some permissive ZIP archives fail this stricter check.");
@@ -1826,6 +1871,32 @@ impl App {
                             ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-check-result"), label.rect));
                             let _ = label;
                         }
+                    }
+                    if let Ok(report)=result && let Some(groups)=&report.content_groups {
+                        let select=ui.add_enabled(!groups.is_empty(),egui::Button::new("Select scanned content matches"))
+                            .on_hover_text("Add every scanned matching regular entry, including hidden ones, after matching original entry index, path and size to this listing. Existing selection is kept. These are SHA-256 matches from the last completed scan, not a new byte-to-byte comparison.");
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-select-content-groups"),select.rect));
+                        select_content_groups=select.clicked();
+                        let details=egui::CollapsingHeader::new(format!("Matching content groups ({})",groups.len())).show(ui,|ui| {
+                            for (_rank,group) in groups.iter().take(100).enumerate() {
+                                let _title=ui.label(format!("SHA-256 {} · {} bytes · {} members",group.sha256,group.size,group.members.len()));
+                                #[cfg(feature="visual-qa")]
+                                let (mut painted,mut rect,mut paths)=(ui.clip_rect().contains_rect(_title.rect),_title.rect,Vec::new());
+                                for member in group.members.iter().take(10) {
+                                    let _label=ui.label(format!("#{} {}",member.index,member.path.display()));
+                                    #[cfg(feature="visual-qa")]
+                                    {painted &= ui.clip_rect().contains_rect(_label.rect);rect=rect.union(_label.rect);paths.push(member.path.clone());}
+                                }
+                                #[cfg(feature="visual-qa")]
+                                if _rank==0 {ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-rendered-content-group"),(group.sha256.clone(),paths,painted,rect)));}
+                                if group.members.len()>10 {ui.label(format!("{} more members; Select includes all",group.members.len()-10));}
+                            }
+                            if groups.len()>100 {ui.label(format!("{} more groups; Select includes all",groups.len()-100));}
+                        });
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-content-groups-details"),details.header_response.rect));
+                        let _=details;
                     }
                     ui.horizontal_wrapped(|ui| {
                         for format in crate::archive_check_export::Format::ALL {
@@ -2662,12 +2733,26 @@ impl App {
             state.check_result = None;
             state.check_recorded_at = None;
             state.check_strict_snapshot = Some(state.strict_zip_headers);
-            state.check = Some(crate::archive_check::start(
+            let start = if start_content_groups {
+                crate::archive_check::start_content_groups
+            } else {
+                crate::archive_check::start
+            };
+            state.check = Some(start(
                 state.path.clone(),
                 Some(std::mem::take(&mut state.password)),
                 state.strict_zip_headers,
                 std::sync::Arc::new(move || repaint.request_repaint()),
             ));
+        }
+        if select_content_groups
+            && let Some(state) = self.ui.tools.archive.as_mut()
+            && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
+        {
+            match content_group_rows(report, listing) {
+                Ok(rows) => state.selected.extend(rows),
+                Err(error) => state.error = Some(error),
+            }
         }
         if let Some(result) = copy_check_report {
             match result {
@@ -2774,7 +2859,7 @@ fn archive_password_input(
         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("archive-password-input"), (output.response.rect, output.response.id)));
         output.state.clear_undoer();
         output.state.store(ui.ctx(), output.response.id);
-        output.response.response.on_hover_text("ZIP password (ZipCrypto or AES), used only for extraction or integrity checking. Cleared when either operation starts or the archive pane closes.")
+        output.response.response.on_hover_text("ZIP password (ZipCrypto or AES), used only for extraction, integrity checking or content-group scans. Cleared when either operation starts or the archive pane closes.")
     }).inner
 }
 
@@ -3526,6 +3611,49 @@ mod tests {
         filter.navigate(None);
         assert_eq!(filter.visible(&listing, "").len(), 2);
         assert!(MemberFilter::default().narrowed.is_none());
+    }
+
+    #[test]
+    fn scanned_content_groups_match_original_index_path_size_before_selection() {
+        let mut listing = listing(&["same", "same", "other"]);
+        for (index, member) in listing.members.iter_mut().enumerate() {
+            member.index = index;
+            member.size = 3;
+        }
+        let report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Zip,
+            members: 3,
+            decoded: 9,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "abc".into(),
+                size: 3,
+                members: vec![
+                    crate::archive_check::ContentMember {
+                        index: 0,
+                        path: "same".into(),
+                        size: 3,
+                    },
+                    crate::archive_check::ContentMember {
+                        index: 1,
+                        path: "same".into(),
+                        size: 3,
+                    },
+                ],
+            }]),
+        };
+        assert_eq!(
+            super::content_group_rows(&report, &listing).unwrap(),
+            [0, 1]
+        );
+        listing.members[1].size = 4;
+        assert!(super::content_group_rows(&report, &listing).is_err());
+        listing.members[1].size = 3;
+        listing.members[1].path = "changed".into();
+        assert!(super::content_group_rows(&report, &listing).is_err());
+        listing.members[1].path = "same".into();
+        listing.members[1].index = 0;
+        assert!(super::content_group_rows(&report, &listing).is_err());
     }
 
     #[test]

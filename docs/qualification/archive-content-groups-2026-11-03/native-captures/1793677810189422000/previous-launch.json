@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_password",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-content-groups-2026-11-03/native-captures/1793677617973707000",
+  "binary_sha256": "111409f363c789aaa5172abe90753ce725b63f4026cd0ce88ad488a18de75d78",
+  "core_sha256": "111409f363c789aaa5172abe90753ce725b63f4026cd0ce88ad488a18de75d78",
+  "wrapper_sha256": "50a98d0d841bcfd005f24157c575c04d0502cc20a46a874f544a02a306d39a0a",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

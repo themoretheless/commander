@@ -1,0 +1,5 @@
+{
+  "docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.zipx": "02ccd2522b9e25d0dfe27eaadfe7223fb6ede0cb1e5338c2e0672e44cbd8f25c",
+  "docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.txt": "c08e539674caaec61f0544f56572a64ab06f2167ae77ad03758eeae28a5504c3",
+  "docs/qualification/zip-password-2026-11-03/fixtures/aes-ppmd-bad-tag.zipx": "7d13bb55b33c4ecfc74f3bf20332b85a83bec3edb56ef205824a97e774c734f6"
+}

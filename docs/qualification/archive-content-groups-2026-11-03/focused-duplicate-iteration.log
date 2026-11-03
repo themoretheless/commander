@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 22.79s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 3 tests
+test archive_check::tests::content_groups_hash_real_bytes_not_crc_collisions_and_keep_entry_ids ... FAILED
+test archive_check::tests::content_groups_refuse_source_mutation_before_publishing_groups ... ok
+test archive_check::tests::content_groups_support_passwords_and_fail_closed_on_auth_limits_and_cancel ... ok
+
+failures:
+
+---- archive_check::tests::content_groups_hash_real_bytes_not_crc_collisions_and_keep_entry_ids stdout ----
+
+thread 'archive_check::tests::content_groups_hash_real_bytes_not_crc_collisions_and_keep_entry_ids' (19776853) panicked at src/archive_check.rs:598:9:
+assertion `left == right` failed
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    archive_check::tests::content_groups_hash_real_bytes_not_crc_collisions_and_keep_entry_ids
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 3452 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `--bin commander`
