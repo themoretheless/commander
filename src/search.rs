@@ -7951,6 +7951,41 @@ mod tests {
     }
 
     #[test]
+    fn zstd_content_search_agrees_for_live_and_indexed_zipx() {
+        let tmp = TempDir::new();
+        for name in ["one.zip", "two.ZIPX"] {
+            std::fs::write(
+                tmp.path().join(name),
+                include_bytes!("../docs/qualification/zip-zstd-2026-11-03/fixtures/normal.zipx"),
+            )
+            .unwrap();
+        }
+        let engine = SearchEngine::default();
+        let query =
+            Query::parse("path:ёж.txt content:needle archives:on", MatchMode::Exact).unwrap();
+        let live = engine
+            .start(tmp.path().into(), query.clone(), 100, Arc::new(|| {}))
+            .unwrap();
+        let (live_hits, live_summary) = collect_run(&live);
+        let index = Arc::new(crate::content_index::build_test_index(tmp.path()));
+        let indexed = engine
+            .start_indexed(index, query, 100, Arc::new(|| {}))
+            .unwrap();
+        let (indexed_hits, indexed_summary) = collect_run(&indexed);
+        for (hits, summary) in [(live_hits, live_summary), (indexed_hits, indexed_summary)] {
+            assert_eq!(summary.matched, 2);
+            assert_eq!(summary.content_skipped, 0);
+            assert!(!summary.truncated);
+            assert_eq!(hits.len(), 2);
+            for hit in hits {
+                assert!(
+                    matches!(hit.location,SearchLocation::ArchiveMember{member,..} if member==Path::new("nested/ёж.txt"))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn xz_content_search_agrees_for_live_and_indexed_zipx() {
         let tmp = TempDir::new();
         for name in ["one.zip", "two.ZIPX"] {

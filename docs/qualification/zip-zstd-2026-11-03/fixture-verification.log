@@ -1,0 +1,19 @@
+normal.zipx verified
+limit-window.zipx verified
+legacy.zipx verified
+concatenated.zipx verified
+skippable.zipx verified
+huge-window.zipx verified
+legacy-window.zipx verified
+later-window.zipx verified
+bad-crc.zipx verified
+bad-size.zipx verified
+truncated.zipx verified
+trailing.zipx verified
+bad-check.zipx verified
+encrypted.zipx verified
+ratio.zipx verified
+unsafe.zipx verified
+symlinks.zipx verified
+*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***
+

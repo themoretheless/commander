@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-zstd-2026-11-03/native-captures/1793664369406572000",
+  "binary_sha256": "b80c1afe087f52bbd9ccf41c9c3561e12ef7a966a350f148cad1ec9267c552d5",
+  "core_sha256": "b80c1afe087f52bbd9ccf41c9c3561e12ef7a966a350f148cad1ec9267c552d5",
+  "wrapper_sha256": "1829ef680d551d8087a23d19b442e2f4c757eb156a76441fb85c51ec295af2ce",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

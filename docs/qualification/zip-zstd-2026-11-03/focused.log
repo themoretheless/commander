@@ -1,0 +1,14 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 27.57s
+     Running unittests src/main.rs (target/debug/build/commander/f26f5591bc046064/out/commander-f26f5591bc046064)
+
+running 6 tests
+test archive::tests::zstd_zipx_extracts_only_symlinks_that_stay_inside_destination ... ok
+test archive::tests::zstd_zipx_keeps_path_ratio_and_cancellation_guards ... ok
+test archive_check::tests::zstd_integrity_keeps_decoded_byte_limit_and_cancellation ... ok
+test archive::tests::zstd_zipx_refuses_bad_streams_and_later_dictionary_requests ... ok
+test archive::tests::zstd_zipx_reads_checks_and_concatenated_streams ... ok
+test search::tests::zstd_content_search_agrees_for_live_and_indexed_zipx ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 3404 filtered out; finished in 0.02s
+

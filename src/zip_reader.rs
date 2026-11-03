@@ -1,12 +1,37 @@
-//! ZIP LZMA/XZ decoding with bounded decoder memory and verified payloads.
+//! ZIP LZMA/XZ/Zstandard decoding with bounded decoder memory and verified payloads.
 //! Other codecs retain zip-rs decoding. Never reread an untrusted LZMA header
 //! after validating it: the exact properties consumed here feed liblzma.
 use std::io::{self, Cursor, Read, Seek};
 
 const MAX_DECODER_MEMORY: u64 = 64 * 1024 * 1024;
 type BoundedInput<'a, R> = std::io::Chain<Cursor<[u8; 13]>, zip::read::ZipFile<'a, R>>;
+enum Decoder<'a, R: Read> {
+    LzmaXz(xz2::read::XzDecoder<BoundedInput<'a, R>>),
+    Zstd(zstd::stream::read::Decoder<'static, std::io::BufReader<zip::read::ZipFile<'a, R>>>),
+}
+impl<R: Read> Read for Decoder<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::LzmaXz(d) => d.read(bytes),
+            Self::Zstd(d) => d.read(bytes).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("Zstandard decode (64 MiB maximum window): {error}"),
+                )
+            }),
+        }
+    }
+}
+impl<'a, R: Read> Decoder<'a, R> {
+    fn entry(&self) -> &zip::read::ZipFile<'a, R> {
+        match self {
+            Self::LzmaXz(d) => d.get_ref().get_ref().1,
+            Self::Zstd(d) => d.get_ref().get_ref(),
+        }
+    }
+}
 struct Decoded<'a, R: Read> {
-    decoder: xz2::read::XzDecoder<BoundedInput<'a, R>>,
+    decoder: Decoder<'a, R>,
     codec: &'static str,
     crc: crc32fast::Hasher,
     expected_crc: u32,
@@ -26,7 +51,7 @@ impl<'a, R: Read> std::ops::Deref for Member<'a, R> {
     fn deref(&self) -> &Self::Target {
         match &self.inner {
             Inner::Standard(entry) => entry,
-            Inner::Bounded(member) => member.decoder.get_ref().get_ref().1,
+            Inner::Bounded(member) => member.decoder.entry(),
         }
     }
 }
@@ -80,8 +105,8 @@ fn validate_properties(header: &[u8; 9]) -> io::Result<()> {
     }
     Ok(())
 }
-/// The decoder enforces the full memory budget, including probability tables;
-/// header inspection rejects excessive dictionaries before decoder construction.
+/// LZMA/XZ enforce a liblzma memory budget, including probability tables.
+/// Zstandard enforces a maximum back-reference window separately.
 pub fn open<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     index: usize,
@@ -90,7 +115,9 @@ pub fn open<R: Read + Seek>(
         .by_index_data(index)
         .map_err(io::Error::other)?
         .compression();
-    if method != zip::CompressionMethod::LZMA && method != zip::CompressionMethod::XZ {
+    let zstd =
+        method == zip::CompressionMethod::ZSTD || method == zip::CompressionMethod::ZSTD_DEPRECATED;
+    if method != zip::CompressionMethod::LZMA && method != zip::CompressionMethod::XZ && !zstd {
         return Ok(Member {
             inner: Inner::Standard(archive.by_index(index).map_err(io::Error::other)?),
         });
@@ -98,6 +125,8 @@ pub fn open<R: Read + Seek>(
     let mut raw = archive.by_index_raw(index).map_err(io::Error::other)?;
     let codec = if method == zip::CompressionMethod::LZMA {
         "LZMA"
+    } else if zstd {
+        "Zstandard"
     } else {
         "XZ"
     };
@@ -108,35 +137,47 @@ pub fn open<R: Read + Seek>(
     }
     let expected_crc = raw.crc32();
     let size = raw.size();
-    let (prefix, stream) = if method == zip::CompressionMethod::LZMA {
-        let mut header = [0; 9];
-        raw.read_exact(&mut header)?;
-        validate_properties(&header)?;
-        // Bit 1 promises an end marker; otherwise the declared size suffices.
-        let stream_size = if raw.flags().as_u16() & 2 != 0 {
-            u64::MAX
-        } else {
-            size
-        };
-        let mut alone = [0; 13];
-        alone[..5].copy_from_slice(&header[4..9]);
-        alone[5..].copy_from_slice(&stream_size.to_le_bytes());
-        (
-            Cursor::new(alone),
-            xz2::stream::Stream::new_lzma_decoder(MAX_DECODER_MEMORY).map_err(io::Error::other)?,
-        )
+    let decoder = if zstd {
+        let mut decoder = zstd::stream::read::Decoder::new(raw)?;
+        // Cap each frame's back-reference window, including concatenated frames.
+        // This is a window bound, not a claim about total process memory.
+        decoder.window_log_max(26)?;
+        Decoder::Zstd(decoder)
     } else {
-        // XZ is self-framed. Enforce the budget for every block/stream,
-        // including later concatenated streams, inside the decoder itself.
-        let mut empty = Cursor::new([0; 13]);
-        empty.set_position(13);
-        (
-            empty,
-            xz2::stream::Stream::new_stream_decoder(MAX_DECODER_MEMORY, xz2::stream::CONCATENATED)
+        let (prefix, stream) = if method == zip::CompressionMethod::LZMA {
+            let mut header = [0; 9];
+            raw.read_exact(&mut header)?;
+            validate_properties(&header)?;
+            // Bit 1 promises an end marker; otherwise the declared size suffices.
+            let stream_size = if raw.flags().as_u16() & 2 != 0 {
+                u64::MAX
+            } else {
+                size
+            };
+            let mut alone = [0; 13];
+            alone[..5].copy_from_slice(&header[4..9]);
+            alone[5..].copy_from_slice(&stream_size.to_le_bytes());
+            (
+                Cursor::new(alone),
+                xz2::stream::Stream::new_lzma_decoder(MAX_DECODER_MEMORY)
+                    .map_err(io::Error::other)?,
+            )
+        } else {
+            // XZ is self-framed. Enforce the budget for every block/stream,
+            // including later concatenated streams, inside the decoder itself.
+            let mut empty = Cursor::new([0; 13]);
+            empty.set_position(13);
+            (
+                empty,
+                xz2::stream::Stream::new_stream_decoder(
+                    MAX_DECODER_MEMORY,
+                    xz2::stream::CONCATENATED,
+                )
                 .map_err(io::Error::other)?,
-        )
+            )
+        };
+        Decoder::LzmaXz(xz2::read::XzDecoder::new_stream(prefix.chain(raw), stream))
     };
-    let decoder = xz2::read::XzDecoder::new_stream(prefix.chain(raw), stream);
     Ok(Member {
         inner: Inner::Bounded(Box::new(Decoded {
             decoder,
