@@ -379,6 +379,19 @@ pub fn open_with_password<'a, R: Read + Seek>(
     })
 }
 
+/// AE-2 uses authentication instead of CRC, even if a producer writes a
+/// nonzero CRC field. Unknown/inconsistent encryption cannot promise a CRC.
+pub fn declared_crc32<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> Option<u32> {
+    if entry.flags().as_u16() & 0x40 != 0 {
+        return None;
+    }
+    match aes::settings(entry) {
+        Ok(Some(settings)) if entry.encrypted() && settings.check_crc => Some(entry.crc32()),
+        Ok(Some(_)) | Err(_) => None,
+        Ok(None) => Some(entry.crc32()),
+    }
+}
+
 /// Declared central-directory encryption; does not authenticate payloads.
 pub fn encryption_label<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> String {
     if entry.flags().as_u16() & 0x40 != 0 {

@@ -1,0 +1,13 @@
+# Declared member CRC-32
+
+Independent adaptation of cohort #96 [PeaZip archive checksum display](https://peazip.github.io/screenshots-peazip-1.html) and [stored archive checksums](https://peazip.github.io/duplicates-hash-checksum.html). Commander adds Declared CRC-32 to Member details and appends CRC-32 (declared) to CSV. Prior CSV columns retain their order. No external implementation or dependency was added.
+
+The value is read from central-directory metadata without decoding payloads or requiring a password. It is displayed as eight uppercase hexadecimal digits, including 00000000 for an empty file. Missing metadata remains unavailable/blank rather than zero. This field is not an integrity-test result. WinZip AE-2 uses authentication instead of CRC, so its checksum remains unavailable even when a producer writes a nonzero CRC placeholder. Unknown strong-encryption declarations or invalid/contradictory AES settings do not claim a usable CRC. AE-1 and ZipCrypto preserve the declared CRC. TAR members and synthetic folders have no ZIP CRC.
+
+Two new Rust regressions cover the standard 123456789 CRC vector, an actual empty member, a forged central-directory checksum retained without payload verification, and a nonzero AE-2 placeholder suppressed. The six-case AES metadata regression also requires CRC availability exactly for AE-1. Existing details and CSV tests verify hexadecimal formatting, zero and unavailable values.
+
+Native ArchiveMetadata preserves eleven states and requires all nine detail fields visible. Independent Python verification compares ordinary member CRCs with Python zlib and prior codec fixture central directories, while the AES AE-2 member must show unavailable. ArchiveExport repeats its five exact recording clipboard copies with the appended empty TAR CRC column. Final build hashes bind both captures to the qualified binary. Sorting/grouping archive members by CRC and direct duplicate discovery remain separate features.
+
+Final gate/capture results follow below. Raw diagnostic logs are preserved verbatim via local .gitattributes.
+
+All seven gates passed: 3447 tests passed, 0 failed, 3 ignored; strict visual-QA Clippy, dependency audit, build, ordinary check, formatting and diff checks passed. Ordinary check retains the existing unused_response warning in diff_find.rs. Native captures 1793675864039569000/archive_metadata and 1793675888720813000/archive_export each passed 14/14 common checks against the final binary. Metadata recorded zero native effects; export exactly five recording clipboard writes with all other effects zero. Both final framebuffers were visually inspected.

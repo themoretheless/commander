@@ -1275,7 +1275,7 @@ fn similar_member_rows(
 fn member_details(
     kind: crate::archive::ArchiveKind,
     member: &crate::archive::ArchiveMember,
-) -> [(&'static str, String); 8] {
+) -> [(&'static str, String); 9] {
     let member_kind = if member.is_symlink {
         "Symbolic link"
     } else if member.is_dir {
@@ -1346,6 +1346,15 @@ fn member_details(
                         "No".to_owned()
                     }
                 })
+                .unwrap_or_else(|| "Unavailable (not recorded per member)".into()),
+        ),
+        (
+            "Declared CRC-32",
+            member
+                .zip_info
+                .as_ref()
+                .and_then(|info| info.crc32)
+                .map(|crc| format!("{crc:08X}"))
                 .unwrap_or_else(|| "Unavailable (not recorded per member)".into()),
         ),
     ]
@@ -2937,6 +2946,7 @@ mod tests {
                 "0000",
                 "No",
                 "Unavailable (not recorded per member)",
+                "Unavailable (not recorded per member)",
                 "Unavailable (not recorded per member)"
             ]
         );
@@ -2958,9 +2968,11 @@ mod tests {
             compression: "Deflated".into(),
             encrypted: true,
             encryption: "ZipCrypto".into(),
+            crc32: Some(0x1234abcd),
         });
         let fields = super::member_details(crate::archive::ArchiveKind::Zip, member);
         assert_eq!(fields[6], ("Compression method", "Deflated".into()));
+        assert_eq!(fields[8], ("Declared CRC-32", "1234ABCD".into()));
         assert_eq!(
             fields[7],
             ("Encrypted", "Yes (ZipCrypto, password required)".into())

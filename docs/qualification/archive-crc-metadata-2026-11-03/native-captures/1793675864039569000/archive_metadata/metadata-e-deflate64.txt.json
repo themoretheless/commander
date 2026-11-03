@@ -1,0 +1,50 @@
+[
+  "e-deflate64.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "301 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "6 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "Unavailable",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Deflate64",
+      true
+    ],
+    [
+      "Encrypted",
+      "No",
+      true
+    ],
+    [
+      "Declared CRC-32",
+      "71054FCA",
+      true
+    ]
+  ]
+]

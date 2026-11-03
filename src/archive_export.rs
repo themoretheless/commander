@@ -64,7 +64,7 @@ pub fn format(
     if format == Format::Csv {
         append(
             &mut out,
-            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted,Encryption method\n",
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted,Encryption method,CRC-32 (declared)\n",
         )?;
     }
     for &index in rows {
@@ -153,6 +153,12 @@ pub fn format(
                 .zip_info
                 .as_ref()
                 .map(|info| info.encryption.clone())
+                .unwrap_or_default(),
+            member
+                .zip_info
+                .as_ref()
+                .and_then(|info| info.crc32)
+                .map(|crc| format!("{crc:08X}"))
                 .unwrap_or_default(),
         ];
         for (column, field) in fields.iter().enumerate() {
@@ -297,14 +303,14 @@ mod tests {
         let text = format(Path::new("a.zip"), &listing, &[1, 2, 3], Format::Csv).unwrap();
         assert_eq!(
             text,
-            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted,Encryption method\na.zip,1,dir/file.txt,symlink,12,4,1970-01-01T00:00:37Z,true,,,\na.zip,2,folder,folder,,,1970-01-01T00:00:37Z,true,,,\na.zip,3,\"'=formula,\"\"quoted\"\"\n.txt\",file,12,4,1970-01-01T00:00:37Z,true,,,\n"
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted,Encryption method,CRC-32 (declared)\na.zip,1,dir/file.txt,symlink,12,4,1970-01-01T00:00:37Z,true,,,,\na.zip,2,folder,folder,,,1970-01-01T00:00:37Z,true,,,,\na.zip,3,\"'=formula,\"\"quoted\"\"\n.txt\",file,12,4,1970-01-01T00:00:37Z,true,,,,\n"
         );
         listing.kind = ArchiveKind::TarXz;
         listing.members[0].modified = None;
         assert!(
             format(Path::new("a.txz"), &listing, &[0], Format::Csv)
                 .unwrap()
-                .ends_with("a.txz,0,dir/file.txt,file,12,,,true,,,\n")
+                .ends_with("a.txz,0,dir/file.txt,file,12,,,true,,,,\n")
         );
     }
     #[test]
@@ -314,17 +320,19 @@ mod tests {
             compression: "Deflated".into(),
             encrypted: true,
             encryption: "ZipCrypto".into(),
+            crc32: Some(0x1234abcd),
         });
         listing.members[1].zip_info = Some(crate::archive::ZipMemberInfo {
             compression: "Stored".into(),
             encrypted: false,
             encryption: "None".into(),
+            crc32: Some(0),
         });
         let text = format(Path::new("a.zip"), &listing, &[0, 1, 2], Format::Csv).unwrap();
         let lines: Vec<_> = text.lines().collect();
-        assert!(lines[1].ends_with(",true,Deflated,true,ZipCrypto"));
-        assert!(lines[2].ends_with(",true,Stored,false,None"));
-        assert!(lines[3].ends_with(",true,,,"));
+        assert!(lines[1].ends_with(",true,Deflated,true,ZipCrypto,1234ABCD"));
+        assert!(lines[2].ends_with(",true,Stored,false,None,00000000"));
+        assert!(lines[3].ends_with(",true,,,,"));
     }
 
     #[test]

@@ -47,6 +47,8 @@ pub struct ZipMemberInfo {
     pub compression: String,
     pub encrypted: bool,
     pub encryption: String,
+    /// Declared CRC, not payload verification; AE-2 has no CRC.
+    pub crc32: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -300,6 +302,7 @@ pub fn visit_members_with_password(
                     },
                     encrypted: raw.encrypted(),
                     encryption: crate::zip_reader::encryption_label(&raw),
+                    crc32: crate::zip_reader::declared_crc32(&raw),
                 }),
                 tar_name: None,
                 modified: zip_member_modified(&raw),
@@ -3417,6 +3420,7 @@ mod tests {
                 let info = listing.members[0].zip_info.as_ref().unwrap();
                 assert!(info.encrypted);
                 assert_eq!(info.encryption, format!("WinZip AES-{bits} (AE-{version})"));
+                assert_eq!(info.crc32.is_some(), version == 1);
             }
         }
     }
@@ -3561,6 +3565,59 @@ mod tests {
             .unwrap();
             assert_eq!(summary.content_skipped, 1);
         }
+    }
+
+    #[test]
+    fn zip_declared_crc32_keeps_zero_and_header_values_without_payload_verification() {
+        let temp = TempDir::new();
+        let path = temp.path().join("crc.zip");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        for (name, bytes) in [
+            ("empty", b"".as_slice()),
+            ("ёж.txt", b"123456789".as_slice()),
+        ] {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+        let listing = list_archive(path.clone(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(listing.members[0].zip_info.as_ref().unwrap().crc32, Some(0));
+        assert_eq!(
+            listing.members[1].zip_info.as_ref().unwrap().crc32,
+            Some(0xcbf43926)
+        );
+        let mut bytes = fs::read(&path).unwrap();
+        let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+        bytes[central + 16..central + 20].copy_from_slice(&0xdeadbeefu32.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+        let listing = list_archive(path, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            listing.members[0].zip_info.as_ref().unwrap().crc32,
+            Some(0xdeadbeef)
+        );
+    }
+
+    #[test]
+    fn zip_declared_crc32_suppresses_nonzero_ae2_placeholder() {
+        let temp = TempDir::new();
+        let path = temp.path().join("ae2.zipx");
+        let bytes = include_bytes!(
+            "../docs/qualification/zip-password-2026-11-03/fixtures/aes-ae2-nonzero-crc.zipx"
+        );
+        let mut raw = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        assert_ne!(raw.by_index_raw(0).unwrap().crc32(), 0);
+        fs::write(&path, bytes).unwrap();
+        let listing = list_archive(path, &AtomicBool::new(false)).unwrap();
+        assert!(
+            listing.members[0]
+                .zip_info
+                .as_ref()
+                .unwrap()
+                .crc32
+                .is_none()
+        );
     }
 
     #[test]

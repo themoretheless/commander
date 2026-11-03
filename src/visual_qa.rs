@@ -3582,7 +3582,7 @@ impl VisualQaApp {
 
     fn archive_export_csv(&self, selected: bool) -> String {
         let mut text = String::from(
-            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted,Encryption method\n",
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted,Encryption method,CRC-32 (declared)\n",
         );
         let rows: &[(usize, &str, usize)] = if selected {
             &[(0, "docs/notes.txt", 30)]
@@ -3595,7 +3595,7 @@ impl VisualQaApp {
         };
         for (index, path, size) in rows {
             text.push_str(&format!(
-                "{},{index},{path},file,{size},,1970-01-01T00:00:37Z,false,,,\n",
+                "{},{index},{path},file,{size},,1970-01-01T00:00:37Z,false,,,,\n",
                 self.fixture.left.join("sample.tar").display()
             ));
         }
@@ -17145,7 +17145,7 @@ impl eframe::App for VisualQaApp {
                 {
                     if !observed.as_ref().is_some_and(|(path, rows)| {
                         path == Path::new(expected)
-                            && rows.len() == 8
+                            && rows.len() == 9
                             && rows.iter().all(|(_, _, visible)| *visible)
                     }) {
                         if let Some(clip) = ctx
@@ -21392,7 +21392,7 @@ impl eframe::App for VisualQaApp {
             }
             Scenario::ArchiveMetadata => {
                 let observed = ctx.data(|d| d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")));
-                let ready = self.archive_copy_phase == 36 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("k-aes.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Stored" && rows[7].1 == "Yes (WinZip AES-256 (AE-2), password required)");
+                let ready = self.archive_copy_phase == 36 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("k-aes.txt") && rows.len() == 9 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Stored" && rows[7].1 == "Yes (WinZip AES-256 (AE-2), password required)" && rows[8].1 == "Unavailable (not recorded per member)");
                 if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-k-aes.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
                 ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file() && self.scenario_dir.join("metadata-d-bzip2.txt.json").is_file() && self.scenario_dir.join("metadata-e-deflate64.txt.json").is_file() && self.scenario_dir.join("metadata-f-lzma.txt.json").is_file() && self.scenario_dir.join("metadata-g-xz.txt.json").is_file() && self.scenario_dir.join("metadata-h-zstd93.txt.json").is_file() && self.scenario_dir.join("metadata-i-zstd20.txt.json").is_file() && self.scenario_dir.join("metadata-j-ppmd.txt.json").is_file()
             }
