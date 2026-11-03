@@ -27,13 +27,14 @@ pub struct OmnibarState {
     list_submit: Option<String>,
     tabs: Vec<crate::tab_search::Entry>,
     tab_search: crate::tab_search::Search,
+    tab_scope: crate::tab_search::Scope,
 }
 
 #[cfg(feature = "visual-qa")]
 impl OmnibarState {
     pub(crate) fn tab_picker_snapshot(&self) -> serde_json::Value {
         let entry = |e: &crate::tab_search::Entry| serde_json::json!({"side":e.side_label(),"index":e.index,"revision":e.revision,"path":e.path.to_string_lossy(),"name":e.name,"current":e.current,"focused":e.focused,"protected":e.protected,"pin":e.pin.as_ref().map(|p|p.to_string_lossy())});
-        serde_json::json!({"input":self.input,"selected":self.selected,"entries":self.tabs.iter().map(entry).collect::<Vec<_>>(),"matches":self.tab_search.rows.iter().map(|&i|entry(&self.tabs[i])).collect::<Vec<_>>(),"too_long":self.tab_search.too_long})
+        serde_json::json!({"input":self.input,"scope":self.tab_scope.label(),"selected":self.selected,"entries":self.tabs.iter().map(entry).collect::<Vec<_>>(),"matches":self.tab_search.rows.iter().map(|&i|entry(&self.tabs[i])).collect::<Vec<_>>(),"too_long":self.tab_search.too_long})
     }
     pub(crate) fn recent_scope_snapshot(&self) -> serde_json::Value {
         serde_json::json!({"base":self.recent_base,"enabled":self.recent_scoped,"query":self.input,"selected":self.selected})
@@ -60,6 +61,21 @@ enum OmniRow {
     },
     AssignSlotPrompt,
     AssignSlot(u8),
+}
+
+fn tab_scope_controls(ui: &mut egui::Ui, scope: &mut crate::tab_search::Scope) -> bool {
+    let before = *scope;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Show tabs in:");
+        for value in crate::tab_search::Scope::ALL {
+            let response=ui.selectable_value(scope,value,value.label()).on_hover_text("Search only the chosen pane's tabs. This changes the list without changing pane focus or loading folders. Resets on reopen.");
+            #[cfg(any(test,feature="visual-qa"))]
+            ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("tab-picker-scope",value.label())),response.rect));
+            #[cfg(not(any(test,feature="visual-qa")))]
+            let _=response;
+        }
+    });
+    *scope != before
 }
 
 fn favorite_scope_controls(ui: &mut egui::Ui, scope: &mut crate::favorite_search::Scope) -> bool {
@@ -460,6 +476,7 @@ impl App {
             list_submit: None,
             tabs,
             tab_search: Default::default(),
+            tab_scope: Default::default(),
         });
         Self::mark_modal_opened(ctx, UiModal::Palette);
     }
@@ -631,7 +648,9 @@ impl App {
             }
             OmnibarMode::Tabs(query) => {
                 let state = self.ui.modals.palette_input.as_mut().unwrap();
-                state.tab_search.refresh(&state.tabs, query);
+                state
+                    .tab_search
+                    .refresh(&state.tabs, query, state.tab_scope);
                 rows = state
                     .tab_search
                     .rows
@@ -852,6 +871,11 @@ impl App {
                     if query.chars().take(129).count()>128 {ui.small("Favorites search is limited to 128 characters.");}
                 }
                 if matches!(mode,OmnibarMode::Tabs(_)) {
+                    if tab_scope_controls(ui, &mut state.tab_scope) {
+                        // Current rows and any queued Enter belong to the old pane scope.
+                        rows.clear(); state.selected=0; selected=0; state.list_submit=None; enter=false;
+                        ui.ctx().request_repaint();
+                    }
                     ui.small(format!("{} of {} open tabs · search names or current full paths",rows.len(),state.tabs.len()));
                     if state.tab_search.too_long {ui.colored_label(t.accent_red,"Tab search is limited to 128 characters");}
                     ui.small("Choose a row to focus its pane and activate that tab. Reopen to refresh the list.");

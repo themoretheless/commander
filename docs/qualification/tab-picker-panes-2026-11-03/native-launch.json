@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/tab-picker-panes-2026-11-03/native-captures/1793720937694483000",
+  "binary_sha256": "328bb8a23e8387fdb5179a903f003697bf9175e06a313e7c5c7439e106a3d7f4",
+  "core_sha256": "328bb8a23e8387fdb5179a903f003697bf9175e06a313e7c5c7439e106a3d7f4",
+  "wrapper_sha256": "ae310bea77fd3c7b481f35264937f0fbfc0d8683029e065f0fb731a3513045aa",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

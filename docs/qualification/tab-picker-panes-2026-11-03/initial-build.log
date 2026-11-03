@@ -1,0 +1,16 @@
+    Blocking waiting for file lock on build directory
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0425]: cannot find value `_ctx` in this scope
+    --> src/visual_qa.rs:8154:34
+     |
+8154 |                 let Some(rect) = _ctx
+     |                                  ^^^^ not found in this scope
+     |
+help: a local variable with a similar name exists
+     |
+8154 -                 let Some(rect) = _ctx
+8154 +                 let Some(rect) = ctx
+     |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `commander` (bin "commander") due to 1 previous error

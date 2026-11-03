@@ -1,0 +1,13 @@
+{
+  "canonical_relative": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-61624-miller_browser/left/column-A",
+  "canonical_target": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-61624-miller_browser/left/Design/ space dir ",
+  "focus": "Right",
+  "input": null,
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-61624-miller_browser/left/column-B",
+  "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-61624-miller_browser/left/column-A",
+  "phase": 196,
+  "probe_input": null,
+  "status": null,
+  "submitted": "'../../column-A'",
+  "target_exists": true
+}

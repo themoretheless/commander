@@ -1,0 +1,18 @@
+{
+  "checks": 7,
+  "tests_passed": 3550,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "tab_choices": 10,
+  "pane_scopes": [
+    "Both panes",
+    "Right pane",
+    "Left pane"
+  ],
+  "scope_reset_on_reopen": true,
+  "cancel_preserves_state": true,
+  "title_search": true,
+  "cross_pane_activation": true,
+  "source_hashes_verified": true,
+  "prior_receipts_verified": true
+}
