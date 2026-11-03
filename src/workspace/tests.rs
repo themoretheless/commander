@@ -2006,6 +2006,129 @@ fn create_dir_focuses_the_new_folder_and_opens_rename() {
 }
 
 #[test]
+fn create_dir_other_preserves_source_owner_and_renames_the_captured_destination() {
+    for source in [ActivePanel::Left, ActivePanel::Right] {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.active = source;
+        let (source_root, target_root) = if source == ActivePanel::Left {
+            (l.path(), r.path())
+        } else {
+            (r.path(), l.path())
+        };
+        let pick = source_root.join("picked.txt");
+        std::fs::write(&pick, b"source").unwrap();
+        let source_panel = ws.active_panel();
+        source_panel.refresh();
+        source_panel.focus_child("picked.txt".into());
+        source_panel.select_path(pick.clone());
+        let generation = source_panel.entries_gen();
+        std::fs::create_dir(target_root.join("New Folder")).unwrap();
+        std::fs::write(target_root.join("New Folder 1"), b"collision").unwrap();
+        let tabs = ws.tab_snapshot(source);
+        ws.execute(Command::CreateDirOther);
+        let created = target_root.join("New Folder 2");
+        assert!(created.is_dir());
+        assert_eq!(ws.active, source);
+        assert_eq!(ws.active_panel_ref().current_path, source_root);
+        assert_eq!(ws.active_panel_ref().entries_gen(), generation);
+        assert_eq!(ws.active_panel_ref().cursor_entry().unwrap().path, pick);
+        assert!(ws.active_panel_ref().is_selected(&pick));
+        assert_eq!(ws.tab_snapshot(source), tabs);
+        assert_eq!(ws.inactive_panel().cursor_entry().unwrap().path, created);
+        assert!(
+            ws.drain_ui_requests()
+                .contains(&UiRequest::Rename(created.clone()))
+        );
+        // Subsequent focus/navigation changes cannot retarget the captured rename.
+        ws.active_panel().navigate_to(source_root.join("missing"));
+        ws.commit_rename(&created, "Prepared").unwrap();
+        assert!(target_root.join("Prepared").is_dir());
+        assert!(!created.exists());
+        assert!(!source_root.join("Prepared").exists());
+        assert_eq!(std::fs::read(pick).unwrap(), b"source");
+        assert_eq!(
+            std::fs::read(target_root.join("New Folder 1")).unwrap(),
+            b"collision"
+        );
+    }
+}
+
+#[test]
+fn create_dir_other_checks_destination_policy_and_updates_both_views_of_one_folder() {
+    use crate::command::availability;
+    let tmp = TempDir::new();
+    let mut same = workspace(&tmp, &tmp);
+    same.create_dir_in_other();
+    let created = tmp.path().join("New Folder");
+    assert!(same.left.entries().iter().any(|e| e.path == created));
+    assert!(same.right.entries().iter().any(|e| e.path == created));
+    assert_eq!(same.active, ActivePanel::Left);
+    for source in [ActivePanel::Left, ActivePanel::Right] {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.active = source;
+        ws.command_context();
+        {
+            let mut c = ws.command_capabilities.borrow_mut();
+            let c = c.as_mut().unwrap();
+            c.left_read_only = source == ActivePanel::Left;
+            c.right_read_only = source == ActivePanel::Right;
+        }
+        assert!(availability(Command::CreateDirOther, &ws.command_context()).enabled);
+        assert!(!availability(Command::CreateDir, &ws.command_context()).enabled);
+        ws.create_dir_in_other();
+        let target = ws.inactive_panel().current_path.clone();
+        assert!(target.join("New Folder").is_dir());
+        ws.drain_ui_requests();
+        {
+            let mut c = ws.command_capabilities.borrow_mut();
+            let c = c.as_mut().unwrap();
+            c.left_read_only = true;
+            c.right_read_only = true;
+        }
+        assert!(!availability(Command::CreateDirOther, &ws.command_context()).enabled);
+        ws.create_dir_in_other();
+        assert!(!target.join("New Folder 1").exists());
+        assert!(
+            ws.drain_ui_requests()
+                .iter()
+                .any(|r| matches!(r, UiRequest::Notice { error: true, .. }))
+        );
+    }
+}
+
+#[test]
+fn create_dir_other_refuses_integrity_stop_and_missing_destination_without_source_writes() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.safe_state = Some(crate::operation::SafeState::integrity(
+        crate::operation::OperationId::new(),
+        "stop".into(),
+        Vec::new(),
+    ));
+    ws.create_dir_in_other();
+    assert!(!r.path().join("New Folder").exists());
+    assert!(
+        ws.drain_ui_requests()
+            .iter()
+            .any(|r| matches!(r, UiRequest::Notice { error: true, .. }))
+    );
+    ws.safe_state = None;
+    let missing = r.dir("gone");
+    std::fs::remove_dir(&missing).unwrap();
+    ws.right.navigate_to(missing.clone());
+    ws.create_dir_in_other();
+    assert!(!missing.exists());
+    assert!(!l.path().join("New Folder").exists());
+    assert!(
+        ws.drain_ui_requests()
+            .iter()
+            .any(|r| matches!(r, UiRequest::Notice { error: true, .. }))
+    );
+}
+
+#[test]
 fn create_dir_reports_a_failure() {
     let (l, r) = (TempDir::new(), TempDir::new());
     let gone = l.dir("gone");

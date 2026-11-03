@@ -1,0 +1,401 @@
+{
+  "after": {
+    "cursor": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design",
+    "generation": 6,
+    "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left",
+    "preview": false,
+    "selected": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-A",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-B",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design"
+    ]
+  },
+  "before": {
+    "cursor": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design",
+    "generation": 6,
+    "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left",
+    "preview": false,
+    "selected": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-A",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-B",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design"
+    ]
+  },
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/right",
+  "tabs": {
+    "active": 0,
+    "closed": [
+      {
+        "position": 6,
+        "tab": {
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-B",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "Miller",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      },
+      {
+        "position": 5,
+        "tab": {
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-B",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "Miller",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      },
+      {
+        "position": 4,
+        "tab": {
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "Miller",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      },
+      {
+        "position": 3,
+        "tab": {
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "List",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      },
+      {
+        "position": 2,
+        "tab": {
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "Icons",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      },
+      {
+        "position": 0,
+        "tab": {
+          "miller_widths": [
+            {
+              "path": [
+                47,
+                118,
+                97,
+                114,
+                47,
+                102,
+                111,
+                108,
+                100,
+                101,
+                114,
+                115,
+                47,
+                106,
+                120,
+                47,
+                112,
+                115,
+                49,
+                104,
+                54,
+                50,
+                118,
+                120,
+                51,
+                103,
+                100,
+                103,
+                108,
+                121,
+                95,
+                100,
+                100,
+                119,
+                108,
+                121,
+                52,
+                109,
+                113,
+                114,
+                48,
+                48,
+                48,
+                48,
+                103,
+                110,
+                47,
+                84,
+                47,
+                99,
+                111,
+                109,
+                109,
+                97,
+                110,
+                100,
+                101,
+                114,
+                45,
+                118,
+                105,
+                115,
+                117,
+                97,
+                108,
+                45,
+                113,
+                97,
+                45,
+                51,
+                54,
+                52,
+                53,
+                54,
+                45,
+                109,
+                105,
+                108,
+                108,
+                101,
+                114,
+                95,
+                98,
+                114,
+                111,
+                119,
+                115,
+                101,
+                114,
+                47,
+                108,
+                101,
+                102,
+                116
+              ],
+              "platform": "unix",
+              "width": 280.0
+            },
+            {
+              "path": [
+                47,
+                118,
+                97,
+                114,
+                47,
+                102,
+                111,
+                108,
+                100,
+                101,
+                114,
+                115,
+                47,
+                106,
+                120,
+                47,
+                112,
+                115,
+                49,
+                104,
+                54,
+                50,
+                118,
+                120,
+                51,
+                103,
+                100,
+                103,
+                108,
+                121,
+                95,
+                100,
+                100,
+                119,
+                108,
+                121,
+                52,
+                109,
+                113,
+                114,
+                48,
+                48,
+                48,
+                48,
+                103,
+                110,
+                47,
+                84,
+                47,
+                99,
+                111,
+                109,
+                109,
+                97,
+                110,
+                100,
+                101,
+                114,
+                45,
+                118,
+                105,
+                115,
+                117,
+                97,
+                108,
+                45,
+                113,
+                97,
+                45,
+                51,
+                54,
+                52,
+                53,
+                54,
+                45,
+                109,
+                105,
+                108,
+                108,
+                101,
+                114,
+                95,
+                98,
+                114,
+                111,
+                119,
+                115,
+                101,
+                114,
+                47,
+                108,
+                101,
+                102,
+                116,
+                47,
+                99,
+                111,
+                108,
+                117,
+                109,
+                110,
+                45,
+                65
+              ],
+              "platform": "unix",
+              "width": 300.0
+            }
+          ],
+          "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-A",
+          "view": {
+            "case_sensitive_name_sort": false,
+            "density": "Comfortable",
+            "folders_by_name": false,
+            "folders_first": true,
+            "mode": "Miller",
+            "natural_name_sort": true,
+            "show_hidden": false,
+            "sort_col": "Name",
+            "sort_order": "Asc"
+          }
+        }
+      }
+    ],
+    "entries": [
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/Design",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-A",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-36456-miller_browser/left/column-B",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 41.76s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 7 tests
+test workspace::tests::create_dir_other_refuses_integrity_stop_and_missing_destination_without_source_writes ... ok
+test workspace::tests::create_dir_focuses_the_new_folder_and_opens_rename ... ok
+test workspace::tests::create_dir_reports_a_failure ... ok
+test workspace::tests::create_dir_picks_first_free_name ... ok
+test workspace::tests::create_dir_says_why_it_is_blocked ... ok
+test workspace::tests::create_dir_other_checks_destination_policy_and_updates_both_views_of_one_folder ... ok
+test workspace::tests::create_dir_other_preserves_source_owner_and_renames_the_captured_destination ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 3535 filtered out; finished in 0.02s
+

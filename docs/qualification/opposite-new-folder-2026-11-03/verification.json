@@ -1,0 +1,11 @@
+{
+  "checks": 7,
+  "tests_passed": 3539,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "shift_f7_created_opposite": true,
+  "captured_rename_verified": true,
+  "source_focus_and_selection_preserved": true,
+  "source_hashes_verified": true,
+  "prior_receipts_verified": true
+}

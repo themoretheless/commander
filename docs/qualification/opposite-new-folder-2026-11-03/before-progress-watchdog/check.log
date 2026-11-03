@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: unused variable: `response`
+   --> src/diff_find.rs:136:17
+    |
+136 |             let response = ui.add(
+    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_response`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `single` is never used
+   --> src/checksum.rs:128:12
+    |
+ 92 | impl AlgorithmSet {
+    | ----------------- method in this implementation
+...
+128 |     pub fn single(self) -> Option<Algorithm> {
+    |            ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander") generated 2 warnings (run `cargo fix --bin "commander" -p commander` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized] target(s) in 9.06s

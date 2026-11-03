@@ -94,6 +94,7 @@ struct ToolbarCommands {
     move_in: crate::command::CommandAvailability,
     copy_in: crate::command::CommandAvailability,
     create_dir: crate::command::CommandAvailability,
+    create_dir_other: crate::command::CommandAvailability,
 }
 
 impl ToolbarCommands {
@@ -105,6 +106,7 @@ impl ToolbarCommands {
             move_in: availability(Command::MoveIntoCursorFolder, &context),
             copy_in: availability(Command::CopyIntoCursorFolder, &context),
             create_dir: availability(Command::CreateDir, &context),
+            create_dir_other: availability(Command::CreateDirOther, &context),
         }
     }
 }
@@ -211,6 +213,13 @@ impl App {
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, actions: ToolbarCommands) {
+        if ui.add_enabled(actions.create_dir_other.enabled, menu_item("New folder in other panel", crate::command::Command::CreateDirOther))
+            .on_disabled_hover_text(actions.create_dir_other.reason.unwrap_or_default())
+            .on_hover_text("Create beside the other pane's current entries, then name it; keep focus and selection here")
+            .clicked() {
+            self.ws.create_dir_in_other();
+            ui.close();
+        }
         if ui
             .add_enabled(
                 actions.create_dir.enabled,

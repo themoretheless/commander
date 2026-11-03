@@ -4972,6 +4972,11 @@ impl eframe::App for VisualQaApp {
         if self.result.lock().is_ok_and(|result| result.is_some()) {
             return;
         }
+        // Native pointer/keyboard automation must not race background-window
+        // activation. The owned window is raised through native UI before play.
+        if self.scenario == Scenario::MillerBrowser && !input.focused {
+            return;
+        }
         self.preset_input_pending = false;
         self.table_input_pending = false;
         self.checksum_input_pending = false;
@@ -4994,7 +4999,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
-            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 165)
+            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 175)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -7811,6 +7816,14 @@ impl eframe::App for VisualQaApp {
                     .inner
                     .ws
                     .tab_snapshot(crate::workspace::ActivePanel::Left);
+                if before.as_ref() != Some(&state) || tabs.entries.len() != count {
+                    let observed = serde_json::json!({"phase":phase,"expected_count":count,"before":before,"observed":state,"tabs":tabs});
+                    let _ = std::fs::write(
+                        self.scenario_dir
+                            .join(format!("current-middle-observed-{mode}.json")),
+                        serde_json::to_vec_pretty(&observed).unwrap(),
+                    );
+                }
                 if before.as_ref() != Some(&state)
                     || tabs.entries.len() != count
                     || tabs.active != 1
@@ -8121,6 +8134,110 @@ impl eframe::App for VisualQaApp {
                     button: egui::PointerButton::Primary,
                     pressed: local == 1,
                     modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && (165..175).contains(&self.disk_export_phase)
+        {
+            use crate::workspace::ActivePanel;
+            let phase = self.disk_export_phase;
+            let base = self.fixture.left.join("column-B");
+            let owner = |p: &crate::panel::PanelState| serde_json::json!({"path":p.current_path,"generation":p.entries_gen(),"cursor":p.cursor_entry().map(|e|&e.path),"selected":p.selected_entries().iter().map(|e|&e.path).collect::<Vec<_>>()});
+            if phase == 165 || phase == 168 || phase == 174 {
+                if self.inner.ws.active != ActivePanel::Right
+                    || self.inner.ws.right.current_path != self.fixture.left
+                    || self
+                        .inner
+                        .ws
+                        .right
+                        .cursor_entry()
+                        .is_none_or(|e| e.path != self.fixture.left.join("Design"))
+                    || self.inner.ws.right.selected_entries().len() != 3
+                {
+                    return;
+                }
+                if phase == 168
+                    && (self
+                        .inner
+                        .ui
+                        .modals
+                        .renaming
+                        .as_ref()
+                        .is_none_or(|r| r.path != base.join("New Folder"))
+                        || !base.join("New Folder").is_dir())
+                {
+                    return;
+                }
+                if phase == 174
+                    && (self.inner.ui.modals.renaming.is_some()
+                        || !base.join("Prepared destination").is_dir()
+                        || base.join("New Folder").exists()
+                        || matches!(
+                            self.inner.ws.left.dir_status(),
+                            crate::panel::DirStatus::Loading
+                        )
+                        || matches!(
+                            self.inner.ws.right.dir_status(),
+                            crate::panel::DirStatus::Loading
+                        ))
+                {
+                    return;
+                }
+                let record = serde_json::json!({"source":owner(&self.inner.ws.right),"destination":owner(&self.inner.ws.left),"rename":self.inner.ui.modals.renaming.as_ref().map(|r|&r.path),"focus":format!("{:?}",self.inner.ws.active),"created":base.join("New Folder").is_dir(),"renamed":base.join("Prepared destination").is_dir(),"source_created":self.fixture.left.join("New Folder").exists(),"source_renamed":self.fixture.left.join("Prepared destination").exists()});
+                if !serde_json::to_vec_pretty(&record).is_ok_and(|b| {
+                    std::fs::write(
+                        self.scenario_dir.join(match phase {
+                            165 => "opposite-before.json",
+                            168 => "opposite-created.json",
+                            _ => "opposite-renamed.json",
+                        }),
+                        b,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+                self.disk_export_phase += 1;
+                return;
+            }
+            let modifiers = if phase == 166 || phase == 167 {
+                egui::Modifiers::SHIFT
+            } else if phase == 169 || phase == 170 {
+                egui::Modifiers::COMMAND
+            } else {
+                egui::Modifiers::NONE
+            };
+            input.events.push(egui::Event::ModifiersChanged(modifiers));
+            if phase == 171 {
+                input
+                    .events
+                    .push(egui::Event::Text("Prepared destination".into()));
+            } else {
+                if phase == 172
+                    && self
+                        .inner
+                        .ui
+                        .modals
+                        .renaming
+                        .as_ref()
+                        .is_none_or(|r| r.buffer != "Prepared destination")
+                {
+                    return;
+                }
+                input.events.push(egui::Event::Key {
+                    key: if phase <= 167 {
+                        egui::Key::F7
+                    } else if phase <= 170 {
+                        egui::Key::A
+                    } else {
+                        egui::Key::Enter
+                    },
+                    physical_key: None,
+                    pressed: matches!(phase, 166 | 169 | 172),
+                    repeat: false,
+                    modifiers,
                 });
             }
             self.disk_export_phase += 1;
@@ -24148,7 +24265,8 @@ impl eframe::App for VisualQaApp {
         // macOS background-window timer defers delayed repaint requests.
         if matches!(
             self.scenario,
-            Scenario::SearchJson
+            Scenario::MillerBrowser
+                | Scenario::SearchJson
                 | Scenario::SearchPassword
                 | Scenario::AllocationSearch
                 | Scenario::AccessedSearch
@@ -24239,7 +24357,27 @@ impl eframe::App for VisualQaApp {
         } else {
             TIMEOUT
         };
-        if self.started.elapsed() > timeout {
+        // The Miller regression now contains 175 observed interaction steps.
+        // Bound a stalled step rather than the total duration of healthy
+        // progress, retaining a separate hard cap for the complete scenario.
+        let stalled_for = if self.scenario == Scenario::MillerBrowser {
+            let focused = ctx.input(|input| input.focused);
+            ctx.data_mut(|data| {
+                let id = egui::Id::new("miller-phase-progress");
+                let previous = data.get_temp::<(u8, Instant)>(id);
+                let since = previous
+                    .filter(|(phase, _)| *phase == self.disk_export_phase && focused)
+                    .map_or_else(Instant::now, |(_, since)| since);
+                data.insert_temp(id, (self.disk_export_phase, since));
+                since.elapsed()
+            })
+        } else {
+            self.started.elapsed()
+        };
+        if stalled_for > timeout
+            || (self.scenario == Scenario::MillerBrowser
+                && self.started.elapsed() > Duration::from_secs(45))
+        {
             let message = format!(
                 "screenshot event timed out after {} frames and {:.1}s ({} attempts): {}; info_phase={}; metadata_button={:?}; metadata_clip={:?}",
                 self.frames,
@@ -26907,10 +27045,10 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==165 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                self.disk_export_phase==175 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.left.current_path==self.fixture.left.join("column-B")
                     && self.inner.ws.left.preview.is_none()
-                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.path==self.fixture.left.join("column-B/a.txt"))
+                    && self.fixture.left.join("column-B/Prepared destination").is_dir()
                     && self.inner.ws.right.current_path==self.fixture.left
                     && self.inner.ws.right.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.right.miller.columns.iter().all(|c|!matches!(c.dir_status(),crate::panel::DirStatus::Loading))

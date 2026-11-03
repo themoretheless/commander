@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0560]: struct `ToolbarCommands` has no field named `create_dir_other`
+   --> src/app/toolbar.rs:108:13
+    |
+108 |             create_dir_other: availability(Command::CreateDirOther, &context),
+    |             ^^^^^^^^^^^^^^^^ `ToolbarCommands` does not have this field
+    |
+    = note: all struct fields are already assigned
+
+error[E0609]: no field `create_dir_other` on type `ToolbarCommands`
+   --> src/app/toolbar.rs:215:35
+    |
+215 | ...   if ui.add_enabled(actions.create_dir_other.enabled, menu_item("New folder in other panel", crate::command::Command::CreateDir...
+    |                                 ^^^^^^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `move_in`, `copy_in`, `create_dir`
+
+error[E0609]: no field `create_dir_other` on type `ToolbarCommands`
+   --> src/app/toolbar.rs:216:45
+    |
+216 |             .on_disabled_hover_text(actions.create_dir_other.reason.unwrap_or_default())
+    |                                             ^^^^^^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `move_in`, `copy_in`, `create_dir`
+
+Some errors have detailed explanations: E0560, E0609.
+For more information about an error, try `rustc --explain E0560`.
+error: could not compile `commander` (bin "commander") due to 3 previous errors

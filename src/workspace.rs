@@ -1529,6 +1529,7 @@ impl Workspace {
             Command::RequestCopy => self.request_copy(),
             Command::RequestMove => self.request_move(),
             Command::CreateDir => self.create_dir(),
+            Command::CreateDirOther => self.create_dir_in_other(),
             Command::RequestDelete => self.request_delete(),
             Command::BeginRename => {
                 let panel = self.active_panel_ref();
@@ -3532,6 +3533,10 @@ impl Workspace {
 
     pub fn create_dir(&mut self) {
         fileops::create_dir(self)
+    }
+
+    pub fn create_dir_in_other(&mut self) {
+        fileops::create_dir_in_other(self)
     }
 
     /// Gather the active panel's selection into a fresh subfolder (Finder's

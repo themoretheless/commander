@@ -1,0 +1,12 @@
+{
+  "src/app/omnibar_dialog.rs": "76814791801d35af31d44a9fc76609ba738dd01287e20604c74f0d734d6e78fc",
+  "src/app/toolbar.rs": "518fd2003f339dedeb914bfe265a69c817385ac736e98af142fecdd2f5f89781",
+  "src/command.rs": "f0dea2b8363f81a31d58e58fd5be4881347106a761782946228b07b3336a477a",
+  "src/visual_qa.rs": "201f76005e0f6285bd316b0b0ddac196f7de667a1905954e15adf9593e3945b3",
+  "src/workspace.rs": "d8dcbe2fe387989b7faed20d1e984bef21ab7cbaa25dfd0fe600de2cfdd7e658",
+  "src/workspace/fileops/mkdir.rs": "a4c8bc3d35c6488464dea4b63c039f088c6da4ec386fc24cfb348f8051f11226",
+  "src/workspace/fileops/mod.rs": "dc2ce52cc5c75cc30def9aa271406ff1c7e694690068c770d80cfb2adbd271d1",
+  "src/workspace/tests.rs": "6e209323fe1dcbfebb145e11b11d6f038a5c9c78e5c57ac0fe2fa08b36b899a5",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}

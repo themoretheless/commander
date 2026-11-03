@@ -72,6 +72,7 @@ pub enum Command {
     RequestCopy,
     RequestMove,
     CreateDir,
+    CreateDirOther,
     RequestDelete,
     /// F2 / Cmd+R: rename the entry under the cursor.
     BeginRename,
@@ -744,6 +745,7 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         RequestDelete => DELETE,
         MoveIntoCursorFolder | CopyIntoCursorFolder => TRANSFER_INTO,
         CreateDir => MUTATE_ACTIVE,
+        CreateDirOther => &[P::MutationsAllowed, P::InactiveWritable],
         BeginSync => SYNC,
         BeginRename => RENAME,
         BeginBatchRename | GatherIntoFolder => MUTATE_SELECTION,
@@ -949,6 +951,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Move selection into highlighted folder", "Cmd+Enter", "file move selection drop highlighted cursor folder keyboard", Command::MoveIntoCursorFolder),
     entry("Copy selection into highlighted folder", "Cmd+Shift+Enter", "file copy selection drop highlighted cursor folder keyboard", Command::CopyIntoCursorFolder),
     entry("New folder", "F7", "file new folder directory mkdir create", Command::CreateDir),
+    entry("New folder in other panel", "Shift+F7", "file new folder directory mkdir create opposite destination other panel", Command::CreateDirOther),
     entry("New folder with selection", "Cmd+Shift+N", "file new folder with selection gather group move into subfolder", Command::GatherIntoFolder),
     entry("Delete (to Trash)", "F8", "file delete remove trash", Command::RequestDelete),
     entry("Rename", "F2", "file rename edit name", Command::BeginRename),
@@ -1432,6 +1435,7 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         F3 => Some(Command::TogglePreview),
         F5 => Some(Command::RequestCopy),
         F6 => Some(Command::RequestMove),
+        F7 if press.shift => Some(Command::CreateDirOther),
         F7 => Some(Command::CreateDir),
         F8 | Delete => Some(Command::RequestDelete),
         A if press.command => Some(Command::SelectAll),
@@ -1735,6 +1739,10 @@ mod tests {
         assert_eq!(map_key(press(KeyCode::F5)), Some(Command::RequestCopy));
         assert_eq!(map_key(press(KeyCode::F6)), Some(Command::RequestMove));
         assert_eq!(map_key(press(KeyCode::F7)), Some(Command::CreateDir));
+        assert_eq!(
+            map_key(shift_press(KeyCode::F7)),
+            Some(Command::CreateDirOther)
+        );
         assert_eq!(map_key(press(KeyCode::F8)), Some(Command::RequestDelete));
         assert_eq!(
             map_key(press(KeyCode::Delete)),
@@ -2155,6 +2163,7 @@ mod tests {
             Command::RequestCopy,
             Command::RequestMove,
             Command::CreateDir,
+            Command::CreateDirOther,
             Command::RequestDelete,
             Command::BeginRename,
             Command::BeginBatchRename,

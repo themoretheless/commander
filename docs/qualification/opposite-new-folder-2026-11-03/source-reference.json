@@ -1,0 +1,7 @@
+{
+  "cohort": 2,
+  "repository": "mikekazakov/nimble-commander",
+  "source": "https://magnumbytes.com/whats-new/",
+  "documented_feature": "Create Directory in Opposite Panel (Shift+F7), release 1.9.0",
+  "adaptation": "Independent Rust implementation using the existing collision-free create-then-rename workflow; source focus and selection stay intact"
+}
