@@ -1,0 +1,7 @@
+{
+  "cohort": 6,
+  "repository": "files-community/Files",
+  "source": "https://files.community/docs/features/tabs",
+  "contract": "Reordering folder tabs",
+  "adaptation": "Within-pane drag/drop before or after a pointed tab, insertion cue, edge scrolling and guarded native tab identity"
+}

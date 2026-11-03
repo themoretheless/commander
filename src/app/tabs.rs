@@ -1,5 +1,89 @@
 use super::*;
 
+#[derive(Clone, Debug)]
+struct FolderTabDrag {
+    side: ActivePanel,
+    from: usize,
+    revision: u64,
+    path: PathBuf,
+}
+fn tab_drag_drop(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    side: ActivePanel,
+    index: usize,
+    revision: u64,
+    path: &std::path::Path,
+) -> Option<(FolderTabDrag, usize)> {
+    response.dnd_set_drag_payload(FolderTabDrag {
+        side,
+        from: index,
+        revision,
+        path: path.into(),
+    });
+    let payload = response.dnd_hover_payload::<FolderTabDrag>()?;
+    if payload.side != side || payload.revision != revision {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::NotAllowed);
+        return None;
+    }
+    let after = ui
+        .input(|input| input.pointer.interact_pos())
+        .is_some_and(|pos| pos.x > response.rect.center().x);
+    let boundary = index + usize::from(after);
+    let to = boundary.saturating_sub(usize::from(payload.from < boundary));
+    let x = if after {
+        response.rect.right()
+    } else {
+        response.rect.left()
+    };
+    ui.painter().vline(
+        x,
+        response.rect.y_range(),
+        egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+    );
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    response
+        .dnd_release_payload::<FolderTabDrag>()
+        .map(|payload| ((*payload).clone(), to))
+}
+fn auto_scroll_tab_drag(
+    ui: &egui::Ui,
+    output: &egui::scroll_area::ScrollAreaOutput<()>,
+    side: ActivePanel,
+    revision: u64,
+) {
+    let Some(payload) = egui::DragAndDrop::payload::<FolderTabDrag>(ui.ctx()) else {
+        return;
+    };
+    if payload.side != side || payload.revision != revision {
+        return;
+    }
+    let Some(pos) = ui.input(|input| input.pointer.interact_pos()) else {
+        return;
+    };
+    if !output.inner_rect.contains(pos) {
+        return;
+    }
+    let direction = if pos.x < output.inner_rect.left() + 24.0 {
+        -1.0
+    } else if pos.x > output.inner_rect.right() - 24.0 {
+        1.0
+    } else {
+        return;
+    };
+    let mut state = output.state;
+    let offset = (state.offset.x + direction * 360.0 * ui.input(|input| input.stable_dt).min(0.05))
+        .clamp(
+            0.0,
+            (output.content_size.x - output.inner_rect.width()).max(0.0),
+        );
+    if offset != state.offset.x {
+        state.offset.x = offset;
+        state.store(ui.ctx(), output.id);
+        ui.ctx().request_repaint();
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClosedTabAction {
     Reopen(usize),
@@ -100,6 +184,8 @@ impl App {
     /// Applies tab changes after rendering the strip so no row can retarget an action mid-loop.
     pub(super) fn render_folder_tabs(&mut self, ui: &mut egui::Ui, side: ActivePanel) -> bool {
         let snapshot = self.ws.tab_snapshot(side);
+        let revision = self.ws.tab_revision();
+        let mut drag_move = None;
         let reveal_key = egui::Id::new(("folder_tab_reveal", side));
         let active_binding = (
             snapshot.active,
@@ -180,7 +266,7 @@ impl App {
                             .clicked();
                     }
                     history_action = closed_tabs_menu(ui, &snapshot, side);
-                    egui::ScrollArea::horizontal()
+                    let strip = egui::ScrollArea::horizontal()
                         .id_salt(("folder_tabs", side))
                         .max_height(28.0)
                         .show(ui, |ui| {
@@ -194,7 +280,8 @@ impl App {
                                         if tab.full_path_label { crate::display_name::truncate_path(&name, 40) } else { crate::display_name::truncate_preserving_extension(&name, 18) }
                                     );
                                     let button =
-                                        ui.selectable_label(index == snapshot.active, label);
+                                        ui.add(egui::Button::selectable(index == snapshot.active, label).sense(egui::Sense::CLICK | egui::Sense::DRAG));
+                                    if let Some(request)=tab_drag_drop(ui,&button,side,index,revision,&tab.path) {drag_move=Some(request);}
                                     button.widget_info(|| {
                                         egui::WidgetInfo::selected(
                                             egui::WidgetType::SelectableLabel,
@@ -208,7 +295,7 @@ impl App {
                                             ),
                                         )
                                     });
-                                    #[cfg(feature = "visual-qa")]
+                                    #[cfg(any(test,feature = "visual-qa"))]
                                     ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("folder-tab-anchor", side, index)), button.rect));
                                     if button.clicked_by(egui::PointerButton::Middle) && snapshot.entries.len() > 1 && !tab.close_protected { close_at = Some(index); }
                                     let title_id = egui::Id::new(("folder-tab-title-draft", side, index, &tab.path));
@@ -329,7 +416,7 @@ impl App {
                                         button.scroll_to_me(Some(egui::Align::Center));
                                     }
                                     if button
-                                        .on_hover_text(format!("{}\n{}\n{}", name, tab.path.display(), if tab.close_protected { "Protected from closing; change in this tab menu" } else { "Middle-click to close this tab" }))
+                                        .on_hover_text(format!("{}\n{}\nDrag to reorder within this pane\n{}", name, tab.path.display(), if tab.close_protected { "Protected from closing; change in this tab menu" } else { "Middle-click to close this tab" }))
                                         .clicked()
                                     {
                                         select = Some(index);
@@ -337,8 +424,19 @@ impl App {
                                 }
                             });
                         });
+                    auto_scroll_tab_drag(ui,&strip,side,revision);
                 });
             });
+        if let Some((binding, to)) = drag_move {
+            if self
+                .ws
+                .move_tab_captured(side, binding.from, to, binding.revision, &binding.path)
+            {
+                self.ui.cancel_context_menu();
+                ui.ctx().request_repaint();
+            }
+            return false;
+        }
         match history_action {
             Some(ClosedTabAction::Forget(index)) => {
                 self.ws.forget_closed_tab_at(side, index);
@@ -463,7 +561,11 @@ impl App {
             return self.ws.close_tab_group(side, anchor, others);
         }
         if let Some((from, to)) = move_tab {
-            return self.ws.move_tab(side, from, to);
+            if self.ws.move_tab(side, from, to) {
+                self.ui.cancel_context_menu();
+                ui.ctx().request_repaint();
+            }
+            return false;
         }
         if deduplicate {
             return self.ws.close_duplicate_tabs(side);
@@ -530,6 +632,183 @@ mod closed_menu_tests {
             ));
         }
         result
+    }
+    #[test]
+    fn tab_drag_payload_moves_between_boundaries_and_refuses_stale_cross_pane_or_outside_drops() {
+        for case in 0..4 {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            let mut render = |events, revision| {
+                time += 0.1;
+                let mut dropped = None;
+                crate::testutil::discard_egui_output(ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(700.0, 400.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        for side in [ActivePanel::Left, ActivePanel::Right] {
+                            ui.push_id(side, |ui| {
+                                ui.horizontal(|ui| {
+                                    for index in 0..3 {
+                                        let path = PathBuf::from(format!("/folder-{index}"));
+                                        let response = ui.add(
+                                            egui::Button::selectable(
+                                                index == 0,
+                                                format!("Tab {index}"),
+                                            )
+                                            .sense(egui::Sense::CLICK | egui::Sense::DRAG),
+                                        );
+                                        ui.ctx().data_mut(|data| {
+                                            data.insert_temp(
+                                                egui::Id::new(("drag-test", side, index)),
+                                                response.rect,
+                                            )
+                                        });
+                                        dropped = tab_drag_drop(
+                                            ui, &response, side, index, revision, &path,
+                                        )
+                                        .or(dropped.take());
+                                    }
+                                });
+                            });
+                        }
+                    },
+                ));
+                dropped
+            };
+            for _ in 0..3 {
+                assert!(render(vec![], 1).is_none());
+            }
+            let source = ctx
+                .data(|data| {
+                    data.get_temp::<egui::Rect>(egui::Id::new((
+                        "drag-test",
+                        ActivePanel::Left,
+                        2usize,
+                    )))
+                })
+                .unwrap()
+                .center();
+            let destination = if case == 3 {
+                egui::pos2(650.0, 350.0)
+            } else {
+                let side = if case == 1 {
+                    ActivePanel::Right
+                } else {
+                    ActivePanel::Left
+                };
+                let rect = ctx
+                    .data(|data| {
+                        data.get_temp::<egui::Rect>(egui::Id::new(("drag-test", side, 0usize)))
+                    })
+                    .unwrap();
+                egui::pos2(rect.left() + 2.0, rect.center().y)
+            };
+            let pointer = |pos, pressed| {
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            };
+            assert!(render(pointer(source, true), 1).is_none());
+            assert!(
+                render(
+                    vec![egui::Event::PointerMoved(source + egui::vec2(12.0, 0.0))],
+                    1
+                )
+                .is_none()
+            );
+            let revision = if case == 2 { 2 } else { 1 };
+            assert!(render(vec![egui::Event::PointerMoved(destination)], revision).is_none());
+            let request = render(pointer(destination, false), revision);
+            if case == 0 {
+                let (binding, to) = request.unwrap();
+                assert_eq!(binding.from, 2);
+                assert_eq!(binding.path, PathBuf::from("/folder-2"));
+                assert_eq!(binding.revision, 1);
+                assert_eq!(to, 0);
+            } else {
+                assert!(request.is_none());
+            }
+            render(vec![], revision);
+            assert!(egui::DragAndDrop::payload::<FolderTabDrag>(&ctx).is_none());
+        }
+    }
+    #[test]
+    fn tab_drag_edge_scroll_stays_in_the_captured_pane() {
+        let ctx = egui::Context::default();
+        let mut id = None;
+        let mut viewport = None;
+        let mut time = 0.0;
+        let mut frame = |side, position: Option<egui::Pos2>| {
+            time += 0.1;
+            crate::testutil::discard_egui_output(
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(220.0, 100.0),
+                        )),
+                        time: Some(time),
+                        events: position
+                            .map(|pos| vec![egui::Event::PointerMoved(pos)])
+                            .unwrap_or_default(),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let output =
+                            egui::ScrollArea::horizontal()
+                                .id_salt("edge-test")
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        for _ in 0..8 {
+                                            ui.add_sized([90.0, 24.0], egui::Button::new("Tab"));
+                                        }
+                                    });
+                                });
+                        id = Some(output.id);
+                        viewport = Some(output.inner_rect);
+                        egui::DragAndDrop::set_payload(
+                            ui.ctx(),
+                            FolderTabDrag {
+                                side,
+                                from: 0,
+                                revision: 1,
+                                path: "/folder".into(),
+                            },
+                        );
+                        auto_scroll_tab_drag(ui, &output, ActivePanel::Left, 1);
+                    },
+                ),
+            );
+            (id.unwrap(), viewport.unwrap())
+        };
+        let (id, rect) = frame(ActivePanel::Left, None);
+        let right = egui::pos2(rect.right() - 2.0, rect.center().y);
+        frame(ActivePanel::Left, Some(right));
+        let offset = egui::scroll_area::State::load(&ctx, id).unwrap().offset.x;
+        assert!(offset > 0.0);
+        frame(ActivePanel::Right, Some(right));
+        assert_eq!(
+            egui::scroll_area::State::load(&ctx, id).unwrap().offset.x,
+            offset
+        );
+        frame(
+            ActivePanel::Left,
+            Some(egui::pos2(rect.left() + 2.0, rect.center().y)),
+        );
+        assert!(egui::scroll_area::State::load(&ctx, id).unwrap().offset.x < offset);
     }
     #[test]
     fn history_menu_remains_actionable_at_capacity_without_reopening() {

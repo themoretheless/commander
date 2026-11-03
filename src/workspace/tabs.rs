@@ -1017,6 +1017,27 @@ impl Workspace {
         true
     }
 
+    /// A drag may only reorder the exact tab captured at gesture start.
+    pub(crate) fn move_tab_captured(
+        &mut self,
+        side: ActivePanel,
+        from: usize,
+        to: usize,
+        revision: u64,
+        path: &std::path::Path,
+    ) -> bool {
+        if self.tab_revision() != revision
+            || self
+                .tab_snapshot(side)
+                .entries
+                .get(from)
+                .is_none_or(|tab| tab.path != path)
+        {
+            return false;
+        }
+        self.move_tab(side, from, to)
+    }
+
     /// Reorder slots without switching or suspending the visible panel.
     pub fn move_tab(&mut self, side: ActivePanel, from: usize, to: usize) -> bool {
         if !self.tabs_can_change()
@@ -1038,7 +1059,8 @@ impl Workspace {
         } else {
             tabs.active
         };
-        self.reset_tab_presentation();
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        *self.command_capabilities.borrow_mut() = None;
         true
     }
 
@@ -2474,6 +2496,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn captured_tab_reorder_keeps_both_previews_selection_and_rejects_changed_bindings() {
+        let temp = TempDir::new();
+        let a = temp.dir("A");
+        let b = temp.dir("B");
+        let file = temp.file("keep.txt", "keep");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.left.refresh();
+        ws.left.focus_child("keep.txt".into());
+        ws.left.select_cursor();
+        assert!(ws.new_background_tab(ActivePanel::Left, a));
+        assert!(ws.new_background_tab(ActivePanel::Left, b.clone()));
+        assert!(ws.set_tab_close_protection(ActivePanel::Left, 1, true));
+        let preview = crate::panel::PreviewContent::Image(file.clone());
+        ws.left.preview = Some(preview.clone());
+        ws.right.preview = Some(preview.clone());
+        let generation = ws.left.entries_gen();
+        let revision = ws.tab_revision();
+        let before = ws.tab_snapshot(ActivePanel::Left);
+        assert!(!ws.move_tab_captured(ActivePanel::Left, 1, 0, revision.wrapping_sub(1), &b));
+        assert!(!ws.move_tab_captured(ActivePanel::Left, 1, 0, revision, temp.path()));
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
+        assert!(ws.move_tab_captured(ActivePanel::Left, 1, 0, revision, &b));
+        assert_eq!(ws.active_tab_index(ActivePanel::Left), 1);
+        assert!(ws.tab_snapshot(ActivePanel::Left).entries[0].close_protected);
+        assert_eq!(ws.left.current_path, temp.path());
+        assert_eq!(ws.left.entries_gen(), generation);
+        assert!(ws.left.is_selected(&file));
+        assert_eq!(ws.left.preview, Some(preview.clone()));
+        assert_eq!(ws.right.preview, Some(preview));
+        let revision = ws.tab_revision();
+        ws.emit_ui_request(crate::ui_request::UiRequest::Rename(file));
+        assert!(!ws.move_tab_captured(ActivePanel::Left, 0, 2, revision, &b));
+        ws.drain_ui_requests();
+        ws.left.navigate_to(b.clone());
+        assert!(!ws.move_tab_captured(ActivePanel::Left, 1, 0, revision, temp.path()));
+    }
     #[test]
     fn reordering_keeps_visible_panel_and_all_slot_bindings() {
         for active in 0..3 {
