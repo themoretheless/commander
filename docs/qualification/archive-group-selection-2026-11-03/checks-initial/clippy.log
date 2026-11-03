@@ -1,0 +1,27 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: this `if` statement can be collapsed
+    --> src/app/archive_dialog.rs:2794:9
+     |
+2794 | /         if select_content_groups
+2795 | |             && let Some(state) = self.ui.tools.archive.as_mut()
+2796 | |             && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
+...    |
+2803 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+2796 ~             && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
+2797 ~             && let Err(error) =
+2798 |                 change_content_group_selection(report, listing, None, true, &mut state.selected)
+2799 |             {
+2800 |                 state.error = Some(error);
+2801 ~             }
+     |
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

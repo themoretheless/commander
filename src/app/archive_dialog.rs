@@ -1147,6 +1147,15 @@ fn content_group_rows(
     report: &crate::archive_check::Report,
     listing: &crate::archive::ArchiveListing,
 ) -> Result<Vec<usize>, String> {
+    content_groups_rows(
+        report.content_groups.as_deref().unwrap_or_default(),
+        listing,
+    )
+}
+fn content_groups_rows(
+    groups: &[crate::archive_check::ContentGroup],
+    listing: &crate::archive::ArchiveListing,
+) -> Result<Vec<usize>, String> {
     let mut by_index = std::collections::HashMap::new();
     for (id, member) in listing.members.iter().enumerate() {
         if by_index.insert(member.index, (id, member)).is_some() {
@@ -1156,7 +1165,7 @@ fn content_group_rows(
         }
     }
     let mut rows = Vec::new();
-    for group in report.content_groups.as_deref().unwrap_or_default() {
+    for group in groups {
         for scanned in &group.members {
             let &(id, member) = by_index.get(&scanned.index).ok_or(
                 "Archive listing differs from scanned identities; reopen before selecting.",
@@ -1176,6 +1185,34 @@ fn content_group_rows(
         }
     }
     Ok(rows)
+}
+
+fn change_content_group_selection(
+    report: &crate::archive_check::Report,
+    listing: &crate::archive::ArchiveListing,
+    group: Option<usize>,
+    select: bool,
+    selected: &mut std::collections::BTreeSet<usize>,
+) -> Result<(), String> {
+    let rows = if let Some(index) = group {
+        let group = report
+            .content_groups
+            .as_ref()
+            .and_then(|groups| groups.get(index))
+            .ok_or("Content group is no longer available; run the scan again.")?;
+        content_groups_rows(std::slice::from_ref(group), listing)?
+    } else {
+        content_group_rows(report, listing)?
+    };
+    // Resolve every identity first, so refusal cannot partly alter selection.
+    if select {
+        selected.extend(rows);
+    } else {
+        for id in rows {
+            selected.remove(&id);
+        }
+    }
+    Ok(())
 }
 
 /// Visible regular-file candidates only; declared CRC/size is not byte equality.
@@ -1691,6 +1728,7 @@ impl App {
         let mut start_check = false;
         let mut start_content_groups = false;
         let mut select_content_groups = false;
+        let mut select_content_group = None;
         let mut stop_check = false;
         let mut copy_members = None;
         let mut copy_check_report = None;
@@ -1891,6 +1929,14 @@ impl App {
                                 #[cfg(feature="visual-qa")]
                                 if _rank==0 {ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-rendered-content-group"),(group.sha256.clone(),paths,painted,rect)));}
                                 if group.members.len()>10 {ui.label(format!("{} more members; Select includes all",group.members.len()-10));}
+                                ui.horizontal_wrapped(|ui| {
+                                    for (select,label) in [(true,"Select group"),(false,"Deselect group")] {
+                                        let button=ui.small_button(label).on_hover_text("Change all scanned members of this SHA-256 group, including hidden entries. Other groups and unrelated selections stay unchanged; identities are checked before applying.");
+                                        #[cfg(feature="visual-qa")]
+                                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-content-group-selection",_rank,select)),button.rect));
+                                        if button.clicked(){select_content_group=Some((_rank,select));}
+                                    }
+                                });
                             }
                             if groups.len()>100 {ui.label(format!("{} more groups; Select includes all",groups.len()-100));}
                         });
@@ -2748,11 +2794,23 @@ impl App {
         if select_content_groups
             && let Some(state) = self.ui.tools.archive.as_mut()
             && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
+            && let Err(error) =
+                change_content_group_selection(report, listing, None, true, &mut state.selected)
         {
-            match content_group_rows(report, listing) {
-                Ok(rows) => state.selected.extend(rows),
-                Err(error) => state.error = Some(error),
-            }
+            state.error = Some(error);
+        }
+        if let Some((group, select)) = select_content_group
+            && let Some(state) = self.ui.tools.archive.as_mut()
+            && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
+            && let Err(error) = change_content_group_selection(
+                report,
+                listing,
+                Some(group),
+                select,
+                &mut state.selected,
+            )
+        {
+            state.error = Some(error);
         }
         if let Some(result) = copy_check_report {
             match result {
@@ -3654,6 +3712,90 @@ mod tests {
         listing.members[1].path = "same".into();
         listing.members[1].index = 0;
         assert!(super::content_group_rows(&report, &listing).is_err());
+    }
+
+    #[test]
+    fn content_group_selection_changes_only_one_group_and_refuses_atomically() {
+        let mut listing = listing(&["dup", "dup", "empty-one", "empty-two", "unrelated"]);
+        for (index, m) in listing.members.iter_mut().enumerate() {
+            m.index = index;
+            m.size = if matches!(index, 2 | 3) { 0 } else { 3 };
+        }
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 5,
+            decoded: 9,
+            strict_headers: false,
+            content_groups: Some(vec![
+                crate::archive_check::ContentGroup {
+                    sha256: "abc".into(),
+                    size: 3,
+                    members: vec![
+                        crate::archive_check::ContentMember {
+                            index: 0,
+                            path: "dup".into(),
+                            size: 3,
+                        },
+                        crate::archive_check::ContentMember {
+                            index: 1,
+                            path: "dup".into(),
+                            size: 3,
+                        },
+                    ],
+                },
+                crate::archive_check::ContentGroup {
+                    sha256: "empty".into(),
+                    size: 0,
+                    members: vec![
+                        crate::archive_check::ContentMember {
+                            index: 2,
+                            path: "empty-one".into(),
+                            size: 0,
+                        },
+                        crate::archive_check::ContentMember {
+                            index: 3,
+                            path: "empty-two".into(),
+                            size: 0,
+                        },
+                    ],
+                },
+            ]),
+        };
+        let mut selected = std::collections::BTreeSet::from([4]);
+        for (group, select, expected) in [
+            (Some(0), true, vec![0, 1, 4]),
+            (Some(1), true, vec![0, 1, 2, 3, 4]),
+            (Some(0), false, vec![2, 3, 4]),
+            (Some(1), false, vec![4]),
+            (None, true, vec![0, 1, 2, 3, 4]),
+        ] {
+            super::change_content_group_selection(&report, &listing, group, select, &mut selected)
+                .unwrap();
+            assert_eq!(selected.iter().copied().collect::<Vec<_>>(), expected);
+        }
+        let before = selected.clone();
+        assert!(
+            super::change_content_group_selection(
+                &report,
+                &listing,
+                Some(99),
+                false,
+                &mut selected
+            )
+            .is_err()
+        );
+        assert_eq!(selected, before);
+        report.content_groups.as_mut().unwrap()[1].members[1].index = 99;
+        assert!(
+            super::change_content_group_selection(&report, &listing, None, false, &mut selected)
+                .is_err()
+        );
+        assert_eq!(selected, before);
+        assert!(
+            super::change_content_group_selection(&report, &listing, Some(1), false, &mut selected)
+                .is_err()
+        );
+        assert_eq!(selected, before);
     }
 
     #[test]
