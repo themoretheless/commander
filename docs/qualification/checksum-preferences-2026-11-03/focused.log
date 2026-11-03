@@ -1,0 +1,35 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 28.44s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 27 tests
+test checksum::tests::checksum_list_rejects_non_utf8_paths_without_lossy_export ... ok
+test checksum::tests::checksum_open_rejects_symlink_substitution_and_special_files ... ok
+test checksum::tests::saved_checksum_preferences_cover_modes_algorithms_empty_and_invalid_values ... ok
+test checksum_list::tests::adler32_lists_support_tags_hints_and_gnu_layout_without_crc_confusion ... ok
+test checksum_list::tests::auto_worker_reports_detected_algorithm_and_refuses_bad_lists_before_hashing_targets ... ok
+test checksum_list::tests::automatic_detection_requires_an_unambiguous_complete_list_and_respects_manual_override ... ok
+test checksum_list::tests::blake2_tags_hints_and_ambiguous_widths_are_distinct_from_sha2 ... ok
+test checksum_list::tests::exported_manifests_round_trip_all_algorithms_absolute_and_relative ... ok
+test checksum_list::tests::limits_parse_failure_and_cancellation_never_claim_unprocessed_records ... ok
+test checksum_list::tests::accepts_system_shasum_generated_manifest_and_detects_corruption ... ok
+test checksum_list::tests::parent_outside_absolute_and_symbolic_paths_are_refused ... ok
+test checksum_list::tests::parser_preserves_escaped_names_spaces_crlf_and_sfv_comments ... ok
+test checksum_list::tests::rhash_bsd_lists_are_detected_and_verified_when_external_verifier_is_available ... ok
+test checksum_list::tests::sha1_lists_detect_gnu_bsd_and_filename_hints_and_verify_mismatches ... ok
+test checksum_list::tests::sha3_tags_hints_and_ambiguous_widths_are_distinct_from_sha2 ... ok
+test checksum_list::tests::tagged_names_preserve_delimiters_unicode_spaces_and_gnu_escapes ... ok
+test checksum_list::tests::verified_rows_distinguish_match_mismatch_missing_and_rerun_changes ... ok
+test checksum_list::tests::openssl_tagged_files_are_detected_and_verified_without_extension_hints ... ok
+test checksum_list_view::tests::new_same_length_reports_require_invalidation_and_keep_preferences ... ok
+test checksum_list::tests::xxh3_lists_keep_width_identity_tags_hints_and_mismatch ... ok
+test checksum_list_view::tests::statuses_and_unicode_names_compose_with_stable_order_and_cached_empty_views ... ok
+test checksum_list_view::tests::visible_copy_keeps_full_summary_partial_status_and_escaped_names_but_refuses_stale_views ... ok
+test checksum::tests::checked_checksum_sets_match_all_results_and_reject_empty_before_io ... ok
+test checksum_list_view::tests::visible_copy_limits_actual_formatted_output ... ok
+test workspace::tests::checksum_list_command_captures_cursor_file_and_gates_parent_row ... ok
+test checksum::tests::selected_checksum_rejects_replaced_source_without_any_digest ... ok
+test session::tests::checksum_choices_survive_atomic_reopen_and_old_or_invalid_choices_keep_session ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 3454 filtered out; finished in 0.13s
+

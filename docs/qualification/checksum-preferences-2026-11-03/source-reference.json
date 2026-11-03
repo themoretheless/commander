@@ -1,0 +1,5 @@
+{
+  "cohort": 96,
+  "reference": "https://peazip.github.io/verify-checksum-hash.html",
+  "behavior": "PeaZip chooses algorithms in persistent File Tools settings. Commander independently stores calculation mode, checked algorithm set and selected single algorithm in its versioned session."
+}

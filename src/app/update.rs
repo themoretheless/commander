@@ -1788,6 +1788,35 @@ impl App {
             })
     }
 
+    /// Exercise the same session snapshot/store/restore path without touching
+    /// the user's store: native QA injects `EphemeralPersist` into the App.
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn checksum_reopen_preferences_for_qa(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> Result<serde_json::Value, String> {
+        if self.checksum_task.is_some() {
+            return Err("Checksum task is still running".into());
+        }
+        let session = self.to_session();
+        crate::session::save_with(self.persistence.as_ref(), &session, &mut self.session_gate)
+            .map_err(|e| format!("{e:?}"))?;
+        let loaded = crate::session::load_with(self.persistence.as_ref())
+            .value
+            .ok_or("Missing saved session")?;
+        let paths = self.checksum_paths.clone();
+        self.restore_checksum_preferences(&serde_json::Value::Null);
+        self.checksum_report = None;
+        self.checksum_paths.clear();
+        self.restore_checksum_preferences(&loaded.checksum_preferences);
+        let restored = self.checksum_preferences().saved();
+        if restored != session.checksum_preferences {
+            return Err("Checksum choices changed on reopen".into());
+        }
+        self.start_checksum(paths, ctx);
+        Ok(serde_json::json!({"saved":session.checksum_preferences,"restored":restored}))
+    }
+
     #[cfg(feature = "visual-qa")]
     pub(crate) fn checksum_calculation_snapshot(&self) -> serde_json::Value {
         serde_json::json!({"selected":self.checksum_algorithm.label(),"comparable":self.checksum_report.as_ref().is_some_and(|report|report.single_digest(self.checksum_algorithm).is_some()),"summary":self.checksum_report.as_ref().map(|report|report.summary_line()),"busy":self.checksum_task.is_some(),"only":self.checksum_calculated_algorithms.single().map(|a|a.label()),"requested":self.checksum_calculated_algorithms.iter().map(|a|a.label()).collect::<Vec<_>>(),"checked":self.checksum_chosen_algorithms.iter().map(|a|a.label()).collect::<Vec<_>>(),"paths":self.checksum_paths,"rows":self.checksum_report.as_ref().map(|report|report.rows.iter().map(|row|serde_json::json!({"path":row.path,"algorithms":crate::checksum::Algorithm::ALL.into_iter().filter(|a|a.digest(row).is_some()).map(|a|a.label()).collect::<Vec<_>>(),"error":row.error,"skipped":row.skipped,"content":row.content_hash})).collect::<Vec<_>>())})
@@ -1868,7 +1897,7 @@ impl App {
                     let _=details;
                     ui.horizontal_wrapped(|ui| {
                         for (mode,label) in [(super::ChecksumCalculation::Selected,"Recalculate selected only"),(super::ChecksumCalculation::All,"Recalculate all"),(super::ChecksumCalculation::Checked,"Recalculate checked set")] {
-                            let button=ui.add_enabled(!self.checksum_paths.is_empty() && (mode!=super::ChecksumCalculation::Checked || !self.checksum_chosen_algorithms.is_empty()),egui::Button::new(label)).on_hover_text("Read the captured files afresh with the selected scope. This calculation mode is reused for later checksum requests in this session. Cancellation and changed-file checks remain enabled.");
+                            let button=ui.add_enabled(!self.checksum_paths.is_empty() && (mode!=super::ChecksumCalculation::Checked || !self.checksum_chosen_algorithms.is_empty()),egui::Button::new(label)).on_hover_text("Read the captured files afresh with the selected scope. This calculation mode and the checked set are remembered across restarts. Cancellation and changed-file checks remain enabled.");
                             #[cfg(feature="visual-qa")]
                             ui.ctx().data_mut(|data|{data.insert_temp(egui::Id::new(label),button.rect);data.insert_temp(egui::Id::new((label,"enabled")),button.enabled());});
                             if button.clicked(){recalculate=Some(mode);}

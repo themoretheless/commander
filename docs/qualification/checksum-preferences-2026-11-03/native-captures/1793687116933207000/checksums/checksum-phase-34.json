@@ -1,0 +1,31 @@
+{
+  "adler_match": false,
+  "blake2b_invalid": false,
+  "blake2b_match": false,
+  "blake2s_invalid": false,
+  "blake2s_match": false,
+  "clip": [
+    661.0,
+    118.6875,
+    1249.0,
+    515.0
+  ],
+  "clipboard": "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7 */var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-70612-checksums/left/checksum.txt\n",
+  "clipboard_calls": 2,
+  "copy_rect": [
+    756.21875,
+    490.84375,
+    896.90625,
+    514.84375
+  ],
+  "phase": 34,
+  "relative": false,
+  "sha3_256_invalid": false,
+  "sha3_256_match": false,
+  "sha3_512_invalid": false,
+  "sha3_512_match": false,
+  "xxh3_128_invalid": false,
+  "xxh3_128_match": false,
+  "xxh3_64_invalid": false,
+  "xxh3_64_match": false
+}

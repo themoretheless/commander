@@ -1,0 +1,23 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0599]: `persistence::JsonSaveError` doesn't implement `std::fmt::Display`
+    --> src/app/update.rs:1803:28
+     |
+1803 |             .map_err(|e| e.to_string())?;
+     |                            ^^^^^^^^^ method cannot be called on `persistence::JsonSaveError` due to unsatisfied trait bounds
+     |
+    ::: src/persistence.rs:705:1
+     |
+ 705 | pub enum JsonSaveError {
+     | ---------------------- method `to_string` not found for this enum because it doesn't satisfy `persistence::JsonSaveError: ToString` or `persistence::JsonSaveError: std::fmt::Display`
+     |
+     = note: the following trait bounds were not satisfied:
+             `persistence::JsonSaveError: std::fmt::Display`
+             which is required by `persistence::JsonSaveError: ToString`
+note: the trait `std::fmt::Display` must be implemented
+    --> /rustc/67eda617e6a8f8ecec01e1ba7fafe2072a64adcc/library/core/src/fmt/mod.rs:1187:0
+     = help: items from traits can only be used if the trait is implemented and in scope
+     = note: the following trait defines an item `to_string`, perhaps you need to implement it:
+             candidate #1: `ToString`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

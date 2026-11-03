@@ -15211,6 +15211,38 @@ impl eframe::App for VisualQaApp {
             }
         }
         if self.scenario == Scenario::ChecksumSelected && self.checksum_click_phase == 51 {
+            match self.inner.checksum_reopen_preferences_for_qa(ctx) {
+                Ok(state) => {
+                    let _ = std::fs::write(
+                        self.scenario_dir.join("preferences-reopen.json"),
+                        serde_json::to_vec_pretty(&state).unwrap(),
+                    );
+                    self.checksum_click_phase = 52;
+                }
+                Err(error) => {
+                    let _ = std::fs::write(self.scenario_dir.join("preferences-error.txt"), error);
+                }
+            }
+            return;
+        }
+        if self.scenario == Scenario::ChecksumSelected && self.checksum_click_phase == 52 {
+            let state = self.inner.checksum_calculation_snapshot();
+            if state["busy"] == false
+                && state["requested"] == serde_json::json!(["XXH3-64"])
+                && state["checked"] == serde_json::json!(["XXH3-64"])
+                && state["selected"] == "XXH3-64"
+                && state["summary"] == "Calculated 1 file(s)"
+                && state["rows"][0]["algorithms"] == serde_json::json!(["XXH3-64"])
+            {
+                let _ = std::fs::write(
+                    self.scenario_dir.join("preferences-result.json"),
+                    serde_json::to_vec_pretty(&state).unwrap(),
+                );
+                self.checksum_click_phase = 53;
+            }
+            return;
+        }
+        if self.scenario == Scenario::ChecksumSelected && self.checksum_click_phase == 53 {
             let state = serde_json::json!({"phase": self.checksum_click_phase, "now":ctx.input(|i|i.time), "toasts":self.inner.toasts.active().iter().map(|t|serde_json::json!({"born":t.born,"ttl":t.ttl,"message":t.message})).collect::<Vec<_>>()});
             let _ = std::fs::write(
                 self.scenario_dir.join("final-wait.json"),
@@ -22412,7 +22444,7 @@ impl eframe::App for VisualQaApp {
                     && self.checksum_list_filtered_copy_ready(false, 6)
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
-            Scenario::ChecksumSelected => self.checksum_click_phase==51 && self.inner.toasts.is_empty() && [6,10,14,21].into_iter().all(|phase|self.scenario_dir.join(format!("selected-{phase}.json")).is_file()) && [34,38,42,46,50].into_iter().all(|phase|self.scenario_dir.join(format!("set-{phase}.json")).is_file()),
+            Scenario::ChecksumSelected => self.checksum_click_phase==53 && self.scenario_dir.join("preferences-result.json").is_file() && self.inner.toasts.is_empty() && [6,10,14,21].into_iter().all(|phase|self.scenario_dir.join(format!("selected-{phase}.json")).is_file()) && [34,38,42,46,50].into_iter().all(|phase|self.scenario_dir.join(format!("set-{phase}.json")).is_file()),
             Scenario::Checksums => {
                 let expected=ABC_XXH3_128_BASE64;
                 self.checksum_click_phase==392 && self.counters.clipboard.load(Ordering::Relaxed)==38

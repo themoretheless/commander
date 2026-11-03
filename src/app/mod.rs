@@ -42,6 +42,7 @@ mod ui_state;
 mod update;
 mod workspace_profiles_dialog;
 
+use crate::checksum::Calculation as ChecksumCalculation;
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Sense, Stroke, Vec2};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -186,13 +187,6 @@ pub struct App {
     checksum_algorithm: crate::checksum::Algorithm,
     checksum_relative_paths: bool,
     checksum_relative_base: Option<Result<std::path::PathBuf, String>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChecksumCalculation {
-    All,
-    Selected,
-    Checked,
 }
 
 struct ChecksumTask {
@@ -1352,6 +1346,11 @@ impl App {
                 .map(|s| s.sync_profiles.clone())
                 .unwrap_or_default(),
         );
+        app.restore_checksum_preferences(
+            session
+                .as_ref()
+                .map_or(&serde_json::Value::Null, |s| &s.checksum_preferences),
+        );
         app.apply_current_palette(&cc.egui_ctx);
         if let Some(trace) = &mut app.startup_trace {
             trace.checkpoint(crate::measurement::StartupPhase::AppAssembly);
@@ -1508,15 +1507,12 @@ impl App {
             checksum_report: None,
             checksum_generation: 0,
             checksum_paths: Vec::new(),
-            checksum_calculation: ChecksumCalculation::All,
-            checksum_chosen_algorithms: crate::checksum::AlgorithmSet::from_algorithms([
-                crate::checksum::Algorithm::Sha256,
-                crate::checksum::Algorithm::Xxh3_128,
-            ]),
+            checksum_calculation: crate::checksum::Preferences::default().calculation,
+            checksum_chosen_algorithms: crate::checksum::Preferences::default().checked,
             checksum_calculated_algorithms: crate::checksum::AlgorithmSet::all(),
             checksum_expected: String::new(),
             checksum_encoding: crate::checksum::DigestEncoding::default(),
-            checksum_algorithm: crate::checksum::Algorithm::default(),
+            checksum_algorithm: crate::checksum::Preferences::default().selected,
             checksum_relative_paths: false,
             checksum_relative_base: None,
         }
@@ -1597,6 +1593,21 @@ impl App {
             .get_or_insert_with(crate::smart_folder::load)
     }
 
+    fn checksum_preferences(&self) -> crate::checksum::Preferences {
+        crate::checksum::Preferences {
+            calculation: self.checksum_calculation,
+            checked: self.checksum_chosen_algorithms,
+            selected: self.checksum_algorithm,
+        }
+    }
+
+    fn restore_checksum_preferences(&mut self, value: &serde_json::Value) {
+        let preferences = crate::checksum::Preferences::from_saved(value);
+        self.checksum_calculation = preferences.calculation;
+        self.checksum_chosen_algorithms = preferences.checked;
+        self.checksum_algorithm = preferences.selected;
+    }
+
     /// Snapshot the current state into a persistable [`Session`].
     fn to_session(&self) -> crate::session::Session {
         let (recent_paths, recent_stats) = crate::panel::visit_snapshot();
@@ -1613,6 +1624,7 @@ impl App {
             theme_palette: self.theme_palette.clone(),
             custom_theme: self.custom_theme.saved(),
             sync_profiles: self.sync_profiles.saved(),
+            checksum_preferences: self.checksum_preferences().saved(),
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,
             tree_width: self.tree_width,

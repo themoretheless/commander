@@ -1,0 +1,186 @@
+[
+  {
+    "size": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "xxh3_64": "2d06800538d394c2",
+    "xxh3_128": "99aa06d3014798d86001c324468d497f",
+    "base64_64": "LQaABTjTlMI=",
+    "base64_128": "maoG0wFHmNhgAcMkRo1Jfw=="
+  },
+  {
+    "size": 1,
+    "sha256": "4a64a107f0cb32536e5bce6c98c393db21cca7f4ea187ba8c4dca8b51d4ea80a",
+    "xxh3_64": "f319fe2bdfcdfebd",
+    "xxh3_128": "f46d8182f5a4994af319fe2bdfcdfebd",
+    "base64_64": "8xn+K9/N/r0=",
+    "base64_128": "9G2BgvWkmUrzGf4r383+vQ=="
+  },
+  {
+    "size": 3,
+    "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "xxh3_64": "78af5f94892f3950",
+    "xxh3_128": "06b05ab6733a618578af5f94892f3950",
+    "base64_64": "eK9flIkvOVA=",
+    "base64_128": "BrBatnM6YYV4r1+UiS85UA=="
+  },
+  {
+    "size": 16,
+    "sha256": "c9942f160dfb01c00e4672a6ee96d2b0f2e210b35d12001fac79cc8a4519afda",
+    "xxh3_64": "715189ff3dcdcff6",
+    "xxh3_128": "086a52d17f54b78c9803f5a245db3129",
+    "base64_64": "cVGJ/z3Nz/Y=",
+    "base64_128": "CGpS0X9Ut4yYA/WiRdsxKQ=="
+  },
+  {
+    "size": 17,
+    "sha256": "6439f3d1c69dd4bc86d09bce2f09aedd6a3e83aaf7ccd762c4d37faa89f2812b",
+    "xxh3_64": "7d33163b8af0179c",
+    "xxh3_128": "4721ae433384feedc2f249861431c09e",
+    "base64_64": "fTMWO4rwF5w=",
+    "base64_128": "RyGuQzOE/u3C8kmGFDHAng=="
+  },
+  {
+    "size": 31,
+    "sha256": "6ea6885aff3c2e1f196ab8148e50e24b0262bcabafac4c84d3c64c79eecc2019",
+    "xxh3_64": "91f3e7ddd073abe6",
+    "xxh3_128": "73f882751ee37f9b1ef8da5301eebfb1",
+    "base64_64": "kfPn3dBzq+Y=",
+    "base64_128": "c/iCdR7jf5se+NpTAe6/sQ=="
+  },
+  {
+    "size": 32,
+    "sha256": "43599ef388fde687ef9376c222e271b733efb0b6982a7810af4a0cbd5a0050e3",
+    "xxh3_64": "909ca0c765b1753c",
+    "xxh3_128": "10df4c9eeb742ab3396876a912beb5b7",
+    "base64_64": "kJygx2WxdTw=",
+    "base64_128": "EN9Mnut0KrM5aHapEr61tw=="
+  },
+  {
+    "size": 64,
+    "sha256": "e5146be62accc56709594cb45c651b361df94f622cbb09b91ea3ca7a2060bd53",
+    "xxh3_64": "0991d97cd58dd82d",
+    "xxh3_128": "1a441eabad80cad8ed32ab74cf20b7b2",
+    "base64_64": "CZHZfNWN2C0=",
+    "base64_128": "GkQeq62AytjtMqt0zyC3sg=="
+  },
+  {
+    "size": 65,
+    "sha256": "4b6c6774f0cbcd776a90e187b9494e04ca880c0afe3ea1c5cad51c8bbcb41f74",
+    "xxh3_64": "8e4f57a107b176db",
+    "xxh3_128": "2d9bf2943de7cd3c2939be58e6279765",
+    "base64_64": "jk9XoQexdts=",
+    "base64_128": "LZvylD3nzTwpOb5Y5ieXZQ=="
+  },
+  {
+    "size": 96,
+    "sha256": "21a6c23f9d88eb205cf46624dbb5f78a39d393defb7aeb8458bb3f8fcc915c80",
+    "xxh3_64": "8adaf9d6e4f4721f",
+    "xxh3_128": "c414fd5bc312abc3d495885313302235",
+    "base64_64": "itr51uT0ch8=",
+    "base64_128": "xBT9W8MSq8PUlYhTEzAiNQ=="
+  },
+  {
+    "size": 127,
+    "sha256": "b4f5398bf618d741f2ab0f6e2fcde06f4949c20d476b5f6e1d4bf8618bc8973a",
+    "xxh3_64": "7bc5430cc7221484",
+    "xxh3_128": "0f66866be686399fba1b0c4280b252e8",
+    "base64_64": "e8VDDMciFIQ=",
+    "base64_128": "D2aGa+aGOZ+6GwxCgLJS6A=="
+  },
+  {
+    "size": 128,
+    "sha256": "ed045c7c319e0c9286e1dea21c80bfd4a08eca43e02e13ee8a7a2c8b4b2baec9",
+    "xxh3_64": "ee847f7fcef4ddbc",
+    "xxh3_128": "d25fb3a54bc43c6e37906c780c01150d",
+    "base64_64": "7oR/f8703bw=",
+    "base64_128": "0l+zpUvEPG43kGx4DAEVDQ=="
+  },
+  {
+    "size": 129,
+    "sha256": "d6f2fca0407b3f98c9ce29ae92a6cdf489506450fdbb29172f6b18987bc685db",
+    "xxh3_64": "7e3e7b750239d4fc",
+    "xxh3_128": "ce245f502a54b8313dc26c2565608a13",
+    "base64_64": "fj57dQI51Pw=",
+    "base64_128": "ziRfUCpUuDE9wmwlZWCKEw=="
+  },
+  {
+    "size": 240,
+    "sha256": "7ef91c43976227eb7f9c5cffb60083fd9118877e4862b4fe74fbc8680cc38afa",
+    "xxh3_64": "44089a144aade02d",
+    "xxh3_128": "b39403b41f31eeafe1a4f0922856b524",
+    "base64_64": "RAiaFEqt4C0=",
+    "base64_128": "s5QDtB8x7q/hpPCSKFa1JA=="
+  },
+  {
+    "size": 241,
+    "sha256": "15c77e78ef55150f6041b1b1097e0868062f97ad058927ba38913bac9815b613",
+    "xxh3_64": "ed93572e52acac83",
+    "xxh3_128": "06229596e1de710aed93572e52acac83",
+    "base64_64": "7ZNXLlKsrIM=",
+    "base64_128": "BiKVluHecQrtk1cuUqysgw=="
+  },
+  {
+    "size": 255,
+    "sha256": "2bfae287351d36c18acee2355b16e41065e5735735d019ccc823aefcb23e67d5",
+    "xxh3_64": "ecede890dd88244b",
+    "xxh3_128": "25d4fca644198841ecede890dd88244b",
+    "base64_64": "7O3okN2IJEs=",
+    "base64_128": "JdT8pkQZiEHs7eiQ3YgkSw=="
+  },
+  {
+    "size": 256,
+    "sha256": "118b38101a6d90a15bec907a04acac42e0f213be5dd3f0731967e0349a3d2b27",
+    "xxh3_64": "5356e48742805b6a",
+    "xxh3_128": "58145ed379bca2d25356e48742805b6a",
+    "base64_64": "U1bkh0KAW2o=",
+    "base64_128": "WBRe03m8otJTVuSHQoBbag=="
+  },
+  {
+    "size": 257,
+    "sha256": "4c3b4cec288f9b9433a40411c9fd1aa609b65c736b9e85f021ad29a225d1999a",
+    "xxh3_64": "90215816e3d19240",
+    "xxh3_128": "7c7cf14a8dfee7c390215816e3d19240",
+    "base64_64": "kCFYFuPRkkA=",
+    "base64_128": "fHzxSo3+58OQIVgW49GSQA=="
+  },
+  {
+    "size": 1024,
+    "sha256": "575383deff0775797e1ff4c82da069141937c843a81cbe50959a96bcfa88140e",
+    "xxh3_64": "f0c5763fadfacd25",
+    "xxh3_128": "73e0806b4c7d6bbcf0c5763fadfacd25",
+    "base64_64": "8MV2P636zSU=",
+    "base64_128": "c+CAa0x9a7zwxXY/rfrNJQ=="
+  },
+  {
+    "size": 65535,
+    "sha256": "c6a1a875a56160beba80d5233caaf8cc4532780b37715889df1add7fc47c8282",
+    "xxh3_64": "af37b2c1d95f0d9d",
+    "xxh3_128": "84e52906b91772d5af37b2c1d95f0d9d",
+    "base64_64": "rzeywdlfDZ0=",
+    "base64_128": "hOUpBrkXctWvN7LB2V8NnQ=="
+  },
+  {
+    "size": 65536,
+    "sha256": "d8f32a3b4c195f65444e342b0c61bdaf114802e84ab7821a1f88e3f66ea15100",
+    "xxh3_64": "562e723d515fe70e",
+    "xxh3_128": "3cf5e94f5720d2fd562e723d515fe70e",
+    "base64_64": "Vi5yPVFf5w4=",
+    "base64_128": "PPXpT1cg0v1WLnI9UV/nDg=="
+  },
+  {
+    "size": 65537,
+    "sha256": "65d80b2b0f0120bda1628b3749982090e058d2d9f4a5fad1bc70250b49bc4e96",
+    "xxh3_64": "a793068b5df40f22",
+    "xxh3_128": "4f7c8922df1ec63ea793068b5df40f22",
+    "base64_64": "p5MGi130DyI=",
+    "base64_128": "T3yJIt8exj6nkwaLXfQPIg=="
+  },
+  {
+    "size": 131123,
+    "sha256": "0f501847f976b32cdded96752ce82d6d61a0625597079cfd513962257bf3a216",
+    "xxh3_64": "7922dd92b85f2c3d",
+    "xxh3_128": "594ea90d4b989f4c7922dd92b85f2c3d",
+    "base64_64": "eSLdkrhfLD0=",
+    "base64_128": "WU6pDUuYn0x5It2SuF8sPQ=="
+  }
+]

@@ -141,6 +141,9 @@ pub struct Session {
     pub custom_theme: serde_json::Value,
     #[serde(default)]
     pub sync_profiles: serde_json::Value,
+    /// Versioned checksum choices only; file paths and results are transient.
+    #[serde(default)]
+    pub checksum_preferences: serde_json::Value,
     pub ui_scale: f32,
     pub show_tree: bool,
     pub tree_width: f32,
@@ -440,6 +443,7 @@ mod tests {
             theme_palette: None,
             custom_theme: serde_json::Value::Null,
             sync_profiles: serde_json::Value::Null,
+            checksum_preferences: serde_json::Value::Null,
             ui_scale: 1.1,
             show_tree: true,
             tree_width: 220.0,
@@ -653,6 +657,66 @@ mod tests {
         assert_eq!(persisted[0], PathBuf::from("/deep"));
         assert_eq!(persisted[1], PathBuf::from("/deep/a"));
         assert_eq!(persisted, persisted_tree_expanded(&expanded));
+    }
+
+    #[test]
+    fn checksum_choices_survive_atomic_reopen_and_old_or_invalid_choices_keep_session() {
+        use crate::checksum::{Algorithm, AlgorithmSet, Calculation, Preferences};
+        let temp = TempDir::new();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut gate = crate::persistence::StoreGate::missing();
+        let mut session = sample(temp.path().into(), temp.path().into());
+        for calculation in [
+            Calculation::All,
+            Calculation::Selected,
+            Calculation::Checked,
+        ] {
+            for checked in [
+                AlgorithmSet::default(),
+                AlgorithmSet::from_algorithms([Algorithm::Sha256, Algorithm::Xxh3_64]),
+            ] {
+                let choices = Preferences {
+                    calculation,
+                    checked,
+                    selected: Algorithm::Xxh3_64,
+                };
+                session.checksum_preferences = choices.saved();
+                save_at(&persist, &path, &session, &mut gate).unwrap();
+                let loaded = load_at(&persist, &path).value.unwrap();
+                assert_eq!(loaded.left_path, session.left_path);
+                assert_eq!(
+                    Preferences::from_saved(&loaded.checksum_preferences),
+                    choices
+                );
+                let keys = loaded.checksum_preferences.as_object().unwrap();
+                assert_eq!(keys.len(), 4); // no input paths, expected digests or results
+            }
+        }
+        let mut legacy = serde_json::to_value(&session).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("checksum_preferences");
+        let loaded: Session = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            Preferences::from_saved(&loaded.checksum_preferences),
+            Preferences::default()
+        );
+        for malformed in [
+            serde_json::json!({"version":99}),
+            serde_json::json!(["unknown"]),
+        ] {
+            session.checksum_preferences = malformed;
+            save_at(&persist, &path, &session, &mut gate).unwrap();
+            let loaded = load_at(&persist, &path).value.unwrap();
+            assert_eq!(loaded.palette_tick, session.palette_tick);
+            assert_eq!(loaded.left_path, session.left_path);
+            assert_eq!(
+                Preferences::from_saved(&loaded.checksum_preferences),
+                Preferences::default()
+            );
+        }
     }
 
     #[test]

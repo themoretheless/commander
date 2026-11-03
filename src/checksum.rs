@@ -134,6 +134,76 @@ impl AlgorithmSet {
     }
 }
 
+/// The calculation scope saved with the session; completed results stay transient.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Calculation {
+    #[default]
+    All,
+    Selected,
+    Checked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Preferences {
+    pub calculation: Calculation,
+    pub checked: AlgorithmSet,
+    pub selected: Algorithm,
+}
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            calculation: Calculation::All,
+            checked: AlgorithmSet::from_algorithms([Algorithm::Sha256, Algorithm::Xxh3_128]),
+            selected: Algorithm::default(),
+        }
+    }
+}
+impl Preferences {
+    /// Invalid or future settings fall back locally without losing the session.
+    /// An explicitly empty checked set is valid and keeps execution disabled.
+    pub fn from_saved(value: &serde_json::Value) -> Self {
+        Self::parse_saved(value).unwrap_or_default()
+    }
+    fn parse_saved(value: &serde_json::Value) -> Option<Self> {
+        let object = value.as_object()?;
+        if object.get("version")?.as_u64()? != 1 {
+            return None;
+        }
+        let calculation = match object.get("mode")?.as_str()? {
+            "all" => Calculation::All,
+            "selected" => Calculation::Selected,
+            "checked" => Calculation::Checked,
+            _ => return None,
+        };
+        let algorithm = |value: &serde_json::Value| {
+            let label = value.as_str()?;
+            Algorithm::ALL.into_iter().find(|a| a.label() == label)
+        };
+        let selected = algorithm(object.get("selected")?)?;
+        let values = object.get("checked")?.as_array()?;
+        if values.len() > Algorithm::ALL.len() {
+            return None;
+        }
+        let mut checked = AlgorithmSet::default();
+        for value in values {
+            checked.set(algorithm(value)?, true);
+        }
+        Some(Self {
+            calculation,
+            checked,
+            selected,
+        })
+    }
+    pub fn saved(self) -> serde_json::Value {
+        let mode = match self.calculation {
+            Calculation::All => "all",
+            Calculation::Selected => "selected",
+            Calculation::Checked => "checked",
+        };
+        serde_json::json!({"version":1,"mode":mode,"selected":self.selected.label(),"checked":self.checked.iter().map(Algorithm::label).collect::<Vec<_>>()})
+    }
+}
+
 impl Algorithm {
     pub const ALL: [Self; 14] = [
         Self::Sha256,
@@ -799,6 +869,70 @@ mod tests {
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
     const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn saved_checksum_preferences_cover_modes_algorithms_empty_and_invalid_values() {
+        use serde_json::json;
+        for calculation in [
+            Calculation::All,
+            Calculation::Selected,
+            Calculation::Checked,
+        ] {
+            for selected in Algorithm::ALL {
+                for checked in [
+                    AlgorithmSet::default(),
+                    AlgorithmSet::one(selected),
+                    AlgorithmSet::all(),
+                ] {
+                    let prefs = Preferences {
+                        calculation,
+                        selected,
+                        checked,
+                    };
+                    assert_eq!(Preferences::from_saved(&prefs.saved()), prefs);
+                }
+            }
+        }
+        let valid = Preferences {
+            calculation: Calculation::Checked,
+            selected: Algorithm::Xxh3_64,
+            checked: AlgorithmSet::one(Algorithm::Sha256),
+        }
+        .saved();
+        for invalid in [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({"version":2}),
+            json!(true),
+        ] {
+            assert_eq!(Preferences::from_saved(&invalid), Preferences::default());
+        }
+        for (field, value) in [
+            ("version", json!(2)),
+            ("mode", json!("future")),
+            ("mode", json!(null)),
+            ("selected", json!("future")),
+            ("selected", json!(6)),
+            ("checked", json!(null)),
+            ("checked", json!(["SHA-256", "future"])),
+            ("checked", json!(vec!["SHA-256"; 15])),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = value;
+            assert_eq!(
+                Preferences::from_saved(&malformed),
+                Preferences::default(),
+                "{malformed}"
+            );
+        }
+        let mut duplicates = valid;
+        duplicates["checked"] = json!(["SHA-256", "SHA-256"]);
+        assert_eq!(
+            Preferences::from_saved(&duplicates).checked,
+            AlgorithmSet::one(Algorithm::Sha256)
+        );
+    }
 
     #[test]
     fn checked_checksum_sets_match_all_results_and_reject_empty_before_io() {

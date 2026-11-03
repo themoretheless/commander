@@ -1,0 +1,9 @@
+{
+  "src/checksum.rs": "9b1e20e2ed2c82364d03c4eef68c672a1aedc5f23de0d4388bad152b471112dd",
+  "src/app/mod.rs": "8026d5210b4c16d640352581d45f58a06a6d88fb685402a56dbad7d402ffcc61",
+  "src/app/update.rs": "ca8b4b5799a1836c00dce9bda339f7a086a30fbd5d76062dcbb47b2bb70dead0",
+  "src/session.rs": "afa0dbba7a494efa7740f738965b0e8ddcf257202d5edec56c39dc29d2109ca0",
+  "src/visual_qa.rs": "a75df08c9b9d70efe5291e3949f1eacda0f101ddee233eee071c2300de68f4d3",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}

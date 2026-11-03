@@ -1,0 +1,3 @@
+2026-11-03T10:24:44 INFO  commander::logging: logging initialized
+2026-11-03T10:24:44 WARN  commander::launch: Ignoring launch path that is missing or cannot be resolved: checksum_selected
+2026-11-03T10:24:44 INFO  eframe: Both the glow and wgpu renderers are available. Using glow.
