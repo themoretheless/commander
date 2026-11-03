@@ -4397,6 +4397,7 @@ impl VisualQaApp {
         if !self.favorite_picker_ready(3)
             || state.probe.is_some()
             || state.input != "@пркт"
+            || state.favorite_case != crate::favorite_search::CaseMode::Ignore
             || state.favorite_target != crate::workspace::FavoriteTarget::CurrentPanel
             || state.favorite_cache.matches.total != 1
             || state.favorite_cache.matches.indices != [150]
@@ -14849,7 +14850,7 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
-        if self.scenario == Scenario::FavoritePicker && self.favorite_picker_phase < 38 {
+        if self.scenario == Scenario::FavoritePicker && self.favorite_picker_phase < 57 {
             let phase = self.favorite_picker_phase;
             if !self.pane_tool_opened {
                 self.inner
@@ -14872,6 +14873,36 @@ impl eframe::App for VisualQaApp {
                     })
             {
                 return;
+            }
+            if phase == 38 && !self.favorite_picker_final() {
+                return;
+            }
+            let expectation = match phase {
+                41 => Some((crate::favorite_search::CaseMode::Match, "@пркт", 0)),
+                44 => Some((crate::favorite_search::CaseMode::Smart, "@пркт", 1)),
+                49 => Some((crate::favorite_search::CaseMode::Smart, "@ПРКТ", 0)),
+                52 => Some((crate::favorite_search::CaseMode::Ignore, "@ПРКТ", 1)),
+                _ => None,
+            };
+            if let Some((mode, query, total)) = expectation {
+                let Some(state) = self.inner.ui.modals.palette_input.as_ref() else {
+                    return;
+                };
+                if state.favorite_case != mode
+                    || state.input != query
+                    || state.favorite_cache.matches.total != total
+                {
+                    return;
+                }
+                let record = serde_json::json!({"phase":phase,"case":format!("{mode:?}"),"query":query,"total":total,"indices":state.favorite_cache.matches.indices});
+                if std::fs::write(
+                    self.scenario_dir.join(format!("case-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                )
+                .is_err()
+                {
+                    return;
+                }
             }
             if phase == 8 {
                 input.events.push(egui::Event::Key {
@@ -14942,7 +14973,24 @@ impl eframe::App for VisualQaApp {
                     phase - 27,
                     None,
                 ),
-                _ => (egui::Id::new("omnibar-input"), phase - 33, Some("@пркт")),
+                33..=37 => (egui::Id::new("omnibar-input"), phase - 33, Some("@пркт")),
+                38..=40 => (
+                    egui::Id::new(("favorite-picker-case", "Match case")),
+                    phase - 38,
+                    None,
+                ),
+                41..=43 => (
+                    egui::Id::new(("favorite-picker-case", "Smart case")),
+                    phase - 41,
+                    None,
+                ),
+                44..=48 => (egui::Id::new("omnibar-input"), phase - 44, Some("@ПРКТ")),
+                49..=51 => (
+                    egui::Id::new(("favorite-picker-case", "Ignore case")),
+                    phase - 49,
+                    None,
+                ),
+                _ => (egui::Id::new("omnibar-input"), phase - 52, Some("@пркт")),
             };
             if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
                 if local == 0 && !self.hex_target_settled(id, rect) {
@@ -25448,7 +25496,7 @@ impl eframe::App for VisualQaApp {
                     && std::fs::copy(keep.join("keep.txt"),self.scenario_dir.join("keep.txt")).is_ok()
             }
             Scenario::FavoritePicker => {
-                self.favorite_picker_phase == 38 && self.favorite_picker_final()
+                self.favorite_picker_phase == 57 && self.favorite_picker_final()
             }
             Scenario::FavoriteImport => {
                 self.favorite_import_phase == 17 && self.favorite_import_export_ready()

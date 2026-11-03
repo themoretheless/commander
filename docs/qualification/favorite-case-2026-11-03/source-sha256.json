@@ -1,0 +1,10 @@
+{
+  "src/favorite_search.rs": "d97cf129b2917b6889303daac102ca14ac03537a76c4be5e3f36a5562ee6bf9b",
+  "src/fuzzy.rs": "e578004696658557975d98c9836399eb5483860e05ebfda04e04b52b434289d0",
+  "src/app/omnibar_dialog.rs": "29a2ae9007d2f231bb89b008bd06abbcfb33d7b5f69fa9677574ba4b41040c67",
+  "src/visual_qa.rs": "e3daca4649e16134fff49fcb7b42b8e2fc4b047c17c19044a960e2ade6dad8e9",
+  "src/omnibar.rs": "f2e1530e70090fc20ed7334bf1a62b2f01a4995e151303317789bd6089849b4e",
+  "src/bookmarks.rs": "67f0ecd04485d1b02569eacccbc7c4fc2f53ecfdbc4f77c0f8f79deba8f80c4c",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}

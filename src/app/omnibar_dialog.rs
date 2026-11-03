@@ -20,6 +20,7 @@ pub struct OmnibarState {
     pub(crate) assigning_slot: bool,
     pub(crate) favorites: crate::bookmarks::Bookmarks,
     pub(crate) favorite_cache: crate::favorite_search::Cache,
+    pub(crate) favorite_case: crate::favorite_search::CaseMode,
     pub(crate) favorite_target: crate::workspace::FavoriteTarget,
     favorite_submit: Option<String>,
 }
@@ -50,6 +51,26 @@ enum OmniRow {
     },
     AssignSlotPrompt,
     AssignSlot(u8),
+}
+
+fn favorite_case_controls(ui: &mut egui::Ui, mode: &mut crate::favorite_search::CaseMode) -> bool {
+    let before = *mode;
+    ui.horizontal_wrapped(|ui| {
+        ui.small("Letter case:");
+        for (value, label) in [
+            (crate::favorite_search::CaseMode::Ignore, "Ignore case"),
+            (crate::favorite_search::CaseMode::Smart, "Smart case"),
+            (crate::favorite_search::CaseMode::Match, "Match case"),
+        ] {
+            let response = ui.selectable_value(mode, value, label)
+                .on_hover_text("Applies to favorite names and paths. Smart case matches uppercase queries exactly; lowercase queries ignore case. Resets when the switcher closes.");
+            #[cfg(any(test, feature="visual-qa"))]
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("favorite-picker-case",label)),response.rect));
+            #[cfg(not(any(test, feature="visual-qa")))]
+            let _ = response;
+        }
+    });
+    *mode != before
 }
 
 fn recent_order_controls(
@@ -382,6 +403,7 @@ impl App {
             assigning_slot: false,
             favorites: self.ws.bookmarks.clone(),
             favorite_cache: Default::default(),
+            favorite_case: Default::default(),
             favorite_target: crate::workspace::FavoriteTarget::CurrentPanel,
             favorite_submit: None,
         });
@@ -558,7 +580,9 @@ impl App {
             }
             OmnibarMode::Favorites(query) => {
                 let state = self.ui.modals.palette_input.as_mut().unwrap();
-                state.favorite_cache.refresh(&state.favorites, query);
+                state
+                    .favorite_cache
+                    .refresh_case(&state.favorites, query, state.favorite_case);
                 rows = state
                     .favorite_cache
                     .matches
@@ -729,6 +753,16 @@ impl App {
                     }
                 });
                 if let OmnibarMode::Favorites(query)=mode {
+                    if favorite_case_controls(ui, &mut state.favorite_case) {
+                        // Rows were ranked before drawing controls. Retire them until
+                        // the next frame; Enter must never open an old-mode match.
+                        rows.clear();
+                        state.selected=0;
+                        selected=0;
+                        state.favorite_submit=None;
+                        enter=false;
+                        ui.ctx().request_repaint();
+                    }
                     ui.horizontal_wrapped(|ui| {
                         ui.label("Open in");
                         for (target,label) in [(crate::workspace::FavoriteTarget::CurrentPanel,"Here"),

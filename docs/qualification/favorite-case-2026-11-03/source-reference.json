@@ -1,0 +1,7 @@
+{
+  "cohort": 75,
+  "repository": "junegunn/fzf",
+  "source": "https://raw.githubusercontent.com/junegunn/fzf/master/man/man1/fzf.1",
+  "contract": "Ignore case, match case, smart case: uppercase query enables sensitivity",
+  "adaptation": "Explicit per-opening Favorites picker policy using existing Commander Unicode fuzzy scorer; default Ignore preserved"
+}

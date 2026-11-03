@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 28.42s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 3 tests
+test favorite_search::tests::empty_and_nonempty_searches_are_cached_for_the_immutable_opening_snapshot ... ok
+test favorite_search::tests::case_modes_cover_unicode_names_path_fallback_stable_ties_and_cache_changes ... ok
+test favorite_search::tests::matches_all_snapshot_rows_then_caps_with_stable_order_and_unicode_name_priority ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 3513 filtered out; finished in 0.01s
+
