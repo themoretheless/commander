@@ -1,0 +1,70 @@
+{
+  "basename": false,
+  "case_sensitive": true,
+  "glob": "*.txt\nempty-*",
+  "global_enabled": true,
+  "listing": [
+    {
+      "id": 0,
+      "index": 2,
+      "path": "a-same.txt"
+    },
+    {
+      "id": 1,
+      "index": 3,
+      "path": "different.txt"
+    },
+    {
+      "id": 2,
+      "index": 8,
+      "path": "dup.txt"
+    },
+    {
+      "id": 3,
+      "index": 9,
+      "path": "dup.txt"
+    },
+    {
+      "id": 4,
+      "index": 4,
+      "path": "empty-one"
+    },
+    {
+      "id": 5,
+      "index": 5,
+      "path": "empty-two"
+    },
+    {
+      "id": 6,
+      "index": 1,
+      "path": "folder/"
+    },
+    {
+      "id": 7,
+      "index": 7,
+      "path": "hard"
+    },
+    {
+      "id": 8,
+      "index": 10,
+      "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt"
+    },
+    {
+      "id": 9,
+      "index": 6,
+      "path": "sym"
+    },
+    {
+      "id": 10,
+      "index": 0,
+      "path": "z-same.txt"
+    }
+  ],
+  "phase": 91,
+  "selected": [
+    8
+  ],
+  "selected_indexes": [
+    10
+  ]
+}

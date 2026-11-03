@@ -123,11 +123,36 @@ impl GroupMatch {
         }
     }
 }
+/// Inclusive bounds on total retained members, not the number of extra copies.
+fn content_group_copy_bounds(
+    min: &str,
+    max: &str,
+) -> Result<(Option<usize>, Option<usize>), String> {
+    let parse = |text: &str| -> Result<Option<usize>, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        if text.len() > 20 || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return Err("Group copy limits need whole nonnegative counts (up to 20 digits); no groups are shown.".into());
+        }
+        text.parse::<usize>().map(Some).map_err(|_| {
+            "Group copy limit is too large for this platform; no groups are shown.".into()
+        })
+    };
+    let (min, max) = (parse(min)?, parse(max)?);
+    if min.zip(max).is_some_and(|(min, max)| min > max) {
+        return Err("Minimum group copies exceeds maximum; no groups are shown.".into());
+    }
+    Ok((min, max))
+}
 /// Cached display permutation only; every action keeps its original scan rank.
 #[derive(Default)]
 pub struct ContentGroupView {
     sort: crate::dedup::GroupSort,
     query: String,
+    min_copies: String,
+    max_copies: String,
     mode: GroupMatch,
     basename_only: bool,
     case_sensitive: bool,
@@ -154,22 +179,30 @@ impl ContentGroupView {
                     ..Default::default()
                 },
             );
-            let filtered = pattern.and_then(|pattern| {
-                let mut order = content_group_order(groups, self.sort);
-                if !matches!(pattern, crate::archive_filter::Pattern::All) {
-                    let mut matches = vec![false; groups.len()];
-                    for (rank, group) in groups.iter().enumerate() {
-                        for member in &group.members {
-                            let path = member.path.to_str().ok_or(
+            let filtered = content_group_copy_bounds(&self.min_copies, &self.max_copies).and_then(
+                |(min, max)| {
+                    pattern.and_then(|pattern| {
+                        let mut order = content_group_order(groups, self.sort);
+                        order.retain(|&rank| {
+                            min.is_none_or(|min| groups[rank].members.len() >= min)
+                                && max.is_none_or(|max| groups[rank].members.len() <= max)
+                        });
+                        if !matches!(pattern, crate::archive_filter::Pattern::All) {
+                            let mut matches = vec![false; groups.len()];
+                            for (rank, group) in groups.iter().enumerate() {
+                                for member in &group.members {
+                                    let path = member.path.to_str().ok_or(
                                 "Group search needs UTF-8 member paths; no groups are shown.",
                             )?;
-                            matches[rank] |= pattern.matches(path, &path.to_lowercase());
+                                    matches[rank] |= pattern.matches(path, &path.to_lowercase());
+                                }
+                            }
+                            order.retain(|&rank| matches[rank]);
                         }
-                    }
-                    order.retain(|&rank| matches[rank]);
-                }
-                Ok(order)
-            });
+                        Ok(order)
+                    })
+                },
+            );
             match filtered {
                 Ok(order) => self.order = order,
                 Err(error) => {
@@ -185,6 +218,8 @@ impl ContentGroupView {
         let previous = (
             self.sort,
             self.query.clone(),
+            self.min_copies.clone(),
+            self.max_copies.clone(),
             self.mode,
             self.basename_only,
             self.case_sensitive,
@@ -206,10 +241,10 @@ impl ContentGroupView {
             #[cfg(feature="visual-qa")]
             ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-group-query"),input.rect));
             let _=input;
-            let reset=ui.add_enabled(!self.query.is_empty() || self.mode!=GroupMatch::Literal || self.basename_only || self.case_sensitive,egui::Button::new("Reset group search"));
+            let reset=ui.add_enabled(!self.query.is_empty() || !self.min_copies.is_empty() || !self.max_copies.is_empty() || self.mode!=GroupMatch::Literal || self.basename_only || self.case_sensitive,egui::Button::new("Reset group search"));
             #[cfg(feature="visual-qa")]
             ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-group-query-reset"),reset.rect));
-            if reset.clicked(){self.query.clear();self.mode=GroupMatch::Literal;self.basename_only=false;self.case_sensitive=false;}
+            if reset.clicked(){self.query.clear();self.min_copies.clear();self.max_copies.clear();self.mode=GroupMatch::Literal;self.basename_only=false;self.case_sensitive=false;}
         });
         ui.horizontal_wrapped(|ui| {
             for mode in [
@@ -247,9 +282,22 @@ impl ContentGroupView {
                 let _ = (button, id);
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Group copies:");
+            for (value,label,id) in [(&mut self.min_copies,"Min","archive-group-min-copies"),(&mut self.max_copies,"Max","archive-group-max-copies")] {
+                ui.label(label);
+                let input=ui.add(egui::TextEdit::singleline(value).id(egui::Id::new((id,"input"))).desired_width(75.0).char_limit(32).hint_text("any"))
+                    .on_hover_text("Inclusive bounds on total members in a scanned group, including the keeper. Blank means no bound. Combines with group search; changes shown groups and shown-group actions/reports only. Does not rescan, apply keeper rules or change selection.");
+                #[cfg(feature="visual-qa")]
+                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(id),input.rect));
+                let _=(input,id);
+            }
+        });
         if (
             self.sort,
             self.query.clone(),
+            self.min_copies.clone(),
+            self.max_copies.clone(),
             self.mode,
             self.basename_only,
             self.case_sensitive,
@@ -262,6 +310,10 @@ impl ContentGroupView {
     #[cfg(feature = "visual-qa")]
     pub(crate) fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({"sort":content_group_sort_label(self.sort),"order":self.order})
+    }
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn copy_bounds_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"min":self.min_copies,"max":self.max_copies})
     }
     #[cfg(feature = "visual-qa")]
     pub(crate) fn filter_snapshot(&self) -> serde_json::Value {
@@ -3951,6 +4003,78 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+    #[test]
+    fn archive_group_copy_bounds_validate_inclusive_platform_counts() {
+        use super::content_group_copy_bounds as bounds;
+        assert_eq!(bounds("", " ").unwrap(), (None, None));
+        assert_eq!(bounds(" 0 ", "0002").unwrap(), (Some(0), Some(2)));
+        assert_eq!(bounds("3", "3").unwrap(), (Some(3), Some(3)));
+        assert_eq!(
+            bounds(&usize::MAX.to_string(), "").unwrap(),
+            (Some(usize::MAX), None)
+        );
+        for (min, max) in [
+            ("4", "3"),
+            ("-1", ""),
+            ("+1", ""),
+            ("1.0", ""),
+            ("1e3", ""),
+            ("１", ""),
+            ("1 2", ""),
+            ("", "x"),
+            ("18446744073709551616", ""),
+            ("000000000000000000000", ""),
+        ] {
+            assert!(bounds(min, max).is_err(), "{min} / {max}");
+        }
+    }
+    #[test]
+    fn archive_group_copy_bounds_intersect_search_sort_and_paginate_original_groups() {
+        use super::ContentGroupView;
+        let groups = (0..202)
+            .map(|rank| sort_group(rank as u64, if rank % 2 == 0 { 2 } else { 5 }))
+            .collect::<Vec<_>>();
+        let original = serde_json::to_value(&groups).unwrap();
+        let mut view = ContentGroupView {
+            min_copies: "3".into(),
+            sort: crate::dedup::GroupSort::Copies,
+            ..Default::default()
+        };
+        let wanted = (1..202).step_by(2).collect::<Vec<_>>();
+        assert_eq!(view.indices(&groups), wanted);
+        let mut page = usize::MAX;
+        assert_eq!(
+            super::content_group_page_range(view.order.len(), &mut page),
+            100..101
+        );
+        assert_eq!(view.order[100], 201);
+        view.max_copies = "4".into();
+        view.invalidate();
+        assert!(view.indices(&groups).is_empty() && view.error.is_none());
+        view.min_copies.clear();
+        view.invalidate();
+        assert_eq!(
+            view.indices(&groups),
+            (0..202).step_by(2).collect::<Vec<_>>()
+        );
+        view.min_copies = "3".into();
+        view.max_copies = "5".into();
+        view.query = "no-such-member".into();
+        view.invalidate();
+        assert!(view.indices(&groups).is_empty() && view.error.is_none());
+        view.query.clear();
+        view.min_copies = "6".into();
+        view.invalidate();
+        assert!(
+            view.indices(&groups).is_empty() && view.error.as_ref().unwrap().contains("exceeds")
+        );
+        view.min_copies.clear();
+        view.max_copies.clear();
+        view.invalidate();
+        assert_eq!(view.indices(&groups).len(), 202);
+        assert!(view.error.is_none());
+        assert_eq!(serde_json::to_value(&groups).unwrap(), original);
     }
     #[test]
     fn archive_group_search_keeps_complete_groups_with_bounded_path_modes() {

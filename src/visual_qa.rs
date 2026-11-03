@@ -5113,7 +5113,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
             && !(self.scenario == Scenario::ArchivePriorityChains
-                && self.archive_preferences_phase < 167)
+                && self.archive_preferences_phase < 205)
             && !(self.scenario == Scenario::ArchiveProtectionModes
                 && (self.archive_copy_phase < 252 || self.archive_preferences_phase < 5))
             && !(self.scenario == Scenario::ArchiveTarContentGroups
@@ -17981,6 +17981,184 @@ impl eframe::App for VisualQaApp {
             self.archive_preferences_phase += 1;
             return;
         }
+        if self.scenario == Scenario::ArchivePriorityChains
+            && (167..205).contains(&self.archive_preferences_phase)
+        {
+            let phase = self.archive_preferences_phase;
+            if matches!(phase, 172 | 176 | 182 | 188 | 194 | 200 | 204) {
+                let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                    return;
+                };
+                let Some(listing) = state.listing.as_ref() else {
+                    return;
+                };
+                let (min, max) = match phase {
+                    172 | 176 => ("3", ""),
+                    182 => ("3", "4"),
+                    188 => ("", "4"),
+                    194 => ("", "5"),
+                    200 => ("x", "5"),
+                    _ => ("", ""),
+                };
+                let bounds = state.content_group_view.copy_bounds_snapshot();
+                if bounds != serde_json::json!({"min":min,"max":max}) {
+                    self.archive_preferences_phase = match phase {
+                        172 => 167,
+                        182 => 177,
+                        188 => 183,
+                        194 => 189,
+                        200 => 195,
+                        204 => 201,
+                        _ => return,
+                    };
+                    self.hex_pointer_target = None;
+                    return;
+                }
+                let order = match phase {
+                    172 | 176 => vec![1],
+                    188 => vec![0],
+                    194 | 204 => vec![1, 0],
+                    _ => vec![],
+                };
+                let view = state.content_group_view.snapshot();
+                let filter = state.content_group_view.filter_snapshot();
+                let enabled = ctx.data(|d| {
+                    d.get_temp::<bool>(egui::Id::new(("Copy shown groups JSON", "enabled")))
+                });
+                let selection_enabled = ctx.data(|d| {
+                    d.get_temp::<bool>(egui::Id::new(("Select shown groups", "enabled")))
+                });
+                let mut indexes = state
+                    .selected
+                    .iter()
+                    .map(|id| listing.members[*id].index)
+                    .collect::<Vec<_>>();
+                indexes.sort_unstable();
+                if view != serde_json::json!({"sort":"Extra payload bytes","order":order})
+                    || filter["error"].is_null() == (phase == 200)
+                    || filter["query"] != ""
+                    || indexes != vec![0, 2, 8, 9, 10]
+                    || state.error.is_some()
+                    || enabled != Some(!order.is_empty())
+                    || selection_enabled != enabled
+                {
+                    return;
+                }
+                if phase == 176 {
+                    if self.counters.clipboard.load(Ordering::Relaxed) != 5 {
+                        return;
+                    }
+                    let Some(text) = self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                    else {
+                        return;
+                    };
+                    if std::fs::write(self.scenario_dir.join("copy-bounds-report.json"), text)
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let record = serde_json::json!({"phase":phase,"bounds":bounds,"view":view,"filter":filter,"shown_actions_enabled":enabled,"selected_indexes":indexes,"groups":state.check_result.as_ref().and_then(|r|r.as_ref().ok()).and_then(|r|r.content_groups.as_ref())});
+                let _ = std::fs::write(
+                    self.scenario_dir.join(format!("copy-bounds-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                self.archive_preferences_phase += 1;
+                return;
+            }
+            let (id, step, text) = match phase {
+                167..=171 => (
+                    egui::Id::new("archive-group-min-copies"),
+                    phase - 167,
+                    Some("3"),
+                ),
+                173..=175 => (egui::Id::new("Copy shown groups JSON"), phase - 173, None),
+                177..=181 => (
+                    egui::Id::new("archive-group-max-copies"),
+                    phase - 177,
+                    Some("4"),
+                ),
+                183..=187 => (
+                    egui::Id::new("archive-group-min-copies"),
+                    phase - 183,
+                    Some(""),
+                ),
+                189..=193 => (
+                    egui::Id::new("archive-group-max-copies"),
+                    phase - 189,
+                    Some("5"),
+                ),
+                195..=199 => (
+                    egui::Id::new("archive-group-min-copies"),
+                    phase - 195,
+                    Some("x"),
+                ),
+                _ => (
+                    egui::Id::new("archive-group-query-reset"),
+                    phase - 201,
+                    None,
+                ),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step == 3 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if step == 4 && text == Some("") {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            } else if step == 4 {
+                input
+                    .events
+                    .push(egui::Event::Text(text.unwrap_or_default().into()));
+            } else if step > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_preferences_phase += 1;
+            return;
+        }
         if self.scenario == Scenario::ArchivePriorityChains && self.archive_preferences_phase == 46
         {
             match self.inner.archive_reopen_preferences_for_qa(ctx) {
@@ -24964,7 +25142,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchivePriorityChains => self.archive_preferences_phase==167 && self.scenario_dir.join("shown-report-166.txt").is_file() && self.scenario_dir.join("group-search-140.json").is_file() && self.scenario_dir.join("group-order-86.json").is_file() && self.scenario_dir.join("priority-reopened.json").is_file(),
+            Scenario::ArchivePriorityChains => self.archive_preferences_phase==205 && self.scenario_dir.join("copy-bounds-204.json").is_file() && self.scenario_dir.join("shown-report-166.txt").is_file() && self.scenario_dir.join("group-search-140.json").is_file() && self.scenario_dir.join("group-order-86.json").is_file() && self.scenario_dir.join("priority-reopened.json").is_file(),
             Scenario::ArchiveProtectionModes => self.archive_copy_phase==252 && self.archive_preferences_phase==5 && self.scenario_dir.join("preferences-reopened.json").is_file() && [231,235,239,243,247,251].into_iter().all(|phase|self.scenario_dir.join(format!("selection-history-{phase}.json")).is_file()) && [183,189,193,199,203,209,215,219,223,227].into_iter().all(|phase|self.scenario_dir.join(format!("copy-candidates-{phase}.json")).is_file()) && [121,127,131,137,141,147,153,157,163,167,173,177].into_iter().all(|phase|self.scenario_dir.join(format!("group-cutoff-{phase}.json")).is_file()) && [75,79,85,91,95,101,105,111,115].into_iter().all(|phase|self.scenario_dir.join(format!("protection-list-{phase}.json")).is_file()) && [154,158,162,166,172,176,180,184,188,192,196,200,206,210].into_iter().all(|phase|self.scenario_dir.join(format!("tar-protection-mode-{phase}.json")).is_file()) && self.scenario_dir.join("modes-initial.json").is_file() && std::fs::read(self.fixture.left.join("groups.tar.gz")).is_ok_and(|bytes|bytes.as_slice()==include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice()),
             Scenario::ArchiveTarContentGroups => self.archive_copy_phase==149 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json","tar-keep-time-62.json","tar-keep-time-66.json","tar-keep-time-70.json","tar-keep-time-74.json","tar-keep-depth-78.json","tar-keep-depth-82.json","tar-keep-depth-86.json","tar-keep-depth-90.json","tar-keep-depth-94.json","tar-keep-depth-98.json","tar-protected-104.json","tar-protected-108.json","tar-protected-114.json","tar-protected-118.json","tar-protected-124.json","tar-protected-128.json","tar-protected-134.json","tar-protected-140.json","tar-protected-144.json","tar-protected-148.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
             Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
@@ -25516,7 +25694,8 @@ struct NativeEffectCalls {
 
 const fn expected_clipboard_writes(scenario: Scenario) -> usize {
     match scenario {
-        Scenario::ArchivePassword | Scenario::ArchivePriorityChains => 4,
+        Scenario::ArchivePassword => 4,
+        Scenario::ArchivePriorityChains => 5,
         Scenario::ArchiveContentGroups => 2,
         Scenario::ArchiveTarContentGroups => 4,
         Scenario::SymlinkWorkflow
@@ -25946,7 +26125,8 @@ mod tests {
     fn copy_scenarios_enforce_recording_clipboard_counts() {
         for scenario in Scenario::ALL {
             let expected = match scenario {
-                Scenario::ArchivePassword | Scenario::ArchivePriorityChains => 4,
+                Scenario::ArchivePassword => 4,
+                Scenario::ArchivePriorityChains => 5,
                 Scenario::ArchiveContentGroups => 2,
                 Scenario::ArchiveTarContentGroups => 4,
                 Scenario::SymlinkWorkflow

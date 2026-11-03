@@ -1,0 +1,54 @@
+{
+  "archive_tar_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 4,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "86607c8ae9cd1e77e05c16c8bcec46c3a44642a4402cf097067f402e69807084",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-copy-bounds-2026-11-03/native-captures/1793700535331418000/archive_tar_content_groups"
+  },
+  "archive_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 2,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "f6aacb1dad3984b6c3a71c4c33f436d745a6f132103c7e1d1985a2ea2ad2ed5f",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-copy-bounds-2026-11-03/native-captures/1793700574227450000/archive_content_groups"
+  },
+  "archive_protection_modes": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "79cb0d1f832ac1d647a39108902580245888fbfdb9b595545d2b5a91696bc449",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-copy-bounds-2026-11-03/native-captures/1793700497997994000/archive_protection_modes"
+  },
+  "archive_priority_chains": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 5,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "63469adac0282e27cd193e3f82cdb7c546ca5f38482472da31bf715b544d346c",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-copy-bounds-2026-11-03/native-captures/1793700465143606000/archive_priority_chains"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "paths": [
+    "plain.txt",
+    "enc-one.txt",
+    "enc-two.txt"
+  ],
+  "sha256": "c08e539674caaec61f0544f56572a64ab06f2167ae77ad03758eeae28a5504c3",
+  "visible": true
+}

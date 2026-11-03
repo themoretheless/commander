@@ -1,0 +1,17 @@
+Commander archive check report (v1)
+Archive: "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-91859-archive_content_groups/left/groups.ZIPX"
+Format: ZIP
+Recorded at: 2026-11-03T10:09:43Z
+Status: complete
+Strict ZIP headers: true
+Members: 4
+Decoded bytes: 13074
+Content comparison: SHA-256 and size
+Content groups: 1
+Group #0
+SHA-256: "c08e539674caaec61f0544f56572a64ab06f2167ae77ad03758eeae28a5504c3"
+Group size (bytes): 4352
+Group members: 3
+Entry #0 (4352 bytes): "plain.txt"
+Entry #1 (4352 bytes): "enc-one.txt"
+Entry #2 (4352 bytes): "enc-two.txt"

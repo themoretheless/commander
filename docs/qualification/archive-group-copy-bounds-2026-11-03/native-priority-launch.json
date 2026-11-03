@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_priority_chains",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-copy-bounds-2026-11-03/native-captures/1793700465143606000",
+  "binary_sha256": "6c7802f1697cc964ef8f5ef494c1b814d5ed48c44ec2a1cf9e91e09e8d8320df",
+  "core_sha256": "6c7802f1697cc964ef8f5ef494c1b814d5ed48c44ec2a1cf9e91e09e8d8320df",
+  "wrapper_sha256": "802383e26ffae39d9ec6561479b8e88b451ac423f03ef2289cd12d6e7b610da3",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

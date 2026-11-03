@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "repository": "https://github.com/pkolaczk/fclones",
+  "reference": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/README.md",
+  "transfer": "Independent post-scan archive-group adaptation of replica-count restrictions. Commander uses explicit inclusive Min/Max total member counts; this is not the fclones exclusive rf-under/rf-over CLI syntax."
+}
