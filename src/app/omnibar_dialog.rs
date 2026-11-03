@@ -20,6 +20,7 @@ pub struct OmnibarState {
     pub(crate) assigning_slot: bool,
     pub(crate) favorites: crate::bookmarks::Bookmarks,
     pub(crate) favorite_cache: crate::favorite_search::Cache,
+    pub(crate) favorite_mode: crate::favorite_search::SearchMode,
     pub(crate) favorite_case: crate::favorite_search::CaseMode,
     pub(crate) favorite_target: crate::workspace::FavoriteTarget,
     favorite_submit: Option<String>,
@@ -51,6 +52,24 @@ enum OmniRow {
     },
     AssignSlotPrompt,
     AssignSlot(u8),
+}
+
+fn favorite_mode_controls(
+    ui: &mut egui::Ui,
+    mode: &mut crate::favorite_search::SearchMode,
+) -> bool {
+    let before = *mode;
+    ui.horizontal_wrapped(|ui| {
+        ui.small("Matching:");
+        for value in crate::favorite_search::SearchMode::ALL {
+            let response = ui.selectable_value(mode, value, value.label()).on_hover_text("Match favorite label first, then its full path. Literal searches a substring; Exact and Glob match the whole field. Glob * stays within a path component; ** can cross folders; ? matches one UTF-8 byte. Regex uses Rust regex syntax. Invalid patterns show no results. Resets on close.");
+            #[cfg(any(test, feature="visual-qa"))]
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("favorite-picker-mode", value.label())), response.rect));
+            #[cfg(not(any(test, feature="visual-qa")))]
+            let _ = response;
+        }
+    });
+    *mode != before
 }
 
 fn favorite_case_controls(ui: &mut egui::Ui, mode: &mut crate::favorite_search::CaseMode) -> bool {
@@ -404,6 +423,7 @@ impl App {
             favorites: self.ws.bookmarks.clone(),
             favorite_cache: Default::default(),
             favorite_case: Default::default(),
+            favorite_mode: Default::default(),
             favorite_target: crate::workspace::FavoriteTarget::CurrentPanel,
             favorite_submit: None,
         });
@@ -580,9 +600,12 @@ impl App {
             }
             OmnibarMode::Favorites(query) => {
                 let state = self.ui.modals.palette_input.as_mut().unwrap();
-                state
-                    .favorite_cache
-                    .refresh_case(&state.favorites, query, state.favorite_case);
+                state.favorite_cache.refresh_options(
+                    &state.favorites,
+                    query,
+                    state.favorite_case,
+                    state.favorite_mode,
+                );
                 rows = state
                     .favorite_cache
                     .matches
@@ -753,7 +776,9 @@ impl App {
                     }
                 });
                 if let OmnibarMode::Favorites(query)=mode {
-                    if favorite_case_controls(ui, &mut state.favorite_case) {
+                    let mode_changed = favorite_mode_controls(ui, &mut state.favorite_mode);
+                    let case_changed = favorite_case_controls(ui, &mut state.favorite_case);
+                    if mode_changed || case_changed {
                         // Rows were ranked before drawing controls. Retire them until
                         // the next frame; Enter must never open an old-mode match.
                         rows.clear();
@@ -776,7 +801,8 @@ impl App {
                             let _=response;
                         }
                     });
-                    ui.small(format!("Fuzzy name/path · {} of {} matches · {} Favorites in the opening snapshot",rows.len(),state.favorite_cache.matches.total,state.favorites.items.len()));
+                    ui.small(format!("{} name/path · {} of {} matches · {} Favorites in the opening snapshot",state.favorite_mode.label(),rows.len(),state.favorite_cache.matches.total,state.favorites.items.len()));
+                    if let Some(error)=&state.favorite_cache.matches.error { ui.colored_label(t.accent_red,error); }
                     if state.favorite_cache.matches.total>rows.len() {ui.small("Showing the first 100 results; type a name or path to narrow the full list.");}
                     if query.chars().take(129).count()>128 {ui.small("Favorites search is limited to 128 characters.");}
                 }

@@ -5,6 +5,34 @@ pub const RESULT_CAP: usize = 100;
 pub struct Matches {
     pub indices: Vec<usize>,
     pub total: usize,
+    pub error: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchMode {
+    #[default]
+    Fuzzy,
+    Literal,
+    Glob,
+    Regex,
+    Exact,
+}
+impl SearchMode {
+    pub const ALL: [Self; 5] = [
+        Self::Fuzzy,
+        Self::Literal,
+        Self::Glob,
+        Self::Regex,
+        Self::Exact,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fuzzy => "Fuzzy",
+            Self::Literal => "Literal",
+            Self::Glob => "Glob",
+            Self::Regex => "Regex",
+            Self::Exact => "Exact",
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CaseMode {
@@ -22,23 +50,62 @@ impl CaseMode {
 pub fn rank(store: &Bookmarks, query: &str) -> Matches {
     rank_case(store, query, CaseMode::Ignore)
 }
+#[cfg(test)]
 pub fn rank_case(store: &Bookmarks, query: &str, mode: CaseMode) -> Matches {
+    rank_options(store, query, mode, SearchMode::Fuzzy)
+}
+pub fn rank_options(store: &Bookmarks, query: &str, mode: CaseMode, search: SearchMode) -> Matches {
     let query = query.trim();
     if query.chars().take(129).count() > 128 {
-        return Matches::default();
+        return Matches {
+            error: Some("Favorites search is limited to 128 characters".into()),
+            ..Default::default()
+        };
     }
     if query.is_empty() {
         return Matches {
             indices: (0..store.items.len().min(RESULT_CAP)).collect(),
             total: store.items.len(),
+            error: None,
         };
     }
     let sensitive = mode.sensitive(query);
+    let pattern = if search == SearchMode::Fuzzy {
+        None
+    } else {
+        match crate::archive_filter::Pattern::compile(
+            query,
+            crate::archive_filter::Options {
+                glob: search == SearchMode::Glob,
+                regex: search == SearchMode::Regex,
+                exact: search == SearchMode::Exact,
+                case_sensitive: sensitive,
+                ..Default::default()
+            },
+        ) {
+            Ok(pattern) => Some(pattern),
+            Err(error) => {
+                return Matches {
+                    error: Some(error),
+                    ..Default::default()
+                };
+            }
+        }
+    };
     let mut scores: Vec<_> = store
         .items
         .iter()
         .enumerate()
         .filter_map(|(index, bookmark)| {
+            if let Some(pattern) = &pattern {
+                let name = pattern.matches(&bookmark.name, &bookmark.name.to_lowercase());
+                let path = !name
+                    && bookmark
+                        .path
+                        .to_str()
+                        .is_some_and(|path| pattern.matches(path, &path.to_lowercase()));
+                return (name || path).then_some((index, name, 0));
+            }
             let name = crate::fuzzy::score_case(query, &bookmark.name, sensitive);
             let path = if name.is_none() {
                 crate::fuzzy::score_case(query, &bookmark.path.to_string_lossy(), sensitive)
@@ -63,11 +130,12 @@ pub fn rank_case(store: &Bookmarks, query: &str, mode: CaseMode) -> Matches {
             .map(|(index, _, _)| index)
             .collect(),
         total,
+        error: None,
     }
 }
 #[derive(Default)]
 pub struct Cache {
-    query: Option<(String, CaseMode)>,
+    query: Option<(String, CaseMode, SearchMode)>,
     pub matches: Matches,
 }
 impl Cache {
@@ -75,22 +143,98 @@ impl Cache {
     pub fn refresh(&mut self, store: &Bookmarks, query: &str) -> bool {
         self.refresh_case(store, query, CaseMode::Ignore)
     }
+    #[cfg(test)]
     pub fn refresh_case(&mut self, store: &Bookmarks, query: &str, mode: CaseMode) -> bool {
-        if self
-            .query
-            .as_ref()
-            .is_some_and(|(cached, case)| cached == query && *case == mode)
-        {
+        self.refresh_options(store, query, mode, SearchMode::Fuzzy)
+    }
+    pub fn refresh_options(
+        &mut self,
+        store: &Bookmarks,
+        query: &str,
+        mode: CaseMode,
+        search: SearchMode,
+    ) -> bool {
+        if self.query.as_ref().is_some_and(|(cached, case, matching)| {
+            cached == query && *case == mode && *matching == search
+        }) {
             return false;
         }
-        self.matches = rank_case(store, query, mode);
-        self.query = Some((query.into(), mode));
+        self.matches = rank_options(store, query, mode, search);
+        self.query = Some((query.into(), mode, search));
         true
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pattern_modes_match_complete_fields_or_substrings_without_fuzzy_fallback() {
+        let mut store = Bookmarks::default();
+        store.add("Report [final]", "/work/one");
+        store.add("report final", "/work/two");
+        store.add("Elsewhere", "/work/Report [final]");
+        store.add("Проект GTK", "/unicode");
+        let run = |q: &str, search| rank_options(&store, q, CaseMode::Ignore, search);
+        assert_eq!(run("rpt", SearchMode::Fuzzy).total, 3);
+        assert_eq!(run("rpt", SearchMode::Literal).total, 0);
+        assert_eq!(run("Report [final]", SearchMode::Literal).indices, [0, 2]);
+        assert_eq!(run("Report [final]", SearchMode::Exact).indices, [0]);
+        assert_eq!(run("/work/Report [final]", SearchMode::Exact).indices, [2]);
+        assert_eq!(run("Report*", SearchMode::Glob).indices, [0, 1]);
+        assert_eq!(run("**/Report*", SearchMode::Glob).indices, [0, 1, 2]);
+        assert_eq!(run("/work/Report*", SearchMode::Glob).indices, [2]);
+        assert_eq!(run("Про?кт*", SearchMode::Glob).total, 0);
+        assert_eq!(run("Про??кт*", SearchMode::Glob).indices, [3]);
+        assert_eq!(run("^report.*final", SearchMode::Regex).indices, [0, 1]);
+        assert_eq!(run("(?i)^ПРОЕКТ", SearchMode::Regex).indices, [3]);
+        for search in SearchMode::ALL {
+            assert_eq!(run("", search).indices, [0, 1, 2, 3]);
+            assert!(run(&"a".repeat(129), search).error.is_some());
+        }
+        for search in [SearchMode::Glob, SearchMode::Regex] {
+            let invalid = run("[", search);
+            assert!(invalid.error.is_some());
+            assert_eq!(invalid.total, 0);
+            assert!(invalid.indices.is_empty());
+        }
+        assert!(run("[", SearchMode::Literal).error.is_none());
+        assert_eq!(run("[", SearchMode::Literal).indices, [0, 2]);
+    }
+    #[test]
+    fn mode_cache_refusals_recover_and_match_case_applies_to_every_pattern_kind() {
+        let mut store = Bookmarks::default();
+        store.add("Проект GTK", "/no-access-required");
+        for mode in SearchMode::ALL {
+            let q = match mode {
+                SearchMode::Glob => "ПРО*",
+                SearchMode::Regex => "^ПРО",
+                _ => "ПРОЕКТ GTK",
+            };
+            assert_eq!(rank_options(&store, q, CaseMode::Ignore, mode).indices, [0]);
+            assert_eq!(rank_options(&store, q, CaseMode::Smart, mode).total, 0);
+            assert_eq!(rank_options(&store, q, CaseMode::Match, mode).total, 0);
+        }
+        let mut cache = Cache::default();
+        assert!(cache.refresh_options(&store, "[", CaseMode::Ignore, SearchMode::Regex));
+        assert!(cache.matches.error.is_some());
+        assert!(!cache.refresh_options(&store, "[", CaseMode::Ignore, SearchMode::Regex));
+        assert!(cache.refresh_options(&store, "[", CaseMode::Ignore, SearchMode::Literal));
+        assert!(cache.matches.error.is_none());
+        assert!(cache.refresh_options(&store, "Проект GTK", CaseMode::Ignore, SearchMode::Exact));
+        assert_eq!(cache.matches.indices, [0]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            store.add(
+                "Other",
+                std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/bad-\xff".to_vec())),
+            );
+            assert_eq!(
+                rank_options(&store, "bad-", CaseMode::Ignore, SearchMode::Literal).total,
+                0
+            );
+        }
+    }
     #[test]
     fn case_modes_cover_unicode_names_path_fallback_stable_ties_and_cache_changes() {
         let mut store = Bookmarks::default();

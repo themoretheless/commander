@@ -1,0 +1,7 @@
+{
+  "cohort": 77,
+  "repository": "sharkdp/fd",
+  "source": "https://raw.githubusercontent.com/sharkdp/fd/master/doc/fd.1",
+  "contract": "--fixed-strings literal substring, --glob full-field mask, --regex, --exact full-field literal",
+  "adaptation": "Explicit Favorites matching modes using shared existing Commander Pattern engine; default Fuzzy preserved"
+}

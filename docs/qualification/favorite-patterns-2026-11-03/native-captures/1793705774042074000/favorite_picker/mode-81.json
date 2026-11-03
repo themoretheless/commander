@@ -1,0 +1,10 @@
+{
+  "error": null,
+  "indices": [
+    150
+  ],
+  "mode": "Glob",
+  "phase": 81,
+  "query": "@Про* GTK",
+  "total": 1
+}

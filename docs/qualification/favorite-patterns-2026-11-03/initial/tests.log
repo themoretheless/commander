@@ -1,0 +1,16 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0716]: temporary value dropped while borrowed
+   --> src/favorite_search.rs:190:26
+    |
+189 |             assert_eq!(run("", search).indices, [0, 1, 2, 3]);
+    |                        --- borrow later used here
+190 |             assert!(run(&"a".repeat(129), search).error.is_some());
+    |             -------------^^^^^^^^^^^^^^^--------------------------
+    |             |            |
+    |             |            creates a temporary value which is freed while still in use
+    |             temporary value is freed at the end of this statement
+    |
+    = note: consider using a `let` binding to create a longer lived value
+
+For more information about this error, try `rustc --explain E0716`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

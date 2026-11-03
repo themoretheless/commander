@@ -1,0 +1,10 @@
+{
+  "error": null,
+  "indices": [
+    150
+  ],
+  "mode": "Regex",
+  "phase": 89,
+  "query": "@^Проект.*GTK$",
+  "total": 1
+}

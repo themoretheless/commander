@@ -1,0 +1,28 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 1m 03s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 5 tests
+test favorite_search::tests::empty_and_nonempty_searches_are_cached_for_the_immutable_opening_snapshot ... ok
+test favorite_search::tests::case_modes_cover_unicode_names_path_fallback_stable_ties_and_cache_changes ... ok
+test favorite_search::tests::matches_all_snapshot_rows_then_caps_with_stable_order_and_unicode_name_priority ... ok
+test favorite_search::tests::mode_cache_refusals_recover_and_match_case_applies_to_every_pattern_kind ... ok
+test favorite_search::tests::pattern_modes_match_complete_fields_or_substrings_without_fuzzy_fallback ... FAILED
+
+failures:
+
+---- favorite_search::tests::pattern_modes_match_complete_fields_or_substrings_without_fuzzy_fallback stdout ----
+
+thread 'favorite_search::tests::pattern_modes_match_complete_fields_or_substrings_without_fuzzy_fallback' (23244598) panicked at src/favorite_search.rs:186:9:
+assertion `left == right` failed
+  left: []
+ right: [3]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    favorite_search::tests::pattern_modes_match_complete_fields_or_substrings_without_fuzzy_fallback
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 3513 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

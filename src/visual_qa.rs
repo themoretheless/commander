@@ -4397,6 +4397,8 @@ impl VisualQaApp {
         if !self.favorite_picker_ready(3)
             || state.probe.is_some()
             || state.input != "@пркт"
+            || state.favorite_mode != crate::favorite_search::SearchMode::Fuzzy
+            || state.favorite_cache.matches.error.is_some()
             || state.favorite_case != crate::favorite_search::CaseMode::Ignore
             || state.favorite_target != crate::workspace::FavoriteTarget::CurrentPanel
             || state.favorite_cache.matches.total != 1
@@ -14850,7 +14852,7 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
-        if self.scenario == Scenario::FavoritePicker && self.favorite_picker_phase < 57 {
+        if self.scenario == Scenario::FavoritePicker && self.favorite_picker_phase < 102 {
             let phase = self.favorite_picker_phase;
             if !self.pane_tool_opened {
                 self.inner
@@ -14874,7 +14876,7 @@ impl eframe::App for VisualQaApp {
             {
                 return;
             }
-            if phase == 38 && !self.favorite_picker_final() {
+            if (phase == 38 || phase == 57) && !self.favorite_picker_final() {
                 return;
             }
             let expectation = match phase {
@@ -14897,6 +14899,74 @@ impl eframe::App for VisualQaApp {
                 let record = serde_json::json!({"phase":phase,"case":format!("{mode:?}"),"query":query,"total":total,"indices":state.favorite_cache.matches.indices});
                 if std::fs::write(
                     self.scenario_dir.join(format!("case-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                )
+                .is_err()
+                {
+                    return;
+                }
+            }
+            let mode_expectation = match phase {
+                60 => Some((
+                    crate::favorite_search::SearchMode::Literal,
+                    "@пркт",
+                    0,
+                    false,
+                )),
+                65 => Some((
+                    crate::favorite_search::SearchMode::Literal,
+                    "@Проект",
+                    1,
+                    false,
+                )),
+                68 => Some((
+                    crate::favorite_search::SearchMode::Exact,
+                    "@Проект",
+                    0,
+                    false,
+                )),
+                73 => Some((
+                    crate::favorite_search::SearchMode::Exact,
+                    "@Проект GTK",
+                    1,
+                    false,
+                )),
+                76 => Some((
+                    crate::favorite_search::SearchMode::Glob,
+                    "@Проект GTK",
+                    1,
+                    false,
+                )),
+                81 => Some((
+                    crate::favorite_search::SearchMode::Glob,
+                    "@Про* GTK",
+                    1,
+                    false,
+                )),
+                89 => Some((
+                    crate::favorite_search::SearchMode::Regex,
+                    "@^Проект.*GTK$",
+                    1,
+                    false,
+                )),
+                94 => Some((crate::favorite_search::SearchMode::Regex, "@[", 0, true)),
+                97 => Some((crate::favorite_search::SearchMode::Fuzzy, "@[", 0, false)),
+                _ => None,
+            };
+            if let Some((mode, query, total, error)) = mode_expectation {
+                let Some(state) = self.inner.ui.modals.palette_input.as_ref() else {
+                    return;
+                };
+                if state.favorite_mode != mode
+                    || state.input != query
+                    || state.favorite_cache.matches.total != total
+                    || state.favorite_cache.matches.error.is_some() != error
+                {
+                    return;
+                }
+                let record = serde_json::json!({"phase":phase,"mode":mode.label(),"query":query,"total":total,"indices":state.favorite_cache.matches.indices,"error":state.favorite_cache.matches.error});
+                if std::fs::write(
+                    self.scenario_dir.join(format!("mode-{phase}.json")),
                     serde_json::to_vec_pretty(&record).unwrap(),
                 )
                 .is_err()
@@ -14990,7 +15060,50 @@ impl eframe::App for VisualQaApp {
                     phase - 49,
                     None,
                 ),
-                _ => (egui::Id::new("omnibar-input"), phase - 52, Some("@пркт")),
+                52..=56 => (egui::Id::new("omnibar-input"), phase - 52, Some("@пркт")),
+                57..=59 => (
+                    egui::Id::new(("favorite-picker-mode", "Literal")),
+                    phase - 57,
+                    None,
+                ),
+                60..=64 => (egui::Id::new("omnibar-input"), phase - 60, Some("@Проект")),
+                65..=67 => (
+                    egui::Id::new(("favorite-picker-mode", "Exact")),
+                    phase - 65,
+                    None,
+                ),
+                68..=72 => (
+                    egui::Id::new("omnibar-input"),
+                    phase - 68,
+                    Some("@Проект GTK"),
+                ),
+                73..=75 => (
+                    egui::Id::new(("favorite-picker-mode", "Glob")),
+                    phase - 73,
+                    None,
+                ),
+                76..=80 => (
+                    egui::Id::new("omnibar-input"),
+                    phase - 76,
+                    Some("@Про* GTK"),
+                ),
+                81..=83 => (
+                    egui::Id::new(("favorite-picker-mode", "Regex")),
+                    phase - 81,
+                    None,
+                ),
+                84..=88 => (
+                    egui::Id::new("omnibar-input"),
+                    phase - 84,
+                    Some("@^Проект.*GTK$"),
+                ),
+                89..=93 => (egui::Id::new("omnibar-input"), phase - 89, Some("@[")),
+                94..=96 => (
+                    egui::Id::new(("favorite-picker-mode", "Fuzzy")),
+                    phase - 94,
+                    None,
+                ),
+                _ => (egui::Id::new("omnibar-input"), phase - 97, Some("@пркт")),
             };
             if let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) {
                 if local == 0 && !self.hex_target_settled(id, rect) {
@@ -25496,7 +25609,7 @@ impl eframe::App for VisualQaApp {
                     && std::fs::copy(keep.join("keep.txt"),self.scenario_dir.join("keep.txt")).is_ok()
             }
             Scenario::FavoritePicker => {
-                self.favorite_picker_phase == 57 && self.favorite_picker_final()
+                self.favorite_picker_phase == 102 && self.favorite_picker_final()
             }
             Scenario::FavoriteImport => {
                 self.favorite_import_phase == 17 && self.favorite_import_export_ready()
