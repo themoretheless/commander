@@ -178,13 +178,21 @@ pub struct App {
     checksum_report: Option<crate::checksum::ChecksumReport>,
     checksum_generation: u64,
     checksum_paths: Vec<PathBuf>,
-    checksum_selected_only: bool,
-    checksum_calculated_algorithm: Option<crate::checksum::Algorithm>,
+    checksum_calculation: ChecksumCalculation,
+    checksum_chosen_algorithms: crate::checksum::AlgorithmSet,
+    checksum_calculated_algorithms: crate::checksum::AlgorithmSet,
     checksum_expected: String,
     checksum_encoding: crate::checksum::DigestEncoding,
     checksum_algorithm: crate::checksum::Algorithm,
     checksum_relative_paths: bool,
     checksum_relative_base: Option<Result<std::path::PathBuf, String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChecksumCalculation {
+    All,
+    Selected,
+    Checked,
 }
 
 struct ChecksumTask {
@@ -1500,8 +1508,12 @@ impl App {
             checksum_report: None,
             checksum_generation: 0,
             checksum_paths: Vec::new(),
-            checksum_selected_only: false,
-            checksum_calculated_algorithm: None,
+            checksum_calculation: ChecksumCalculation::All,
+            checksum_chosen_algorithms: crate::checksum::AlgorithmSet::from_algorithms([
+                crate::checksum::Algorithm::Sha256,
+                crate::checksum::Algorithm::Xxh3_128,
+            ]),
+            checksum_calculated_algorithms: crate::checksum::AlgorithmSet::all(),
             checksum_expected: String::new(),
             checksum_encoding: crate::checksum::DigestEncoding::default(),
             checksum_algorithm: crate::checksum::Algorithm::default(),

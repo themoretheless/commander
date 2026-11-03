@@ -1,0 +1,63 @@
+{
+  "phase": 17,
+  "rect": [
+    1092.21875,
+    427.34375,
+    1162.90625,
+    451.34375
+  ],
+  "state": {
+    "busy": false,
+    "checked": [
+      "SHA-256",
+      "XXH3-128"
+    ],
+    "comparable": true,
+    "only": null,
+    "paths": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-55874-checksum_selected/left/checksum.txt"
+    ],
+    "requested": [
+      "SHA-256",
+      "SHA-384",
+      "SHA-512",
+      "SHA3-256",
+      "SHA3-512",
+      "BLAKE2s-256",
+      "BLAKE2b-512",
+      "BLAKE3",
+      "CRC32",
+      "MD5",
+      "SHA-1",
+      "Adler-32",
+      "XXH3-64",
+      "XXH3-128"
+    ],
+    "rows": [
+      {
+        "algorithms": [
+          "SHA-256",
+          "SHA-384",
+          "SHA-512",
+          "SHA3-256",
+          "SHA3-512",
+          "BLAKE2s-256",
+          "BLAKE2b-512",
+          "BLAKE3",
+          "CRC32",
+          "MD5",
+          "SHA-1",
+          "Adler-32",
+          "XXH3-64",
+          "XXH3-128"
+        ],
+        "content": 7221438079771758899,
+        "error": null,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-55874-checksum_selected/left/checksum.txt",
+        "skipped": null
+      }
+    ],
+    "selected": "SHA-256",
+    "summary": "Calculated 1 file(s)"
+  }
+}

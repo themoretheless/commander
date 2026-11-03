@@ -1,0 +1,8 @@
+{
+  "scenario": "checksum_selected",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/checksum-sets-2026-11-03/native-captures/1793686344528292000",
+  "binary_sha256": "fb79bc5ec097eb576a827a86da8cff9b38daf860ca73e57018fde905d9334a8a",
+  "core_sha256": "fb79bc5ec097eb576a827a86da8cff9b38daf860ca73e57018fde905d9334a8a",
+  "wrapper_sha256": "d84014ba5fddccb2b5959c0e46a43b299abaabf2dfe69bf95e97735be0d761d1",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

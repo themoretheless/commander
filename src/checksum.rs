@@ -86,6 +86,54 @@ pub enum Algorithm {
     Xxh3_64,
     Xxh3_128,
 }
+/// A bounded, runtime-only set of supported algorithms; no raw bitmask input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AlgorithmSet(u64);
+impl AlgorithmSet {
+    pub const fn all() -> Self {
+        Self((1u64 << Algorithm::ALL.len()) - 1)
+    }
+    pub const fn one(algorithm: Algorithm) -> Self {
+        Self(1u64 << (algorithm as usize))
+    }
+    pub fn from_algorithms(algorithms: impl IntoIterator<Item = Algorithm>) -> Self {
+        let mut set = Self::default();
+        for algorithm in algorithms {
+            set.set(algorithm, true);
+        }
+        set
+    }
+    pub fn set(&mut self, algorithm: Algorithm, enabled: bool) {
+        let bit = Self::one(algorithm).0;
+        if enabled {
+            self.0 |= bit;
+        } else {
+            self.0 &= !bit;
+        }
+    }
+    pub const fn contains(self, algorithm: Algorithm) -> bool {
+        self.0 & Self::one(algorithm).0 != 0
+    }
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    pub const fn len(self) -> usize {
+        self.0.count_ones() as usize
+    }
+    pub fn iter(self) -> impl Iterator<Item = Algorithm> {
+        Algorithm::ALL
+            .into_iter()
+            .filter(move |a| self.contains(*a))
+    }
+    pub fn single(self) -> Option<Algorithm> {
+        if self.len() == 1 {
+            self.iter().next()
+        } else {
+            None
+        }
+    }
+}
+
 impl Algorithm {
     pub const ALL: [Self; 14] = [
         Self::Sha256,
@@ -484,7 +532,7 @@ pub fn verify_paths_cancellable(
     paths: Vec<PathBuf>,
     cancelled: &crate::workload::CancellationToken,
     completed: &std::sync::atomic::AtomicUsize,
-    only: Option<Algorithm>,
+    algorithms: AlgorithmSet,
 ) -> ChecksumReport {
     let mut report = ChecksumReport::default();
     for path in paths {
@@ -492,11 +540,7 @@ pub fn verify_paths_cancellable(
             report.cancelled = true;
             break;
         }
-        let row = if only.is_some() {
-            verify_one_algorithm(&path, &|| cancelled.is_cancelled(), only)
-        } else {
-            verify_one(&path, &|| cancelled.is_cancelled())
-        };
+        let row = verify_one_selected(&path, &|| cancelled.is_cancelled(), algorithms);
         if cancelled.is_cancelled() {
             report.cancelled = true;
             break;
@@ -507,7 +551,7 @@ pub fn verify_paths_cancellable(
     report
 }
 pub fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
-    verify_one_algorithm(path, cancelled, None)
+    verify_one_selected(path, cancelled, AlgorithmSet::all())
 }
 
 /// A requested single algorithm never initializes or updates the others.
@@ -516,10 +560,26 @@ pub fn verify_one_algorithm(
     cancelled: &dyn Fn() -> bool,
     only: Option<Algorithm>,
 ) -> ChecksumRow {
+    if let Some(algorithm) = only {
+        verify_one_selected(path, cancelled, AlgorithmSet::one(algorithm))
+    } else {
+        verify_one(path, cancelled)
+    }
+}
+
+pub fn verify_one_selected(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    algorithms: AlgorithmSet,
+) -> ChecksumRow {
     let mut row = ChecksumRow {
         path: path.into(),
         ..Default::default()
     };
+    if algorithms.is_empty() {
+        row.error = Some("Select at least one checksum algorithm".into());
+        return row;
+    }
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) => {
@@ -539,7 +599,7 @@ pub fn verify_one_algorithm(
         row.skipped = Some("only regular files are hashed".into());
         return row;
     }
-    match digests(path, &meta, cancelled, only) {
+    match digests(path, &meta, cancelled, algorithms) {
         Ok(digests) => {
             row.content_hash = digests.blake3.as_ref().map(content_hash_of);
             row.blake3_hex = digests
@@ -589,7 +649,7 @@ fn digests(
     path: &Path,
     expected: &std::fs::Metadata,
     cancelled: &dyn Fn() -> bool,
-    only: Option<Algorithm>,
+    algorithms: AlgorithmSet,
 ) -> io::Result<FileDigests> {
     use crate::path_identity::PathIdentity;
     let cancel = || {
@@ -621,7 +681,7 @@ fn digests(
     }
     let mut remaining = opened.len();
     let mut buffer = [0u8; 64 * 1024];
-    let want = |algorithm| only.is_none_or(|selected| selected == algorithm);
+    let want = |algorithm| algorithms.contains(algorithm);
     let mut blake = want(Algorithm::Blake3).then(blake3::Hasher::new);
     let mut sha = want(Algorithm::Sha256).then(Sha256::new);
     let mut sha384 = want(Algorithm::Sha384).then(Sha384::new);
@@ -739,6 +799,58 @@ mod tests {
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
     const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn checked_checksum_sets_match_all_results_and_reject_empty_before_io() {
+        let temp = TempDir::new();
+        let path = temp.file("data", &"abc".repeat(40_000));
+        let all = verify_one(&path, &|| false);
+        for requested in [
+            vec![Algorithm::Sha256, Algorithm::Xxh3_64],
+            vec![Algorithm::Xxh3_64, Algorithm::Xxh3_128, Algorithm::Xxh3_64],
+            vec![Algorithm::Blake3, Algorithm::Sha384, Algorithm::Blake2s],
+            vec![Algorithm::Crc32, Algorithm::Adler32],
+        ] {
+            let set = AlgorithmSet::from_algorithms(requested);
+            let row = verify_one_selected(&path, &|| false, set);
+            assert!(row.error.is_none());
+            for algorithm in Algorithm::ALL {
+                assert_eq!(
+                    algorithm.digest(&row),
+                    if set.contains(algorithm) {
+                        algorithm.digest(&all)
+                    } else {
+                        None
+                    }
+                );
+            }
+            assert_eq!(row.content_hash.is_some(), set.contains(Algorithm::Blake3));
+            let report = ChecksumReport {
+                rows: vec![row],
+                cancelled: false,
+            };
+            assert_eq!(report.successful(), 1);
+            for algorithm in Algorithm::ALL {
+                assert_eq!(
+                    report.checksum_list(algorithm).is_ok(),
+                    set.contains(algorithm)
+                );
+            }
+        }
+        let empty = verify_one_selected(
+            &temp.path().join("not-present"),
+            &|| false,
+            AlgorithmSet::default(),
+        );
+        assert!(empty.error.unwrap().contains("at least one"));
+        let mut set = AlgorithmSet::all();
+        assert_eq!(set.len(), Algorithm::ALL.len());
+        for algorithm in Algorithm::ALL {
+            assert!(set.contains(algorithm));
+            set.set(algorithm, false);
+        }
+        assert!(set.is_empty());
+    }
 
     #[test]
     fn selected_checksum_rejects_replaced_source_without_any_digest() {

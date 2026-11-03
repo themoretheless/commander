@@ -1,0 +1,42 @@
+{
+  "clip": [
+    256.0,
+    118.6875,
+    1279.09375,
+    515.0
+  ],
+  "phase": 50,
+  "recalculate": [
+    256.0,
+    365.09375,
+    421.75,
+    389.09375
+  ],
+  "state": {
+    "busy": false,
+    "checked": [
+      "XXH3-64"
+    ],
+    "comparable": true,
+    "only": "XXH3-64",
+    "paths": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-49415-checksum_selected/left/checksum.txt"
+    ],
+    "requested": [
+      "XXH3-64"
+    ],
+    "rows": [
+      {
+        "algorithms": [
+          "XXH3-64"
+        ],
+        "content": null,
+        "error": null,
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-49415-checksum_selected/left/checksum.txt",
+        "skipped": null
+      }
+    ],
+    "selected": "XXH3-64",
+    "summary": "Calculated 1 file(s)"
+  }
+}

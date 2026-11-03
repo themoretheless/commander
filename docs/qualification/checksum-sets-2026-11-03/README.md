@@ -1,0 +1,15 @@
+# Checked checksum algorithm sets — 2026-11-03
+
+Independent adaptation of cohort #96 [PeaZip's selected algorithms in a single data-read pass](https://peazip.github.io/verify-checksum-hash.html). Commander adds a four-column checkbox grid for arbitrary subsets of its fourteen existing checksum algorithms and a Recalculate checked set action. The initial pending set is SHA-256 plus XXH3-128. All / selected-only modes remain available. The selected mode and pending set last for the running session, without persisted preferences.
+
+The shared Rust worker accepts a bounded AlgorithmSet, instantiates only requested hashers, and updates them in the existing single file-read loop. Both XXH3 widths share one state. Unrequested digests remain unavailable, and Content identity exists only with BLAKE3. Empty sets are rejected before filesystem access, with the UI action disabled. Every recalculation rereads the complete captured path set and retains cancellation, source identity/size checks and generation ownership. Editing the pending set leaves completed results and their actual-scope labels unchanged until explicitly recalculated.
+
+The new engine regression compares four mixed sets against all-mode results, covers duplicate entries, both XXH3 widths, export availability, absent digests, BLAKE3 Content identity and empty-set refusal before I/O. Existing single-algorithm, cancellation, replacement and independent vector regressions remain included.
+
+Native checksum_selected exercises selected XXH3-128, unavailable SHA-256 comparison, all fourteen, selected XXH3-64, a SHA-256 + XXH3-64 set, pending edits without recalculation, set recalculation and an empty pending set. JSON receipts assert exact requested/pending/published algorithms, summaries and captured paths. The full checksums scene preserves all earlier comparison and clipboard-export assertions. verify.py checks both native receipts, independent expected values, effect counts and exact source/binary hashes.
+
+All seven final gates passed: dependency audit, visual-qa build, 3476 tests passed / 0 failed / 3 ignored, strict Clippy, ordinary build check, formatting and diff checks. Both final native scenes passed 14/14; the full scene preserved 393 observations and exactly 38 isolated clipboard writes. Exact source/binary hashes and receipt contents passed verify.py. Both final frames were visually inspected.
+
+Initial failed captures are retained. Stable-target waits fixed clicks during window reflow. Final hover uses the exposed edge of the same file row because the sheet can cover its centre; normal notification expiry, hover, framebuffer and timeout guards remain enabled. Visual review also exposed the last checkbox collapsing into vertical text in a wrapped row; the four-column grid fixes it.
+
+No dependency changes or measured throughput claim. Settings persistence, broader platform/native qualification and numeric performance measurement remain open. Reproduce with run_checks.py, prepare_capture.py and CUA launch for checksum_selected and checksums, followed by verify.py.

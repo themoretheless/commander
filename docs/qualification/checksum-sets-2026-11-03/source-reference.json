@@ -1,0 +1,5 @@
+{
+  "cohort": 96,
+  "reference": "https://peazip.github.io/verify-checksum-hash.html",
+  "behavior": "PeaZip allows users to select multiple hash algorithms and performs them in one data-read pass. Commander independently adds checked algorithm sets to its shared checksum worker."
+}

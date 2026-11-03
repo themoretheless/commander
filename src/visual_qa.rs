@@ -4977,7 +4977,7 @@ impl eframe::App for VisualQaApp {
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
             && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 392)
-            && !(self.scenario == Scenario::ChecksumSelected && self.checksum_click_phase < 22)
+            && self.scenario != Scenario::ChecksumSelected
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -15210,13 +15210,137 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
+        if self.scenario == Scenario::ChecksumSelected && self.checksum_click_phase == 51 {
+            let state = serde_json::json!({"phase": self.checksum_click_phase, "now":ctx.input(|i|i.time), "toasts":self.inner.toasts.active().iter().map(|t|serde_json::json!({"born":t.born,"ttl":t.ttl,"message":t.message})).collect::<Vec<_>>()});
+            let _ = std::fs::write(
+                self.scenario_dir.join("final-wait.json"),
+                serde_json::to_vec_pretty(&state).unwrap(),
+            );
+            // The checksum sheet can overlap the row centre after expanding
+            // its algorithm set. Hover the exposed left edge of the same row.
+            if let Some(row) = ProbeSnapshot::read(ctx).left_row {
+                input.events.push(egui::Event::PointerMoved(egui::pos2(
+                    row.rect.left() + 20.0,
+                    row.rect.center().y,
+                )));
+            }
+        }
         if self.scenario == Scenario::ChecksumSelected
             && self.pane_tool_opened
-            && self.checksum_click_phase < 22
+            && self.checksum_click_phase < 51
         {
             let phase = self.checksum_click_phase;
             let observed = self.inner.checksum_calculation_snapshot();
+            let geometry = |key| {
+                ctx.data(|data| data.get_temp::<egui::Rect>(egui::Id::new(key)))
+                    .map(|r| [r.min.x, r.min.y, r.max.x, r.max.y])
+            };
+            let progress = serde_json::json!({"phase":phase,"state":observed,"recalculate":geometry("Recalculate selected only"),"clip":geometry("checksum-sheet-clip")});
+            let _ = std::fs::write(
+                self.scenario_dir.join("set-progress.json"),
+                serde_json::to_vec_pretty(&progress).unwrap(),
+            );
+
             if observed["busy"] == true || observed["rows"].is_null() {
+                return;
+            }
+            if phase >= 22 {
+                if matches!(phase, 34 | 38 | 42 | 46 | 50) {
+                    let enabled = ctx.data(|data| {
+                        data.get_temp::<bool>(egui::Id::new(("Recalculate checked set", "enabled")))
+                    });
+                    if enabled != Some(phase != 46) {
+                        return;
+                    }
+                    let _ = std::fs::write(
+                        self.scenario_dir.join(format!("set-enabled-{phase}.json")),
+                        serde_json::to_vec(&enabled).unwrap(),
+                    );
+                    let requested = if phase < 42 {
+                        vec!["SHA-256", "XXH3-64"]
+                    } else {
+                        vec!["XXH3-64"]
+                    };
+                    let checked = if phase == 34 {
+                        vec!["SHA-256", "XXH3-64"]
+                    } else if phase == 46 {
+                        vec![]
+                    } else {
+                        vec!["XXH3-64"]
+                    };
+                    if observed["requested"] != serde_json::json!(requested)
+                        || observed["checked"] != serde_json::json!(checked)
+                        || observed["rows"][0]["algorithms"] != serde_json::json!(requested)
+                        || observed["summary"] != "Calculated 1 file(s)"
+                    {
+                        return;
+                    }
+                    let _ = std::fs::write(
+                        self.scenario_dir.join(format!("set-{phase}.json")),
+                        serde_json::to_vec_pretty(&observed).unwrap(),
+                    );
+                    self.checksum_click_phase += 1;
+                    return;
+                }
+                let (id, step, label) = match phase {
+                    22..=24 => (egui::Id::new("checksum-calculation-set"), phase - 22, None),
+                    25..=27 => (
+                        egui::Id::new(("checksum-set-algorithm", "XXH3-128")),
+                        phase - 25,
+                        Some("XXH3-128"),
+                    ),
+                    28..=30 => (
+                        egui::Id::new(("checksum-set-algorithm", "XXH3-64")),
+                        phase - 28,
+                        Some("XXH3-64"),
+                    ),
+                    31..=33 => (egui::Id::new("Recalculate checked set"), phase - 31, None),
+                    35..=37 => (
+                        egui::Id::new(("checksum-set-algorithm", "SHA-256")),
+                        phase - 35,
+                        Some("SHA-256"),
+                    ),
+                    39..=41 => (egui::Id::new("Recalculate checked set"), phase - 39, None),
+                    43..=45 => (
+                        egui::Id::new(("checksum-set-algorithm", "XXH3-64")),
+                        phase - 43,
+                        Some("XXH3-64"),
+                    ),
+                    _ => (
+                        egui::Id::new(("checksum-set-algorithm", "XXH3-64")),
+                        phase - 47,
+                        Some("XXH3-64"),
+                    ),
+                };
+                if let Some(label) = label
+                    && !ctx.data(|data| {
+                        data.get_temp::<bool>(egui::Id::new(("checksum-set-visible", label)))
+                            .unwrap_or(false)
+                    })
+                {
+                    let _ = checksum_input_rect(ctx, id, input);
+                    return;
+                }
+                if let Some(rect) = checksum_input_rect(ctx, id, input) {
+                    input.events.push(egui::Event::PointerMoved(rect.center()));
+                    if step == 0 && !self.hex_target_settled(id, rect) {
+                        return;
+                    }
+                    let action = serde_json::json!({"phase":phase,"rect":[rect.min.x,rect.min.y,rect.max.x,rect.max.y],"state":observed});
+                    let _ = std::fs::write(
+                        self.scenario_dir.join(format!("set-input-{phase}.json")),
+                        serde_json::to_vec_pretty(&action).unwrap(),
+                    );
+                    if step > 0 {
+                        input.events.push(egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 1,
+                            modifiers: Default::default(),
+                        });
+                    }
+                    self.checksum_input_pending = true;
+                }
                 return;
             }
             if matches!(phase, 6 | 10 | 14 | 21) {
@@ -15278,6 +15402,14 @@ impl eframe::App for VisualQaApp {
             };
             if let Some(rect) = checksum_input_rect(ctx, id, input) {
                 input.events.push(egui::Event::PointerMoved(rect.center()));
+                if step == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                let action = serde_json::json!({"phase":phase,"rect":[rect.min.x,rect.min.y,rect.max.x,rect.max.y],"state":observed});
+                let _ = std::fs::write(
+                    self.scenario_dir.join(format!("set-input-{phase}.json")),
+                    serde_json::to_vec_pretty(&action).unwrap(),
+                );
                 if step > 0 {
                     input.events.push(egui::Event::PointerButton {
                         pos: rect.center(),
@@ -22280,7 +22412,7 @@ impl eframe::App for VisualQaApp {
                     && self.checksum_list_filtered_copy_ready(false, 6)
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
-            Scenario::ChecksumSelected => self.checksum_click_phase==22 && self.inner.toasts.is_empty() && [6,10,14,21].into_iter().all(|phase|self.scenario_dir.join(format!("selected-{phase}.json")).is_file()),
+            Scenario::ChecksumSelected => self.checksum_click_phase==51 && self.inner.toasts.is_empty() && [6,10,14,21].into_iter().all(|phase|self.scenario_dir.join(format!("selected-{phase}.json")).is_file()) && [34,38,42,46,50].into_iter().all(|phase|self.scenario_dir.join(format!("set-{phase}.json")).is_file()),
             Scenario::Checksums => {
                 let expected=ABC_XXH3_128_BASE64;
                 self.checksum_click_phase==392 && self.counters.clipboard.load(Ordering::Relaxed)==38

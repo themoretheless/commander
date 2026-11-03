@@ -1,0 +1,20 @@
+Diff in /Users/themoretheless/Documents/Sources/commander/src/visual_qa.rs:15212:
+         }
+         if self.scenario == Scenario::ChecksumSelected && self.checksum_click_phase == 51 {
+             let state = serde_json::json!({"phase": self.checksum_click_phase, "now":ctx.input(|i|i.time), "toasts":self.inner.toasts.active().iter().map(|t|serde_json::json!({"born":t.born,"ttl":t.ttl,"message":t.message})).collect::<Vec<_>>()});
+-            let _ = std::fs::write(self.scenario_dir.join("final-wait.json"), serde_json::to_vec_pretty(&state).unwrap());
++            let _ = std::fs::write(
++                self.scenario_dir.join("final-wait.json"),
++                serde_json::to_vec_pretty(&state).unwrap(),
++            );
+             // The checksum sheet can overlap the row centre after expanding
+             // its algorithm set. Hover the exposed left edge of the same row.
+             if let Some(row) = ProbeSnapshot::read(ctx).left_row {
+Diff in /Users/themoretheless/Documents/Sources/commander/src/visual_qa.rs:15219:
+                 input.events.push(egui::Event::PointerMoved(egui::pos2(
+-                    row.rect.left() + 20.0, row.rect.center().y,
++                    row.rect.left() + 20.0,
++                    row.rect.center().y,
+                 )));
+             }
+         }
