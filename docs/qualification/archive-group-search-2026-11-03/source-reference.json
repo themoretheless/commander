@@ -1,0 +1,6 @@
+{
+  "cohort": 77,
+  "repository": "https://github.com/sharkdp/fd",
+  "reference": "https://raw.githubusercontent.com/sharkdp/fd/master/doc/fd.1",
+  "transfer": "Independent adaptation of text, glob, regex, exact, filename/path and case matching to existing scanned archive content groups. fd does not supply this grouped post-scan UI."
+}

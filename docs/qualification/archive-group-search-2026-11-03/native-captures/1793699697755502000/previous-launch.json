@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_protection_modes",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-search-2026-11-03/native-captures/1793699588360445000",
+  "binary_sha256": "86b2913d6875b2ffd9f7b9a8c7004fdf1c17e532927ed61d822705dcd62d914e",
+  "core_sha256": "86b2913d6875b2ffd9f7b9a8c7004fdf1c17e532927ed61d822705dcd62d914e",
+  "wrapper_sha256": "3d41c1107eb97e04693130db59dc4895301591b93908a9eebec8f3c8cc61cf6e",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

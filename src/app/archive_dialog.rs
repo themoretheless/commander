@@ -105,27 +105,90 @@ fn content_group_order(
     }
     order
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GroupMatch {
+    #[default]
+    Literal,
+    Glob,
+    Regex,
+    Exact,
+}
+impl GroupMatch {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Literal => "Literal",
+            Self::Glob => "Glob",
+            Self::Regex => "Regex",
+            Self::Exact => "Exact",
+        }
+    }
+}
 /// Cached display permutation only; every action keeps its original scan rank.
 #[derive(Default)]
 pub struct ContentGroupView {
     sort: crate::dedup::GroupSort,
+    query: String,
+    mode: GroupMatch,
+    basename_only: bool,
+    case_sensitive: bool,
+    error: Option<String>,
     order: Vec<usize>,
     ready: bool,
 }
 impl ContentGroupView {
     fn invalidate(&mut self) {
         self.order.clear();
+        self.error = None;
         self.ready = false;
     }
     fn indices(&mut self, groups: &[crate::archive_check::ContentGroup]) -> &[usize] {
         if !self.ready {
-            self.order = content_group_order(groups, self.sort);
+            let pattern = crate::archive_filter::Pattern::compile(
+                &self.query,
+                crate::archive_filter::Options {
+                    glob: self.mode == GroupMatch::Glob,
+                    regex: self.mode == GroupMatch::Regex,
+                    exact: self.mode == GroupMatch::Exact,
+                    basename_only: self.basename_only,
+                    case_sensitive: self.case_sensitive,
+                    ..Default::default()
+                },
+            );
+            let filtered = pattern.and_then(|pattern| {
+                let mut order = content_group_order(groups, self.sort);
+                if !matches!(pattern, crate::archive_filter::Pattern::All) {
+                    let mut matches = vec![false; groups.len()];
+                    for (rank, group) in groups.iter().enumerate() {
+                        for member in &group.members {
+                            let path = member.path.to_str().ok_or(
+                                "Group search needs UTF-8 member paths; no groups are shown.",
+                            )?;
+                            matches[rank] |= pattern.matches(path, &path.to_lowercase());
+                        }
+                    }
+                    order.retain(|&rank| matches[rank]);
+                }
+                Ok(order)
+            });
+            match filtered {
+                Ok(order) => self.order = order,
+                Err(error) => {
+                    self.order.clear();
+                    self.error = Some(error);
+                }
+            }
             self.ready = true;
         }
         &self.order
     }
     fn ui(&mut self, ui: &mut egui::Ui, page: &mut usize) {
-        let previous = self.sort;
+        let previous = (
+            self.sort,
+            self.query.clone(),
+            self.mode,
+            self.basename_only,
+            self.case_sensitive,
+        );
         ui.horizontal_wrapped(|ui| {
             ui.label("Group order:");
             for sort in crate::dedup::GroupSort::ALL {
@@ -136,7 +199,62 @@ impl ContentGroupView {
                 let _=button;
             }
         });
-        if self.sort != previous {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Search groups:");
+            let input=ui.add(egui::TextEdit::singleline(&mut self.query).id(egui::Id::new("archive-group-query-input")).desired_width(260.0).char_limit(1024).hint_text("member name or path"))
+                .on_hover_text("Show a complete scanned group if any member matches. Up to 256 characters, case-insensitive by default. This does not rescan or change selection. Global actions and reports still include all scanned groups.");
+            #[cfg(feature="visual-qa")]
+            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-group-query"),input.rect));
+            let _=input;
+            let reset=ui.add_enabled(!self.query.is_empty() || self.mode!=GroupMatch::Literal || self.basename_only || self.case_sensitive,egui::Button::new("Reset group search"));
+            #[cfg(feature="visual-qa")]
+            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-group-query-reset"),reset.rect));
+            if reset.clicked(){self.query.clear();self.mode=GroupMatch::Literal;self.basename_only=false;self.case_sensitive=false;}
+        });
+        ui.horizontal_wrapped(|ui| {
+            for mode in [
+                GroupMatch::Literal,
+                GroupMatch::Glob,
+                GroupMatch::Regex,
+                GroupMatch::Exact,
+            ] {
+                let button = ui.selectable_value(&mut self.mode, mode, mode.label());
+                #[cfg(feature = "visual-qa")]
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new(("archive-group-match", mode.label())),
+                        button.rect,
+                    )
+                });
+                let _ = button;
+            }
+            for (value, label, id) in [
+                (
+                    &mut self.basename_only,
+                    "Filename only",
+                    "archive-group-query-basename",
+                ),
+                (
+                    &mut self.case_sensitive,
+                    "Match case",
+                    "archive-group-query-case",
+                ),
+            ] {
+                let button = ui.checkbox(value, label);
+                #[cfg(feature = "visual-qa")]
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new(id), button.rect));
+                let _ = (button, id);
+            }
+        });
+        if (
+            self.sort,
+            self.query.clone(),
+            self.mode,
+            self.basename_only,
+            self.case_sensitive,
+        ) != previous
+        {
             self.invalidate();
             *page = 0;
         }
@@ -144,6 +262,10 @@ impl ContentGroupView {
     #[cfg(feature = "visual-qa")]
     pub(crate) fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({"sort":content_group_sort_label(self.sort),"order":self.order})
+    }
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn filter_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"query":self.query,"mode":self.mode.label(),"basename_only":self.basename_only,"case_sensitive":self.case_sensitive,"error":self.error})
     }
 }
 
@@ -1432,6 +1554,32 @@ fn change_content_group_selection(
     Ok(())
 }
 
+fn change_shown_content_groups_selection(
+    report: &crate::archive_check::Report,
+    listing: &crate::archive::ArchiveListing,
+    ranks: &[usize],
+    select: bool,
+    selected: &mut std::collections::BTreeSet<usize>,
+) -> Result<(), String> {
+    let groups = report
+        .content_groups
+        .as_ref()
+        .ok_or("No completed content-group scan is available.")?;
+    let mut rows = std::collections::BTreeSet::new();
+    for &rank in ranks {
+        let group = groups
+            .get(rank)
+            .ok_or("A shown group is no longer available; run the scan again.")?;
+        rows.extend(content_groups_rows(std::slice::from_ref(group), listing)?);
+    }
+    if select {
+        selected.extend(rows);
+    } else {
+        selected.retain(|row| !rows.contains(row));
+    }
+    Ok(())
+}
+
 /// Runtime-only replica policy shared by the per-group and global actions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2488,6 +2636,7 @@ impl App {
         let mut start_content_groups = false;
         let mut select_content_groups = false;
         let mut select_content_group = None;
+        let mut select_shown_groups = None;
         let mut select_redundant_groups = None;
         let mut stop_check = false;
         let mut copy_members = None;
@@ -2696,8 +2845,20 @@ impl App {
 
                         let details=egui::CollapsingHeader::new(format!("Matching content groups ({})",groups.len())).show(ui,|ui| {
                             state.content_group_view.ui(ui,&mut state.content_group_page);
-                            let range=content_group_pager(ui,groups.len(), &mut state.content_group_page);
-                            let order=state.content_group_view.indices(groups);
+                            state.content_group_view.indices(groups);
+                            if let Some(error)=&state.content_group_view.error {ui.colored_label(ui.visuals().error_fg_color,error);}
+                            let order=&state.content_group_view.order;
+                            ui.label(format!("Showing {} of {} scanned groups; all members of matching groups remain visible.",order.len(),groups.len()));
+                            ui.horizontal_wrapped(|ui| {
+                                for (select,label) in [(true,"Select shown groups"),(false,"Deselect shown groups")] {
+                                    let button=ui.add_enabled(!order.is_empty() && state.content_group_view.error.is_none(),egui::Button::new(label))
+                                        .on_hover_text("Change every member of the currently shown groups, including members that do not match the search and other group pages. Hidden groups and unrelated selections remain unchanged. Does not apply keeper rules or change files.");
+                                    #[cfg(feature="visual-qa")]
+                                    ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new(label),button.rect);d.insert_temp(egui::Id::new((label,"enabled")),button.enabled());});
+                                    if button.clicked(){select_shown_groups=Some((order.clone(),select));}
+                                }
+                            });
+                            let range=content_group_pager(ui,order.len(), &mut state.content_group_page);
                             for &_rank in &order[range] {
                                 let group=&groups[_rank];
                                 let _title=ui.label(format!("SHA-256 {} · {} bytes · {} members",group.sha256,group.size,group.members.len()));
@@ -3611,6 +3772,19 @@ impl App {
         {
             state.error = Some(error);
         }
+        if let Some((ranks, select)) = select_shown_groups
+            && let Some(state) = self.ui.tools.archive.as_mut()
+            && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
+            && let Err(error) = change_shown_content_groups_selection(
+                report,
+                listing,
+                &ranks,
+                select,
+                &mut state.selected,
+            )
+        {
+            state.error = Some(error);
+        }
         if let Some(group) = select_redundant_groups
             && let Some(state) = self.ui.tools.archive.as_mut()
             && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
@@ -3769,6 +3943,117 @@ mod tests {
                 .collect(),
         }
     }
+    #[test]
+    fn archive_group_search_keeps_complete_groups_with_bounded_path_modes() {
+        use super::{ContentGroupView, GroupMatch as M};
+        let mut groups = vec![sort_group(10, 3), sort_group(0, 2), sort_group(20, 2)];
+        for (group, paths) in groups.iter_mut().zip([
+            vec!["root/Alpha.TXT", ".hidden/ёж.txt", "unmatched"],
+            vec!["empty-one", "empty-two"],
+            vec!["folder/nested.txt", "other"],
+        ]) {
+            for (member, path) in group.members.iter_mut().zip(paths) {
+                member.path = path.into();
+            }
+        }
+        let original = serde_json::to_value(&groups).unwrap();
+        for (query, mode, basename, case, wanted) in [
+            ("alpha", M::Literal, false, false, vec![0]),
+            ("ЁЖ", M::Literal, false, false, vec![0]),
+            ("*.txt", M::Glob, false, false, vec![]),
+            ("*.txt", M::Glob, true, false, vec![0, 2]),
+            ("root/**", M::Glob, false, false, vec![0]),
+            ("root/**", M::Glob, true, false, vec![]),
+            (r"root/.*\.txt$", M::Regex, false, false, vec![0]),
+            ("Alpha.TXT", M::Exact, false, false, vec![]),
+            ("Alpha.TXT", M::Exact, true, true, vec![0]),
+            ("alpha.txt", M::Exact, true, true, vec![]),
+            ("  ", M::Literal, false, false, vec![0, 1, 2]),
+        ] {
+            let mut view = ContentGroupView {
+                query: query.into(),
+                mode,
+                basename_only: basename,
+                case_sensitive: case,
+                ..Default::default()
+            };
+            assert_eq!(view.indices(&groups), wanted, "{query}");
+            assert!(view.error.is_none());
+            assert_eq!(serde_json::to_value(&groups).unwrap(), original);
+        }
+        let mut view = ContentGroupView {
+            query: "[".into(),
+            mode: M::Regex,
+            ..Default::default()
+        };
+        assert!(view.indices(&groups).is_empty() && view.error.is_some());
+        view.query = "x".repeat(257);
+        view.mode = M::Literal;
+        view.invalidate();
+        assert!(view.indices(&groups).is_empty() && view.error.is_some());
+        view.query.clear();
+        view.invalidate();
+        assert_eq!(view.indices(&groups), vec![0, 1, 2]);
+        assert!(view.error.is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            groups[1].members[1].path = std::ffi::OsString::from_vec(vec![255]).into();
+            view.invalidate();
+            assert_eq!(view.indices(&groups), vec![0, 1, 2]);
+            view.query = "alpha".into();
+            view.invalidate();
+            assert!(view.indices(&groups).is_empty());
+            assert!(view.error.as_ref().unwrap().contains("UTF-8"));
+        }
+    }
+    #[test]
+    fn archive_shown_group_actions_preserve_hidden_selection_and_validate_every_identity_first() {
+        use super::change_shown_content_groups_selection as change;
+        use std::collections::BTreeSet;
+        let mut listing = listing(&["same", "same", "second", "third", "unrelated"]);
+        for (id, member) in listing.members.iter_mut().enumerate() {
+            member.index = [9, 2, 8, 4, 99][id];
+            member.size = 3;
+        }
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 5,
+            decoded: 15,
+            strict_headers: false,
+            content_groups: Some(
+                (0..2)
+                    .map(|rank| crate::archive_check::ContentGroup {
+                        size: 3,
+                        sha256: format!("hash-{rank}"),
+                        members: listing.members[rank * 2..rank * 2 + 2]
+                            .iter()
+                            .map(|m| crate::archive_check::ContentMember {
+                                index: m.index,
+                                path: m.path.clone(),
+                                size: m.size,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            ),
+        };
+        let mut selected = BTreeSet::from([4]);
+        change(&report, &listing, &[1], true, &mut selected).unwrap();
+        assert_eq!(selected, BTreeSet::from([2, 3, 4]));
+        change(&report, &listing, &[0], true, &mut selected).unwrap();
+        assert_eq!(selected, BTreeSet::from([0, 1, 2, 3, 4]));
+        change(&report, &listing, &[1], false, &mut selected).unwrap();
+        assert_eq!(selected, BTreeSet::from([0, 1, 4]));
+        assert!(change(&report, &listing, &[0, 99], false, &mut selected).is_err());
+        assert_eq!(selected, BTreeSet::from([0, 1, 4]));
+        change(&report, &listing, &[], false, &mut selected).unwrap();
+        assert_eq!(selected, BTreeSet::from([0, 1, 4]));
+        report.content_groups.as_mut().unwrap()[1].members[1].path = "stale".into();
+        assert!(change(&report, &listing, &[0, 1], false, &mut selected).is_err());
+        assert_eq!(selected, BTreeSet::from([0, 1, 4]));
+    }
+
     #[test]
     fn archive_group_sort_uses_wide_payload_keys_and_preserves_scan_identities() {
         use crate::dedup::GroupSort as S;

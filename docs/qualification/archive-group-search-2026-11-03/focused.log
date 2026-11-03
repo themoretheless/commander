@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `filter_snapshot` is never used
+   --> src/app/archive_dialog.rs:267:19
+    |
+138 | impl ContentGroupView {
+    | --------------------- method in this implementation
+...
+267 |     pub(crate) fn filter_snapshot(&self) -> serde_json::Value {
+    |                   ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 31.08s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 5 tests
+test app::archive_dialog::tests::archive_group_cutoff_parses_dates_offsets_fractional_and_pre_epoch_times ... ok
+test app::archive_dialog::tests::archive_group_sort_uses_wide_payload_keys_and_preserves_scan_identities ... ok
+test app::archive_dialog::tests::archive_group_view_pages_cover_original_ranks_and_rebuild_after_same_size_scan ... ok
+test app::archive_dialog::tests::archive_group_cutoff_skips_complete_new_or_unknown_groups_without_changing_selection ... ok
+test app::archive_dialog::tests::archive_group_search_keeps_complete_groups_with_bounded_path_modes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3495 filtered out; finished in 0.01s
+
