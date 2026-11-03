@@ -5113,7 +5113,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
             && !(self.scenario == Scenario::ArchivePriorityChains
-                && self.archive_preferences_phase < 205)
+                && self.archive_preferences_phase < 231)
             && !(self.scenario == Scenario::ArchiveProtectionModes
                 && (self.archive_copy_phase < 252 || self.archive_preferences_phase < 5))
             && !(self.scenario == Scenario::ArchiveTarContentGroups
@@ -18165,6 +18165,155 @@ impl eframe::App for VisualQaApp {
             self.archive_preferences_phase += 1;
             return;
         }
+        if self.scenario == Scenario::ArchivePriorityChains
+            && (205..231).contains(&self.archive_preferences_phase)
+        {
+            let phase = self.archive_preferences_phase;
+            if matches!(phase, 208 | 212 | 216 | 222 | 226 | 230) {
+                let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                    return;
+                };
+                let Some(listing) = state.listing.as_ref() else {
+                    return;
+                };
+                let filtered = matches!(phase, 222 | 226);
+                let order = if filtered { vec![1] } else { vec![1, 0] };
+                let bounds = state.content_group_view.copy_bounds_snapshot();
+                if bounds != serde_json::json!({"min":if filtered {"3"}else{""},"max":""}) {
+                    self.archive_preferences_phase = if filtered { 217 } else { 227 };
+                    self.hex_pointer_target = None;
+                    return;
+                }
+                let mut indexes = state
+                    .selected
+                    .iter()
+                    .map(|id| listing.members[*id].index)
+                    .collect::<Vec<_>>();
+                indexes.sort_unstable();
+                let view = state.content_group_view.snapshot();
+                if indexes != vec![0, 2, 8, 9, 10]
+                    || state.error.is_some()
+                    || view != serde_json::json!({"sort":"Extra payload bytes","order":order})
+                {
+                    return;
+                }
+                if matches!(phase, 208 | 212 | 216 | 226) {
+                    let expected = match phase {
+                        208 => 6,
+                        212 => 7,
+                        216 => 8,
+                        _ => 9,
+                    };
+                    let calls = self.counters.clipboard.load(Ordering::Relaxed);
+                    if calls == expected - 1 {
+                        self.archive_preferences_phase = phase - 3;
+                        self.hex_pointer_target = None;
+                        return;
+                    }
+                    if calls != expected {
+                        return;
+                    }
+                    let Some(text) = self
+                        .counters
+                        .clipboard_text
+                        .lock()
+                        .ok()
+                        .and_then(|v| v.clone())
+                    else {
+                        return;
+                    };
+                    if std::fs::write(
+                        self.scenario_dir.join(format!("group-export-{phase}.csv")),
+                        text,
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                let record = serde_json::json!({"phase":phase,"bounds":bounds,"view":view,"selected_indexes":indexes,"groups":state.check_result.as_ref().and_then(|r|r.as_ref().ok()).and_then(|r|r.content_groups.as_ref())});
+                let _ = std::fs::write(
+                    self.scenario_dir.join(format!("csv-export-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                self.archive_preferences_phase += 1;
+                return;
+            }
+            let (id, step, text) = match phase {
+                205..=207 => (egui::Id::new("Copy shown groups CSV"), phase - 205, None),
+                209..=211 => (
+                    egui::Id::new(("archive-content-group-export", 1usize, "Copy group CSV")),
+                    phase - 209,
+                    None,
+                ),
+                213..=215 => (egui::Id::new("Copy check report CSV"), phase - 213, None),
+                217..=221 => (
+                    egui::Id::new("archive-group-min-copies"),
+                    phase - 217,
+                    Some("3"),
+                ),
+                223..=225 => (egui::Id::new("Copy shown groups CSV"), phase - 223, None),
+                _ => (
+                    egui::Id::new("archive-group-query-reset"),
+                    phase - 227,
+                    None,
+                ),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step == 3 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if step == 4 && text == Some("") {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            } else if step == 4 {
+                input
+                    .events
+                    .push(egui::Event::Text(text.unwrap_or_default().into()));
+            } else if step > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_preferences_phase += 1;
+            return;
+        }
         if self.scenario == Scenario::ArchivePriorityChains && self.archive_preferences_phase == 46
         {
             match self.inner.archive_reopen_preferences_for_qa(ctx) {
@@ -25148,7 +25297,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchivePriorityChains => self.archive_preferences_phase==205 && self.scenario_dir.join("copy-bounds-204.json").is_file() && self.scenario_dir.join("shown-report-166.txt").is_file() && self.scenario_dir.join("group-search-140.json").is_file() && self.scenario_dir.join("group-order-86.json").is_file() && self.scenario_dir.join("priority-reopened.json").is_file(),
+            Scenario::ArchivePriorityChains => self.archive_preferences_phase==231 && self.scenario_dir.join("csv-export-230.json").is_file() && self.scenario_dir.join("copy-bounds-204.json").is_file() && self.scenario_dir.join("shown-report-166.txt").is_file() && self.scenario_dir.join("group-search-140.json").is_file() && self.scenario_dir.join("group-order-86.json").is_file() && self.scenario_dir.join("priority-reopened.json").is_file(),
             Scenario::ArchiveProtectionModes => self.archive_copy_phase==252 && self.archive_preferences_phase==5 && self.scenario_dir.join("preferences-reopened.json").is_file() && [231,235,239,243,247,251].into_iter().all(|phase|self.scenario_dir.join(format!("selection-history-{phase}.json")).is_file()) && [183,189,193,199,203,209,215,219,223,227].into_iter().all(|phase|self.scenario_dir.join(format!("copy-candidates-{phase}.json")).is_file()) && [121,127,131,137,141,147,153,157,163,167,173,177].into_iter().all(|phase|self.scenario_dir.join(format!("group-cutoff-{phase}.json")).is_file()) && [75,79,85,91,95,101,105,111,115].into_iter().all(|phase|self.scenario_dir.join(format!("protection-list-{phase}.json")).is_file()) && [154,158,162,166,172,176,180,184,188,192,196,200,206,210].into_iter().all(|phase|self.scenario_dir.join(format!("tar-protection-mode-{phase}.json")).is_file()) && self.scenario_dir.join("modes-initial.json").is_file() && std::fs::read(self.fixture.left.join("groups.tar.gz")).is_ok_and(|bytes|bytes.as_slice()==include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice()),
             Scenario::ArchiveTarContentGroups => self.archive_copy_phase==149 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json","tar-keep-time-62.json","tar-keep-time-66.json","tar-keep-time-70.json","tar-keep-time-74.json","tar-keep-depth-78.json","tar-keep-depth-82.json","tar-keep-depth-86.json","tar-keep-depth-90.json","tar-keep-depth-94.json","tar-keep-depth-98.json","tar-protected-104.json","tar-protected-108.json","tar-protected-114.json","tar-protected-118.json","tar-protected-124.json","tar-protected-128.json","tar-protected-134.json","tar-protected-140.json","tar-protected-144.json","tar-protected-148.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
             Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
@@ -25701,7 +25850,7 @@ struct NativeEffectCalls {
 const fn expected_clipboard_writes(scenario: Scenario) -> usize {
     match scenario {
         Scenario::ArchivePassword => 4,
-        Scenario::ArchivePriorityChains => 5,
+        Scenario::ArchivePriorityChains => 9,
         Scenario::ArchiveContentGroups => 2,
         Scenario::ArchiveTarContentGroups => 4,
         Scenario::SymlinkWorkflow
@@ -26132,7 +26281,7 @@ mod tests {
         for scenario in Scenario::ALL {
             let expected = match scenario {
                 Scenario::ArchivePassword => 4,
-                Scenario::ArchivePriorityChains => 5,
+                Scenario::ArchivePriorityChains => 9,
                 Scenario::ArchiveContentGroups => 2,
                 Scenario::ArchiveTarContentGroups => 4,
                 Scenario::SymlinkWorkflow

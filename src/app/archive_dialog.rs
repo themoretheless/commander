@@ -2937,7 +2937,7 @@ impl App {
                                 }
                             });
                             ui.horizontal_wrapped(|ui| {
-                                for (format,label) in [(crate::archive_check_export::Format::Text,"Copy shown groups report"),(crate::archive_check_export::Format::Json,"Copy shown groups JSON")] {
+                                for (format,label) in [(crate::archive_check_export::Format::Text,"Copy shown groups report"),(crate::archive_check_export::Format::Json,"Copy shown groups JSON"),(crate::archive_check_export::Format::Csv,"Copy shown groups CSV")] {
                                     let button=ui.add_enabled(!order.is_empty() && state.content_group_view.error.is_none(),egui::Button::new(label).small())
                                         .on_hover_text("Copy complete matching groups across all pages, in current group order, with original group indices. Scan totals describe the complete scan; selection and archive files stay unchanged.");
                                     #[cfg(feature="visual-qa")]
@@ -2974,7 +2974,7 @@ impl App {
                                     #[cfg(feature="visual-qa")]
                                     ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new(("archive-select-redundant-group",_rank)),redundant.rect);d.insert_temp(egui::Id::new(("archive-select-redundant-group-enabled",_rank)),redundant.enabled());});
                                     if redundant.clicked(){select_redundant_groups=Some(Some(_rank));}
-                                    for (format,label) in [(crate::archive_check_export::Format::Text,"Copy group report"),(crate::archive_check_export::Format::Json,"Copy group JSON")] {
+                                    for (format,label) in [(crate::archive_check_export::Format::Text,"Copy group report"),(crate::archive_check_export::Format::Json,"Copy group JSON"),(crate::archive_check_export::Format::Csv,"Copy group CSV")] {
                                         let button=ui.small_button(label).on_hover_text("Copy every retained member of this group, including other pages. Scan totals remain complete-scan metadata; the report identifies this group's original index.");
                                         #[cfg(feature="visual-qa")]
                                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-content-group-export",_rank,label)),button.rect));

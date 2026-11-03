@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "repository": "https://github.com/pkolaczk/fclones",
+  "reference": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/README.md",
+  "transfer": "Independent CSV archive-content report extension inspired by fclones machine-readable output. This is Commander CSV, not a fclones import/removal format."
+}

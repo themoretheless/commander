@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 29.86s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 14 tests
+test archive_check_export::tests::content_groups_export_exact_identities_escape_lines_and_distinguish_unrequested_empty ... ok
+test archive_check_export::tests::incomplete_reports_preserve_mode_and_escape_untrusted_lines ... ok
+test archive_check_export::tests::non_utf8_group_member_paths_are_refused_without_lossy_replacement ... ok
+test archive_check_export::tests::non_utf8_paths_are_refused_without_lossy_replacement ... ok
+test archive_check_export::tests::group_totals_use_wide_exact_decimal_fields_and_export_scope ... ok
+test archive_check_export::tests::csv_group_reports_keep_empty_unrequested_and_failed_context_distinct ... ok
+test archive_check_export::tests::csv_group_reports_round_trip_scopes_order_exact_names_and_wide_totals ... ok
+test archive_check_export::tests::scoped_groups_preserve_original_rank_and_complete_members ... ok
+test archive_check_export::tests::shown_groups_preserve_display_order_original_ranks_and_complete_members ... ok
+test archive_check_export::tests::scoped_groups_keep_output_limits_and_refuse_lossy_paths ... ok
+test archive_check_export::tests::successful_report_exports_actual_mode_counts_and_timestamp ... ok
+test archive_check_export::tests::oversized_group_reports_refuse_both_formats_without_truncation ... ok
+test archive_check_export::tests::oversized_escaped_reports_fail_without_truncation ... ok
+test archive_check_export::tests::shown_groups_refuse_invalid_scopes_and_bounded_or_lossy_output_atomically ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 3494 filtered out; finished in 0.26s
+

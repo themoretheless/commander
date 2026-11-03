@@ -9,13 +9,15 @@ const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub enum Format {
     Text,
     Json,
+    Csv,
 }
 impl Format {
-    pub const ALL: [Self; 2] = [Self::Text, Self::Json];
+    pub const ALL: [Self; 3] = [Self::Text, Self::Json, Self::Csv];
     pub fn label(self) -> &'static str {
         match self {
             Self::Text => "Copy check report",
             Self::Json => "Copy check report JSON",
+            Self::Csv => "Copy check report CSV",
         }
     }
 }
@@ -33,6 +35,11 @@ impl Write for Output {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+fn csv_json_cell(value: &str) -> Result<String, String> {
+    let mut output = Output(Vec::new());
+    serde_json::to_writer(&mut output, value).map_err(|e| e.to_string())?;
+    String::from_utf8(output.0).map_err(|e| e.to_string())
 }
 #[derive(serde::Serialize)]
 struct JsonReport<'a> {
@@ -228,6 +235,87 @@ fn format_scoped(
             serde_json::to_writer_pretty(&mut output, &value).map_err(|e| e.to_string())?;
             output.write_all(b"\n").map_err(|e| e.to_string())?;
         }
+        Format::Csv => {
+            let mut csv = csv::WriterBuilder::new()
+                .terminator(csv::Terminator::CRLF)
+                .from_writer(&mut output);
+            csv.write_record([
+                "record_type",
+                "scope",
+                "archive_json",
+                "archive_format",
+                "recorded_at",
+                "status",
+                "strict_headers",
+                "scan_members",
+                "scan_decoded_bytes",
+                "group_index",
+                "sha256_json",
+                "group_size_bytes",
+                "group_members",
+                "member_index",
+                "member_size_bytes",
+                "member_path_json",
+                "error_json",
+                "exported_groups",
+                "exported_members",
+                "payload_bytes",
+                "extra_members",
+                "extra_payload_bytes",
+                "extra_payload_basis",
+            ])
+            .map_err(|e| e.to_string())?;
+            let scope = match scope {
+                Scope::All => "all_scan",
+                Scope::One(_) => "single_group",
+                Scope::Shown(_) => "shown_groups",
+            };
+            let mut context = vec![String::new(); 23];
+            context[0] = "report".into();
+            context[1] = scope.into();
+            context[2] = csv_json_cell(path_text)?;
+            context[3] = kind.unwrap_or_default().into();
+            context[4] = at.unwrap_or_default();
+            context[5] = status.into();
+            context[6] = strict.map(|v| v.to_string()).unwrap_or_default();
+            context[7] = members.map(|v| v.to_string()).unwrap_or_default();
+            context[8] = decoded.map(|v| v.to_string()).unwrap_or_default();
+            context[16] = error
+                .map(csv_json_cell)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            if let Some(total) = totals {
+                context[17] = total.groups.to_string();
+                context[18] = total.members.to_string();
+                context[19] = total.payload_bytes.to_string();
+                context[20] = total.extra_members.to_string();
+                context[21] = total.extra_payload_bytes.to_string();
+                context[22] = "one_keeper_per_group_uncompressed_not_disk_savings".into();
+            }
+            csv.write_record(&context).map_err(|e| e.to_string())?;
+            if let Some(groups) = groups {
+                for (rank, group) in groups {
+                    let mut record = context.clone();
+                    record[0] = "group".into();
+                    record[9] = rank.to_string();
+                    record[10] = csv_json_cell(&group.sha256)?;
+                    record[11] = group.size.to_string();
+                    record[12] = group.members.len().to_string();
+                    csv.write_record(&record).map_err(|e| e.to_string())?;
+                    record[0] = "member".into();
+                    for member in &group.members {
+                        record[13] = member.index.to_string();
+                        record[14] = member.size.to_string();
+                        record[15] = csv_json_cell(
+                            member.path.to_str().expect("member UTF-8 checked above"),
+                        )?;
+                        csv.write_record(&record).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            csv.flush().map_err(|e| e.to_string())?;
+        }
         Format::Text => {
             output
                 .write_all(b"Commander archive check report (v1)\nArchive: ")
@@ -318,6 +406,141 @@ mod tests {
                 ],
             }]),
         })
+    }
+    fn csv_rows(text: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+        csv::Reader::from_reader(text.as_bytes())
+            .deserialize()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+    #[test]
+    fn csv_group_reports_round_trip_scopes_order_exact_names_and_wide_totals() {
+        let mut report = grouped_report();
+        let groups = report.as_mut().unwrap().content_groups.as_mut().unwrap();
+        groups[0].size = u64::MAX;
+        groups[0].members[0].path = "=formula,\"ёж\r\nnext".into();
+        groups[0].sha256 = "+hash,\"\n".into();
+        for index in 10..31 {
+            groups[0].members.push(crate::archive_check::ContentMember {
+                index,
+                path: format!("@path-{index}").into(),
+                size: 3,
+            });
+        }
+        groups.insert(
+            0,
+            crate::archive_check::ContentGroup {
+                sha256: "zero".into(),
+                size: 0,
+                members: vec![],
+            },
+        );
+        let original = serde_json::to_value(&report.as_ref().unwrap().content_groups).unwrap();
+        let archive = Path::new("-archive,\"\n.zip");
+        for ranks in [vec![1], vec![1, 0], vec![]] {
+            let text = format_shown_groups(archive, &report, None, &ranks, Format::Csv).unwrap();
+            assert!(text.ends_with("\r\n"));
+            let rows = csv_rows(&text);
+            assert_eq!(rows[0]["record_type"], "report");
+            assert_eq!(rows[0]["exported_groups"], ranks.len().to_string());
+            assert_eq!(rows[0]["scan_members"], "2");
+            let group_rows = rows
+                .iter()
+                .filter(|r| r["record_type"] == "group")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                group_rows
+                    .iter()
+                    .map(|r| r["group_index"].parse::<usize>().unwrap())
+                    .collect::<Vec<_>>(),
+                ranks
+            );
+            let member_rows = rows
+                .iter()
+                .filter(|r| r["record_type"] == "member")
+                .collect::<Vec<_>>();
+            let expected = ranks
+                .iter()
+                .flat_map(|&rank| original[rank]["members"].as_array().unwrap().iter())
+                .collect::<Vec<_>>();
+            assert_eq!(member_rows.len(), expected.len());
+            for (row, member) in member_rows.iter().zip(expected) {
+                assert_eq!(
+                    row["member_index"],
+                    member["index"].as_u64().unwrap().to_string()
+                );
+                assert_eq!(
+                    serde_json::from_str::<String>(&row["member_path_json"]).unwrap(),
+                    member["path"].as_str().unwrap()
+                );
+                assert!(row["member_path_json"].starts_with('"'));
+                assert_eq!(
+                    row["member_size_bytes"],
+                    member["size"].as_u64().unwrap().to_string()
+                );
+            }
+            for row in &rows {
+                assert_eq!(row["scope"], "shown_groups");
+                assert_eq!(row["status"], "complete");
+                assert_eq!(
+                    serde_json::from_str::<String>(&row["archive_json"]).unwrap(),
+                    archive.to_str().unwrap()
+                );
+                assert_eq!(
+                    row["extra_payload_basis"],
+                    "one_keeper_per_group_uncompressed_not_disk_savings"
+                );
+            }
+            if ranks.contains(&1) {
+                assert_eq!(
+                    rows[0]["payload_bytes"],
+                    (u128::from(u64::MAX) * 23).to_string()
+                );
+            }
+        }
+        let rows = csv_rows(&format_group(archive, &report, None, 1, Format::Csv).unwrap());
+        assert!(rows.iter().all(|r| r["scope"] == "single_group"));
+        let rows = csv_rows(&format(archive, &report, None, None, Format::Csv).unwrap());
+        assert!(rows.iter().all(|r| r["scope"] == "all_scan"));
+        assert_eq!(
+            serde_json::to_value(&report.as_ref().unwrap().content_groups).unwrap(),
+            original
+        );
+    }
+    #[test]
+    fn csv_group_reports_keep_empty_unrequested_and_failed_context_distinct() {
+        let error = "=bad,\"\r\nStatus: complete";
+        let rows = csv_rows(
+            &format(
+                Path::new("archive.zip"),
+                &Err(error.into()),
+                Some(false),
+                None,
+                Format::Csv,
+            )
+            .unwrap(),
+        );
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row["status"], "incomplete");
+        assert_eq!(row["strict_headers"], "false");
+        assert!(row["scan_members"].is_empty() && row["exported_groups"].is_empty());
+        assert_eq!(
+            serde_json::from_str::<String>(&row["error_json"]).unwrap(),
+            error
+        );
+        let mut report = grouped_report();
+        report.as_mut().unwrap().content_groups = None;
+        let rows =
+            csv_rows(&format(Path::new("archive.zip"), &report, None, None, Format::Csv).unwrap());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0]["exported_groups"].is_empty());
+        report.as_mut().unwrap().content_groups = Some(vec![]);
+        let rows =
+            csv_rows(&format(Path::new("archive.zip"), &report, None, None, Format::Csv).unwrap());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["exported_groups"], "0");
+        assert_eq!(rows[0]["payload_bytes"], "0");
     }
     #[test]
     fn group_totals_use_wide_exact_decimal_fields_and_export_scope() {

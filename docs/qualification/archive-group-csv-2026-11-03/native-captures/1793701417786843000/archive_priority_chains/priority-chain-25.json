@@ -1,0 +1,89 @@
+{
+  "listing": [
+    {
+      "id": 0,
+      "index": 2,
+      "path": "a-same.txt"
+    },
+    {
+      "id": 1,
+      "index": 3,
+      "path": "different.txt"
+    },
+    {
+      "id": 2,
+      "index": 8,
+      "path": "dup.txt"
+    },
+    {
+      "id": 3,
+      "index": 9,
+      "path": "dup.txt"
+    },
+    {
+      "id": 4,
+      "index": 4,
+      "path": "empty-one"
+    },
+    {
+      "id": 5,
+      "index": 5,
+      "path": "empty-two"
+    },
+    {
+      "id": 6,
+      "index": 1,
+      "path": "folder/"
+    },
+    {
+      "id": 7,
+      "index": 7,
+      "path": "hard"
+    },
+    {
+      "id": 8,
+      "index": 10,
+      "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt"
+    },
+    {
+      "id": 9,
+      "index": 6,
+      "path": "sym"
+    },
+    {
+      "id": 10,
+      "index": 0,
+      "path": "z-same.txt"
+    }
+  ],
+  "phase": 25,
+  "policy": {
+    "policy": {
+      "candidate_globs": "",
+      "count": 1,
+      "modified_before": "",
+      "order": "shallowest",
+      "protect_basename": false,
+      "protect_case_sensitive": true,
+      "protected_glob": "",
+      "tie_breakers": [
+        "newest"
+      ]
+    },
+    "version": 1
+  },
+  "selected": [
+    0,
+    3,
+    5,
+    8,
+    10
+  ],
+  "selected_indexes": [
+    0,
+    2,
+    5,
+    9,
+    10
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "archive_tar_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 4,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "c6da80ba0add276d2b7aa6160f5c1f6e9aa30789d26c93e1352e09b6b1691123",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-csv-2026-11-03/native-captures/1793701511011817000/archive_tar_content_groups"
+  },
+  "archive_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 2,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "c16fd8d965a4d7f8a5c2c178634d9497bad03bc95bed928d43c2fbb3c23a0491",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-csv-2026-11-03/native-captures/1793701557151419000/archive_content_groups"
+  },
+  "archive_protection_modes": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "0624750db21f69693573f02f160dc5e6cdfb351d2b240a98ba76bc2ea35578aa",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-csv-2026-11-03/native-captures/1793701465358227000/archive_protection_modes"
+  },
+  "group_totals": {
+    "ui_checkpoints": 7,
+    "json_reports": 6,
+    "text_reports": 5
+  },
+  "csv_exports": {
+    "ui_checkpoints": 6,
+    "reports": 4,
+    "scopes": [
+      "all_scan",
+      "single_group",
+      "shown_groups"
+    ]
+  },
+  "archive_priority_chains": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 9,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "bb98b546ad12a3f36120a3e67b6b4be5b960371950efcdd5a285204721093dcf",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-csv-2026-11-03/native-captures/1793701417786843000/archive_priority_chains"
+  }
+}
