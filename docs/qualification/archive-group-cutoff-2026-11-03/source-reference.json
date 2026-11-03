@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "url": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "feature": "DedupeConfig.modified_before skips a whole group if any member is newer",
+  "adaptation": "Strict before boundary, declared archive modification times, unknown dates skip the group, preserving its selection"
+}

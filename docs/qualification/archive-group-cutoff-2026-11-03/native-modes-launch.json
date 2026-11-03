@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_protection_modes",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-group-cutoff-2026-11-03/native-captures/1793694728239263000",
+  "binary_sha256": "51e511ede6d757139e4dfdfeed024a1a2034655e22119bafb8380da13adf9201",
+  "core_sha256": "51e511ede6d757139e4dfdfeed024a1a2034655e22119bafb8380da13adf9201",
+  "wrapper_sha256": "6e46ce75ba7c30a122dfa1ba6581da4aa0cc1371d51aefafd3dffb3f6b936f2c",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

@@ -1325,6 +1325,7 @@ pub struct ContentKeep {
     pub protected_glob: String,
     pub protect_basename: bool,
     pub protect_case_sensitive: bool,
+    pub modified_before: String,
 }
 impl Default for ContentKeep {
     fn default() -> Self {
@@ -1334,6 +1335,7 @@ impl Default for ContentKeep {
             protected_glob: String::new(),
             protect_basename: false,
             protect_case_sensitive: true,
+            modified_before: String::new(),
         }
     }
 }
@@ -1377,6 +1379,41 @@ impl ContentKeep {
         }
         Ok(patterns)
     }
+    fn cutoff(&self) -> Result<Option<std::time::SystemTime>, String> {
+        let error = "Use a UTC date (2026-01-01) or RFC 3339 timestamp (2026-01-01T12:30:00Z), up to 64 bytes; the boundary is excluded.";
+        if self.modified_before.len() > 64 {
+            return Err(error.into());
+        }
+        let text = self.modified_before.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let time = if text.len() == 10 {
+            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .map_err(|_| error.to_string())?
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+        } else {
+            chrono::DateTime::parse_from_rfc3339(text)
+                .map_err(|_| error.to_string())?
+                .to_utc()
+        };
+        let seconds = time.timestamp();
+        let nanos = time.timestamp_subsec_nanos();
+        if nanos >= 1_000_000_000 {
+            return Err(error.into());
+        }
+        let duration = std::time::Duration::from_secs(seconds.unsigned_abs());
+        let base = if seconds >= 0 {
+            std::time::UNIX_EPOCH.checked_add(duration)
+        } else {
+            std::time::UNIX_EPOCH.checked_sub(duration)
+        };
+        base.and_then(|time| time.checked_add(std::time::Duration::from_nanos(nanos.into())))
+            .map(Some)
+            .ok_or_else(|| error.into())
+    }
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         ui.horizontal_wrapped(|ui| {
             ui.label("Keep copies per group:");
@@ -1410,7 +1447,17 @@ impl ContentKeep {
             let _=(basename,case);
         });
         ui.add(egui::Label::new(egui::RichText::new("One glob per line; all matches are kept; copy count is a minimum.").small()).wrap()).on_hover_text("One archive-relative glob per line; up to 16 nonempty patterns, 256 characters each. Any matching pattern protects the member. Empty lines are ignored; spaces are literal. Filename only matches the final name at any depth; Match case controls letter case. In full-path mode, * stays within a folder and ** crosses folders. Empty disables protection. Editing the pattern leaves selection unchanged until Select copies.");
-        let error = self.protection().err();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Only groups modified before:");
+            let input=ui.add(egui::TextEdit::singleline(&mut self.modified_before)
+                .id(egui::Id::new("archive-group-before-input")).desired_width(260.0).char_limit(64)
+                .hint_text("2026-01-01 or RFC 3339"))
+                .on_hover_text("Apply only if every member has a known declared archive modification time strictly before this instant. Dates mean midnight UTC; RFC 3339 offsets are accepted. Newer, equal or unknown dates skip the entire group, preserving its selection. Empty disables the limit. Edits apply on Select copies.");
+            #[cfg(feature="visual-qa")]
+            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-group-before"),input.rect));
+            let _=input;
+        });
+        let error = self.protection().err().or_else(|| self.cutoff().err());
         if let Some(error) = &error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -1438,6 +1485,7 @@ fn select_redundant_content_groups(
         return Err("Keep at least one representative per group.".into());
     }
     let protection = keep.protection()?;
+    let cutoff = keep.cutoff()?;
     let groups = report
         .content_groups
         .as_deref()
@@ -1454,11 +1502,24 @@ fn select_redundant_content_groups(
     let rows = content_groups_rows(groups, listing)?;
     let mut seen = std::collections::HashSet::new();
     let mut keepers = Vec::new();
+    let mut applicable_rows = Vec::new();
     let mut offset = 0;
     for group in groups {
         if group.members.len() < 2 {
             return Err("Content group has fewer than two members; run the scan again.".into());
         }
+        let group_rows = &rows[offset..offset + group.members.len()];
+        if cutoff.is_some_and(|before| {
+            group_rows.iter().any(|&id| {
+                listing.members[id]
+                    .modified
+                    .is_none_or(|time| time >= before)
+            })
+        }) {
+            offset += group.members.len();
+            continue;
+        }
+        applicable_rows.extend_from_slice(group_rows);
         let mut ranked = group.members.iter().enumerate().collect::<Vec<_>>();
         ranked.sort_unstable_by(|(left, a), (right, b)| match keep.order {
             ContentKeepOrder::First => a.index.cmp(&b.index),
@@ -1523,7 +1584,7 @@ fn select_redundant_content_groups(
     if rows.iter().any(|id| !seen.insert(*id)) {
         return Err("Content groups overlap; run the scan again.".into());
     }
-    selected.extend(rows);
+    selected.extend(applicable_rows);
     for keeper in keepers {
         selected.remove(&keeper);
     }
@@ -3295,6 +3356,160 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn archive_group_cutoff_parses_dates_offsets_fractional_and_pre_epoch_times() {
+        use super::ContentKeep;
+        use std::time::{Duration, UNIX_EPOCH};
+        for (text, expected) in [
+            ("", None),
+            ("  ", None),
+            ("1970-01-01", Some(UNIX_EPOCH)),
+            ("1970-01-01T01:00:00+01:00", Some(UNIX_EPOCH)),
+            (
+                "1969-12-31T23:59:59.5Z",
+                UNIX_EPOCH.checked_sub(Duration::from_millis(500)),
+            ),
+            (
+                "1970-01-01T00:00:00.5Z",
+                UNIX_EPOCH.checked_add(Duration::from_millis(500)),
+            ),
+        ] {
+            assert_eq!(
+                ContentKeep {
+                    modified_before: text.into(),
+                    ..Default::default()
+                }
+                .cutoff()
+                .unwrap(),
+                expected,
+                "{text}"
+            );
+        }
+        for text in [
+            "1970-02-30",
+            "1970-01-01..",
+            "1970-01-01T00:00:00",
+            "1970-01-01T00:00:60Z",
+            "1970-1-1",
+        ] {
+            assert!(
+                ContentKeep {
+                    modified_before: text.into(),
+                    ..Default::default()
+                }
+                .cutoff()
+                .is_err(),
+                "{text}"
+            );
+        }
+        assert!(
+            ContentKeep {
+                modified_before: " ".repeat(65),
+                ..Default::default()
+            }
+            .cutoff()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn archive_group_cutoff_skips_complete_new_or_unknown_groups_without_changing_selection() {
+        use super::{ContentKeep, select_redundant_content_groups};
+        use std::{
+            collections::BTreeSet,
+            time::{Duration, UNIX_EPOCH},
+        };
+        let mut listing = listing(&["a", "b", "c", "d", "e", "f", "unrelated"]);
+        for (id, member) in listing.members.iter_mut().enumerate() {
+            member.index = id;
+            member.size = 3;
+            member.modified = [
+                Some(100),
+                Some(200),
+                Some(300),
+                Some(400),
+                None,
+                Some(100),
+                None,
+            ][id]
+                .map(|t| UNIX_EPOCH + Duration::from_secs(t));
+        }
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 7,
+            decoded: 21,
+            strict_headers: false,
+            content_groups: Some(
+                (0..3)
+                    .map(|group| crate::archive_check::ContentGroup {
+                        sha256: format!("hash-{group}"),
+                        size: 3,
+                        members: listing.members[group * 2..group * 2 + 2]
+                            .iter()
+                            .map(|m| crate::archive_check::ContentMember {
+                                index: m.index,
+                                path: m.path.clone(),
+                                size: m.size,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            ),
+        };
+        for (cutoff, wanted) in [
+            ("1970-01-01T00:03:20Z", vec![2, 4, 6]),
+            ("1970-01-01T00:05:00Z", vec![1, 2, 4, 6]),
+            ("1970-01-01T00:06:40Z", vec![1, 2, 4, 6]),
+            ("1970-01-01T00:06:40.001Z", vec![1, 3, 4, 6]),
+            ("1970-01-02", vec![1, 3, 4, 6]),
+            ("", vec![1, 3, 5, 6]),
+        ] {
+            let keep = ContentKeep {
+                modified_before: cutoff.into(),
+                ..Default::default()
+            };
+            let mut selected = BTreeSet::from([2, 4, 6]);
+            select_redundant_content_groups(&report, &listing, None, &keep, &mut selected).unwrap();
+            assert_eq!(selected.into_iter().collect::<Vec<_>>(), wanted, "{cutoff}");
+        }
+        for (group, wanted) in [
+            (0, vec![1, 2, 4, 6]),
+            (1, vec![2, 4, 6]),
+            (2, vec![2, 4, 6]),
+        ] {
+            let keep = ContentKeep {
+                modified_before: "1970-01-01T00:05:00Z".into(),
+                ..Default::default()
+            };
+            let mut selected = BTreeSet::from([2, 4, 6]);
+            select_redundant_content_groups(&report, &listing, Some(group), &keep, &mut selected)
+                .unwrap();
+            assert_eq!(selected.into_iter().collect::<Vec<_>>(), wanted);
+        }
+        let keep = ContentKeep {
+            modified_before: "1970-01-01T00:05:00Z".into(),
+            protected_glob: "a\nb".into(),
+            ..Default::default()
+        };
+        let mut selected = BTreeSet::from([0, 1, 2, 4, 6]);
+        select_redundant_content_groups(&report, &listing, None, &keep, &mut selected).unwrap();
+        assert_eq!(selected, BTreeSet::from([2, 4, 6]));
+        let invalid = ContentKeep {
+            modified_before: "invalid".into(),
+            ..Default::default()
+        };
+        assert!(
+            select_redundant_content_groups(&report, &listing, None, &invalid, &mut selected)
+                .is_err()
+        );
+        assert_eq!(selected, BTreeSet::from([2, 4, 6]));
+        report.content_groups.as_mut().unwrap()[1].members[1].path = "stale".into();
+        assert!(
+            select_redundant_content_groups(&report, &listing, None, &keep, &mut selected).is_err()
+        );
+        assert_eq!(selected, BTreeSet::from([2, 4, 6]));
+    }
+
+    #[test]
     fn archive_protection_lists_union_matches_and_refuse_invalid_lines_atomically() {
         use super::{ContentKeep, select_redundant_content_groups};
         use std::collections::BTreeSet;
@@ -3431,6 +3646,7 @@ mod tests {
                     protected_glob: glob.into(),
                     protect_basename: basename,
                     protect_case_sensitive: case_sensitive,
+                    modified_before: String::new(),
                 };
                 let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
                 select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
@@ -3497,6 +3713,7 @@ mod tests {
                     protected_glob: glob.into(),
                     protect_basename: false,
                     protect_case_sensitive: true,
+                    modified_before: String::new(),
                 };
                 let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
                 select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
@@ -3521,6 +3738,7 @@ mod tests {
                         protected_glob: glob,
                         protect_basename: false,
                         protect_case_sensitive: true,
+                        modified_before: String::new(),
                     },
                     &mut selected
                 )
@@ -3546,6 +3764,7 @@ mod tests {
                         protected_glob: "**".into(),
                         protect_basename: false,
                         protect_case_sensitive: true,
+                        modified_before: String::new(),
                     },
                     &mut selected
                 )
@@ -3566,6 +3785,7 @@ mod tests {
                     protected_glob: "keep/*".into(),
                     protect_basename: false,
                     protect_case_sensitive: true,
+                    modified_before: String::new(),
                 },
                 &mut selected
             )
@@ -3635,6 +3855,7 @@ mod tests {
                         protected_glob: String::new(),
                         protect_basename: false,
                         protect_case_sensitive: true,
+                        modified_before: String::new(),
                     },
                     &mut selected,
                 )
@@ -3659,6 +3880,7 @@ mod tests {
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
+                    modified_before: String::new(),
                 },
                 &mut selected
             )
@@ -3718,6 +3940,7 @@ mod tests {
                         protected_glob: String::new(),
                         protect_basename: false,
                         protect_case_sensitive: true,
+                        modified_before: String::new(),
                     },
                     &mut selected,
                 )
@@ -3742,6 +3965,7 @@ mod tests {
                 protected_glob: String::new(),
                 protect_basename: false,
                 protect_case_sensitive: true,
+                modified_before: String::new(),
             },
             &mut selected,
         )
@@ -3759,6 +3983,7 @@ mod tests {
                 protected_glob: String::new(),
                 protect_basename: false,
                 protect_case_sensitive: true,
+                modified_before: String::new(),
             },
             &mut selected,
         )
@@ -3779,6 +4004,7 @@ mod tests {
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
+                    modified_before: String::new(),
                 },
                 &mut selected,
             )
@@ -3798,6 +4024,7 @@ mod tests {
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
+                    modified_before: String::new(),
                 },
                 &mut selected
             )
@@ -3857,6 +4084,7 @@ mod tests {
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
+                    modified_before: String::new(),
                 },
                 &mut selected,
             )
@@ -3875,6 +4103,7 @@ mod tests {
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
+                    modified_before: String::new(),
                 },
                 &mut selected
             )

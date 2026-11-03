@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 28.72s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 2 tests
+test app::archive_dialog::tests::archive_group_cutoff_parses_dates_offsets_fractional_and_pre_epoch_times ... ok
+test app::archive_dialog::tests::archive_group_cutoff_skips_complete_new_or_unknown_groups_without_changing_selection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3488 filtered out; finished in 0.01s
+

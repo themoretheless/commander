@@ -1,0 +1,87 @@
+{
+  "keep_count": 1,
+  "listing": [
+    {
+      "id": 0,
+      "index": 2,
+      "modified": 100,
+      "path": "a-same.txt"
+    },
+    {
+      "id": 1,
+      "index": 3,
+      "modified": 0,
+      "path": "different.txt"
+    },
+    {
+      "id": 2,
+      "index": 8,
+      "modified": 400,
+      "path": "dup.txt"
+    },
+    {
+      "id": 3,
+      "index": 9,
+      "modified": 50,
+      "path": "dup.txt"
+    },
+    {
+      "id": 4,
+      "index": 4,
+      "modified": 500,
+      "path": "empty-one"
+    },
+    {
+      "id": 5,
+      "index": 5,
+      "modified": 200,
+      "path": "empty-two"
+    },
+    {
+      "id": 6,
+      "index": 1,
+      "modified": 0,
+      "path": "folder/"
+    },
+    {
+      "id": 7,
+      "index": 7,
+      "modified": 0,
+      "path": "hard"
+    },
+    {
+      "id": 8,
+      "index": 10,
+      "modified": 250,
+      "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt"
+    },
+    {
+      "id": 9,
+      "index": 6,
+      "modified": 0,
+      "path": "sym"
+    },
+    {
+      "id": 10,
+      "index": 0,
+      "modified": 300,
+      "path": "z-same.txt"
+    }
+  ],
+  "order": "Oldest timestamps",
+  "phase": 70,
+  "selected": [
+    0,
+    3,
+    5,
+    8,
+    10
+  ],
+  "selected_indexes": [
+    0,
+    2,
+    5,
+    9,
+    10
+  ]
+}
