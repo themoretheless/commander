@@ -1294,6 +1294,8 @@ pub enum ContentKeepOrder {
     Last,
     Newest,
     Oldest,
+    Shallowest,
+    Deepest,
 }
 impl ContentKeepOrder {
     pub fn label(self) -> &'static str {
@@ -1302,6 +1304,8 @@ impl ContentKeepOrder {
             Self::Last => "Last entries",
             Self::Newest => "Newest timestamps",
             Self::Oldest => "Oldest timestamps",
+            Self::Shallowest => "Shallowest paths",
+            Self::Deepest => "Deepest paths",
         }
     }
     fn short_label(self) -> &'static str {
@@ -1310,6 +1314,8 @@ impl ContentKeepOrder {
             Self::Last => "last",
             Self::Newest => "newest",
             Self::Oldest => "oldest",
+            Self::Shallowest => "shallowest",
+            Self::Deepest => "deepest",
         }
     }
 }
@@ -1333,15 +1339,23 @@ impl ContentKeep {
         ui.horizontal_wrapped(|ui| {
             ui.label("Keep copies per group:");
             ui.add(egui::DragValue::new(&mut self.count).range(1..=100_000).speed(1));
-            for order in [ContentKeepOrder::First,ContentKeepOrder::Last,ContentKeepOrder::Newest,ContentKeepOrder::Oldest] {
+            for order in [ContentKeepOrder::First,ContentKeepOrder::Last,ContentKeepOrder::Newest,ContentKeepOrder::Oldest,ContentKeepOrder::Shallowest,ContentKeepOrder::Deepest] {
                 let label=order.label();
-                let button=ui.selectable_value(&mut self.order,order,label).on_hover_text("First/last use original entry numbers. Newest/oldest use member timestamps declared in the archive: known dates first, missing dates last, ties by lowest original entry number. Groups with fewer members keep them all. Apply with Select copies; changing this policy leaves selection unchanged.");
+                let button=ui.selectable_value(&mut self.order,order,label).on_hover_text("First/last use original entry numbers. Newest/oldest use member timestamps declared in the archive: known dates first, missing dates last, ties by lowest original entry number. Shallowest/deepest use the number of parent folders inside the archive, with lowest original entry number for equal depths. Groups with fewer members keep them all. Apply with Select copies; changing this policy leaves selection unchanged.");
                 #[cfg(feature="visual-qa")]
                 ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-keep-order",label)),button.rect));
                 let _=button;
             }
         });
     }
+}
+
+/// Lexical archive-relative parent depth; no filesystem or link resolution.
+fn content_path_depth(path: &std::path::Path) -> usize {
+    path.components()
+        .filter(|part| matches!(part, std::path::Component::Normal(_)))
+        .count()
+        .saturating_sub(1)
 }
 
 /// Resolve the entire proposal before removing keepers from the selection.
@@ -1380,6 +1394,15 @@ fn select_redundant_content_groups(
         ranked.sort_unstable_by(|(left, a), (right, b)| match keep.order {
             ContentKeepOrder::First => a.index.cmp(&b.index),
             ContentKeepOrder::Last => b.index.cmp(&a.index),
+            ContentKeepOrder::Shallowest | ContentKeepOrder::Deepest => {
+                let depth = content_path_depth(&a.path).cmp(&content_path_depth(&b.path));
+                let depth = if keep.order == ContentKeepOrder::Deepest {
+                    depth.reverse()
+                } else {
+                    depth
+                };
+                depth.then_with(|| a.index.cmp(&b.index))
+            }
             ContentKeepOrder::Newest | ContentKeepOrder::Oldest => {
                 let left = listing.members[rows[offset + left]].modified;
                 let right = listing.members[rows[offset + right]].modified;
@@ -3180,6 +3203,90 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn archive_depth_keepers_count_folders_and_preserve_stable_identity() {
+        use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};
+        use std::collections::BTreeSet;
+        assert_eq!(
+            super::content_path_depth(std::path::Path::new("a///./b")),
+            1
+        );
+        assert_eq!(super::content_path_depth(std::path::Path::new("./ёж")), 0);
+        let long = "ёж".repeat(100);
+        let mut listing = listing(&[
+            &long,
+            ".hidden/same",
+            ".hidden/same",
+            "deep/ёж/y",
+            "x",
+            "unrelated",
+        ]);
+        for (row, member) in listing.members.iter_mut().enumerate() {
+            member.index = [9, 2, 8, 4, 1, 99][row];
+            member.size = 3;
+        }
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 6,
+            decoded: 18,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..5]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        for (order, count, wanted) in [
+            (ContentKeepOrder::Shallowest, 1, vec![0, 1, 2, 3, 5]),
+            (ContentKeepOrder::Deepest, 1, vec![0, 1, 2, 4, 5]),
+            (ContentKeepOrder::Shallowest, 2, vec![1, 2, 3, 5]),
+            (ContentKeepOrder::Deepest, 2, vec![0, 2, 4, 5]),
+            (ContentKeepOrder::Shallowest, 4, vec![3, 5]),
+            (ContentKeepOrder::Deepest, 4, vec![0, 5]),
+            (ContentKeepOrder::Deepest, usize::MAX, vec![5]),
+        ] {
+            for group in [None, Some(0)] {
+                let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
+                select_redundant_content_groups(
+                    &report,
+                    &listing,
+                    group,
+                    &ContentKeep { count, order },
+                    &mut selected,
+                )
+                .unwrap();
+                assert_eq!(
+                    selected.into_iter().collect::<Vec<_>>(),
+                    wanted,
+                    "{order:?}, keep {count}"
+                );
+            }
+        }
+        report.content_groups.as_mut().unwrap()[0].members[1].path = "stale".into();
+        let mut selected = BTreeSet::from([2, 5]);
+        assert!(
+            select_redundant_content_groups(
+                &report,
+                &listing,
+                None,
+                &ContentKeep {
+                    count: 1,
+                    order: ContentKeepOrder::Deepest
+                },
+                &mut selected
+            )
+            .is_err()
+        );
+        assert_eq!(selected, BTreeSet::from([2, 5]));
+    }
+
     #[test]
     fn archive_time_keepers_use_declared_dates_stable_ties_and_missing_last() {
         use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};

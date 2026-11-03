@@ -1,0 +1,5 @@
+{
+  "cohort": 85,
+  "reference": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "behavior": "fclones Priority includes MostNested and LeastNested. Commander independently adds deepest/shallowest archive-relative keep policies, using folder component count and stable original-index ties."
+}

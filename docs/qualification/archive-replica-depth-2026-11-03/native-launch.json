@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_tar_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-replica-depth-2026-11-03/native-captures/1793688993134014000",
+  "binary_sha256": "af3fbf004731770b31f09e87d3ca27bfed8c53f7c8667d3c2cca98ac4194a9f5",
+  "core_sha256": "af3fbf004731770b31f09e87d3ca27bfed8c53f7c8667d3c2cca98ac4194a9f5",
+  "wrapper_sha256": "0268db60ce62322e47cbf5d50210d4bca422f3aaa9437fb85137496777675dcc",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

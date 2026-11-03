@@ -1,0 +1,20 @@
+Commander archive check report (v1)
+Archive: "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18412-archive_tar_content_groups/left/groups.tar.gz"
+Format: tar.gz
+Recorded at: 2026-11-03T06:56:44Z
+Status: complete
+Strict ZIP headers: false
+Members: 11
+Decoded bytes: 20480
+Scope: content group #1 (counts above describe the complete scan)
+Content comparison: SHA-256 and size
+Content groups: 1
+Group #1
+SHA-256: "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+Group size (bytes): 33
+Group members: 5
+Entry #0 (33 bytes): "z-same.txt"
+Entry #2 (33 bytes): "a-same.txt"
+Entry #8 (33 bytes): "dup.txt"
+Entry #9 (33 bytes): "dup.txt"
+Entry #10 (33 bytes): "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt"

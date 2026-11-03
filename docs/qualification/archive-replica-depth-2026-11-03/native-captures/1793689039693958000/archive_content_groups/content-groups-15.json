@@ -1,0 +1,57 @@
+{
+  "error": null,
+  "groups": [
+    {
+      "members": [
+        {
+          "index": 0,
+          "path": "plain.txt",
+          "size": 4352
+        },
+        {
+          "index": 1,
+          "path": "enc-one.txt",
+          "size": 4352
+        },
+        {
+          "index": 2,
+          "path": "enc-two.txt",
+          "size": 4352
+        }
+      ],
+      "sha256": "c08e539674caaec61f0544f56572a64ab06f2167ae77ad03758eeae28a5504c3",
+      "size": 4352
+    }
+  ],
+  "listing": [
+    {
+      "id": 0,
+      "index": 3,
+      "path": "different.txt",
+      "size": 18
+    },
+    {
+      "id": 1,
+      "index": 1,
+      "path": "enc-one.txt",
+      "size": 4352
+    },
+    {
+      "id": 2,
+      "index": 2,
+      "path": "enc-two.txt",
+      "size": 4352
+    },
+    {
+      "id": 3,
+      "index": 0,
+      "path": "plain.txt",
+      "size": 4352
+    }
+  ],
+  "no_extracted_files": true,
+  "password_empty": true,
+  "phase": 15,
+  "selected": [],
+  "source_unchanged": true
+}
