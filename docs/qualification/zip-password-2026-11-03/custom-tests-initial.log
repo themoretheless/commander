@@ -1,0 +1,20 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 58.01s
+     Running unittests src/main.rs (target/debug/build/commander/71462e936fdee0e9/out/commander-71462e936fdee0e9)
+
+running 2 tests
+
+thread 'zip_reader::tests::password_custom_codecs_preserve_memory_and_payload_validation' (18089140) panicked at src/zip_reader.rs:386:34:
+called `Result::unwrap_err()` on an `Ok` value: 28
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test zip_reader::tests::password_custom_codecs_preserve_memory_and_payload_validation ... FAILED
+test zip_reader::tests::password_custom_codecs_keep_metadata_and_decode_exact_bytes ... ok
+
+failures:
+
+failures:
+    zip_reader::tests::password_custom_codecs_preserve_memory_and_payload_validation
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 3418 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

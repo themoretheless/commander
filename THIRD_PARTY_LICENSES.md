@@ -63,3 +63,28 @@ ZIP method 9 decoding uses `deflate64` 0.1.12, derived from the .NET implementat
 ## PPMd ZIP decompression
 
 ZIP method 98 uses ppmd-rust 1.5.2 under its [CC0 option](data/licenses/ppmd-rust-1.5.2-CC0.txt). The Rust port acknowledges Igor Pavlov, Dmitry Shkarin and Dmitry Subbotin, who placed the original algorithms in the public domain. Commander does not claim authorship of the decoder.
+
+## Ephemeral ZIP password keys
+
+ZIP decryption keys use `zeroize` 1.9.0, already present transitively and now a
+direct dependency, under its MIT licence option. See
+[licence](data/licenses/zeroize-1.9.0-MIT.txt). Traditional ZIP compatibility is
+independently implemented from PKWARE APPNOTE 6.1; it is not used for creating
+new encrypted archives.
+
+## ZIP AES decryption
+
+ZIP AES uses RustCrypto cipher, HMAC and PBKDF2 primitives. Its streaming
+composition and authentication-at-EOF behavior follow zip-rs 9.0.5, by
+Mathijs van de Nes and contributors, under the
+[MIT licence](data/licenses/zip-9.0.5-MIT.txt). Newly activated packages:
+
+- `aes-0.9.4`: [MIT licence](data/licenses/aes-0.9.4-MIT.txt).
+- `cipher-0.5.2`: [MIT licence](data/licenses/cipher-0.5.2-MIT.txt).
+- `cmov-0.5.4`: [MIT licence](data/licenses/cmov-0.5.4-MIT.txt).
+- `constant_time_eq-0.6.1`: [CC0 licence](data/licenses/constant_time_eq-0.6.1-CC0.txt).
+- `cpubits-0.1.1`: [MIT licence](data/licenses/cpubits-0.1.1-MIT.txt).
+- `ctutils-0.4.8`: [MIT licence](data/licenses/ctutils-0.4.8-MIT.txt).
+- `hmac-0.13.0`: [MIT licence](data/licenses/hmac-0.13.0-MIT.txt).
+- `inout-0.2.5`: [MIT licence](data/licenses/inout-0.2.5-MIT.txt).
+- `pbkdf2-0.13.0`: [MIT licence](data/licenses/pbkdf2-0.13.0-MIT.txt).

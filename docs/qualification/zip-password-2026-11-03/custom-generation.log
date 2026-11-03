@@ -1,0 +1,128 @@
+{
+  "lzma": {
+    "source": "docs/qualification/zip-lzma-2026-11-03/fixtures/normal.zipx",
+    "method": 14,
+    "descriptor": false,
+    "invalid": false,
+    "oracle_method": 14,
+    "sha256": "d04dd957bfb9a6662ebf4556640ea4559d066b270f9cfae5d6d78312480a0a11",
+    "external_exit": 0
+  },
+  "lzma-descriptor": {
+    "source": "docs/qualification/zip-lzma-2026-11-03/fixtures/normal.zipx",
+    "method": 14,
+    "descriptor": true,
+    "invalid": false,
+    "oracle_method": 14,
+    "sha256": "532c94775db2615c953c562187c74999bec1c4df1d893e69065fac0341f6cd94",
+    "external_exit": 0
+  },
+  "xz": {
+    "source": "docs/qualification/zip-xz-2026-11-03/fixtures/normal.zipx",
+    "method": 95,
+    "descriptor": false,
+    "invalid": false,
+    "oracle_method": 95,
+    "sha256": "649c20c47dacc72bb0d1a2624aaf5425f8d969a007597232c9d947ee5f6cb067",
+    "external_exit": 0
+  },
+  "zstd": {
+    "source": "docs/qualification/zip-zstd-2026-11-03/fixtures/normal.zipx",
+    "method": 93,
+    "descriptor": false,
+    "invalid": false,
+    "oracle_method": 93,
+    "sha256": "4591a7bbeb8d6ca3e7b24f9747c17eefd2cced3209f91b207565e34f0056f13c",
+    "external_exit": 0
+  },
+  "zstd-legacy": {
+    "source": "docs/qualification/zip-zstd-2026-11-03/fixtures/legacy.zipx",
+    "method": 20,
+    "descriptor": false,
+    "invalid": false,
+    "oracle_method": 93,
+    "sha256": "2199e05531dd29fec1d135d855603ba206b3a0072ec0967e38016a65becf8114",
+    "external_exit": 0
+  },
+  "ppmd": {
+    "source": "docs/qualification/zip-ppmd-2026-11-03/fixtures/normal.zipx",
+    "method": 98,
+    "descriptor": false,
+    "invalid": false,
+    "oracle_method": 98,
+    "sha256": "6645e71f3e9cf672c615662b475ed4698a8a7230481d80bfbfc90e9143038625",
+    "external_exit": 0
+  },
+  "lzma-memory": {
+    "source": "docs/qualification/zip-lzma-2026-11-03/fixtures/memory-limit.zipx",
+    "method": 14,
+    "descriptor": false,
+    "invalid": "policy",
+    "oracle_method": 14,
+    "sha256": "36b7fa4e621b011786ae56d87197185ad000f01fda206cc58cbbd7b32b4588d4",
+    "external_exit": 0
+  },
+  "xz-memory": {
+    "source": "docs/qualification/zip-xz-2026-11-03/fixtures/huge-dictionary.zipx",
+    "method": 95,
+    "descriptor": false,
+    "invalid": "policy",
+    "oracle_method": 95,
+    "sha256": "f64e305be7bcc8dab9e294555727e836e23ead4522f69f40db835581c467a922",
+    "external_exit": 0
+  },
+  "ppmd-memory": {
+    "source": "docs/qualification/zip-ppmd-2026-11-03/fixtures/large-arena.zipx",
+    "method": 98,
+    "descriptor": false,
+    "invalid": "policy",
+    "oracle_method": 98,
+    "sha256": "ab07b3440a13624dcd10e2161409d3f503023efe5b53bd0059c78ea0f6c3e976",
+    "external_exit": 0
+  },
+  "ppmd-no-eos": {
+    "source": "docs/qualification/zip-ppmd-2026-11-03/fixtures/missing-eos.zipx",
+    "method": 98,
+    "descriptor": false,
+    "invalid": "eos",
+    "oracle_method": 98,
+    "sha256": "083cc427a2348ae7b223f47e712973b9ff6586c1b0cfc9e94b3aa3271c64a1e4",
+    "external_exit": 2
+  },
+  "ppmd-bad-crc": {
+    "source": "docs/qualification/zip-ppmd-2026-11-03/fixtures/normal.zipx",
+    "method": 98,
+    "descriptor": false,
+    "invalid": "crc",
+    "oracle_method": 98,
+    "sha256": "006ae2efa3e36c513ca331e7344bd47bad9915db8df42e03df4ffca8052a3c7c",
+    "external_exit": 2
+  },
+  "ppmd-bad-size": {
+    "source": "docs/qualification/zip-ppmd-2026-11-03/fixtures/normal.zipx",
+    "method": 98,
+    "descriptor": false,
+    "invalid": "size",
+    "oracle_method": 98,
+    "sha256": "02d6cc12099c27f4a211f9e254ecd9eec9fbeef51e53e5d7819358b6adbb2c77",
+    "external_exit": 2
+  },
+  "xz-truncated": {
+    "source": "docs/qualification/zip-xz-2026-11-03/fixtures/normal.zipx",
+    "method": 95,
+    "descriptor": false,
+    "invalid": "truncated",
+    "oracle_method": 95,
+    "sha256": "6d2d9b7957a52491dd3795ff3ebc9badab39995e1484b6083bb4b16fbeb7239f",
+    "external_exit": 2
+  },
+  "xz-short-header": {
+    "source": "docs/qualification/zip-xz-2026-11-03/fixtures/normal.zipx",
+    "method": 95,
+    "descriptor": false,
+    "invalid": "header",
+    "oracle_method": 95,
+    "sha256": "d66fc9a1c674d4bfeb574d258c9a2c0668108a6e7271a72a53ea6cdcc5c7bf5e",
+    "external_exit": 2
+  }
+}

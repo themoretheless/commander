@@ -727,6 +727,18 @@ pub fn extract_members(
     member_indexes: &[usize],
     cancelled: &AtomicBool,
 ) -> Result<ExtractReport, String> {
+    extract_members_with_password(archive_path, dest_dir, member_indexes, cancelled, None)
+}
+
+/// Extract using an ephemeral password. The caller owns the password lifetime;
+/// reports contain member names and decoder errors, never password contents.
+pub fn extract_members_with_password(
+    archive_path: &Path,
+    dest_dir: &Path,
+    member_indexes: &[usize],
+    cancelled: &AtomicBool,
+    password: Option<&[u8]>,
+) -> Result<ExtractReport, String> {
     if member_indexes.is_empty() {
         return Ok(ExtractReport::default());
     }
@@ -738,7 +750,7 @@ pub fn extract_members(
     })?;
     match kind_of(archive_path) {
         Some(ArchiveKind::Zip) => {
-            extract_zip_members(archive_path, dest_dir, member_indexes, cancelled)
+            extract_zip_members(archive_path, dest_dir, member_indexes, cancelled, password)
         }
         Some(
             ArchiveKind::TarGz
@@ -754,15 +766,51 @@ pub fn extract_members(
     }
 }
 
+/// Keep cancellation responsive during encrypted authentication tails too,
+/// where a codec has already reached EOS and the outer copy loop cannot poll.
+struct ZipExtractionInput<'a, R> {
+    reader: R,
+    cancelled: &'a AtomicBool,
+}
+impl<R: Read> Read for ZipExtractionInput<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self.cancelled.load(Ordering::Acquire) {
+            // Interrupted would be retried by read_exact; cancellation is terminal.
+            return Err(std::io::Error::other("Extraction cancelled"));
+        }
+        let length = bytes.len().min(64 * 1024);
+        self.reader.read(&mut bytes[..length])
+    }
+}
+impl<R: std::io::Seek> std::io::Seek for ZipExtractionInput<'_, R> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.reader.seek(position)
+    }
+}
+
 fn extract_zip_members(
     archive_path: &Path,
     dest_dir: &Path,
     member_indexes: &[usize],
     cancelled: &AtomicBool,
+    password: Option<&[u8]>,
 ) -> Result<ExtractReport, String> {
     let file = fs::File::open(archive_path)
         .map_err(|error| format!("Could not open archive {}: {error}", archive_path.display()))?;
-    let mut archive = zip::ZipArchive::new(file)
+    if cancelled.load(Ordering::Acquire) {
+        return Ok(ExtractReport {
+            errors: vec!["Extraction cancelled".into()],
+            ..ExtractReport::default()
+        });
+    }
+    let input = ZipExtractionInput {
+        reader: file,
+        cancelled,
+    };
+    let mut archive = zip::ZipArchive::new(input)
         .map_err(|error| format!("Could not read archive {}: {error}", archive_path.display()))?;
     let mut report = ExtractReport::default();
     for &index in member_indexes {
@@ -777,7 +825,7 @@ fn extract_zip_members(
             .name_for_index(index)
             .and_then(Result::ok)
             .map_or_else(|| format!("#{index}"), |name| name.into_owned());
-        let mut entry = match crate::zip_reader::open(&mut archive, index) {
+        let mut entry = match crate::zip_reader::open_with_password(&mut archive, index, password) {
             Ok(entry) => entry,
             Err(error) => {
                 report
@@ -792,6 +840,17 @@ fn extract_zip_members(
         };
         let out_path = dest_dir.join(&enclosed);
         if entry.is_dir() {
+            // Even an empty encrypted directory has an authentication tag.
+            // Verify it before creating the directory; the password verifier
+            // alone is not proof that the password/data is correct.
+            if entry.encrypted()
+                && let Err(error) = std::io::copy(&mut entry, &mut std::io::sink())
+            {
+                report
+                    .errors
+                    .push(format!("Could not verify directory {label}: {error}"));
+                continue;
+            }
             if let Err(error) = fs::create_dir_all(&out_path) {
                 report
                     .errors
@@ -879,8 +938,8 @@ fn symlink_target_stays_inside(member: &Path, target: &Path) -> bool {
     true
 }
 
-fn extract_zip_symlink(
-    entry: &mut crate::zip_reader::Member<'_, fs::File>,
+fn extract_zip_symlink<R: Read>(
+    entry: &mut crate::zip_reader::Member<'_, R>,
     member: &Path,
     out_path: &Path,
     report: &mut ExtractReport,
@@ -960,7 +1019,7 @@ fn copy_until_cancelled(
 /// Restore the member's permission bits and modification time, as the tar
 /// path does, so extracted scripts stay executable and files keep their
 /// dates. Best effort: a failure leaves the defaults and is only logged.
-fn apply_zip_metadata(out: &fs::File, entry: &zip::read::ZipFile<'_, fs::File>) {
+fn apply_zip_metadata<R: Read>(out: &fs::File, entry: &zip::read::ZipFile<'_, R>) {
     let name = entry
         .name()
         .map_or_else(|_| "<invalid member name>".into(), |name| name.into_owned());
@@ -981,7 +1040,7 @@ fn apply_zip_metadata(out: &fs::File, entry: &zip::read::ZipFile<'_, fs::File>) 
 
 /// A member's modification time: the UTC extended-timestamp field when the
 /// archiver wrote one, else the MS-DOS field, which is local time.
-fn zip_member_mtime(entry: &zip::read::ZipFile<'_, fs::File>) -> Option<std::time::SystemTime> {
+fn zip_member_mtime<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> Option<std::time::SystemTime> {
     let extended = entry.extra_data_fields().find_map(|field| match field {
         zip::extra_fields::ExtraField::ExtendedTimestamp(ts) => ts.mod_time(),
         _ => None,
@@ -1333,13 +1392,24 @@ pub fn start_extract(
     archive: PathBuf,
     dest: PathBuf,
     member_indexes: Vec<usize>,
+    password: Option<zeroize::Zeroizing<String>>,
     notify: Notify,
 ) -> ExtractRun {
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = extract_members(&archive, &dest, &member_indexes, &worker_cancelled);
+        let result = if let Some(password) = password {
+            extract_members_with_password(
+                &archive,
+                &dest,
+                &member_indexes,
+                &worker_cancelled,
+                Some(password.as_bytes()),
+            )
+        } else {
+            extract_members(&archive, &dest, &member_indexes, &worker_cancelled)
+        };
         let _ = sender.send(result);
         notify();
     });
@@ -1422,6 +1492,436 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use std::io::Write;
+
+    #[test]
+    fn aes_empty_password_is_preserved_by_worker() {
+        let temp = TempDir::new();
+        let path = temp.path().join("empty-password.zipx");
+        fs::write(
+            &path,
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-empty-password.zipx"
+            ),
+        )
+        .unwrap();
+        let dest = temp.path().join("output");
+        let report = extract_members(&path, &dest, &[0], &AtomicBool::new(false)).unwrap();
+        assert!(!report.errors.is_empty());
+        assert!(!dest.join("payload.txt").exists());
+        let run = start_extract(
+            path,
+            dest.clone(),
+            vec![0],
+            Some(zeroize::Zeroizing::new(String::new())),
+            Arc::new(|| {}),
+        );
+        let report = run
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.extracted, 1);
+        assert_eq!(
+            fs::read(dest.join("payload.txt")).unwrap(),
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-empty-password.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn aes_standard_codecs_reject_bad_tags_and_underfilled_declared_sizes() {
+        for (name, bytes) in [
+            ("aes-stored-bad-tag", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-bad-tag.zip").as_slice()),
+            ("aes-stored-bad-size", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-bad-size.zip").as_slice()),
+            ("aes-deflate-bad-tag", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-bad-tag.zip").as_slice()),
+            ("aes-deflate-bad-size", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-bad-size.zip").as_slice()),
+            ("aes-bzip2-bad-tag", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-bad-tag.zip").as_slice()),
+            ("aes-bzip2-bad-size", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-bad-size.zip").as_slice()),
+            ("aes-deflate64-bad-tag", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-bad-tag.zip").as_slice()),
+            ("aes-deflate64-bad-size", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-bad-size.zip").as_slice()),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("input.zip");
+            fs::write(&path, bytes).unwrap();
+            let dest = temp.path().join("output");
+            let report = extract_members_with_password(&path, &dest, &[0], &AtomicBool::new(false), Some(b"fixture-password")).unwrap();
+            assert!(!report.errors.is_empty(), "{name}: unexpectedly accepted");
+            assert!(!dest.join("payload.txt").exists(), "{name}: partial file retained");
+        }
+    }
+
+    #[test]
+    fn aes_directories_are_authenticated_before_creation() {
+        for (bytes, valid) in [
+            (include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-directory.zipx").as_slice(), true),
+            (include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-directory-bad-tag.zipx").as_slice(), false),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("directory.zipx");
+            fs::write(&path, bytes).unwrap();
+            let dest = temp.path().join("output");
+            let report = extract_members_with_password(&path, &dest, &[0], &AtomicBool::new(false), Some(b"fixture-password")).unwrap();
+            assert_eq!(dest.join("empty-dir1").is_dir(), valid, "{:?}", report.errors);
+            assert_eq!(report.errors.is_empty(), valid);
+            assert_eq!(report.skipped_dirs, usize::from(valid));
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn aes_symlinks_authenticate_and_preserve_target_confinement() {
+        for (name, bytes, valid) in [
+            ("safe", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-symlink-safe.zipx").as_slice(), true),
+            ("escape", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-symlink-escape.zipx").as_slice(), false),
+            ("tag", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-symlink-bad-tag.zipx").as_slice(), false),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("symlink.zipx");
+            fs::write(&path, bytes).unwrap();
+            let dest = temp.path().join("output");
+            let report = extract_members_with_password(&path, &dest, &[0], &AtomicBool::new(false), Some(b"fixture-password")).unwrap();
+            assert_eq!(report.errors.is_empty(), valid, "{name}: {:?}", report.errors);
+            if valid { assert_eq!(fs::read_link(dest.join("payload.txt")).unwrap(), Path::new("target.txt")); }
+            else { assert!(fs::symlink_metadata(dest.join("payload.txt")).is_err(), "{name}"); }
+        }
+    }
+
+    #[test]
+    fn aes_standard_codecs_extract_all_strengths_and_custom_errors_cleanup() {
+        let expected =
+            include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/expected.txt");
+        for (name, bytes) in [
+            (
+                "aes-stored-128",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-128.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-stored-192",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-192.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-stored-256",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-256.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-deflate-128",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-128.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-deflate-192",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-192.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-deflate-256",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-256.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-bzip2-128",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-128.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-bzip2-192",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-192.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-bzip2-256",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-256.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-deflate64-128",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-128.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-deflate64-192",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-192.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "aes-deflate64-256",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-256.zip"
+                )
+                .as_slice(),
+            ),
+            ("aes-stored-128-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-128-v1.zip").as_slice()),
+            ("aes-stored-192-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-192-v1.zip").as_slice()),
+            ("aes-stored-256-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-256-v1.zip").as_slice()),
+            ("aes-deflate-128-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-128-v1.zip").as_slice()),
+            ("aes-deflate-192-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-192-v1.zip").as_slice()),
+            ("aes-deflate-256-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate-256-v1.zip").as_slice()),
+            ("aes-bzip2-128-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-128-v1.zip").as_slice()),
+            ("aes-bzip2-192-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-192-v1.zip").as_slice()),
+            ("aes-bzip2-256-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-bzip2-256-v1.zip").as_slice()),
+            ("aes-deflate64-128-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-128-v1.zip").as_slice()),
+            ("aes-deflate64-192-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-192-v1.zip").as_slice()),
+            ("aes-deflate64-256-v1", include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-deflate64-256-v1.zip").as_slice()),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("input.zip");
+            fs::write(&path, bytes).unwrap();
+            let dest = temp.path().join("correct");
+            let cancel = AtomicBool::new(false);
+            let report = extract_members_with_password(
+                &path,
+                &dest,
+                &[0],
+                &cancel,
+                Some(b"fixture-password"),
+            )
+            .unwrap();
+            assert!(report.errors.is_empty(), "{name}: {:?}", report.errors);
+            assert_eq!(report.extracted, 1);
+            assert_eq!(fs::read(dest.join("payload.txt")).unwrap(), expected);
+            let wrong_dest = temp.path().join("wrong");
+            let report = extract_members_with_password(
+                &path,
+                &wrong_dest,
+                &[0],
+                &cancel,
+                Some(b"wrong-password"),
+            )
+            .unwrap();
+            assert!(!report.errors.is_empty(), "{name}");
+            assert!(!wrong_dest.join("payload.txt").exists());
+        }
+        for bytes in [
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-ppmd-bad-tag.zipx"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-ppmd-tail-bad-tag.zipx"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/aes-bad-size.zipx"
+            )
+            .as_slice(),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("input.zipx");
+            fs::write(&path, bytes).unwrap();
+            let dest = temp.path().join("output");
+            let report = extract_members_with_password(
+                &path,
+                &dest,
+                &[0],
+                &AtomicBool::new(false),
+                Some(b"fixture-password"),
+            )
+            .unwrap();
+            assert!(!report.errors.is_empty());
+            assert!(!dest.join("payload.txt").exists());
+        }
+    }
+    #[test]
+    fn aes_authentication_tail_observes_extraction_cancellation() {
+        let cancelled = AtomicBool::new(false);
+        let input = ZipExtractionInput {
+            reader: std::io::Cursor::new(
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-ppmd-tail.zipx"
+                )
+                .as_slice(),
+            ),
+            cancelled: &cancelled,
+        };
+        let mut archive = zip::ZipArchive::new(input).unwrap();
+        let mut member =
+            crate::zip_reader::open_with_password(&mut archive, 0, Some(b"fixture-password"))
+                .unwrap();
+        let expected = include_bytes!(
+            "../docs/qualification/zip-password-2026-11-03/fixtures/aes-ppmd-tail.txt"
+        );
+        let mut decoded = vec![0; expected.len()];
+        member.read_exact(&mut decoded).unwrap();
+        assert_eq!(decoded, expected);
+        cancelled.store(true, Ordering::Release);
+        assert!(
+            member
+                .read(&mut [0; 1])
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+    }
+
+    #[test]
+    fn password_worker_extracts_custom_codec_and_cleans_failed_payloads() {
+        let temp = TempDir::new();
+        let path = temp.path().join("ppmd.zipx");
+        fs::write(
+            &path,
+            include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/ppmd.zipx"),
+        )
+        .unwrap();
+        let dest = temp.path().join("worker");
+        let run = start_extract(
+            path.clone(),
+            dest.clone(),
+            vec![0],
+            Some(zeroize::Zeroizing::new("fixture-password".into())),
+            Arc::new(|| {}),
+        );
+        let report = run
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.extracted, 1);
+        assert_eq!(
+            fs::read(dest.join("payload.txt")).unwrap(),
+            include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/ppmd.txt")
+        );
+        for (name, bytes) in [
+            (
+                "crc",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/ppmd-bad-crc.zipx"
+                )
+                .as_slice(),
+            ),
+            (
+                "size",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/ppmd-bad-size.zipx"
+                )
+                .as_slice(),
+            ),
+            (
+                "eos",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/ppmd-no-eos.zipx"
+                )
+                .as_slice(),
+            ),
+            (
+                "truncated",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/xz-truncated.zipx"
+                )
+                .as_slice(),
+            ),
+        ] {
+            fs::write(&path, bytes).unwrap();
+            let dest = temp.path().join(name);
+            let report = extract_members_with_password(
+                &path,
+                &dest,
+                &[0],
+                &AtomicBool::new(false),
+                Some(b"fixture-password"),
+            )
+            .unwrap();
+            assert!(!report.errors.is_empty(), "{name}");
+            assert!(!dest.join("payload.txt").exists(), "{name}");
+        }
+    }
+
+    #[test]
+    fn password_extraction_standard_zipcrypto_codecs() {
+        let expected =
+            include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/expected.txt");
+        for (name, bytes) in [
+            (
+                "stored",
+                include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/stored.zip")
+                    .as_slice(),
+            ),
+            (
+                "deflate",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/deflate.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "bzip2",
+                include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/bzip2.zip")
+                    .as_slice(),
+            ),
+            (
+                "deflate64",
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/deflate64.zip"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join(format!("{name}.zip"));
+            fs::write(&path, bytes).unwrap();
+            let cancel = AtomicBool::new(false);
+            for (attempt, password) in [
+                ("missing", None),
+                ("wrong", Some(b"wrong-fixture-secret".as_slice())),
+            ] {
+                let dest = temp.path().join(attempt);
+                let report =
+                    extract_members_with_password(&path, &dest, &[0], &cancel, password).unwrap();
+                assert!(!report.errors.is_empty(), "{name}/{attempt}");
+                assert!(!dest.join("payload.txt").exists(), "{name}/{attempt}");
+                assert!(!format!("{report:?}").contains("wrong-fixture-secret"));
+            }
+            let dest = temp.path().join("correct");
+            let report = extract_members_with_password(
+                &path,
+                &dest,
+                &[0],
+                &cancel,
+                Some(b"fixture-password"),
+            )
+            .unwrap();
+            assert!(report.errors.is_empty(), "{name}: {:?}", report.errors);
+            assert_eq!(fs::read(dest.join("payload.txt")).unwrap(), expected);
+            let report = extract_members_with_password(
+                &path,
+                &dest,
+                &[0],
+                &cancel,
+                Some(b"fixture-password"),
+            )
+            .unwrap();
+            assert!(report.errors.is_empty());
+            assert_eq!(report.skipped_existing, 1);
+            assert_eq!(report.extracted, 0);
+            assert_eq!(fs::read(dest.join("payload.txt")).unwrap(), expected);
+        }
+    }
 
     fn write_zip(path: &Path, files: &[(&str, &[u8])]) {
         let file = fs::File::create(path).unwrap();

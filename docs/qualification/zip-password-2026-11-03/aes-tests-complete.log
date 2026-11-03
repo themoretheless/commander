@@ -1,0 +1,18 @@
+   Compiling sha1 v0.11.0
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling zip v9.0.5
+    Finished `test` profile [unoptimized] target(s) in 29.11s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 8 tests
+test zip_reader::tests::aes_utf8_password_bytes_are_preserved ... ok
+test archive::tests::aes_authentication_tail_observes_extraction_cancellation ... ok
+test archive::tests::aes_directories_are_authenticated_before_creation ... ok
+test zip_reader::tests::aes_custom_codec_memory_limits_still_apply_before_allocation ... ok
+test archive::tests::aes_symlinks_authenticate_and_preserve_target_confinement ... ok
+test zip_reader::tests::aes_authentication_size_crc_and_late_eos_fail_closed ... ok
+test archive::tests::aes_standard_codecs_extract_all_strengths_and_custom_errors_cleanup ... ok
+test zip_reader::tests::aes_custom_codecs_all_strengths_versions_and_chunk_boundaries ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 3422 filtered out; finished in 0.41s
+

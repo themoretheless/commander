@@ -1,0 +1,16 @@
+    Updating crates.io index
+     Locking 9 packages to highest Rust 1.100.0-nightly compatible versions
+      Adding aes v0.9.4
+      Adding cipher v0.5.2
+      Adding cmov v0.5.4
+      Adding constant_time_eq v0.6.1
+      Adding cpubits v0.1.1
+      Adding ctutils v0.4.8
+      Adding hmac v0.13.0
+      Adding inout v0.2.5
+      Adding pbkdf2 v0.13.0
+ Downloading crates ...
+  Downloaded inout v0.2.5
+  Downloaded constant_time_eq v0.6.1
+  Downloaded ctutils v0.4.8
+  Downloaded aes v0.9.4

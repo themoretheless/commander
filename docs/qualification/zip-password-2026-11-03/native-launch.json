@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-password-2026-11-03/native-captures/1793669484892024000",
+  "binary_sha256": "f7ca9a432d01e4eade550d4c0ef56aca774b225c33f75a47828f2d26d7b53731",
+  "core_sha256": "f7ca9a432d01e4eade550d4c0ef56aca774b225c33f75a47828f2d26d7b53731",
+  "wrapper_sha256": "cb1174bf79b068270a0fd65e15827b663d241151972643112aa69efe48231f17",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

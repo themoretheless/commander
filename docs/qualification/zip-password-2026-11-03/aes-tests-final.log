@@ -1,0 +1,26 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: can't compare `[&str; 138]` with `[&str; 137]`
+     --> src/visual_qa.rs:22104:9
+      |
+22104 | /         assert_eq!(
+22105 | |             Scenario::ALL.map(Scenario::name),
+22106 | |             [
+22107 | |                 "desktop_base",
+...     |
+22245 | |         );
+      | |_________^ no implementation for `[&str; 138] == [&str; 137]`
+      |
+      = help: the trait `PartialEq<[&str; 137]>` is not implemented for `[&str; 138]`
+      = help: the following other types implement trait `PartialEq<Rhs>`:
+                `&[T]` implements `PartialEq<[U; N]>`
+                `&[T]` implements `PartialEq<std::borrow::Cow<'_, [U]>>`
+                `&[T]` implements `PartialEq<std::vec::Vec<U, A>>`
+                `&[u8; N]` implements `PartialEq<ByteStr>`
+                `&[u8; N]` implements `PartialEq<ByteString>`
+                `&[u8; N]` implements `PartialEq<HtmlString>`
+                `&[u8; N]` implements `PartialEq<bstr::bstr::BStr>`
+                `&[u8; N]` implements `PartialEq<bstr::bstring::BString>`
+              and 45 others
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

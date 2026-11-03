@@ -56,8 +56,13 @@ rayon = "1"
 regex = "1"
 regex-automata = "0.4"
 regex-syntax = "0.8"
-zip = { version = "9.0", default-features = false, features = ["deflate", "bzip2", "deflate64"] }
+zip = { version = "9.0", default-features = false, features = ["deflate", "bzip2", "deflate64", "aes-crypto"] }
 ppmd-rust = "1.5"
+zeroize = "1.9.0"
+aes = { version = "0.9", features = ["zeroize"] }
+hmac = { version = "0.13", features = ["zeroize"] }
+pbkdf2 = "0.13"
+constant_time_eq = "0.6"
 libc = "0.2"
 blake3 = "1.8.7"
 crc32fast = "1.5"
@@ -77,7 +82,7 @@ argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 rand = "0.8"
 globset = { version = "0.4", default-features = false }
 md-5 = "0.11.0"
-sha1 = "0.11.0"
+sha1 = { version = "0.11.0", features = ["zeroize"] }
 sha3 = "0.12.0"
 blake2 = "0.10.6"
 

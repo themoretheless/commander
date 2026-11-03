@@ -1,0 +1,28 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "68b0887b786c2e1ccea2d2e10ebd4f75fff16497dab28d0023d581eb0dc7ac39",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-password-2026-11-03/native-captures/1793669484892024000/archive_metadata"
+  },
+  "archive_password": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "aa55833dddaac96614401a497df9ece61a5191f4e11f75223cf92459d98b7c37",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-password-2026-11-03/native-captures/1793669460051695000/archive_password"
+  }
+}

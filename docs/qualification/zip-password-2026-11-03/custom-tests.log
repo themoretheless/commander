@@ -1,0 +1,16 @@
+   Compiling zeroize v1.9.0
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+   Compiling cipher v0.4.4
+   Compiling chacha20 v0.9.1
+   Compiling chacha20poly1305 v0.10.1
+    Finished `test` profile [unoptimized] target(s) in 39.78s
+     Running unittests src/main.rs (target/debug/build/commander/1c8eccc44e6ea17d/out/commander-1c8eccc44e6ea17d)
+
+running 4 tests
+test app::archive_dialog::tests::archive_details_show_zip_method_and_password_requirement ... ok
+test zip_reader::tests::password_custom_codecs_keep_metadata_and_decode_exact_bytes ... ok
+test archive::tests::password_extraction_standard_zipcrypto_codecs ... ok
+test zip_reader::tests::password_custom_codecs_preserve_memory_and_payload_validation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3416 filtered out; finished in 0.01s
+

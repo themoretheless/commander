@@ -1341,7 +1341,7 @@ fn member_details(
                 .as_ref()
                 .map(|info| {
                     if info.encrypted {
-                        "Yes (password extraction unavailable)"
+                        "Yes (password required)"
                     } else {
                         "No"
                     }
@@ -1476,6 +1476,7 @@ impl App {
         );
         self.ui.tools.replace_on(side);
         self.ui.tools.archive = Some(ArchiveState {
+            password: zeroize::Zeroizing::new(String::new()),
             check: None,
             check_result: None,
             copy_format: crate::archive_export::Format::default(),
@@ -2461,6 +2462,13 @@ impl App {
                         ui.label(selection_stats.get(listing, &state.selected).label())
                             .on_hover_text("Declared metadata for all selected real members, including hidden ones. Byte totals cover regular files only; directories do not expand implicitly. Not verified payload sizes or required disk space.");
                     }
+                    if listing.kind == crate::archive::ArchiveKind::Zip
+                        && listing.members.iter().any(|member| member.zip_info.as_ref().is_some_and(|info| info.encrypted))
+                    {
+                        ui.add_enabled_ui(state.extract.is_none(), |ui| {
+                            let _ = archive_password_input(ui, &mut state.password);
+                        });
+                    }
                     let dest_hint = format!("Extract into {}", dest.display());
                     ui.horizontal_wrapped(|ui| {
                         let n = state.selected.len();
@@ -2503,7 +2511,7 @@ impl App {
                         } else {
                             dest_hint.clone()
                         };
-                        if ui
+                        let all_button = ui
                             .add_enabled(
                                 !listing.members.is_empty() && state.extract.is_none() && state.check.is_none(),
                                 super::dialog_button(
@@ -2512,11 +2520,10 @@ impl App {
                                     egui::RichText::new(extract_all_label(listing)).size(13.0),
                                 ),
                             )
-                            .on_hover_text(all_hint)
-                            .clicked()
-                        {
-                            extract_all = true;
-                        }
+                            .on_hover_text(all_hint);
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("archive-extract-all"), all_button.rect));
+                        if all_button.clicked() { extract_all = true; }
                     });
                 }
             });
@@ -2610,10 +2617,10 @@ impl App {
     }
 
     fn start_archive_extract(&mut self, ctx: &egui::Context, all: bool) {
-        let Some(state) = self.ui.tools.archive.as_ref() else {
+        let Some(state) = self.ui.tools.archive.as_mut() else {
             return;
         };
-        if state.check.is_some() {
+        if state.check.is_some() || state.extract.is_some() {
             return;
         }
         let Some(listing) = state.listing.as_ref() else {
@@ -2632,12 +2639,16 @@ impl App {
             return;
         }
         let archive = state.path.clone();
+        // Empty is a valid ZIP password too; preserve it as Some rather than
+        // treating an empty field as an absent password.
+        let password = Some(std::mem::take(&mut state.password));
         let dest = self.archive_extract_dest();
         let repaint = ctx.clone();
         let run = crate::archive::start_extract(
             archive,
             dest,
             indexes,
+            password,
             std::sync::Arc::new(move || repaint.request_repaint()),
         );
         if let Some(state) = self.ui.tools.archive.as_mut() {
@@ -2646,6 +2657,28 @@ impl App {
             state.status = Some("Extracting…".to_string());
         }
     }
+}
+
+/// Passwords never enter persisted app/session state. Clear egui's undo history
+/// each frame as `TextEdit` otherwise keeps plaintext snapshots across frames.
+fn archive_password_input(
+    ui: &mut egui::Ui,
+    password: &mut zeroize::Zeroizing<String>,
+) -> egui::Response {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("ZIP password");
+        let mut output = egui::TextEdit::singleline(&mut **password)
+            .id_salt("archive-extraction-password")
+            .password(true)
+            .desired_width(180.0)
+            .hint_text("For this extraction")
+            .show(ui);
+        #[cfg(feature = "visual-qa")]
+        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("archive-password-input"), (output.response.rect, output.response.id)));
+        output.state.clear_undoer();
+        output.state.store(ui.ctx(), output.response.id);
+        output.response.response.on_hover_text("ZIP password (ZipCrypto or AES), used only for this extraction. Cleared when extraction starts or the archive pane closes.")
+    }).inner
 }
 
 /// A fixed-width table cell whose label starts at the left edge
@@ -2700,6 +2733,22 @@ mod tests {
             unreadable_members: 0,
             truncated: false,
         }
+    }
+
+    #[test]
+    fn password_widget_masks_text_and_discards_undo_snapshots() {
+        let ctx = egui::Context::default();
+        let mut password = zeroize::Zeroizing::new("private-fixture-password".to_string());
+        let mut id = None;
+        let output =
+            crate::testutil::take_egui_output(ctx.run_ui(egui::RawInput::default(), |ui| {
+                id = Some(super::archive_password_input(ui, &mut password).id);
+            }));
+        assert!(!format!("{:?}", output.shapes).contains("private-fixture-password"));
+        let state = egui::text_edit::TextEditState::load(&ctx, id.unwrap()).unwrap();
+        let current = (egui::text::CCursorRange::default(), String::new());
+        assert!(!state.undoer().has_undo(&current));
+        assert!(!state.undoer().has_redo(&current));
     }
 
     #[test]
@@ -2867,10 +2916,7 @@ mod tests {
         });
         let fields = super::member_details(crate::archive::ArchiveKind::Zip, member);
         assert_eq!(fields[6], ("Compression method", "Deflated".into()));
-        assert_eq!(
-            fields[7],
-            ("Encrypted", "Yes (password extraction unavailable)".into())
-        );
+        assert_eq!(fields[7], ("Encrypted", "Yes (password required)".into()));
         member.zip_info.as_mut().unwrap().encrypted = false;
         assert_eq!(
             super::member_details(crate::archive::ArchiveKind::Zip, member)[7].1,

@@ -1,0 +1,45 @@
+[
+  "i-zstd20.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "30 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "43 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "Unavailable",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Zstd (legacy method 20)",
+      true
+    ],
+    [
+      "Encrypted",
+      "No",
+      true
+    ]
+  ]
+]

@@ -329,6 +329,7 @@ enum Scenario {
     TableDialect,
     TableAmbiguous,
     ArchiveMetadata,
+    ArchivePassword,
     ArchiveBrowser,
     ArchiveFuzzy,
     ArchiveExport,
@@ -363,7 +364,7 @@ impl Scenario {
             Self::ArchiveBrowser | Self::ArchiveFuzzy | Self::ArchiveExport => {
                 Some(ArchiveKind::Tar)
             }
-            Self::ArchiveMetadata => Some(ArchiveKind::Zip),
+            Self::ArchiveMetadata | Self::ArchivePassword => Some(ArchiveKind::Zip),
             Self::ArchiveBzip2 => Some(ArchiveKind::TarBz2),
             Self::ArchiveXz => Some(ArchiveKind::TarXz),
             Self::ArchiveZstd => Some(ArchiveKind::TarZstd),
@@ -373,6 +374,7 @@ impl Scenario {
     fn archive_name(self) -> &'static str {
         match self {
             Self::ArchiveMetadata => "metadata.ZIPX",
+            Self::ArchivePassword => "password.ZIPX",
             Self::ArchiveBzip2 => "sample.tar.bz2",
             Self::ArchiveXz => "sample.tar.xz",
             Self::ArchiveZstd => "sample.tar.zst",
@@ -396,7 +398,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 137] = [
+    const ALL: [Self; 138] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -524,6 +526,7 @@ impl Scenario {
         Self::TableDialect,
         Self::TableAmbiguous,
         Self::ArchiveMetadata,
+        Self::ArchivePassword,
         Self::ArchiveBrowser,
         Self::ArchiveFuzzy,
         Self::ArchiveExport,
@@ -672,6 +675,7 @@ impl Scenario {
             Self::TableDialect => "table_dialect",
             Self::TableAmbiguous => "table_ambiguous",
             Self::ArchiveMetadata => "archive_metadata",
+            Self::ArchivePassword => "archive_password",
             Self::ArchiveBrowser => "archive_browser",
             Self::ArchiveFuzzy => "archive_fuzzy",
             Self::ArchiveExport => "archive_export",
@@ -815,6 +819,7 @@ impl Scenario {
             | Self::TableDialect
             | Self::TableAmbiguous
             | Self::ArchiveMetadata
+            | Self::ArchivePassword
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -968,6 +973,7 @@ impl Scenario {
             | Self::TableDialect
             | Self::TableAmbiguous
             | Self::ArchiveMetadata
+            | Self::ArchivePassword
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -2561,6 +2567,15 @@ fn main() {
             std::fs::write(left.join("preview.rs"), code)
                 .map_err(|error| format!("could not create code fixture: {error}"))?;
         }
+        if scenario == Scenario::ArchivePassword {
+            std::fs::write(
+                left.join("password.ZIPX"),
+                include_bytes!(
+                    "../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.zipx"
+                ),
+            )
+            .map_err(|error| format!("could not create password fixture: {error}"))?;
+        }
         if scenario == Scenario::ArchiveMetadata {
             let create = || -> Result<(), Box<dyn std::error::Error>> {
                 use std::io::Write;
@@ -2640,7 +2655,12 @@ fn main() {
             };
             create().map_err(|e| e.to_string())?;
         }
-        if scenario.archive_kind().is_some() && scenario != Scenario::ArchiveMetadata {
+        if scenario.archive_kind().is_some()
+            && !matches!(
+                scenario,
+                Scenario::ArchiveMetadata | Scenario::ArchivePassword
+            )
+        {
             let create_archive = || -> std::io::Result<()> {
                 let mut builder = tar::Builder::new(Vec::new());
                 for (name, bytes) in [
@@ -4944,6 +4964,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 33)
+            && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 24)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -16663,6 +16684,131 @@ impl eframe::App for VisualQaApp {
                 }
             }
         }
+        if self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 24 {
+            let phase = self.archive_copy_phase;
+            let Some(state) = self
+                .inner
+                .ui
+                .tools
+                .archive
+                .as_ref()
+                .filter(|s| s.listing.is_some())
+            else {
+                return;
+            };
+            let field = ctx.data(|d| {
+                d.get_temp::<(egui::Rect, egui::Id)>(egui::Id::new("archive-password-input"))
+            });
+            if matches!(phase, 3 | 11 | 19) {
+                if field.is_some_and(|(_, id)| ctx.memory(|m| m.has_focus(id))) {
+                    input.events.push(egui::Event::Text(
+                        if phase == 3 {
+                            "wrong-password"
+                        } else {
+                            "fixture-пароль-ёж"
+                        }
+                        .into(),
+                    ));
+                    self.archive_copy_phase += 1;
+                }
+                return;
+            }
+            if matches!(phase, 7 | 15 | 23) {
+                if state.extract.is_some() || !state.password.is_empty() {
+                    return;
+                }
+                let path = self.fixture.left.join("payload.txt");
+                let complete = if phase == 7 {
+                    state.error.as_ref().is_some_and(|e| e.contains("password")) && !path.exists()
+                } else {
+                    state.error.is_none() && std::fs::read(&path).ok().as_deref() == Some(include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.txt").as_slice())
+                        && state.status.as_ref().is_some_and(|s| s.contains(if phase == 23 { "skipped existing 1" } else { "Extracted 1" }))
+                };
+                if complete {
+                    let observation = serde_json::json!({"phase":phase,"password_empty":state.password.is_empty(),"status":state.status,"error":state.error,"output_path":path,"output_exists":path.exists(),"output_matches":std::fs::read(&path).ok().as_deref() == Some(include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.txt").as_slice())});
+                    let _ = std::fs::write(
+                        self.scenario_dir
+                            .join(format!("password-result-{phase}.json")),
+                        serde_json::to_vec_pretty(&observation).unwrap(),
+                    );
+                    self.archive_copy_phase += 1;
+                }
+                return;
+            }
+            if matches!(phase, 4 | 12 | 20) {
+                let expected = if phase == 4 {
+                    "wrong-password"
+                } else {
+                    "fixture-пароль-ёж"
+                };
+                if state.password.as_str() != expected {
+                    return;
+                }
+                let _ = std::fs::write(self.scenario_dir.join(format!("password-input-{phase}.json")), serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"characters":state.password.chars().count(),"bytes":state.password.len()})).unwrap());
+            }
+            let (key, rect, step) = match phase {
+                0..=2 => ("archive-password-input", field.map(|(r, _)| r), phase),
+                4..=6 => (
+                    "archive-extract-all",
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-extract-all"))),
+                    phase - 4,
+                ),
+                8..=10 => ("archive-password-input", field.map(|(r, _)| r), phase - 8),
+                12..=14 => (
+                    "archive-extract-all",
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-extract-all"))),
+                    phase - 12,
+                ),
+                16..=18 => ("archive-password-input", field.map(|(r, _)| r), phase - 16),
+                20..=22 => (
+                    "archive-extract-all",
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-extract-all"))),
+                    phase - 20,
+                ),
+                _ => return,
+            };
+            let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+            else {
+                return;
+            };
+            let Some(rect) = rect else {
+                return;
+            };
+            if !clip.contains_rect(rect.shrink(0.5)) {
+                input.events.push(egui::Event::PointerMoved(
+                    clip.right_bottom() - egui::vec2(25.0, 25.0),
+                ));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(
+                        0.0,
+                        if rect.center().y < clip.center().y {
+                            80.0
+                        } else {
+                            -80.0
+                        },
+                    ),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(egui::Id::new(key), rect) {
+                return;
+            }
+            if step != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_copy_phase += 1;
+            return;
+        }
         if self.scenario == Scenario::ArchiveMetadata
             && self.archive_copy_phase == 33
             && ctx
@@ -19139,7 +19285,10 @@ impl eframe::App for VisualQaApp {
         }
 
         if self.scenario.archive_kind().is_some()
-            && self.scenario != Scenario::ArchiveMetadata
+            && !matches!(
+                self.scenario,
+                Scenario::ArchiveMetadata | Scenario::ArchivePassword
+            )
             && let Some(state) = self.inner.ui.tools.archive.as_mut()
             && state.listing.is_some()
             && state.member_filter.order.field != crate::archive_order::Field::Size
@@ -20919,6 +21068,17 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
+            Scenario::ArchivePassword => {
+                self.archive_copy_phase == 24
+                    && [7,15,23].iter().all(|phase| self.scenario_dir.join(format!("password-result-{phase}.json")).is_file())
+                    && [4,12,20].iter().all(|phase| self.scenario_dir.join(format!("password-input-{phase}.json")).is_file())
+                    && self.inner.ui.tools.archive.as_ref().is_some_and(|state| state.password.is_empty() && state.extract.is_none() && state.error.is_none())
+                    && ctx.data(|d| {
+                        let field = d.get_temp::<(egui::Rect,egui::Id)>(egui::Id::new("archive-password-input"));
+                        let clip = d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip"));
+                        field.zip(clip).is_some_and(|((rect,_),clip)| clip.contains_rect(rect.shrink(0.5)))
+                    })
+            }
             Scenario::ArchiveMetadata => {
                 let observed = ctx.data(|d| d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")));
                 let ready = self.archive_copy_phase == 33 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("j-ppmd.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Ppmd" && rows[7].1 == "No");
@@ -21285,6 +21445,26 @@ impl eframe::App for VisualQaApp {
                 self.inner.ws.pending_op.is_some(),
                 self.inner.ui.modals.any_open(),
                 self.fixture.right.join("bytes.bin").exists(),
+            ));
+        }
+        if self.scenario == Scenario::ArchivePassword {
+            self.last_probe_summary.push_str(&format!(
+                "; archive_password_phase={}, field={:?}, status={:?}, error={:?}",
+                self.archive_copy_phase,
+                ctx.data(|d| d
+                    .get_temp::<(egui::Rect, egui::Id)>(egui::Id::new("archive-password-input"))),
+                self.inner
+                    .ui
+                    .tools
+                    .archive
+                    .as_ref()
+                    .and_then(|s| s.status.as_deref()),
+                self.inner
+                    .ui
+                    .tools
+                    .archive
+                    .as_ref()
+                    .and_then(|s| s.error.as_deref())
             ));
         }
         if self.scenario == Scenario::ArchiveMetadata {
@@ -22051,6 +22231,7 @@ mod tests {
                 "table_dialect",
                 "table_ambiguous",
                 "archive_metadata",
+                "archive_password",
                 "archive_browser",
                 "archive_fuzzy",
                 "archive_export",

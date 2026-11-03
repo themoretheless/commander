@@ -1,0 +1,18 @@
+{
+  "stored": {
+    "method": 0,
+    "sha256": "0fb23854b2f045eab531f9348c1a5de715b3e333a0b51a814a2b6670b2a8dab4"
+  },
+  "deflate": {
+    "method": 8,
+    "sha256": "b533415f38fb98bf610c64f9113b5d346d33a98fe32dc7e2b650fbc9a0d6838c"
+  },
+  "bzip2": {
+    "method": 12,
+    "sha256": "70e734d35668ae24c7a9791c695ce694f0c8eece151d0a2a58e41d913682131e"
+  },
+  "deflate64": {
+    "method": 9,
+    "sha256": "dac70dd00d0fa18d317083637d14a068cd7cffde7d5a5b81951e82294fb5ff2f"
+  }
+}

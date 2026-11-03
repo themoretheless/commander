@@ -3,11 +3,104 @@
 //! after validating it: the exact properties consumed here feed liblzma.
 use std::io::{self, Cursor, Read, Seek};
 
+mod aes;
+mod zipcrypto;
+
 const MAX_DECODER_MEMORY: u64 = 64 * 1024 * 1024;
-type BoundedInput<'a, R> = std::io::Chain<Cursor<[u8; 13]>, zip::read::ZipFile<'a, R>>;
+type BoundedInput<'a, R> = std::io::Chain<Cursor<[u8; 13]>, CompressedInput<'a, R>>;
+
+/// Keeps original metadata alongside an optionally decrypted compressed stream.
+/// The cryptographic header is consumed before any codec reads its properties.
+struct CompressedInput<'a, R: Read> {
+    entry: zip::read::ZipFile<'a, R>,
+    crypto: Crypto,
+    check_crc: bool,
+}
+enum Crypto {
+    Plain,
+    Legacy(zipcrypto::Keys),
+    Aes(Box<aes::State>),
+}
+impl<'a, R: Read> CompressedInput<'a, R> {
+    fn new(mut entry: zip::read::ZipFile<'a, R>, password: Option<&[u8]>) -> io::Result<Self> {
+        let aes = aes::settings(&entry)?;
+        if aes.is_some() && !entry.encrypted() {
+            return Err(io::Error::other("ZIP AES member has no encryption flag"));
+        }
+        let crypto = if entry.encrypted() {
+            let password = password
+                .ok_or_else(|| io::Error::other("Encrypted ZIP member requires a password"))?;
+            if entry.flags().as_u16() & (1 << 6) != 0 {
+                return Err(io::Error::other("ZIP strong encryption is not supported"));
+            }
+            if let Some(settings) = aes {
+                let total = entry.compressed_size();
+                return Ok(Self {
+                    crypto: Crypto::Aes(Box::new(aes::State::new(
+                        &mut entry, password, total, settings,
+                    )?)),
+                    entry,
+                    check_crc: settings.check_crc,
+                });
+            }
+            let verifier = if entry.flags().as_u16() & 8 != 0 {
+                (entry
+                    .last_modified()
+                    .ok_or_else(|| {
+                        io::Error::other("Encrypted ZIP member has no valid DOS timestamp")
+                    })?
+                    .timepart()
+                    >> 8) as u8
+            } else {
+                (entry.crc32() >> 24) as u8
+            };
+            let mut keys = zipcrypto::Keys::new(password);
+            let mut header = [0; 12];
+            entry.read_exact(&mut header)?;
+            keys.decrypt(&mut header);
+            if header[11] != verifier {
+                return Err(io::Error::other("Invalid ZIP password"));
+            }
+            Crypto::Legacy(keys)
+        } else {
+            Crypto::Plain
+        };
+        Ok(Self {
+            entry,
+            crypto,
+            check_crc: true,
+        })
+    }
+}
+impl<R: Read> CompressedInput<'_, R> {
+    fn finish(&mut self) -> io::Result<()> {
+        if let Crypto::Aes(state) = &mut self.crypto {
+            state.finish(&mut self.entry)?;
+        }
+        Ok(())
+    }
+}
+impl<'a, R: Read> std::ops::Deref for CompressedInput<'a, R> {
+    type Target = zip::read::ZipFile<'a, R>;
+    fn deref(&self) -> &Self::Target {
+        &self.entry
+    }
+}
+impl<R: Read> Read for CompressedInput<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if let Crypto::Aes(state) = &mut self.crypto {
+            return state.read(&mut self.entry, bytes);
+        }
+        let count = self.entry.read(bytes)?;
+        if let Crypto::Legacy(keys) = &mut self.crypto {
+            keys.decrypt(&mut bytes[..count]);
+        }
+        Ok(count)
+    }
+}
 // ppmd-rust treats UnexpectedEof as a successful partial read. ZIP PPMd
 // requires its end marker: preserve premature input exhaustion as an error.
-struct PpmdInput<'a, R: Read>(zip::read::ZipFile<'a, R>);
+struct PpmdInput<'a, R: Read>(CompressedInput<'a, R>);
 impl<R: Read> Read for PpmdInput<'_, R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         if bytes.is_empty() {
@@ -28,7 +121,7 @@ impl<R: Read> Read for PpmdInput<'_, R> {
 enum Decoder<'a, R: Read> {
     Ppmd(Box<ppmd_rust::Ppmd8Decoder<PpmdInput<'a, R>>>),
     LzmaXz(xz2::read::XzDecoder<BoundedInput<'a, R>>),
-    Zstd(zstd::stream::read::Decoder<'static, std::io::BufReader<zip::read::ZipFile<'a, R>>>),
+    Zstd(zstd::stream::read::Decoder<'static, std::io::BufReader<CompressedInput<'a, R>>>),
 }
 impl<R: Read> Read for Decoder<'_, R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -45,6 +138,13 @@ impl<R: Read> Read for Decoder<'_, R> {
     }
 }
 impl<'a, R: Read> Decoder<'a, R> {
+    fn finish(&mut self) -> io::Result<()> {
+        match self {
+            Self::Ppmd(d) => d.get_mut().0.finish(),
+            Self::LzmaXz(d) => d.get_mut().get_mut().1.finish(),
+            Self::Zstd(d) => d.get_mut().get_mut().finish(),
+        }
+    }
     fn entry(&self) -> &zip::read::ZipFile<'a, R> {
         match self {
             Self::Ppmd(d) => &d.get_ref().0,
@@ -57,13 +157,17 @@ struct Decoded<'a, R: Read> {
     decoder: Decoder<'a, R>,
     codec: &'static str,
     crc: crc32fast::Hasher,
-    expected_crc: u32,
+    expected_crc: Option<u32>,
     size: u64,
     decoded: u64,
     finished: bool,
 }
+struct Standard<'a, R: Read> {
+    entry: zip::read::ZipFile<'a, R>,
+    decoded: u64,
+}
 enum Inner<'a, R: Read> {
-    Standard(zip::read::ZipFile<'a, R>),
+    Standard(Standard<'a, R>),
     Bounded(Box<Decoded<'a, R>>),
 }
 pub struct Member<'a, R: Read> {
@@ -73,7 +177,7 @@ impl<'a, R: Read> std::ops::Deref for Member<'a, R> {
     type Target = zip::read::ZipFile<'a, R>;
     fn deref(&self) -> &Self::Target {
         match &self.inner {
-            Inner::Standard(entry) => entry,
+            Inner::Standard(member) => &member.entry,
             Inner::Bounded(member) => member.decoder.entry(),
         }
     }
@@ -84,7 +188,18 @@ impl<R: Read> Read for Member<'_, R> {
             return Ok(0);
         }
         match &mut self.inner {
-            Inner::Standard(entry) => entry.read(bytes),
+            Inner::Standard(member) => {
+                let count = member.entry.read(bytes)?;
+                member.decoded = member
+                    .decoded
+                    .checked_add(count as u64)
+                    .ok_or_else(|| io::Error::other("ZIP decoded size overflow"))?;
+                let size = member.entry.size();
+                if member.decoded > size || (count == 0 && member.decoded != size) {
+                    return Err(io::Error::other("ZIP member size mismatch"));
+                }
+                Ok(count)
+            }
             Inner::Bounded(member) => {
                 if member.finished {
                     return Ok(0);
@@ -101,8 +216,11 @@ impl<R: Read> Read for Member<'_, R> {
                 }
                 member.crc.update(&bytes[..count]);
                 if count == 0 {
+                    member.decoder.finish()?;
                     if member.decoded != member.size
-                        || member.crc.clone().finalize() != member.expected_crc
+                        || member
+                            .expected_crc
+                            .is_some_and(|expected| member.crc.clone().finalize() != expected)
                     {
                         return Err(io::Error::other(format!(
                             "{} member size or CRC mismatch",
@@ -151,6 +269,16 @@ pub fn open<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     index: usize,
 ) -> io::Result<Member<'_, R>> {
+    open_with_password(archive, index, None)
+}
+
+/// Password bytes are borrowed only while initializing the reader. They are
+/// never stored in archive metadata or copied into diagnostics.
+pub fn open_with_password<'a, R: Read + Seek>(
+    archive: &'a mut zip::ZipArchive<R>,
+    index: usize,
+    password: Option<&[u8]>,
+) -> io::Result<Member<'a, R>> {
     let method = archive
         .by_index_data(index)
         .map_err(io::Error::other)?
@@ -164,10 +292,18 @@ pub fn open<R: Read + Seek>(
         && !ppmd
     {
         return Ok(Member {
-            inner: Inner::Standard(archive.by_index(index).map_err(io::Error::other)?),
+            inner: Inner::Standard(Standard {
+                entry: archive
+                    .by_index_with_options(
+                        index,
+                        zip::read::ZipReadOptions::new().password(password),
+                    )
+                    .map_err(io::Error::other)?,
+                decoded: 0,
+            }),
         });
     }
-    let mut raw = archive.by_index_raw(index).map_err(io::Error::other)?;
+    let raw = archive.by_index_raw(index).map_err(io::Error::other)?;
     let codec = if method == zip::CompressionMethod::LZMA {
         "LZMA"
     } else if ppmd {
@@ -177,12 +313,8 @@ pub fn open<R: Read + Seek>(
     } else {
         "XZ"
     };
-    if raw.encrypted() {
-        return Err(io::Error::other(format!(
-            "Encrypted ZIP {codec} member requires a password"
-        )));
-    }
-    let expected_crc = raw.crc32();
+    let mut raw = CompressedInput::new(raw, password)?;
+    let expected_crc = raw.check_crc.then(|| raw.crc32());
     let size = raw.size();
     let decoder = if ppmd {
         let mut header = [0; 2];
@@ -250,6 +382,394 @@ pub fn open<R: Read + Seek>(
 mod tests {
     use super::*;
     use std::io::Write;
+    macro_rules! fixture {
+        ($name:literal, $extension:literal) => {
+            include_bytes!(concat!(
+                "../",
+                "docs/qualification/zip-password-2026-11-03/fixtures/",
+                $name,
+                $extension
+            ))
+            .as_slice()
+        };
+    }
+    #[test]
+    fn aes_custom_codec_memory_limits_still_apply_before_allocation() {
+        for (name, bytes, message) in [
+            ("lzma", fixture!("aes-lzma-memory", ".zipx"), "memory"),
+            ("xz", fixture!("aes-xz-memory", ".zipx"), "memory"),
+            ("zstd", fixture!("aes-zstd-memory", ".zipx"), "64 MiB"),
+            ("ppmd", fixture!("aes-ppmd-memory", ".zipx"), "64 MiB"),
+        ] {
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let error = open_with_password(&mut archive, 0, Some(b"fixture-password"))
+                .and_then(|mut member| io::copy(&mut member, &mut io::sink()))
+                .expect_err(name)
+                .to_string();
+            assert!(error.contains(message), "{name}: {error}");
+        }
+    }
+    #[test]
+    fn aes_custom_codecs_all_strengths_versions_and_chunk_boundaries() {
+        for (name, bytes, expected) in [
+            (
+                "aes-lzma-1-v1",
+                fixture!("aes-lzma-1-v1", ".zipx"),
+                fixture!("aes-lzma-1-v1", ".txt"),
+            ),
+            (
+                "aes-lzma-1-v2",
+                fixture!("aes-lzma-1-v2", ".zipx"),
+                fixture!("aes-lzma-1-v2", ".txt"),
+            ),
+            (
+                "aes-lzma-2-v1",
+                fixture!("aes-lzma-2-v1", ".zipx"),
+                fixture!("aes-lzma-2-v1", ".txt"),
+            ),
+            (
+                "aes-lzma-2-v2",
+                fixture!("aes-lzma-2-v2", ".zipx"),
+                fixture!("aes-lzma-2-v2", ".txt"),
+            ),
+            (
+                "aes-lzma-3-v1",
+                fixture!("aes-lzma-3-v1", ".zipx"),
+                fixture!("aes-lzma-3-v1", ".txt"),
+            ),
+            (
+                "aes-lzma-3-v2",
+                fixture!("aes-lzma-3-v2", ".zipx"),
+                fixture!("aes-lzma-3-v2", ".txt"),
+            ),
+            (
+                "aes-xz-1-v1",
+                fixture!("aes-xz-1-v1", ".zipx"),
+                fixture!("aes-xz-1-v1", ".txt"),
+            ),
+            (
+                "aes-xz-1-v2",
+                fixture!("aes-xz-1-v2", ".zipx"),
+                fixture!("aes-xz-1-v2", ".txt"),
+            ),
+            (
+                "aes-xz-2-v1",
+                fixture!("aes-xz-2-v1", ".zipx"),
+                fixture!("aes-xz-2-v1", ".txt"),
+            ),
+            (
+                "aes-xz-2-v2",
+                fixture!("aes-xz-2-v2", ".zipx"),
+                fixture!("aes-xz-2-v2", ".txt"),
+            ),
+            (
+                "aes-xz-3-v1",
+                fixture!("aes-xz-3-v1", ".zipx"),
+                fixture!("aes-xz-3-v1", ".txt"),
+            ),
+            (
+                "aes-xz-3-v2",
+                fixture!("aes-xz-3-v2", ".zipx"),
+                fixture!("aes-xz-3-v2", ".txt"),
+            ),
+            (
+                "aes-zstd-1-v1",
+                fixture!("aes-zstd-1-v1", ".zipx"),
+                fixture!("aes-zstd-1-v1", ".txt"),
+            ),
+            (
+                "aes-zstd-1-v2",
+                fixture!("aes-zstd-1-v2", ".zipx"),
+                fixture!("aes-zstd-1-v2", ".txt"),
+            ),
+            (
+                "aes-zstd-2-v1",
+                fixture!("aes-zstd-2-v1", ".zipx"),
+                fixture!("aes-zstd-2-v1", ".txt"),
+            ),
+            (
+                "aes-zstd-2-v2",
+                fixture!("aes-zstd-2-v2", ".zipx"),
+                fixture!("aes-zstd-2-v2", ".txt"),
+            ),
+            (
+                "aes-zstd-3-v1",
+                fixture!("aes-zstd-3-v1", ".zipx"),
+                fixture!("aes-zstd-3-v1", ".txt"),
+            ),
+            (
+                "aes-zstd-3-v2",
+                fixture!("aes-zstd-3-v2", ".zipx"),
+                fixture!("aes-zstd-3-v2", ".txt"),
+            ),
+            (
+                "aes-legacy-1-v1",
+                fixture!("aes-legacy-1-v1", ".zipx"),
+                fixture!("aes-legacy-1-v1", ".txt"),
+            ),
+            (
+                "aes-legacy-1-v2",
+                fixture!("aes-legacy-1-v2", ".zipx"),
+                fixture!("aes-legacy-1-v2", ".txt"),
+            ),
+            (
+                "aes-legacy-2-v1",
+                fixture!("aes-legacy-2-v1", ".zipx"),
+                fixture!("aes-legacy-2-v1", ".txt"),
+            ),
+            (
+                "aes-legacy-2-v2",
+                fixture!("aes-legacy-2-v2", ".zipx"),
+                fixture!("aes-legacy-2-v2", ".txt"),
+            ),
+            (
+                "aes-legacy-3-v1",
+                fixture!("aes-legacy-3-v1", ".zipx"),
+                fixture!("aes-legacy-3-v1", ".txt"),
+            ),
+            (
+                "aes-legacy-3-v2",
+                fixture!("aes-legacy-3-v2", ".zipx"),
+                fixture!("aes-legacy-3-v2", ".txt"),
+            ),
+            (
+                "aes-ppmd-1-v1",
+                fixture!("aes-ppmd-1-v1", ".zipx"),
+                fixture!("aes-ppmd-1-v1", ".txt"),
+            ),
+            (
+                "aes-ppmd-1-v2",
+                fixture!("aes-ppmd-1-v2", ".zipx"),
+                fixture!("aes-ppmd-1-v2", ".txt"),
+            ),
+            (
+                "aes-ppmd-2-v1",
+                fixture!("aes-ppmd-2-v1", ".zipx"),
+                fixture!("aes-ppmd-2-v1", ".txt"),
+            ),
+            (
+                "aes-ppmd-2-v2",
+                fixture!("aes-ppmd-2-v2", ".zipx"),
+                fixture!("aes-ppmd-2-v2", ".txt"),
+            ),
+            (
+                "aes-ppmd-3-v1",
+                fixture!("aes-ppmd-3-v1", ".zipx"),
+                fixture!("aes-ppmd-3-v1", ".txt"),
+            ),
+            (
+                "aes-ppmd-3-v2",
+                fixture!("aes-ppmd-3-v2", ".zipx"),
+                fixture!("aes-ppmd-3-v2", ".txt"),
+            ),
+            (
+                "aes-lzma-empty",
+                fixture!("aes-lzma-empty", ".zipx"),
+                fixture!("aes-lzma-empty", ".txt"),
+            ),
+            (
+                "aes-xz-empty",
+                fixture!("aes-xz-empty", ".zipx"),
+                fixture!("aes-xz-empty", ".txt"),
+            ),
+            (
+                "aes-ppmd-empty",
+                fixture!("aes-ppmd-empty", ".zipx"),
+                fixture!("aes-ppmd-empty", ".txt"),
+            ),
+            (
+                "aes-descriptor",
+                fixture!("aes-descriptor", ".zipx"),
+                fixture!("aes-descriptor", ".txt"),
+            ),
+            (
+                "aes-ae2-nonzero-crc",
+                fixture!("aes-ae2-nonzero-crc", ".zipx"),
+                fixture!("aes-ae2-nonzero-crc", ".txt"),
+            ),
+            (
+                "aes-ppmd-tail",
+                fixture!("aes-ppmd-tail", ".zipx"),
+                fixture!("aes-ppmd-tail", ".txt"),
+            ),
+        ] {
+            for password in [None, Some(b"wrong-password".as_slice())] {
+                let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+                assert!(
+                    open_with_password(&mut archive, 0, password).is_err(),
+                    "{name}"
+                );
+            }
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let mut member =
+                open_with_password(&mut archive, 0, Some(b"fixture-password")).unwrap();
+            assert!(member.encrypted());
+            assert_eq!(member.read(&mut []).unwrap(), 0);
+            let mut decoded = Vec::new();
+            let mut round = 0;
+            loop {
+                let mut buffer = [0; 4096];
+                let length = [1, 17, 3, 4096][round % 4];
+                round += 1;
+                let count = member
+                    .read(&mut buffer[..length])
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+                if count == 0 {
+                    break;
+                }
+                decoded.extend_from_slice(&buffer[..count]);
+            }
+            assert_eq!(decoded, expected, "{name}");
+        }
+    }
+    #[test]
+    fn aes_authentication_size_crc_and_late_eos_fail_closed() {
+        for (name, bytes, message) in [
+            (
+                "aes-lzma-bad-tag",
+                fixture!("aes-lzma-bad-tag", ".zipx"),
+                "authentication",
+            ),
+            (
+                "aes-xz-bad-tag",
+                fixture!("aes-xz-bad-tag", ".zipx"),
+                "authentication",
+            ),
+            (
+                "aes-zstd-bad-tag",
+                fixture!("aes-zstd-bad-tag", ".zipx"),
+                "authentication",
+            ),
+            (
+                "aes-legacy-bad-tag",
+                fixture!("aes-legacy-bad-tag", ".zipx"),
+                "authentication",
+            ),
+            (
+                "aes-ppmd-bad-tag",
+                fixture!("aes-ppmd-bad-tag", ".zipx"),
+                "authentication",
+            ),
+            (
+                "aes-ppmd-tail-bad-tag",
+                fixture!("aes-ppmd-tail-bad-tag", ".zipx"),
+                "authentication",
+            ),
+            (
+                "aes-ae1-bad-crc",
+                fixture!("aes-ae1-bad-crc", ".zipx"),
+                "CRC",
+            ),
+            ("aes-bad-size", fixture!("aes-bad-size", ".zipx"), "size"),
+            (
+                "aes-short-header",
+                fixture!("aes-short-header", ".zipx"),
+                "",
+            ),
+        ] {
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let result = open_with_password(&mut archive, 0, Some(b"fixture-password")).and_then(
+                |mut member| {
+                    let error = io::copy(&mut member, &mut io::sink()).expect_err(name);
+                    if message == "authentication" {
+                        for _ in 0..2 {
+                            assert!(
+                                member.read(&mut [0; 1]).is_err(),
+                                "{name} became EOF after authentication failure"
+                            );
+                        }
+                    }
+                    Err::<(), _>(error)
+                },
+            );
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(message), "{name}: {error}");
+            assert!(!error.contains("fixture-password"));
+        }
+        // Reading exactly the declared plaintext is insufficient to authenticate
+        // a compressed entry: the next EOF read must still reject the bad tag.
+        let mut archive =
+            zip::ZipArchive::new(Cursor::new(fixture!("aes-ppmd-tail-bad-tag", ".zipx"))).unwrap();
+        let mut member = open_with_password(&mut archive, 0, Some(b"fixture-password")).unwrap();
+        let expected = fixture!("aes-ppmd-tail-bad-tag", ".txt");
+        let mut decoded = vec![0; expected.len()];
+        member.read_exact(&mut decoded).unwrap();
+        assert_eq!(decoded, expected);
+        assert!(
+            member
+                .read(&mut [0; 1])
+                .unwrap_err()
+                .to_string()
+                .contains("authentication")
+        );
+    }
+    #[test]
+    fn aes_utf8_password_bytes_are_preserved() {
+        let mut archive =
+            zip::ZipArchive::new(Cursor::new(fixture!("aes-utf8-password", ".zipx"))).unwrap();
+        let mut member =
+            open_with_password(&mut archive, 0, Some("fixture-пароль-ёж".as_bytes())).unwrap();
+        let mut decoded = Vec::new();
+        member.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, fixture!("aes-utf8-password", ".txt"));
+    }
+    #[test]
+    fn password_custom_codecs_keep_metadata_and_decode_exact_bytes() {
+        for (name, bytes, expected) in [
+            ("lzma", fixture!("lzma", ".zipx"), fixture!("lzma", ".txt")),
+            (
+                "lzma-descriptor",
+                fixture!("lzma-descriptor", ".zipx"),
+                fixture!("lzma-descriptor", ".txt"),
+            ),
+            ("xz", fixture!("xz", ".zipx"), fixture!("xz", ".txt")),
+            ("zstd", fixture!("zstd", ".zipx"), fixture!("zstd", ".txt")),
+            (
+                "zstd-legacy",
+                fixture!("zstd-legacy", ".zipx"),
+                fixture!("zstd-legacy", ".txt"),
+            ),
+            ("ppmd", fixture!("ppmd", ".zipx"), fixture!("ppmd", ".txt")),
+        ] {
+            for password in [None, Some(b"wrong-password".as_slice())] {
+                let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+                assert!(
+                    open_with_password(&mut archive, 0, password).is_err(),
+                    "{name}"
+                );
+            }
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let mut member =
+                open_with_password(&mut archive, 0, Some(b"fixture-password")).unwrap();
+            assert!(member.encrypted());
+            assert_eq!(member.name().unwrap(), "payload.txt");
+            assert_eq!(member.read(&mut []).unwrap(), 0);
+            let mut decoded = Vec::new();
+            member.read_to_end(&mut decoded).unwrap();
+            assert_eq!(decoded, expected, "{name}");
+            assert_eq!(member.read(&mut [0; 3]).unwrap(), 0);
+        }
+    }
+    #[test]
+    fn password_custom_codecs_preserve_memory_and_payload_validation() {
+        for (name, bytes, error) in [
+            ("lzma-memory", fixture!("lzma-memory", ".zipx"), "memory"),
+            ("xz-memory", fixture!("xz-memory", ".zipx"), "memory"),
+            ("ppmd-memory", fixture!("ppmd-memory", ".zipx"), "64 MiB"),
+            ("ppmd-no-eos", fixture!("ppmd-no-eos", ".zipx"), ""),
+            ("ppmd-bad-crc", fixture!("ppmd-bad-crc", ".zipx"), "CRC"),
+            ("ppmd-bad-size", fixture!("ppmd-bad-size", ".zipx"), "size"),
+            ("xz-truncated", fixture!("xz-truncated", ".zipx"), ""),
+            ("xz-short-header", fixture!("xz-short-header", ".zipx"), ""),
+        ] {
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let result = open_with_password(&mut archive, 0, Some(b"fixture-password"))
+                .and_then(|mut member| io::copy(&mut member, &mut io::sink()));
+            let message = result.expect_err(name).to_string();
+            assert!(message.contains(error), "{name}: {message}");
+            assert!(!message.contains("fixture-password"));
+        }
+    }
     #[test]
     fn ppmd_parameters_bound_model_arena_before_decoder_creation() {
         for (order, mib, restore, valid) in [
