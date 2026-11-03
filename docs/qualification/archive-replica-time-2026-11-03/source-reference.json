@@ -1,0 +1,5 @@
+{
+  "cohort": 85,
+  "reference": "https://github.com/pkolaczk/fclones#removing-files",
+  "behavior": "fclones supports timestamp priority when choosing replicas. Commander independently adds newest/oldest keep ordering to archive content-group selection; the labels express copies kept, unlike fclones removal-priority labels."
+}

@@ -1,0 +1,8 @@
+{
+  "src/app/archive_dialog.rs": "2ecd6dd8b8eb65c3e642feca84b3e2fb1c388624393580b3a1efa05f8b6b7b0e",
+  "src/visual_qa.rs": "a9352f0df7d14bfa119bb063ac6993dae90f61ba3158a54f793f91a6a98fd88a",
+  "src/archive.rs": "9c6353689dc4d3684c9a4bf341de152a1869cee46c3b50cb5cb86c8b0878f0b4",
+  "src/archive_check.rs": "423cdf93b2f6ef7bdf93bde1d72c77f0c2111db9275c4766e9ccec69016e64f8",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}

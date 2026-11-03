@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-replica-time-2026-11-03/native-captures/1793688553380540000",
+  "binary_sha256": "77906a5250a4c9bef50238ef6b5ae9b1c743ca789262c412411ce910c4fe1d85",
+  "core_sha256": "77906a5250a4c9bef50238ef6b5ae9b1c743ca789262c412411ce910c4fe1d85",
+  "wrapper_sha256": "868a54bec98801f997df28769d0ac8f0eb231f3e64dbd41090c5e06d5c5c3f31",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

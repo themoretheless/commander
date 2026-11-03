@@ -1287,34 +1287,57 @@ fn change_content_group_selection(
 }
 
 /// Runtime-only replica policy shared by the per-group and global actions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContentKeepOrder {
+    #[default]
+    First,
+    Last,
+    Newest,
+    Oldest,
+}
+impl ContentKeepOrder {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::First => "First entries",
+            Self::Last => "Last entries",
+            Self::Newest => "Newest timestamps",
+            Self::Oldest => "Oldest timestamps",
+        }
+    }
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::Last => "last",
+            Self::Newest => "newest",
+            Self::Oldest => "oldest",
+        }
+    }
+}
 pub struct ContentKeep {
     pub count: usize,
-    pub last: bool,
+    pub order: ContentKeepOrder,
 }
 impl Default for ContentKeep {
     fn default() -> Self {
         Self {
             count: 1,
-            last: false,
+            order: ContentKeepOrder::First,
         }
     }
 }
 impl ContentKeep {
     fn label(&self) -> String {
-        format!(
-            "{} {}",
-            self.count,
-            if self.last { "last" } else { "first" }
-        )
+        format!("{} {}", self.count, self.order.short_label())
     }
     fn ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Keep copies per group:");
             ui.add(egui::DragValue::new(&mut self.count).range(1..=100_000).speed(1));
-            for (last,label) in [(false,"First entries"),(true,"Last entries")] {
-                let button=ui.selectable_value(&mut self.last,last,label).on_hover_text("Order by original archive entry index, independently of listing order or filename. Groups with fewer members keep them all.");
+            for order in [ContentKeepOrder::First,ContentKeepOrder::Last,ContentKeepOrder::Newest,ContentKeepOrder::Oldest] {
+                let label=order.label();
+                let button=ui.selectable_value(&mut self.order,order,label).on_hover_text("First/last use original entry numbers. Newest/oldest use member timestamps declared in the archive: known dates first, missing dates last, ties by lowest original entry number. Groups with fewer members keep them all. Apply with Select copies; changing this policy leaves selection unchanged.");
                 #[cfg(feature="visual-qa")]
-                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-keep-order",last)),button.rect));
+                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-keep-order",label)),button.rect));
                 let _=button;
             }
         });
@@ -1354,10 +1377,27 @@ fn select_redundant_content_groups(
             return Err("Content group has fewer than two members; run the scan again.".into());
         }
         let mut ranked = group.members.iter().enumerate().collect::<Vec<_>>();
-        ranked.sort_unstable_by_key(|(_, member)| member.index);
-        if keep.last {
-            ranked.reverse();
-        }
+        ranked.sort_unstable_by(|(left, a), (right, b)| match keep.order {
+            ContentKeepOrder::First => a.index.cmp(&b.index),
+            ContentKeepOrder::Last => b.index.cmp(&a.index),
+            ContentKeepOrder::Newest | ContentKeepOrder::Oldest => {
+                let left = listing.members[rows[offset + left]].modified;
+                let right = listing.members[rows[offset + right]].modified;
+                let time = match (left, right) {
+                    (Some(a), Some(b)) => {
+                        if keep.order == ContentKeepOrder::Newest {
+                            b.cmp(&a)
+                        } else {
+                            a.cmp(&b)
+                        }
+                    }
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                };
+                time.then_with(|| a.index.cmp(&b.index))
+            }
+        });
         keepers.extend(
             ranked
                 .into_iter()
@@ -2085,7 +2125,7 @@ impl App {
                         select_content_groups=select.clicked();
                         state.content_keep.ui(ui);
                         let redundant=ui.add_enabled(!groups.is_empty(),egui::Button::new(format!("Select copies; keep {} in each group",state.content_keep.label())))
-                            .on_hover_text("Select extra copies using the configured count and original-entry order. Kept entries are deselected even if previously selected. Unrelated selections stay unchanged. Includes hidden members and all pages; no archive files are changed.");
+                            .on_hover_text("Select extra copies using the configured count and keep order. Kept entries are deselected even if previously selected. Unrelated selections stay unchanged. Includes hidden members and all pages; no archive files are changed.");
                         #[cfg(feature="visual-qa")]
                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-select-redundant-groups"),redundant.rect));
                         if redundant.clicked(){select_redundant_groups=Some(None);}
@@ -2115,7 +2155,7 @@ impl App {
                                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-content-group-selection",_rank,select)),button.rect));
                                         if button.clicked(){select_content_group=Some((_rank,select));}
                                     }
-                                    let redundant=ui.small_button(format!("Select copies; keep {}",state.content_keep.label())).on_hover_text("Apply the configured keep count and original-entry order to this group. Kept entries are deselected; other groups and unrelated selections stay unchanged. Includes hidden members and every page. No files are changed.");
+                                    let redundant=ui.small_button(format!("Select copies; keep {}",state.content_keep.label())).on_hover_text("Apply the configured keep count and keep order to this group. Kept entries are deselected; other groups and unrelated selections stay unchanged. Includes hidden members and every page. No files are changed.");
                                     #[cfg(feature="visual-qa")]
                                     ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-select-redundant-group",_rank)),redundant.rect));
                                     if redundant.clicked(){select_redundant_groups=Some(Some(_rank));}
@@ -3141,6 +3181,124 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn archive_time_keepers_use_declared_dates_stable_ties_and_missing_last() {
+        use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};
+        use std::collections::BTreeSet;
+        use std::time::{Duration, UNIX_EPOCH};
+        let mut listing = listing(&["same", "same", "c", "d", "e", "unrelated"]);
+        for (row, member) in listing.members.iter_mut().enumerate() {
+            member.index = [9, 2, 8, 4, 1, 99][row];
+            member.size = 3;
+            member.modified = [Some(10), Some(30), Some(30), None, None, Some(100)][row]
+                .map(|s| UNIX_EPOCH + Duration::from_secs(s));
+        }
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 6,
+            decoded: 18,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..5]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        for (order, count, wanted) in [
+            (ContentKeepOrder::Newest, 1, vec![0, 2, 3, 4, 5]),
+            (ContentKeepOrder::Oldest, 1, vec![1, 2, 3, 4, 5]),
+            (ContentKeepOrder::Newest, 2, vec![0, 3, 4, 5]),
+            (ContentKeepOrder::Oldest, 2, vec![2, 3, 4, 5]),
+            (ContentKeepOrder::Newest, 4, vec![3, 5]),
+            (ContentKeepOrder::Oldest, 4, vec![3, 5]),
+            (ContentKeepOrder::Newest, usize::MAX, vec![5]),
+        ] {
+            for group in [None, Some(0)] {
+                let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
+                select_redundant_content_groups(
+                    &report,
+                    &listing,
+                    group,
+                    &ContentKeep { count, order },
+                    &mut selected,
+                )
+                .unwrap();
+                assert_eq!(
+                    selected.into_iter().collect::<Vec<_>>(),
+                    wanted,
+                    "{order:?} count={count}"
+                );
+            }
+        }
+        listing.members[2].modified =
+            Some(UNIX_EPOCH + Duration::from_secs(30) + Duration::from_nanos(1));
+        let mut selected = BTreeSet::from([5]);
+        select_redundant_content_groups(
+            &report,
+            &listing,
+            None,
+            &ContentKeep {
+                count: 1,
+                order: ContentKeepOrder::Newest,
+            },
+            &mut selected,
+        )
+        .unwrap();
+        assert_eq!(selected, BTreeSet::from([0, 1, 3, 4, 5]));
+        listing.members[0].modified = Some(UNIX_EPOCH - Duration::from_secs(1));
+        selected = BTreeSet::from([5]);
+        select_redundant_content_groups(
+            &report,
+            &listing,
+            None,
+            &ContentKeep {
+                count: 1,
+                order: ContentKeepOrder::Oldest,
+            },
+            &mut selected,
+        )
+        .unwrap();
+        assert_eq!(selected, BTreeSet::from([1, 2, 3, 4, 5]));
+        for member in &mut listing.members {
+            member.modified = None;
+        }
+        for order in [ContentKeepOrder::Newest, ContentKeepOrder::Oldest] {
+            selected = BTreeSet::from([5]);
+            select_redundant_content_groups(
+                &report,
+                &listing,
+                None,
+                &ContentKeep { count: 1, order },
+                &mut selected,
+            )
+            .unwrap();
+            assert_eq!(selected, BTreeSet::from([0, 1, 2, 3, 5]));
+        }
+        report.content_groups.as_mut().unwrap()[0].members[1].path = "stale".into();
+        selected = BTreeSet::from([2, 5]);
+        assert!(
+            select_redundant_content_groups(
+                &report,
+                &listing,
+                None,
+                &ContentKeep {
+                    count: 1,
+                    order: ContentKeepOrder::Newest
+                },
+                &mut selected
+            )
+            .is_err()
+        );
+        assert_eq!(selected, BTreeSet::from([2, 5]));
+    }
+
+    #[test]
     fn archive_replica_count_and_order_keep_exact_original_indices() {
         let mut listing = listing(&["dup", "dup", "a", "z", "unrelated"]);
         for (row, m) in listing.members.iter_mut().enumerate() {
@@ -3181,7 +3339,14 @@ mod tests {
                 &report,
                 &listing,
                 None,
-                &super::ContentKeep { count, last },
+                &super::ContentKeep {
+                    count,
+                    order: if last {
+                        super::ContentKeepOrder::Last
+                    } else {
+                        super::ContentKeepOrder::First
+                    },
+                },
                 &mut selected,
             )
             .unwrap();
@@ -3195,7 +3360,7 @@ mod tests {
                 None,
                 &super::ContentKeep {
                     count: 0,
-                    last: false
+                    order: super::ContentKeepOrder::First
                 },
                 &mut selected
             )
