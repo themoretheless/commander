@@ -1,0 +1,10 @@
+{
+  "native_checks": 16,
+  "observations": 97,
+  "native_effects": 0,
+  "anchors_exclusions_refusal_and_recovery": true,
+  "independent_oracle": "Python regex anchors and ordered fragments",
+  "peer_rank_and_source_preserved": true,
+  "no_panel_navigation": true,
+  "source_and_binary_hashes_match": true
+}

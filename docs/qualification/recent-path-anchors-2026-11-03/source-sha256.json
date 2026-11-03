@@ -1,0 +1,9 @@
+{
+  "src/panel/visit.rs": "7bade09b68fc60c19156baa4a237065526b5d89739978a79cfd9ecc832f9ca9e",
+  "src/app/omnibar_dialog.rs": "9a69c714cd148484e63afed6f44d37a455d6d1031ec925c569cbd8c3ac80837b",
+  "src/omnibar.rs": "cf3f408d8d2a42caa1a1f329f31be1c86ce3b29429e5cd9ef0f762d72be03c42",
+  "src/visual_qa.rs": "72c163dd6d794f4b6b398d5e631c43c3a8258a59ad4ae896c5a3fcde18c3e023",
+  "src/session.rs": "197ae0558142d981c4123a20b3d28a0ed4779bc705e993034a04d217737f5d55",
+  "Cargo.toml": "31849c33a854be13849630880d2ea12cec69c83573d896476d2efb4637f87045",
+  "Cargo.lock": "04a0f3e352461b6e04a2f164f118bbc72e1e028fa841b64c9650ee8920ac84b6"
+}

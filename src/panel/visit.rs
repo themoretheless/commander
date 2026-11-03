@@ -62,8 +62,46 @@ pub enum RecentMatchMode {
 }
 
 struct PathTerms {
-    positive: Vec<String>,
-    negative: Vec<String>,
+    positive: Vec<PathTerm>,
+    negative: Vec<PathTerm>,
+}
+struct PathTerm {
+    text: String,
+    start: bool,
+    end: bool,
+}
+impl PathTerm {
+    fn parse(raw: &str) -> Option<Self> {
+        let (text, start) = if let Some(rest) = raw.strip_prefix(r"\!") {
+            (format!("!{rest}"), false)
+        } else if let Some(rest) = raw.strip_prefix(r"\^") {
+            (format!("^{rest}"), false)
+        } else if let Some(rest) = raw.strip_prefix('^') {
+            (rest.to_owned(), true)
+        } else {
+            (raw.to_owned(), false)
+        };
+        let (text, end) = if let Some(rest) = text.strip_suffix(r"\$") {
+            (format!("{rest}$"), false)
+        } else if let Some(rest) = text.strip_suffix('$') {
+            (rest.to_owned(), true)
+        } else {
+            (text, false)
+        };
+        (!text.is_empty()).then(|| Self {
+            text: text.to_lowercase(),
+            start,
+            end,
+        })
+    }
+    fn find_in(&self, prefix: &str, full_len: usize) -> Option<usize> {
+        let index = if self.start {
+            prefix.starts_with(&self.text).then_some(0)
+        } else {
+            prefix.rfind(&self.text)
+        }?;
+        (!self.end || index + self.text.len() == full_len).then_some(index)
+    }
 }
 impl PathTerms {
     fn parse(query: &str) -> Option<Self> {
@@ -77,14 +115,14 @@ impl PathTerms {
                 return None;
             }
             if let Some(literal) = term.strip_prefix(r"\!") {
-                positive.push(format!("!{literal}").to_lowercase());
+                positive.push(PathTerm::parse(&format!("!{literal}"))?);
             } else if let Some(excluded) = term.strip_prefix('!') {
                 if excluded.is_empty() {
                     return None;
                 }
-                negative.push(excluded.to_lowercase());
+                negative.push(PathTerm::parse(excluded)?);
             } else {
-                positive.push(term.to_lowercase());
+                positive.push(PathTerm::parse(term)?);
             }
         }
         Some(Self { positive, negative })
@@ -94,27 +132,38 @@ impl PathTerms {
             .to_string_lossy()
             .to_lowercase()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        if self.negative.iter().any(|term| label.contains(term)) {
-            return false;
-        }
         let normalized = label.trim_end_matches('/');
-        let mut prefix = if normalized.is_empty() {
+        let full = if normalized.is_empty() {
             label.as_str()
         } else {
             normalized
         };
+        if self.negative.iter().any(|term| {
+            // Edge anchors share positive terms' trailing-separator normalization.
+            // Unanchored exclusions retain their original literal substring scope.
+            let hay = if term.start || term.end {
+                full
+            } else {
+                label.as_str()
+            };
+            term.find_in(hay, hay.len()).is_some()
+        }) {
+            return false;
+        }
+        let mut prefix = full;
         let Some((last, previous)) = self.positive.split_last() else {
             return true;
         };
-        let Some(index) = prefix.rfind(last.as_str()) else {
+        let full_len = prefix.len();
+        let Some(index) = last.find_in(prefix, full_len) else {
             return false;
         };
-        if prefix[index + last.len()..].contains('/') {
+        if prefix[index + last.text.len()..].contains('/') {
             return false;
         }
         prefix = &prefix[..index];
         for term in previous.iter().rev() {
-            let Some(index) = prefix.rfind(term.as_str()) else {
+            let Some(index) = term.find_in(prefix, full_len) else {
                 return false;
             };
             prefix = &prefix[..index];
@@ -143,7 +192,7 @@ pub fn recent_paths_within(paths: &[PathBuf], base: &Path) -> Vec<PathBuf> {
 
 pub fn recent_match_error(query: &str, mode: RecentMatchMode) -> Option<&'static str> {
     (mode == RecentMatchMode::OrderedTerms && PathTerms::parse(query).is_none())
-        .then_some(r"Use at most 32 path terms and 1024 UTF-8 bytes; ! needs exclusion text (\! matches a literal !)")
+        .then_some(r"Use at most 32 path terms and 1024 UTF-8 bytes; !, ^ and $ need text (escape literal operators with \)")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -289,6 +338,43 @@ pub fn rank_visited_with_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchored_recent_terms_bind_full_path_edges_and_preserve_order() {
+        let cases = [
+            ("^/work src$", "/work/src", true),
+            ("^/work src$", "/other/work/src", false),
+            ("^/work src$", "/work/src-old", false),
+            ("^/work/src$", "/work/src", true),
+            ("^/work/src$", "/work/src/nested", false),
+            ("^/WORK ЁЖ$", "/work/ёж", true),
+            ("work src !^/archive", "/work/src", true),
+            ("src !^/work", "/work/src", false),
+            ("src !src$", "/work/src", false),
+            ("src !src$", "/work/src/", false),
+            ("src$", "/work/src/", true),
+            ("src !src/", "/work/src/", false),
+            ("src !src$", "/work/src-old", true),
+            (r"\^literal$", "/work/^literal", true),
+            (r"literal\$", "/work/literal$", true),
+            (r"\!literal$", "/work/!literal", true),
+            (r"literal !\!literal$", "/work/!literal", false),
+            ("work$ src", "/work/src", false),
+            ("src$ work", "/work/src", false),
+        ];
+        for (query, path, expected) in cases {
+            assert_eq!(
+                PathTerms::parse(query).unwrap().matches(Path::new(path)),
+                expected,
+                "{query} :: {path}"
+            );
+        }
+        for query in ["^", "$", "^$", "!^", "!$", "!^$"] {
+            assert!(PathTerms::parse(query).is_none(), "{query}");
+            assert!(recent_match_error(query, RecentMatchMode::OrderedTerms).is_some());
+        }
+        assert!(PathTerms::parse(&vec!["^x$"; 33].join(" ")).is_none());
+    }
 
     #[test]
     fn recent_path_exclusions_filter_full_paths_without_changing_order_or_stats() {

@@ -1,0 +1,41 @@
+{
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74375-recent_forget/left",
+  "match_error": null,
+  "match_mode": "OrderedTerms",
+  "order": "Frecency",
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74375-recent_forget/KeepMe"
+  ],
+  "phase": 61,
+  "query": "RECENT_FORGET / KEE",
+  "right": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74375-recent_forget/right",
+  "saved": {
+    "match_mode": "OrderedTerms",
+    "order": "Frecency",
+    "paths": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74375-recent_forget/KeepMe"
+    ],
+    "stats": {
+      "tick": 10,
+      "uses": {
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74375-recent_forget/KeepMe": {
+          "count": 8,
+          "last": 8
+        }
+      }
+    }
+  },
+  "selected": 0,
+  "stats": {
+    "tick": 10,
+    "uses": {
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74375-recent_forget/KeepMe": {
+        "count": 8,
+        "last": 8
+      }
+    }
+  },
+  "visible": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-74375-recent_forget/KeepMe"
+  ]
+}

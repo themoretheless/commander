@@ -1,0 +1,8 @@
+{
+  "scenario": "recent_forget",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/recent-path-anchors-2026-11-03/native-captures/1793682283776755000",
+  "binary_sha256": "5e8875d5a9c70d04145ac4e62f5c5752c71bb3262c774fa4a8b298069fa4d045",
+  "core_sha256": "5e8875d5a9c70d04145ac4e62f5c5752c71bb3262c774fa4a8b298069fa4d045",
+  "wrapper_sha256": "52baf228aa7349853ecf15c06387596b4a45dc0c26a8598217fd0fcbd3e4189e",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

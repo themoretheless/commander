@@ -1,0 +1,7 @@
+{
+  "cohort": 75,
+  "repository": "https://github.com/junegunn/fzf",
+  "reference": "https://github.com/junegunn/fzf#search-syntax",
+  "observed": "2026-11-03",
+  "behavior": "fzf supports ^text prefix-exact, text$ suffix-exact, !^text inverse-prefix and !text$ inverse-suffix tokens. Commander independently adapts these to bounded ordered recent-path terms."
+}
