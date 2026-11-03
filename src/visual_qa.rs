@@ -4988,7 +4988,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
-            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 84)
+            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 104)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -7737,6 +7737,129 @@ impl eframe::App for VisualQaApp {
                 input.events.push(egui::Event::PointerButton {
                     pos,
                     button,
+                    pressed: local == 1,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && (84..104).contains(&self.disk_export_phase) {
+            let phase = self.disk_export_phase;
+            if phase < 86 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::ArrowLeft,
+                    physical_key: None,
+                    pressed: phase == 84,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                self.disk_export_phase += 1;
+                return;
+            }
+            let panel = &self.inner.ws.left;
+            if panel.current_path != self.fixture.left
+                || matches!(panel.dir_status(), crate::panel::DirStatus::Loading)
+            {
+                return;
+            }
+            let state = serde_json::json!({"path":panel.current_path,"mode":panel.browser_mode(),"generation":panel.entries_gen(),"cursor":panel.cursor_entry().map(|entry|&entry.path),"selected":panel.selected_entries().iter().map(|entry|&entry.path).collect::<Vec<_>>()});
+            if matches!(phase, 89 | 95 | 101) {
+                let (mode, count) = match phase {
+                    89 => ("Miller", 5),
+                    95 => ("List", 6),
+                    _ => ("Icons", 7),
+                };
+                let before = std::fs::read(
+                    self.scenario_dir
+                        .join(format!("current-before-{mode}.json")),
+                )
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                let tabs = self
+                    .inner
+                    .ws
+                    .tab_snapshot(crate::workspace::ActivePanel::Left);
+                if before.as_ref() != Some(&state)
+                    || tabs.entries.len() != count
+                    || tabs.active != 1
+                    || tabs.entries[2].path != self.fixture.left.join("Design")
+                {
+                    return;
+                }
+                let record = serde_json::json!({"before":before,"after":state,"tabs":tabs,"right":self.inner.ws.right.current_path});
+                if !serde_json::to_vec_pretty(&record).is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir
+                            .join(format!("current-middle-{mode}.json")),
+                        bytes,
+                    )
+                    .is_ok()
+                }) {
+                    return;
+                }
+            }
+            let (id, local, folder_mode) = match phase {
+                86..=88 => (
+                    egui::Id::new(("folder-row", "left", &self.fixture.left.join("Design"))),
+                    phase - 86,
+                    Some("Miller"),
+                ),
+                89..=91 => (
+                    egui::Id::new(("browser-mode", "left", "List")),
+                    phase - 89,
+                    None,
+                ),
+                92..=94 => (
+                    egui::Id::new(("folder-row", "left", &self.fixture.left.join("Design"))),
+                    phase - 92,
+                    Some("List"),
+                ),
+                95..=97 => (
+                    egui::Id::new(("browser-mode", "left", "Icons")),
+                    phase - 95,
+                    None,
+                ),
+                98..=100 => (
+                    egui::Id::new(("folder-row", "left", &self.fixture.left.join("Design"))),
+                    phase - 98,
+                    Some("Icons"),
+                ),
+                _ => (
+                    egui::Id::new(("browser-mode", "left", "Columns")),
+                    phase - 101,
+                    None,
+                ),
+            };
+            let Some(rect) = ctx.data(|data| data.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if local == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if local == 0
+                && let Some(mode) = folder_mode
+                && !serde_json::to_vec_pretty(&state).is_ok_and(|bytes| {
+                    std::fs::write(
+                        self.scenario_dir
+                            .join(format!("current-before-{mode}.json")),
+                        bytes,
+                    )
+                    .is_ok()
+                })
+            {
+                return;
+            }
+            let pos = rect.center();
+            input.events.push(egui::Event::PointerMoved(pos));
+            if local != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: if folder_mode.is_some() {
+                        egui::PointerButton::Middle
+                    } else {
+                        egui::PointerButton::Primary
+                    },
                     pressed: local == 1,
                     modifiers: egui::Modifiers::NONE,
                 });
@@ -26185,12 +26308,12 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==84 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
-                    && self.inner.ws.left.current_path==self.fixture.left.join("column-B")
+                self.disk_export_phase==104 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                    && self.inner.ws.left.current_path==self.fixture.left
                     && self.inner.ws.left.preview.is_none()
-                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.path==self.fixture.left.join("column-B/a.txt"))
+                    && self.inner.ws.left.cursor_entry().is_some_and(|e|e.path==self.fixture.left.join("column-B"))
                     && self.inner.ws.right.current_path==self.fixture.right
-                    && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)==4
+                    && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)==7
                     && self.inner.ws.left.miller.columns.iter().all(|c|!matches!(c.dir_status(),crate::panel::DirStatus::Loading))
                     && std::fs::copy(self.fixture.left.join("column-A/a.txt"),self.scenario_dir.join("source-A.txt")).is_ok()
                     && std::fs::copy(self.fixture.left.join("column-B/a.txt"),self.scenario_dir.join("source-B.txt")).is_ok()

@@ -1,0 +1,7 @@
+{
+  "cohort": 6,
+  "repository": "files-community/Files",
+  "source": "https://www.files.community/docs/features/tabs",
+  "contract": "Middle-click a folder to open a new tab",
+  "adaptation": "Current-folder rows in List, Icons and Columns open lazy background tabs while preserving action owner; existing ancestor/menu routes retained"
+}

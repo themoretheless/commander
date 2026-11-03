@@ -679,6 +679,7 @@ impl App {
         dragged: &[PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
+        folder_tab: &mut Option<super::miller_browser::FolderTabRequest>,
     ) -> Option<Result<ui_state::ContextMenuCandidate, String>> {
         // Only claim Shift+F10 when the cursor is on a file row; on ".." or an
         // empty list there is nothing for the menu to target.
@@ -1218,6 +1219,8 @@ impl App {
                     if panel.browser_mode() == crate::panel::BrowserMode::Miller {
                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("miller-active",panel_side,entry.name.as_str())),row_resp.rect));
                     }
+                    #[cfg(any(test,feature="visual-qa"))]
+                    ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("folder-row",panel_side,&entry.path)),row_resp.rect));
                     let accesskit_context_menu_requested = ui.is_enabled()
                         && crate::accessibility::consume_show_context_menu(ui.ctx(), row_resp.id);
                     #[cfg(feature = "visual-qa")]
@@ -1592,7 +1595,13 @@ impl App {
                         ));
                     }
 
-                    if row_resp.double_clicked() {
+                    if row_resp.clicked_by(egui::PointerButton::Middle) {
+                        if entry.is_dir {
+                            *folder_tab=Some(super::miller_browser::FolderTabRequest {
+                                owner:panel.current_path.clone(),generation:panel.entries_gen(),folder:entry.path.clone(),activate:false,ancestor:false,
+                            });
+                        }
+                    } else if row_resp.double_clicked() {
                         pending_cursor = Some(row_cursor);
                         if entry.is_dir {
                             navigate_to = Some(entry.path.clone());

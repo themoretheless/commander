@@ -2,11 +2,12 @@
 //! operations always target the main panel's current actionable column.
 use super::*;
 #[derive(Clone, Debug)]
-pub struct MillerTabRequest {
+pub struct FolderTabRequest {
     pub owner: PathBuf,
     pub generation: u64,
     pub folder: PathBuf,
     pub activate: bool,
+    pub ancestor: bool,
 }
 
 fn folder_tab_actions(
@@ -14,14 +15,15 @@ fn folder_tab_actions(
     owner: &std::path::Path,
     generation: u64,
     folder: &std::path::Path,
-    request: &mut Option<MillerTabRequest>,
+    request: &mut Option<FolderTabRequest>,
 ) {
     if response.clicked_by(egui::PointerButton::Middle) {
-        *request = Some(MillerTabRequest {
+        *request = Some(FolderTabRequest {
             owner: owner.into(),
             generation,
             folder: folder.into(),
             activate: false,
+            ancestor: true,
         });
     }
     let binding = response.id.with("miller-tab-binding");
@@ -56,11 +58,12 @@ fn folder_tab_actions(
                     )
                 });
                 if button.clicked() {
-                    *request = Some(MillerTabRequest {
+                    *request = Some(FolderTabRequest {
                         owner: owner.clone(),
                         generation,
                         folder: folder.clone(),
                         activate,
+                        ancestor: true,
                     });
                     ui.close();
                 }
@@ -166,7 +169,7 @@ impl App {
         dragged: &[PathBuf],
         metrics: crate::density::DensityMetrics,
         reduced_motion: bool,
-        tab_request: &mut Option<MillerTabRequest>,
+        tab_request: &mut Option<FolderTabRequest>,
     ) -> Option<Result<ui_state::ContextMenuCandidate, String>> {
         *tab_request = None;
         if panel.browser_mode() != crate::panel::BrowserMode::Miller {
@@ -185,6 +188,7 @@ impl App {
                 dragged,
                 metrics,
                 reduced_motion,
+                tab_request,
             );
         }
         let changed = panel.prepare_miller();
@@ -255,7 +259,7 @@ impl App {
                     ui.set_min_size(egui::vec2(active_width,height));ui.set_max_size(egui::vec2(active_width,height));
                     ui.add_sized([active_width,24.0],egui::Label::new(egui::RichText::new(current.file_name().map_or_else(||current.display().to_string(),|n|n.to_string_lossy().into_owned())).strong()).truncate()).on_hover_text(format!("Current folder: {}. File actions and keyboard commands target this column.",current.display()));
                     ui.separator();
-                    request=Self::render_file_list_plain(ui,panel,image_cache,is_active,t,panel_side,size_bars,compare,opener,dragging,dragged,metrics,reduced_motion);
+                    request=Self::render_file_list_plain(ui,panel,image_cache,is_active,t,panel_side,size_bars,compare,opener,dragging,dragged,metrics,reduced_motion,tab_request);
                 });
                 column_divider(ui,panel,&current,current_column.response.rect,active_width,gap,panel_side);
                 #[cfg(any(test,feature="visual-qa"))]
@@ -278,6 +282,107 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_folder_middle_click_preserves_owner_in_list_icons_and_columns() {
+        for mode in [
+            crate::panel::BrowserMode::List,
+            crate::panel::BrowserMode::Icons,
+            crate::panel::BrowserMode::Miller,
+        ] {
+            let temp = crate::testutil::TempDir::new();
+            let folder = temp.dir("Target");
+            let file = temp.file("keep.txt", "owner");
+            let mut panel = PanelState::new(temp.path().into());
+            panel.refresh();
+            panel.focus_child("keep.txt".into());
+            panel.select_cursor();
+            panel.set_browser_mode(mode);
+            let workload = crate::workload::DeterministicWorkload::new(
+                crate::workload::SchedulerLimits::default(),
+            );
+            panel.set_workload(workload.handle());
+            panel.set_notify(std::sync::Arc::new(|| {}));
+            let ctx = egui::Context::default();
+            let mut images = crate::image_cache::ImageCache::new();
+            let mut tick = 0.0;
+            let mut render = |panel: &mut PanelState, events| {
+                tick += 0.1;
+                let mut request = None;
+                crate::testutil::discard_egui_output(ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(637.0, 500.0),
+                        )),
+                        time: Some(tick),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        App::render_file_list(
+                            ui,
+                            panel,
+                            &mut images,
+                            true,
+                            &ThemeColors::dark(),
+                            "left",
+                            false,
+                            None,
+                            &|_| panic!("middle-click must not open files externally"),
+                            false,
+                            &[],
+                            crate::density::metrics(crate::density::Density::default()),
+                            true,
+                            &mut request,
+                        );
+                    },
+                ));
+                request
+            };
+            for _ in 0..8 {
+                while workload.run_next() {}
+                panel.poll_listing();
+                assert!(render(&mut panel, vec![]).is_none());
+            }
+            let generation = panel.entries_gen();
+            let cursor = panel.cursor_entry().unwrap().path.clone();
+            for (target, expected) in [(&folder, true), (&file, false)] {
+                let pos = ctx
+                    .data(|data| {
+                        data.get_temp::<egui::Rect>(egui::Id::new(("folder-row", "left", target)))
+                    })
+                    .unwrap()
+                    .center();
+                let mut request = None;
+                for pressed in [true, false] {
+                    request = render(
+                        &mut panel,
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Middle,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    )
+                    .or(request);
+                }
+                assert_eq!(request.is_some(), expected, "{mode:?}");
+                if let Some(request) = request {
+                    assert_eq!(request.owner, temp.path());
+                    assert_eq!(request.folder, folder);
+                    assert_eq!(request.generation, generation);
+                    assert!(!request.activate && !request.ancestor);
+                }
+                assert_eq!(panel.current_path, temp.path());
+                assert_eq!(panel.entries_gen(), generation);
+                assert_eq!(panel.cursor_entry().unwrap().path, cursor);
+                assert_eq!(panel.selected_entries()[0].path, file);
+            }
+        }
+    }
     #[test]
     fn folder_menu_routes_both_tab_actions_with_the_original_popup_binding() {
         for (label, activate) in [("Open in new tab", true), ("Open in background tab", false)] {

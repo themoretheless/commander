@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 28.54s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 3 tests
+test app::tree::tests::favorite_middle_click_requests_a_background_tab_without_active_navigation ... ok
+test app::miller_browser::tests::current_folder_middle_click_preserves_owner_in_list_icons_and_columns ... ok
+test app::miller_browser::tests::middle_click_ancestor_folder_requests_tab_without_promoting_the_action_owner ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 3523 filtered out; finished in 0.24s
+

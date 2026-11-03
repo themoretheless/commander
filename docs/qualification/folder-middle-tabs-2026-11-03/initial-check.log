@@ -1,0 +1,21 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0063]: missing field `ancestor` in initializer of `FolderTabRequest`
+  --> src/app/miller_browser.rs:61:37
+   |
+61 |                     *request = Some(FolderTabRequest {
+   |                                     ^^^^^^^^^^^^^^^^ missing `ancestor`
+
+error[E0624]: method `filtered_position` is private
+    --> src/workspace/tabs.rs:568:18
+     |
+ 568 |                 .filtered_position(|entry| entry.is_dir && entry.path == folder)
+     |                  ^^^^^^^^^^^^^^^^^ private method
+     |
+    ::: src/panel.rs:2580:5
+     |
+2580 |     fn filtered_position(&self, predicate: impl FnMut(&FileEntry) -> bool) -> Option<usize> {
+     |     --------------------------------------------------------------------------------------- private method defined here
+
+Some errors have detailed explanations: E0063, E0624.
+For more information about an error, try `rustc --explain E0063`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors

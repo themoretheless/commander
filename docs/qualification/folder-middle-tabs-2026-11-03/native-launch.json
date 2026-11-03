@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/folder-middle-tabs-2026-11-03/native-captures/1793708156833819000",
+  "binary_sha256": "0c9f8268b51fdceea2f2a8f5987d593849bff5e58d25b3d72a38d1964add3b3d",
+  "core_sha256": "0c9f8268b51fdceea2f2a8f5987d593849bff5e58d25b3d72a38d1964add3b3d",
+  "wrapper_sha256": "fa667f83f14a77a8045dd57575e94350a296d3f64e85c8ee05bc5919d0752e74",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

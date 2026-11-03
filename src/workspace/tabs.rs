@@ -549,6 +549,37 @@ impl Workspace {
         true
     }
 
+    /// Validate a captured current-list folder row before changing tab ownership.
+    pub(crate) fn open_listed_folder_tab(
+        &mut self,
+        side: ActivePanel,
+        owner: &std::path::Path,
+        generation: u64,
+        folder: PathBuf,
+        activate: bool,
+    ) -> bool {
+        let panel = match side {
+            ActivePanel::Left => &self.left,
+            ActivePanel::Right => &self.right,
+        };
+        if panel.current_path != owner
+            || panel.entries_gen() != generation
+            || !panel.filtered_indices().iter().any(|&index| {
+                panel
+                    .entries()
+                    .get(index)
+                    .is_some_and(|entry| entry.is_dir && entry.path == folder)
+            })
+        {
+            return false;
+        }
+        if activate {
+            self.new_tab(side, Some(folder))
+        } else {
+            self.new_background_tab(side, folder)
+        }
+    }
+
     /// Only a currently displayed Miller ancestor directory may request a tab.
     #[cfg(test)]
     fn open_miller_background_tab(
@@ -1030,6 +1061,77 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    #[test]
+    fn listed_folder_tabs_revalidate_visible_directory_and_preserve_source_for_all_views() {
+        for mode in [
+            crate::panel::BrowserMode::List,
+            crate::panel::BrowserMode::Icons,
+            crate::panel::BrowserMode::Miller,
+        ] {
+            let temp = TempDir::new();
+            let folder = temp.dir("Target");
+            let file = temp.file("keep.txt", "keep");
+            let other = temp.dir("Other");
+            let mut ws = Workspace::new(temp.path().into(), other.clone());
+            ws.left.refresh();
+            ws.left.focus_child("keep.txt".into());
+            ws.left.select_cursor();
+            ws.left.set_browser_mode(mode);
+            ws.active = ActivePanel::Right;
+            let revision = ws.left.entries_gen();
+            for (owner, generation, target) in [
+                (other.clone(), revision, folder.clone()),
+                (temp.path().into(), revision.wrapping_add(1), folder.clone()),
+                (temp.path().into(), revision, file.clone()),
+                (temp.path().into(), revision, temp.path().join("missing")),
+            ] {
+                assert!(!ws.open_listed_folder_tab(
+                    ActivePanel::Left,
+                    &owner,
+                    generation,
+                    target,
+                    false
+                ));
+                assert_eq!(ws.tab_count(ActivePanel::Left), 1);
+            }
+            ws.left.set_search_query("keep");
+            assert!(!ws.open_listed_folder_tab(
+                ActivePanel::Left,
+                temp.path(),
+                ws.left.entries_gen(),
+                folder.clone(),
+                false
+            ));
+            ws.left.clear_filters();
+            let revision = ws.left.entries_gen();
+            assert!(ws.open_listed_folder_tab(
+                ActivePanel::Left,
+                temp.path(),
+                revision,
+                folder.clone(),
+                false
+            ));
+            assert_eq!(ws.tab_count(ActivePanel::Left), 2);
+            assert_eq!(ws.active_tab_index(ActivePanel::Left), 0);
+            assert_eq!(ws.tab_snapshot(ActivePanel::Left).entries[1].path, folder);
+            assert_eq!(ws.left.current_path, temp.path());
+            assert_eq!(ws.left.entries_gen(), revision);
+            assert_eq!(ws.left.cursor_entry().unwrap().path, file);
+            assert_eq!(ws.left.selected_entries()[0].path, file);
+            assert_eq!(ws.right.current_path, other);
+            assert_eq!(ws.active, ActivePanel::Right);
+            while ws.tab_count(ActivePanel::Left) < MAX_TABS {
+                assert!(ws.new_background_tab(ActivePanel::Left, folder.clone()));
+            }
+            assert!(!ws.open_listed_folder_tab(
+                ActivePanel::Left,
+                temp.path(),
+                revision,
+                folder,
+                false
+            ));
+        }
+    }
     #[test]
     fn miller_foreground_tab_activates_the_captured_folder_and_preserves_source_slot() {
         let temp = TempDir::new();
