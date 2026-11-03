@@ -1,0 +1,11 @@
+# Miller ancestor folder tab menu — 2026-11-03
+
+Independent adaptation of cohort #6 [Files folder context-menu tabs](https://www.files.community/docs/features/tabs). Right-click an ancestor folder row or column header to choose Open in new tab or Open in background tab. Foreground opens and activates a new tab; background retains the current live column. Middle-click keeps its background-tab behavior. Ordinary file rows have no new ancestor tab menu.
+
+Popup creation freezes the owner path, listing generation and target native path. Subsequent frames cannot retarget the action if owner/row data changes. Existing workspace checks validate the captured Miller owner, generation and displayed directory membership, then delegate to existing guarded foreground/background tab insertion. Stale requests and full capacity refuse without fallback navigation; pending operation/modal guards remain. No new filesystem probe or file-operation target is introduced. A foreground choice intentionally changes the active tab; original source tab remains available.
+
+Two new regressions cover both actual popup pointer actions, frozen bindings after changed owner/generation/target, activated destination with retained source slot and stale-foreground refusal. Existing background/capacity/pointer/resize/layout/session tests remain; focused Miller tests passed 20/20 before the final native driver extension. Seven final gates passed: 3521 tests, 0 failed, 3 ignored; audit/build/Clippy/default check/format/diff.
+
+Native MillerBrowser retains the earlier route/preview/resize/keyboard/middle-click phases. Actual context-menu clicks first create a background third tab with identical source path/revision/cursor/selection, then activate a foreground fourth tab at column-B while retaining column-A in slot zero. It confirms keyboard navigation in the activated tab, unchanged opposite pane and original source payloads. All 14 native checks passed on the final recorded binary with zero external native effects; final frame inspected. Folder-row popup interaction is native-qualified on macOS; header pointer automation, other platforms and independent ancestor keyboard focus/multi-selection remain open.
+
+Run `run_checks.py`, prepare the native scene with `prepare_capture.py`, then `verify.py` to verify source/binary hashes and captured menu/tab/owner receipts.

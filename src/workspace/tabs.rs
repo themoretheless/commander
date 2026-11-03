@@ -549,13 +549,24 @@ impl Workspace {
         true
     }
 
-    /// Only a currently displayed Miller ancestor directory may request a lazy tab.
-    pub(crate) fn open_miller_background_tab(
+    /// Only a currently displayed Miller ancestor directory may request a tab.
+    #[cfg(test)]
+    fn open_miller_background_tab(
         &mut self,
         side: ActivePanel,
         owner: &std::path::Path,
         generation: u64,
         folder: PathBuf,
+    ) -> bool {
+        self.open_miller_tab(side, owner, generation, folder, false)
+    }
+    pub(crate) fn open_miller_tab(
+        &mut self,
+        side: ActivePanel,
+        owner: &std::path::Path,
+        generation: u64,
+        folder: PathBuf,
+        activate: bool,
     ) -> bool {
         let panel = match side {
             ActivePanel::Left => &self.left,
@@ -574,7 +585,11 @@ impl Workspace {
         {
             return false;
         }
-        self.new_background_tab(side, folder)
+        if activate {
+            self.new_tab(side, Some(folder))
+        } else {
+            self.new_background_tab(side, folder)
+        }
     }
 
     /// Insert beside the current tab, leaving its listing, watcher and preview live.
@@ -1015,6 +1030,39 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    #[test]
+    fn miller_foreground_tab_activates_the_captured_folder_and_preserves_source_slot() {
+        let temp = TempDir::new();
+        let a = temp.dir("A");
+        let b = temp.dir("B");
+        temp.file("A/a.txt", "keep");
+        let mut ws = Workspace::new(a.clone(), temp.path().into());
+        ws.left.refresh();
+        ws.left.set_browser_mode(crate::panel::BrowserMode::Miller);
+        let mut column = PanelState::new(temp.path().into());
+        column.refresh();
+        ws.left.miller.columns.push(column);
+        let revision = ws.left.entries_gen();
+        assert!(!ws.open_miller_tab(
+            ActivePanel::Left,
+            &a,
+            revision.wrapping_add(1),
+            b.clone(),
+            true
+        ));
+        assert_eq!(ws.tab_count(ActivePanel::Left), 1);
+        assert!(ws.open_miller_tab(ActivePanel::Left, &a, revision, b.clone(), true));
+        assert_eq!(ws.left.current_path, b);
+        assert_eq!(ws.left.browser_mode(), crate::panel::BrowserMode::Miller);
+        let tabs = ws.tab_snapshot(ActivePanel::Left);
+        assert_eq!(tabs.active, 1);
+        assert_eq!(tabs.entries[0].path, a);
+        assert_eq!(tabs.entries[1].path, b);
+        assert_eq!(ws.right.current_path, temp.path());
+        assert_eq!(ws.active, ActivePanel::Left);
+        assert!(!ws.open_miller_tab(ActivePanel::Left, &a, revision, temp.path().into(), true));
+        assert_eq!(ws.tab_count(ActivePanel::Left), 2);
+    }
     #[test]
     fn miller_background_tabs_validate_displayed_owner_and_preserve_live_state() {
         let temp = TempDir::new();

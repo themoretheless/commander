@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/miller-tab-menu-2026-11-03/native-captures/1793707528096472000",
+  "binary_sha256": "0844b1b062ce8c280c31f3cee20423e95b4e25a16b8e6215dd28f93c095a59fc",
+  "core_sha256": "0844b1b062ce8c280c31f3cee20423e95b4e25a16b8e6215dd28f93c095a59fc",
+  "wrapper_sha256": "d8667bfd0908d79d388da60d39be387af80710992015618e4e639df7b43a2bfd",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

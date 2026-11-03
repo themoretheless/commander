@@ -2664,15 +2664,16 @@ impl App {
         }
 
         for (side, request) in [
-            (ActivePanel::Left, left_outcome.miller_background_tab),
-            (ActivePanel::Right, right_outcome.miller_background_tab),
+            (ActivePanel::Left, left_outcome.miller_tab),
+            (ActivePanel::Right, right_outcome.miller_tab),
         ] {
             if let Some(request) = request
-                && !self.ws.open_miller_background_tab(
+                && !self.ws.open_miller_tab(
                     side,
                     &request.owner,
                     request.generation,
                     request.folder,
+                    request.activate,
                 )
             {
                 self.toast(&ctx, crate::toasts::ToastKind::Info, "Could not open column folder: view changed, operation pending or tab limit reached", false);

@@ -1,0 +1,11 @@
+{
+  "src/app/miller_browser.rs": "d2b55bb7573a16e05d7ed952f7cb9fae79e47b088989599a3ef30c0b45d2e0d6",
+  "src/app/render.rs": "ed7d10d0d080fe1c75997ac9dfe24e1fc2e18046a010dfb02fec4b1f2f3c3c66",
+  "src/app/update.rs": "988c9758d547ab20bbee1f7dceee068663fad5597cbfc88707b10ce7e9cd44ad",
+  "src/app/file_list.rs": "8912710cc804ea89b630d6d713b5b72d37c75fc4d0d36143e84c5469934a6264",
+  "src/workspace/tabs.rs": "9a3e9b3a2beff2b87e736d0333bbd4a608593a4b056787913322cc3df0c421d8",
+  "src/panel/miller.rs": "153b965d46dfe9d577d981e2140338334cbd58e00492be1216bd58ba022afdc3",
+  "src/visual_qa.rs": "d03a2081f443d7d50cb21ae67d672a0325a9fa1e8f1bc393ee7362980a045512",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}
