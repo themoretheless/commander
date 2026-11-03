@@ -1,0 +1,97 @@
+{
+  "bounds": {
+    "max": "4",
+    "min": ""
+  },
+  "filter": {
+    "basename_only": false,
+    "case_sensitive": false,
+    "error": null,
+    "mode": "Literal",
+    "query": ""
+  },
+  "groups": [
+    {
+      "members": [
+        {
+          "index": 4,
+          "path": "empty-one",
+          "size": 0
+        },
+        {
+          "index": 5,
+          "path": "empty-two",
+          "size": 0
+        }
+      ],
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "members": [
+        {
+          "index": 0,
+          "path": "z-same.txt",
+          "size": 33
+        },
+        {
+          "index": 2,
+          "path": "a-same.txt",
+          "size": 33
+        },
+        {
+          "index": 8,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 9,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 10,
+          "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt",
+          "size": 33
+        }
+      ],
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17",
+      "size": 33
+    }
+  ],
+  "phase": 188,
+  "selected_indexes": [
+    0,
+    2,
+    8,
+    9,
+    10
+  ],
+  "shown_actions_enabled": true,
+  "total_labels": [
+    "Scanned groups: 2 groups · 7 members · 165 payload bytes · 5 extra copies · 132 extra payload bytes",
+    "Shown groups: 1 groups · 2 members · 0 payload bytes · 1 extra copies · 0 extra payload bytes"
+  ],
+  "totals": {
+    "scanned": {
+      "extra_members": "5",
+      "extra_payload_bytes": "132",
+      "groups": 2,
+      "members": "7",
+      "payload_bytes": "165"
+    },
+    "shown": {
+      "extra_members": "1",
+      "extra_payload_bytes": "0",
+      "groups": 1,
+      "members": "2",
+      "payload_bytes": "0"
+    }
+  },
+  "view": {
+    "order": [
+      0
+    ],
+    "sort": "Extra payload bytes"
+  }
+}

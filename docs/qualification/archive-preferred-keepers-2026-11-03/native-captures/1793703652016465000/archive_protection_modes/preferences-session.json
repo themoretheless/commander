@@ -1,0 +1,44 @@
+{
+  "invalid_pending_fallback": {
+    "policy": {
+      "candidate_globs": "*.TXT",
+      "count": 1,
+      "modified_before": "",
+      "order": "deepest",
+      "preferred_globs": "",
+      "protect_basename": false,
+      "protect_case_sensitive": false,
+      "protected_glob": "",
+      "tie_breakers": []
+    },
+    "version": 1
+  },
+  "restored": {
+    "policy": {
+      "candidate_globs": "*.TXT",
+      "count": 1,
+      "modified_before": "",
+      "order": "deepest",
+      "preferred_globs": "",
+      "protect_basename": false,
+      "protect_case_sensitive": false,
+      "protected_glob": "",
+      "tie_breakers": []
+    },
+    "version": 1
+  },
+  "saved": {
+    "policy": {
+      "candidate_globs": "*.TXT",
+      "count": 1,
+      "modified_before": "",
+      "order": "deepest",
+      "preferred_globs": "",
+      "protect_basename": false,
+      "protect_case_sensitive": false,
+      "protected_glob": "",
+      "tie_breakers": []
+    },
+    "version": 1
+  }
+}

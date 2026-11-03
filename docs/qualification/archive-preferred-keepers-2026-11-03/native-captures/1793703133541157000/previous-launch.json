@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_preferred_keepers",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-preferred-keepers-2026-11-03/native-captures/1793703005806234000",
+  "binary_sha256": "606d1ba9bb8d16323aca6499289c6af29f53b81ef1e5f03a1ed51189eed46e5e",
+  "core_sha256": "606d1ba9bb8d16323aca6499289c6af29f53b81ef1e5f03a1ed51189eed46e5e",
+  "wrapper_sha256": "a673c0b122080a2b53536024ec15e460e2cb3d35e75ea2d98e666b047b2543c5",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

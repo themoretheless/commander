@@ -1728,6 +1728,8 @@ pub struct ContentKeep {
     pub protect_case_sensitive: bool,
     pub modified_before: String,
     pub candidate_globs: String,
+    #[serde(default)]
+    pub preferred_globs: String,
 }
 impl Default for ContentKeep {
     fn default() -> Self {
@@ -1740,6 +1742,7 @@ impl Default for ContentKeep {
             protect_case_sensitive: true,
             modified_before: String::new(),
             candidate_globs: String::new(),
+            preferred_globs: String::new(),
         }
     }
 }
@@ -1808,6 +1811,7 @@ impl ContentKeep {
             && (1..=100_000).contains(&self.count)
             && self.protection().is_ok()
             && self.candidates().is_ok()
+            && self.preferences().is_ok()
             && self.cutoff().is_ok()
     }
     pub(crate) fn saved(&self) -> serde_json::Value {
@@ -1840,7 +1844,11 @@ impl ContentKeep {
                 "at least "
             },
             self.count,
-            self.order.short_label()
+            if self.preferred_globs.lines().all(str::is_empty) {
+                self.order.short_label().to_owned()
+            } else {
+                format!("preferred paths, then {}", self.order.short_label())
+            }
         )
     }
     fn protection(&self) -> Result<Vec<crate::archive_filter::Pattern>, String> {
@@ -1848,6 +1856,13 @@ impl ContentKeep {
     }
     fn candidates(&self) -> Result<Vec<crate::archive_filter::Pattern>, String> {
         self.pattern_list(&self.candidate_globs, "Candidate", "candidate")
+    }
+    fn preferences(&self) -> Result<Vec<crate::archive_filter::Pattern>, String> {
+        self.pattern_list(
+            &self.preferred_globs,
+            "Preferred keeper",
+            "preferred keeper",
+        )
     }
     fn pattern_list(
         &self,
@@ -1950,8 +1965,8 @@ impl ContentKeep {
             ui.ctx()
                 .data_mut(|d| d.insert_temp(egui::Id::new("archive-protect-glob"), input.rect));
             let _ = input;
-            let basename=ui.checkbox(&mut self.protect_basename,"Filename only").on_hover_text("For both pattern lists: match the final filename at any folder depth instead of the complete archive-relative path. Editing this option leaves selection unchanged until Select copies.");
-            let case=ui.checkbox(&mut self.protect_case_sensitive,"Match case").on_hover_text("For both pattern lists: when off, use the archive filter's lowercase-based matching for patterns and filenames. Editing this option leaves selection unchanged until Select copies.");
+            let basename=ui.checkbox(&mut self.protect_basename,"Filename only").on_hover_text("For protection, candidates and preferred keepers: match the final filename at any folder depth instead of the complete archive-relative path. Editing this option leaves selection unchanged until Select copies.");
+            let case=ui.checkbox(&mut self.protect_case_sensitive,"Match case").on_hover_text("For protection, candidates and preferred keepers: when off, use the archive filter's lowercase-based matching for patterns and filenames. Editing this option leaves selection unchanged until Select copies.");
             #[cfg(feature="visual-qa")]
             ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new("archive-protect-basename"),basename.rect);d.insert_temp(egui::Id::new("archive-protect-case"),case.rect);});
             let _=(basename,case);
@@ -1962,15 +1977,25 @@ impl ContentKeep {
             let input=ui.add(egui::TextEdit::multiline(&mut self.candidate_globs)
                 .id(egui::Id::new("archive-candidate-globs-input")).desired_width(260.0).desired_rows(2).char_limit(8192)
                 .hint_text("backups/**\n*.bak"))
-                .on_hover_text("Only members matching any candidate pattern can be selected as extra copies. Empty allows every member. Nonmatching and protected members are kept and count toward the minimum. One glob per line; the same limits, Filename only and Match case options apply to both lists. Edits apply on Select copies.");
+                .on_hover_text("Only members matching any candidate pattern can be selected as extra copies. Empty allows every member. Nonmatching and protected members are kept and count toward the minimum. One glob per line; the same limits, Filename only and Match case options apply to all three lists. Edits apply on Select copies.");
             #[cfg(feature="visual-qa")]
             ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-candidate-globs"),input.rect));
             let _=input;
         });
         ui.label(
-            egui::RichText::new("Filename only and Match case apply to both pattern lists.")
+            egui::RichText::new("Filename only and Match case apply to all three pattern lists.")
                 .small(),
         );
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Prefer keepers (globs):");
+            let input=ui.add(egui::TextEdit::multiline(&mut self.preferred_globs)
+                .id(egui::Id::new("archive-preferred-globs-input")).desired_width(260.0).desired_rows(2).char_limit(8192)
+                .hint_text("originals/**\nmaster.*"))
+                .on_hover_text("Choose matching eligible members first when filling keeper slots. Multiple matches still compete using the main priority, tie breakers and original entry number; this does not protect every match or increase the keeper count. Protected/noncandidate members remain kept and consume slots first. No match falls back to existing priorities. One glob per line with the same limits and Filename only/Match case options. Apply with Select copies; editing leaves selection unchanged.");
+            #[cfg(feature="visual-qa")]
+            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-preferred-globs"),input.rect));
+            let _=input;
+        });
         ui.horizontal_wrapped(|ui| {
             ui.label("Only groups modified before:");
             let input=ui.add(egui::TextEdit::singleline(&mut self.modified_before)
@@ -1985,6 +2010,7 @@ impl ContentKeep {
             .protection()
             .err()
             .or_else(|| self.candidates().err())
+            .or_else(|| self.preferences().err())
             .or_else(|| self.cutoff().err())
             .or_else(|| self.validate_priorities().err());
         if let Some(error) = &error {
@@ -2016,6 +2042,7 @@ fn select_redundant_content_groups(
     keep.validate_priorities()?;
     let protection = keep.protection()?;
     let candidates = keep.candidates()?;
+    let preferences = keep.preferences()?;
     let cutoff = keep.cutoff()?;
     let groups = report
         .content_groups
@@ -2051,21 +2078,9 @@ fn select_redundant_content_groups(
             continue;
         }
         applicable_rows.extend_from_slice(group_rows);
-        let mut ranked = group.members.iter().enumerate().collect::<Vec<_>>();
-        ranked.sort_unstable_by(|(left, a), (right, b)| {
-            std::iter::once(keep.order)
-                .chain(keep.tie_breakers.iter().copied())
-                .map(|order| {
-                    order.compare(
-                        &listing.members[rows[offset + left]],
-                        &listing.members[rows[offset + right]],
-                    )
-                })
-                .find(|order| !order.is_eq())
-                .unwrap_or_else(|| a.index.cmp(&b.index))
-        });
         let mut protected = vec![false; group.members.len()];
-        if !protection.is_empty() || !candidates.is_empty() {
+        let mut preferred = vec![false; group.members.len()];
+        if !protection.is_empty() || !candidates.is_empty() || !preferences.is_empty() {
             for (rank, member) in group.members.iter().enumerate() {
                 let path = member.path.to_str().ok_or(
                     "Path policy matching requires UTF-8 member paths; selection was not changed.",
@@ -2075,6 +2090,9 @@ fn select_redundant_content_groups(
                 } else {
                     std::borrow::Cow::Owned(path.to_lowercase())
                 };
+                preferred[rank] = preferences
+                    .iter()
+                    .any(|pattern| pattern.matches(path, &lowercase));
                 if (!candidates.is_empty()
                     && !candidates
                         .iter()
@@ -2088,6 +2106,21 @@ fn select_redundant_content_groups(
                 }
             }
         }
+        let mut ranked = group.members.iter().enumerate().collect::<Vec<_>>();
+        ranked.sort_unstable_by(|(left, a), (right, b)| {
+            preferred[*right].cmp(&preferred[*left]).then_with(|| {
+                std::iter::once(keep.order)
+                    .chain(keep.tie_breakers.iter().copied())
+                    .map(|order| {
+                        order.compare(
+                            &listing.members[rows[offset + left]],
+                            &listing.members[rows[offset + right]],
+                        )
+                    })
+                    .find(|order| !order.is_eq())
+                    .unwrap_or_else(|| a.index.cmp(&b.index))
+            })
+        });
         let additional = keep
             .count
             .saturating_sub(protected.iter().filter(|&&p| p).count());
@@ -2984,7 +3017,7 @@ impl App {
                             }
                         });
                         #[cfg(feature="visual-qa")]
-                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-content-groups-details"),details.header_response.rect));
+                        ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new("archive-content-groups-details"),details.header_response.rect);d.insert_temp(egui::Id::new("archive-content-groups-open"),details.body_response.is_some());});
                         let _=details;
                     }
                     ui.horizontal_wrapped(|ui| {
@@ -4313,6 +4346,180 @@ mod tests {
         assert_eq!(view.indices(&groups), (0..201).collect::<Vec<_>>());
     }
 
+    fn preferred_fixture() -> (crate::archive::ArchiveListing, crate::archive_check::Report) {
+        let mut listing = listing(&["first", "preferred/a", "preferred/b", "other", "unrelated"]);
+        for (id, m) in listing.members.iter_mut().enumerate() {
+            m.index = [9, 8, 2, 4, 99][id];
+            m.size = 3;
+            m.modified = None;
+        }
+        let report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 5,
+            decoded: 15,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..4]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        (listing, report)
+    }
+    #[test]
+    fn archive_preferred_keepers_rank_without_overriding_counts_protection_or_cutoff() {
+        use super::{ContentKeep, ContentKeepOrder as O, select_redundant_content_groups as apply};
+        use std::collections::BTreeSet;
+        let (listing, report) = preferred_fixture();
+        for scope in [None, Some(0)] {
+            for order in O::ALL {
+                let keep = ContentKeep {
+                    preferred_globs: "preferred/**".into(),
+                    order,
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([4]);
+                apply(&report, &listing, scope, &keep, &mut selected).unwrap();
+                let keeper = if order == O::Last { 1 } else { 2 };
+                assert_eq!(
+                    selected,
+                    (0..5).filter(|&id| id != keeper).collect(),
+                    "{order:?}"
+                );
+            }
+            for (count, protection, candidates, wanted) in [
+                (2, "", "", vec![0, 3, 4]),
+                (1, "first", "", vec![1, 2, 3, 4]),
+                (3, "first", "", vec![3, 4]),
+                (1, "", "preferred/**", vec![1, 2, 4]),
+                (9, "", "", vec![4]),
+            ] {
+                let keep = ContentKeep {
+                    preferred_globs: "preferred/**".into(),
+                    count,
+                    protected_glob: protection.into(),
+                    candidate_globs: candidates.into(),
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([4]);
+                apply(&report, &listing, scope, &keep, &mut selected).unwrap();
+                assert_eq!(selected.into_iter().collect::<Vec<_>>(), wanted);
+            }
+            let keep = ContentKeep {
+                preferred_globs: "preferred/**".into(),
+                modified_before: "2026-01-01".into(),
+                ..Default::default()
+            };
+            let mut selected = BTreeSet::from([2, 4]);
+            apply(&report, &listing, scope, &keep, &mut selected).unwrap();
+            assert_eq!(selected, BTreeSet::from([2, 4]));
+        }
+    }
+    #[test]
+    fn archive_preferred_keepers_share_pattern_modes_limits_and_atomic_identity_guards() {
+        use super::{ContentKeep, select_redundant_content_groups as apply};
+        use std::collections::BTreeSet;
+        let (mut listing, mut report) = preferred_fixture();
+        for (id, path) in [(1, "deep/MASTER.TXT"), (2, "master.txt")] {
+            listing.members[id].path = path.into();
+            report.content_groups.as_mut().unwrap()[0].members[id].path = path.into();
+        }
+        for (pattern, basename, case, keeper) in [
+            ("MASTER.TXT", false, true, 2),
+            ("MASTER.TXT", true, true, 1),
+            ("MASTER.TXT", true, false, 2),
+            ("deep/**", false, true, 1),
+            ("deep/**", true, true, 2),
+            ("deep/**\nno-match", false, true, 1),
+        ] {
+            let keep = ContentKeep {
+                preferred_globs: pattern.into(),
+                protect_basename: basename,
+                protect_case_sensitive: case,
+                ..Default::default()
+            };
+            let mut selected = BTreeSet::from([4]);
+            apply(&report, &listing, None, &keep, &mut selected).unwrap();
+            assert_eq!(selected, (0..5).filter(|&id| id != keeper).collect());
+        }
+        for pattern in [
+            "[".into(),
+            "x".repeat(257),
+            (0..17)
+                .map(|n| format!("p{n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "x".repeat(8193),
+        ] {
+            let keep = ContentKeep {
+                preferred_globs: pattern,
+                ..Default::default()
+            };
+            let mut selected = BTreeSet::from([2, 4]);
+            assert!(apply(&report, &listing, None, &keep, &mut selected).is_err());
+            assert_eq!(selected, BTreeSet::from([2, 4]));
+            assert!(keep.saved().is_null());
+        }
+        let keep = ContentKeep {
+            preferred_globs: "deep/**".into(),
+            ..Default::default()
+        };
+        report.content_groups.as_mut().unwrap()[0].members[3].path = "stale".into();
+        let mut selected = BTreeSet::from([2, 4]);
+        assert!(apply(&report, &listing, None, &keep, &mut selected).is_err());
+        assert_eq!(selected, BTreeSet::from([2, 4]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let path = std::ffi::OsString::from_vec(vec![255]);
+            listing.members[3].path = path.clone().into();
+            report.content_groups.as_mut().unwrap()[0].members[3].path = path.into();
+            assert!(
+                apply(&report, &listing, None, &keep, &mut selected)
+                    .unwrap_err()
+                    .contains("UTF-8")
+            );
+            assert_eq!(selected, BTreeSet::from([2, 4]));
+        }
+    }
+    #[test]
+    fn archive_preferred_keepers_persist_and_legacy_rules_keep_all_other_fields() {
+        use super::{ContentKeep, ContentKeepOrder as O};
+        let keep = ContentKeep {
+            count: 2,
+            order: O::Newest,
+            tie_breakers: vec![O::Shallowest],
+            preferred_globs: "originals/**\n*.master".into(),
+            candidate_globs: "backups/**".into(),
+            ..Default::default()
+        };
+        let saved = keep.saved();
+        assert_eq!(ContentKeep::from_saved(&saved), keep);
+        let mut legacy = saved.clone();
+        legacy["policy"]
+            .as_object_mut()
+            .unwrap()
+            .remove("preferred_globs");
+        let mut expected = keep.clone();
+        expected.preferred_globs.clear();
+        assert_eq!(ContentKeep::from_saved(&legacy), expected);
+        for invalid in [
+            serde_json::json!("["),
+            serde_json::json!(false),
+            serde_json::json!("x".repeat(8193)),
+        ] {
+            let mut corrupt = saved.clone();
+            corrupt["policy"]["preferred_globs"] = invalid;
+            assert_eq!(ContentKeep::from_saved(&corrupt), ContentKeep::default());
+        }
+    }
     #[test]
     fn archive_priority_chains_resolve_ties_in_order_with_stable_fallback_and_atomic_guards() {
         use super::{ContentKeep, ContentKeepOrder as O, select_redundant_content_groups};
@@ -4451,11 +4658,12 @@ mod tests {
                     protect_case_sensitive: !flag,
                     modified_before: "2026-01-01T12:30:00+01:00".into(),
                     candidate_globs: "backups/**\n*.tmp".into(),
+                    preferred_globs: "originals/**\nmaster.*".into(),
                 };
                 let saved = keep.saved();
                 assert_eq!(ContentKeep::from_saved(&saved), keep);
                 assert_eq!(saved.as_object().unwrap().len(), 2);
-                assert_eq!(saved["policy"].as_object().unwrap().len(), 8);
+                assert_eq!(saved["policy"].as_object().unwrap().len(), 9);
                 for (key, value) in [
                     ("count", serde_json::json!(0)),
                     ("count", serde_json::json!(100_001)),
@@ -4955,6 +5163,7 @@ mod tests {
         ] {
             for group in [None, Some(0)] {
                 let keep = ContentKeep {
+                    preferred_globs: String::new(),
                     count: 1,
                     order: ContentKeepOrder::First,
                     tie_breakers: Vec::new(),
@@ -5024,6 +5233,7 @@ mod tests {
         ] {
             for group in [None, Some(0)] {
                 let keep = ContentKeep {
+                    preferred_globs: String::new(),
                     count,
                     order: ContentKeepOrder::First,
                     tie_breakers: Vec::new(),
@@ -5051,6 +5261,7 @@ mod tests {
                     &listing,
                     None,
                     &ContentKeep {
+                        preferred_globs: String::new(),
                         count: 1,
                         order: ContentKeepOrder::First,
                         tie_breakers: Vec::new(),
@@ -5079,6 +5290,7 @@ mod tests {
                     &listing,
                     None,
                     &ContentKeep {
+                        preferred_globs: String::new(),
                         count: 1,
                         order: ContentKeepOrder::First,
                         tie_breakers: Vec::new(),
@@ -5102,6 +5314,7 @@ mod tests {
                 &listing,
                 None,
                 &ContentKeep {
+                    preferred_globs: String::new(),
                     count: 1,
                     order: ContentKeepOrder::First,
                     tie_breakers: Vec::new(),
@@ -5174,6 +5387,7 @@ mod tests {
                     &listing,
                     group,
                     &ContentKeep {
+                        preferred_globs: String::new(),
                         count,
                         order,
                         tie_breakers: Vec::new(),
@@ -5201,6 +5415,7 @@ mod tests {
                 &listing,
                 None,
                 &ContentKeep {
+                    preferred_globs: String::new(),
                     count: 1,
                     order: ContentKeepOrder::Deepest,
                     tie_breakers: Vec::new(),
@@ -5263,6 +5478,7 @@ mod tests {
                     &listing,
                     group,
                     &ContentKeep {
+                        preferred_globs: String::new(),
                         count,
                         order,
                         tie_breakers: Vec::new(),
@@ -5290,6 +5506,7 @@ mod tests {
             &listing,
             None,
             &ContentKeep {
+                preferred_globs: String::new(),
                 count: 1,
                 order: ContentKeepOrder::Newest,
                 tie_breakers: Vec::new(),
@@ -5310,6 +5527,7 @@ mod tests {
             &listing,
             None,
             &ContentKeep {
+                preferred_globs: String::new(),
                 count: 1,
                 order: ContentKeepOrder::Oldest,
                 tie_breakers: Vec::new(),
@@ -5333,6 +5551,7 @@ mod tests {
                 &listing,
                 None,
                 &ContentKeep {
+                    preferred_globs: String::new(),
                     count: 1,
                     order,
                     tie_breakers: Vec::new(),
@@ -5355,6 +5574,7 @@ mod tests {
                 &listing,
                 None,
                 &ContentKeep {
+                    preferred_globs: String::new(),
                     count: 1,
                     order: ContentKeepOrder::Newest,
                     tie_breakers: Vec::new(),
@@ -5413,6 +5633,7 @@ mod tests {
                 &listing,
                 None,
                 &super::ContentKeep {
+                    preferred_globs: String::new(),
                     count,
                     order: if last {
                         super::ContentKeepOrder::Last
@@ -5438,6 +5659,7 @@ mod tests {
                 &listing,
                 None,
                 &super::ContentKeep {
+                    preferred_globs: String::new(),
                     count: 0,
                     order: super::ContentKeepOrder::First,
                     tie_breakers: Vec::new(),

@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "repository": "https://github.com/pkolaczk/fclones",
+  "reference": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "transfer": "Independent Commander soft-keeper preference extension inspired by fclones path-aware keep/candidate rules. fclones keep-name/keep-path are hard protections, not this soft count-bounded preference."
+}

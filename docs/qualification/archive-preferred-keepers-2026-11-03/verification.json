@@ -1,0 +1,89 @@
+{
+  "archive_tar_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 4,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "f071163020de463dc97fafcfc2229cabd92c2a08fc77001e92872e23ec9ba4b6",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-preferred-keepers-2026-11-03/native-captures/1793703705750584000/archive_tar_content_groups"
+  },
+  "archive_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 2,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "2b9857b529ab1131f9788c895f9816f03948dc22dbd8dd728e2f194e5155a46d",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-preferred-keepers-2026-11-03/native-captures/1793703768019659000/archive_content_groups"
+  },
+  "archive_protection_modes": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "4d8a353b482dfd7d8a26f7143e86cddb9a1b67fb30d6db41a0019ec97bf3c5a1",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-preferred-keepers-2026-11-03/native-captures/1793703652016465000/archive_protection_modes"
+  },
+  "group_totals": {
+    "ui_checkpoints": 7,
+    "json_reports": 6,
+    "text_reports": 5
+  },
+  "csv_exports": {
+    "ui_checkpoints": 6,
+    "reports": 4,
+    "scopes": [
+      "all_scan",
+      "single_group",
+      "shown_groups"
+    ]
+  },
+  "archive_priority_chains": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 9,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "0338696e1ef5639e8aa31a723909dc4cf6abacf59bcae82e7efc622871db396e",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-preferred-keepers-2026-11-03/native-captures/1793703546339673000/archive_priority_chains"
+  },
+  "preferred_keepers": {
+    "ui_checkpoints": 10,
+    "session_reopen": true,
+    "scopes": [
+      "single_group",
+      "all_groups"
+    ]
+  },
+  "archive_preferred_keepers": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "bfca9e83271af98382c1d73543406e615bf7970da8493b09cb08687889113291",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-preferred-keepers-2026-11-03/native-captures/1793703600972527000/archive_preferred_keepers"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "pid": 24037,
+  "command": "/Users/themoretheless/Documents/Sources/commander/target/CommanderFolderQA.app/Contents/MacOS/CommanderFolderQA-core --visual-qa archive_priority_chains --output /Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-preferred-keepers-2026-11-03/native-captures/1793703258278308000",
+  "reason": "Owned QA process remained live without new receipts for more than its 10-second scene budget; stop before verifying the acknowledged-header driver on the next binary.",
+  "stopped_at": 1793703394.507466
+}

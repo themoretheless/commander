@@ -1,0 +1,50 @@
+{
+  "invalid_pending_fallback": {
+    "policy": {
+      "candidate_globs": "",
+      "count": 1,
+      "modified_before": "",
+      "order": "shallowest",
+      "preferred_globs": "dup.txt",
+      "protect_basename": false,
+      "protect_case_sensitive": true,
+      "protected_glob": "",
+      "tie_breakers": [
+        "newest"
+      ]
+    },
+    "version": 1
+  },
+  "restored": {
+    "policy": {
+      "candidate_globs": "",
+      "count": 1,
+      "modified_before": "",
+      "order": "shallowest",
+      "preferred_globs": "dup.txt",
+      "protect_basename": false,
+      "protect_case_sensitive": true,
+      "protected_glob": "",
+      "tie_breakers": [
+        "newest"
+      ]
+    },
+    "version": 1
+  },
+  "saved": {
+    "policy": {
+      "candidate_globs": "",
+      "count": 1,
+      "modified_before": "",
+      "order": "shallowest",
+      "preferred_globs": "dup.txt",
+      "protect_basename": false,
+      "protect_case_sensitive": true,
+      "protected_glob": "",
+      "tie_breakers": [
+        "newest"
+      ]
+    },
+    "version": 1
+  }
+}

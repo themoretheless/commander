@@ -677,6 +677,7 @@ mod tests {
             tie_breakers: vec![ContentKeepOrder::Shallowest],
             protected_glob: "originals/**\n*.bak".into(),
             candidate_globs: "backups/**".into(),
+            preferred_globs: "originals/**\nmaster.*".into(),
             modified_before: "2026-01-01".into(),
             protect_basename: true,
             protect_case_sensitive: false,

@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 26.36s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 3 tests
+test app::archive_dialog::tests::archive_preferred_keepers_persist_and_legacy_rules_keep_all_other_fields ... ok
+test app::archive_dialog::tests::archive_preferred_keepers_share_pattern_modes_limits_and_atomic_identity_guards ... ok
+test app::archive_dialog::tests::archive_preferred_keepers_rank_without_overriding_counts_protection_or_cutoff ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 3508 filtered out; finished in 0.02s
+

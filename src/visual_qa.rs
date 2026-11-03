@@ -340,6 +340,7 @@ enum Scenario {
     ArchiveTarContentGroups,
     ArchiveProtectionModes,
     ArchivePriorityChains,
+    ArchivePreferredKeepers,
     ArchiveBrowser,
     ArchiveFuzzy,
     ArchiveExport,
@@ -379,7 +380,8 @@ impl Scenario {
             }
             Self::ArchiveTarContentGroups
             | Self::ArchiveProtectionModes
-            | Self::ArchivePriorityChains => Some(ArchiveKind::TarGz),
+            | Self::ArchivePriorityChains
+            | Self::ArchivePreferredKeepers => Some(ArchiveKind::TarGz),
             Self::ArchiveBzip2 => Some(ArchiveKind::TarBz2),
             Self::ArchiveXz => Some(ArchiveKind::TarXz),
             Self::ArchiveZstd => Some(ArchiveKind::TarZstd),
@@ -393,7 +395,8 @@ impl Scenario {
             Self::ArchiveContentGroups => "groups.ZIPX",
             Self::ArchiveTarContentGroups
             | Self::ArchiveProtectionModes
-            | Self::ArchivePriorityChains => "groups.tar.gz",
+            | Self::ArchivePriorityChains
+            | Self::ArchivePreferredKeepers => "groups.tar.gz",
             Self::ArchiveBzip2 => "sample.tar.bz2",
             Self::ArchiveXz => "sample.tar.xz",
             Self::ArchiveZstd => "sample.tar.zst",
@@ -417,7 +420,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 144] = [
+    const ALL: [Self; 145] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -552,6 +555,7 @@ impl Scenario {
         Self::ArchiveTarContentGroups,
         Self::ArchiveProtectionModes,
         Self::ArchivePriorityChains,
+        Self::ArchivePreferredKeepers,
         Self::ArchiveBrowser,
         Self::ArchiveFuzzy,
         Self::ArchiveExport,
@@ -707,6 +711,7 @@ impl Scenario {
             Self::ArchiveTarContentGroups => "archive_tar_content_groups",
             Self::ArchiveProtectionModes => "archive_protection_modes",
             Self::ArchivePriorityChains => "archive_priority_chains",
+            Self::ArchivePreferredKeepers => "archive_preferred_keepers",
             Self::ArchiveBrowser => "archive_browser",
             Self::ArchiveFuzzy => "archive_fuzzy",
             Self::ArchiveExport => "archive_export",
@@ -857,6 +862,7 @@ impl Scenario {
             | Self::ArchiveTarContentGroups
             | Self::ArchiveProtectionModes
             | Self::ArchivePriorityChains
+            | Self::ArchivePreferredKeepers
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -1017,6 +1023,7 @@ impl Scenario {
             | Self::ArchiveTarContentGroups
             | Self::ArchiveProtectionModes
             | Self::ArchivePriorityChains
+            | Self::ArchivePreferredKeepers
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -2631,6 +2638,7 @@ fn main() {
             Scenario::ArchiveTarContentGroups
                 | Scenario::ArchiveProtectionModes
                 | Scenario::ArchivePriorityChains
+                | Scenario::ArchivePreferredKeepers
         ) {
             std::fs::write(
                 left.join("groups.tar.gz"),
@@ -2781,6 +2789,7 @@ fn main() {
                     | Scenario::ArchiveTarContentGroups
                     | Scenario::ArchiveProtectionModes
                     | Scenario::ArchivePriorityChains
+                    | Scenario::ArchivePreferredKeepers
             )
         {
             let create_archive = || -> std::io::Result<()> {
@@ -3308,7 +3317,7 @@ struct VisualQaApp {
     table_phase: u8,
     table_input_pending: bool,
     archive_copy_phase: u8,
-    archive_preferences_phase: u8,
+    archive_preferences_phase: u16,
     archive_copy_settle: u8,
     preset_click_phase: u8,
     preset_input_pending: bool,
@@ -5114,6 +5123,8 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
             && !(self.scenario == Scenario::ArchivePriorityChains
                 && self.archive_preferences_phase < 231)
+            && !(self.scenario == Scenario::ArchivePreferredKeepers
+                && self.archive_preferences_phase < 284)
             && !(self.scenario == Scenario::ArchiveProtectionModes
                 && (self.archive_copy_phase < 252 || self.archive_preferences_phase < 5))
             && !(self.scenario == Scenario::ArchiveTarContentGroups
@@ -17305,8 +17316,10 @@ impl eframe::App for VisualQaApp {
                 }
             }
         }
-        if self.scenario == Scenario::ArchivePriorityChains
-            && self.archive_copy_phase == 8
+        if matches!(
+            self.scenario,
+            Scenario::ArchivePriorityChains | Scenario::ArchivePreferredKeepers
+        ) && self.archive_copy_phase == 8
             && (5..46).contains(&self.archive_preferences_phase)
         {
             use crate::app::archive_dialog::ContentKeepOrder as O;
@@ -17480,6 +17493,14 @@ impl eframe::App for VisualQaApp {
             && (51..87).contains(&self.archive_preferences_phase)
         {
             let phase = self.archive_preferences_phase;
+            if phase == 54
+                && ctx.data(|d| d.get_temp::<bool>(egui::Id::new("archive-content-groups-open")))
+                    == Some(false)
+            {
+                self.archive_preferences_phase = 51;
+                self.hex_pointer_target = None;
+                return;
+            }
             if matches!(phase, 54 | 58 | 62 | 66 | 70 | 74 | 78 | 82 | 86) {
                 let Some(state) = self.inner.ui.tools.archive.as_ref() else {
                     return;
@@ -18314,6 +18335,320 @@ impl eframe::App for VisualQaApp {
             self.archive_preferences_phase += 1;
             return;
         }
+        if self.scenario == Scenario::ArchivePreferredKeepers
+            && (46..56).contains(&self.archive_preferences_phase)
+        {
+            let phase = self.archive_preferences_phase;
+            if phase == 49
+                && ctx.data(|d| d.get_temp::<bool>(egui::Id::new("archive-content-groups-open")))
+                    == Some(false)
+            {
+                self.archive_preferences_phase = 46;
+                self.hex_pointer_target = None;
+                return;
+            }
+            if phase == 55 {
+                let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                    return;
+                };
+                let Some(listing) = state.listing.as_ref() else {
+                    return;
+                };
+                let mut indexes = state
+                    .selected
+                    .iter()
+                    .map(|id| listing.members[*id].index)
+                    .collect::<Vec<_>>();
+                indexes.sort_unstable();
+                if indexes != vec![0, 2, 8, 9, 10] || state.error.is_some() {
+                    self.archive_preferences_phase = 49;
+                    self.hex_pointer_target = None;
+                    return;
+                }
+                let record = serde_json::json!({"selected_indexes":indexes,"policy":state.content_keep.saved()});
+                let _ = std::fs::write(
+                    self.scenario_dir.join("preferred-setup.json"),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                self.archive_preferences_phase = 231;
+                return;
+            }
+            let (id, step, text) = match phase {
+                46..=48 => (
+                    egui::Id::new("archive-content-groups-details"),
+                    phase - 46,
+                    None::<&str>,
+                ),
+                49..=51 => (
+                    egui::Id::new(("archive-content-group-selection", 1usize, true)),
+                    phase - 49,
+                    None,
+                ),
+                _ => (
+                    egui::Id::new(("archive-content-group-selection", 0usize, false)),
+                    phase - 52,
+                    None,
+                ),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step == 3 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if step == 4 && text == Some("") {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            } else if step == 4 {
+                input
+                    .events
+                    .push(egui::Event::Text(text.unwrap_or_default().into()));
+            } else if step > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_preferences_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::ArchivePreferredKeepers
+            && (231..284).contains(&self.archive_preferences_phase)
+        {
+            let phase = self.archive_preferences_phase;
+            if phase == 275 {
+                match self.inner.archive_reopen_preferences_for_qa(ctx) {
+                    Ok(record) => {
+                        let _ = std::fs::write(
+                            self.scenario_dir.join("preferred-session.json"),
+                            serde_json::to_vec_pretty(&record).unwrap(),
+                        );
+                        self.archive_preferences_phase = 276;
+                    }
+                    Err(error) => {
+                        let _ =
+                            std::fs::write(self.scenario_dir.join("preferred-error.txt"), error);
+                    }
+                }
+                return;
+            }
+            if matches!(
+                phase,
+                236 | 242 | 248 | 252 | 258 | 262 | 268 | 274 | 279 | 283
+            ) {
+                let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                    return;
+                };
+                let Some(listing) = state.listing.as_ref() else {
+                    return;
+                };
+                if phase == 279 && state.check.is_none() && state.check_result.is_none() {
+                    self.archive_preferences_phase = 276;
+                    self.hex_pointer_target = None;
+                    return;
+                }
+                let Some(Ok(report)) = &state.check_result else {
+                    return;
+                };
+                if report
+                    .content_groups
+                    .as_ref()
+                    .is_none_or(|groups| groups.len() != 2)
+                {
+                    return;
+                }
+                let preferred = match phase {
+                    236 | 242 => "",
+                    248 | 252 | 274 | 279 | 283 => "dup.txt",
+                    258 | 262 => "nested/**",
+                    _ => "[",
+                };
+                let candidates = "";
+                if !state.content_keep.protected_glob.is_empty()
+                    || state.content_keep.candidate_globs != candidates
+                    || state.content_keep.preferred_globs != preferred
+                {
+                    self.archive_preferences_phase = match phase {
+                        236 => 231,
+                        242 => 237,
+                        248 => 243,
+                        258 => 253,
+                        268 => 263,
+                        274 => 269,
+                        _ => return,
+                    };
+                    self.hex_pointer_target = None;
+                    return;
+                }
+                let mut indexes = state
+                    .selected
+                    .iter()
+                    .map(|id| listing.members[*id].index)
+                    .collect::<Vec<_>>();
+                indexes.sort_unstable();
+                let wanted = match phase {
+                    236 | 242 | 248 => vec![0, 2, 8, 9, 10],
+                    252 | 258 => vec![0, 2, 9, 10],
+                    262 | 268 | 274 => vec![0, 2, 5, 8, 9],
+                    279 => vec![],
+                    _ => vec![0, 2, 5, 9, 10],
+                };
+                let enabled = ctx.data(|d| {
+                    d.get_temp::<bool>(egui::Id::new("archive-select-redundant-groups-enabled"))
+                });
+                if indexes != wanted && matches!(phase, 252 | 262 | 283) && state.error.is_none() {
+                    self.archive_preferences_phase = phase - 3;
+                    self.hex_pointer_target = None;
+                    return;
+                }
+                if indexes != wanted || state.error.is_some() || enabled != Some(phase != 268) {
+                    return;
+                }
+                if phase == 279
+                    && (state.selection_history.can_undo() || state.selection_history.can_redo())
+                {
+                    return;
+                }
+                let record = serde_json::json!({"phase":phase,"preferred":preferred,"policy":state.content_keep.saved(),"enabled":enabled,"selected_indexes":indexes,"selected":state.selected,"groups":report.content_groups,"listing":listing.members.iter().enumerate().map(|(id,m)|serde_json::json!({"id":id,"index":m.index,"path":m.path})).collect::<Vec<_>>()});
+                let _ = std::fs::write(
+                    self.scenario_dir.join(format!("preferred-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                self.archive_preferences_phase += 1;
+                return;
+            }
+            let (id, step, text) = match phase {
+                231..=235 => (egui::Id::new("archive-protect-glob"), phase - 231, Some("")),
+                237..=241 => (
+                    egui::Id::new("archive-candidate-globs"),
+                    phase - 237,
+                    Some(""),
+                ),
+                243..=247 => (
+                    egui::Id::new("archive-preferred-globs"),
+                    phase - 243,
+                    Some("dup.txt"),
+                ),
+                249..=251 => (
+                    egui::Id::new(("archive-select-redundant-group", 1usize)),
+                    phase - 249,
+                    None,
+                ),
+                253..=257 => (
+                    egui::Id::new("archive-preferred-globs"),
+                    phase - 253,
+                    Some("nested/**"),
+                ),
+                259..=261 => (
+                    egui::Id::new("archive-select-redundant-groups"),
+                    phase - 259,
+                    None,
+                ),
+                263..=267 => (
+                    egui::Id::new("archive-preferred-globs"),
+                    phase - 263,
+                    Some("["),
+                ),
+                269..=273 => (
+                    egui::Id::new("archive-preferred-globs"),
+                    phase - 269,
+                    Some("dup.txt"),
+                ),
+                276..=278 => (egui::Id::new("archive-content-groups"), phase - 276, None),
+                _ => (
+                    egui::Id::new("archive-select-redundant-groups"),
+                    phase - 280,
+                    None,
+                ),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step == 3 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if step == 4 && text == Some("") {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            } else if step == 4 {
+                input
+                    .events
+                    .push(egui::Event::Text(text.unwrap_or_default().into()));
+            } else if step > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_preferences_phase += 1;
+            return;
+        }
         if self.scenario == Scenario::ArchivePriorityChains && self.archive_preferences_phase == 46
         {
             match self.inner.archive_reopen_preferences_for_qa(ctx) {
@@ -18500,7 +18835,9 @@ impl eframe::App for VisualQaApp {
         }
         if matches!(
             self.scenario,
-            Scenario::ArchiveProtectionModes | Scenario::ArchivePriorityChains
+            Scenario::ArchiveProtectionModes
+                | Scenario::ArchivePriorityChains
+                | Scenario::ArchivePreferredKeepers
         ) && self.archive_copy_phase < 8
         {
             let phase = self.archive_copy_phase;
@@ -18553,7 +18890,10 @@ impl eframe::App for VisualQaApp {
                     serde_json::to_vec_pretty(&record).unwrap(),
                 );
                 self.archive_copy_phase = 8;
-                if self.scenario == Scenario::ArchivePriorityChains {
+                if matches!(
+                    self.scenario,
+                    Scenario::ArchivePriorityChains | Scenario::ArchivePreferredKeepers
+                ) {
                     self.archive_preferences_phase = 5;
                 }
                 return;
@@ -22783,6 +23123,11 @@ impl eframe::App for VisualQaApp {
         self.frames = self.frames.saturating_add(1);
         let timeout = if self.scenario == Scenario::SearchResults {
             Duration::from_secs(30)
+        } else if self.scenario == Scenario::ArchivePriorityChains {
+            // This regression now validates 231 UI/receipt steps before capture.
+            // Keep every assertion; allow the expanded sheet and pending screenshot
+            // callback to finish after the scripted interactions have completed.
+            TIMEOUT + Duration::from_secs(5)
         } else if matches!(
             self.scenario,
             Scenario::TableDialect
@@ -23494,6 +23839,7 @@ impl eframe::App for VisualQaApp {
                     | Scenario::ArchiveTarContentGroups
                     | Scenario::ArchiveProtectionModes
                     | Scenario::ArchivePriorityChains
+                    | Scenario::ArchivePreferredKeepers
             )
             && let Some(state) = self.inner.ui.tools.archive.as_mut()
             && state.listing.is_some()
@@ -25297,6 +25643,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
+            Scenario::ArchivePreferredKeepers => self.archive_preferences_phase==284 && self.scenario_dir.join("preferred-283.json").is_file(),
             Scenario::ArchivePriorityChains => self.archive_preferences_phase==231 && self.scenario_dir.join("csv-export-230.json").is_file() && self.scenario_dir.join("copy-bounds-204.json").is_file() && self.scenario_dir.join("shown-report-166.txt").is_file() && self.scenario_dir.join("group-search-140.json").is_file() && self.scenario_dir.join("group-order-86.json").is_file() && self.scenario_dir.join("priority-reopened.json").is_file(),
             Scenario::ArchiveProtectionModes => self.archive_copy_phase==252 && self.archive_preferences_phase==5 && self.scenario_dir.join("preferences-reopened.json").is_file() && [231,235,239,243,247,251].into_iter().all(|phase|self.scenario_dir.join(format!("selection-history-{phase}.json")).is_file()) && [183,189,193,199,203,209,215,219,223,227].into_iter().all(|phase|self.scenario_dir.join(format!("copy-candidates-{phase}.json")).is_file()) && [121,127,131,137,141,147,153,157,163,167,173,177].into_iter().all(|phase|self.scenario_dir.join(format!("group-cutoff-{phase}.json")).is_file()) && [75,79,85,91,95,101,105,111,115].into_iter().all(|phase|self.scenario_dir.join(format!("protection-list-{phase}.json")).is_file()) && [154,158,162,166,172,176,180,184,188,192,196,200,206,210].into_iter().all(|phase|self.scenario_dir.join(format!("tar-protection-mode-{phase}.json")).is_file()) && self.scenario_dir.join("modes-initial.json").is_file() && std::fs::read(self.fixture.left.join("groups.tar.gz")).is_ok_and(|bytes|bytes.as_slice()==include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice()),
             Scenario::ArchiveTarContentGroups => self.archive_copy_phase==149 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json","tar-keep-time-62.json","tar-keep-time-66.json","tar-keep-time-70.json","tar-keep-time-74.json","tar-keep-depth-78.json","tar-keep-depth-82.json","tar-keep-depth-86.json","tar-keep-depth-90.json","tar-keep-depth-94.json","tar-keep-depth-98.json","tar-protected-104.json","tar-protected-108.json","tar-protected-114.json","tar-protected-118.json","tar-protected-124.json","tar-protected-128.json","tar-protected-134.json","tar-protected-140.json","tar-protected-144.json","tar-protected-148.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
@@ -26482,6 +26829,7 @@ mod tests {
                 "archive_tar_content_groups",
                 "archive_protection_modes",
                 "archive_priority_chains",
+                "archive_preferred_keepers",
                 "archive_browser",
                 "archive_fuzzy",
                 "archive_export",

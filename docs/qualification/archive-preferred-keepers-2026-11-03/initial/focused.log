@@ -1,0 +1,93 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5165:28
+     |
+5165 |                 let keep = ContentKeep {
+     |                            ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5234:28
+     |
+5234 |                 let keep = ContentKeep {
+     |                            ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5261:22
+     |
+5261 |                     &ContentKeep {
+     |                      ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5289:22
+     |
+5289 |                     &ContentKeep {
+     |                      ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5312:18
+     |
+5312 |                 &ContentKeep {
+     |                  ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5384:22
+     |
+5384 |                     &ContentKeep {
+     |                      ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5411:18
+     |
+5411 |                 &ContentKeep {
+     |                  ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5473:22
+     |
+5473 |                     &ContentKeep {
+     |                      ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5500:14
+     |
+5500 |             &ContentKeep {
+     |              ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5520:14
+     |
+5520 |             &ContentKeep {
+     |              ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5543:18
+     |
+5543 |                 &ContentKeep {
+     |                  ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5565:18
+     |
+5565 |                 &ContentKeep {
+     |                  ^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5623:18
+     |
+5623 |                 &super::ContentKeep {
+     |                  ^^^^^^^^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+    --> src/app/archive_dialog.rs:5648:18
+     |
+5648 |                 &super::ContentKeep {
+     |                  ^^^^^^^^^^^^^^^^^^ missing `preferred_globs`
+
+error[E0063]: missing field `preferred_globs` in initializer of `ContentKeep`
+   --> src/session.rs:674:20
+    |
+674 |         let keep = ContentKeep {
+    |                    ^^^^^^^^^^^ missing `preferred_globs`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `commander` (bin "commander" test) due to 15 previous errors
