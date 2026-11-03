@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0689]: can't call method `div_ceil` on ambiguous numeric type `{integer}`
+    --> src/app/archive_dialog.rs:2968:39
+     |
+2966 |         for count in [0, 1, 99, 100, 101, 200, 201, 10_001] {
+     |             ----- you must specify a type for this binding, like `i32`
+2967 |             let mut visited = Vec::new();
+2968 |             for requested in 0..count.div_ceil(super::CONTENT_GROUPS_PER_PAGE).max(1) {
+     |                                       ^^^^^^^^
+
+For more information about this error, try `rustc --explain E0689`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

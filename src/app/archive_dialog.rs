@@ -3,6 +3,51 @@
 use super::*;
 use crate::archive_order::{Field as ArchiveField, Order as ArchiveOrder};
 
+const CONTENT_GROUPS_PER_PAGE: usize = 100;
+
+/// Clamp stale pages before multiplying, including empty and extreme inputs.
+fn content_group_page_range(count: usize, page: &mut usize) -> std::ops::Range<usize> {
+    *page = (*page).min(count.saturating_sub(1) / CONTENT_GROUPS_PER_PAGE);
+    let start = *page * CONTENT_GROUPS_PER_PAGE;
+    start..start.saturating_add(CONTENT_GROUPS_PER_PAGE).min(count)
+}
+
+fn content_group_pager(
+    ui: &mut egui::Ui,
+    count: usize,
+    page: &mut usize,
+) -> std::ops::Range<usize> {
+    let mut range = content_group_page_range(count, page);
+    if count > CONTENT_GROUPS_PER_PAGE {
+        ui.horizontal_wrapped(|ui| {
+            for (forward, label, enabled) in [
+                (false, "Previous groups", range.start > 0),
+                (true, "Next groups", range.end < count),
+            ] {
+                let button = ui.add_enabled(enabled, egui::Button::new(label));
+                #[cfg(any(test, feature = "visual-qa"))]
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new(label), button.rect));
+                if button.clicked() {
+                    if forward {
+                        *page += 1;
+                    } else {
+                        *page -= 1;
+                    }
+                }
+            }
+            range = content_group_page_range(count, page);
+            ui.label(format!(
+                "Groups {}–{} of {}",
+                range.start + 1,
+                range.end,
+                count
+            ));
+        });
+    }
+    range
+}
+
 const MAX_ARCHIVE_HISTORY: usize = 64;
 const MAX_ARCHIVE_HISTORY_BYTES: usize = 256 * 1024;
 #[derive(Clone)]
@@ -1591,6 +1636,7 @@ impl App {
         );
         self.ui.tools.replace_on(side);
         self.ui.tools.archive = Some(ArchiveState {
+            content_group_page: 0,
             strict_zip_headers: false,
             password: zeroize::Zeroizing::new(String::new()),
             check: None,
@@ -1656,6 +1702,7 @@ impl App {
             if let Some(result) = result {
                 state.check = None;
                 state.check_result = Some(result);
+                state.content_group_page = 0;
                 state.check_recorded_at = Some(chrono::Utc::now());
             }
         }
@@ -1917,7 +1964,8 @@ impl App {
                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-select-content-groups"),select.rect));
                         select_content_groups=select.clicked();
                         let details=egui::CollapsingHeader::new(format!("Matching content groups ({})",groups.len())).show(ui,|ui| {
-                            for (_rank,group) in groups.iter().take(100).enumerate() {
+                            let range=content_group_pager(ui,groups.len(), &mut state.content_group_page);
+                            for (_rank,group) in groups.iter().enumerate().skip(range.start).take(range.len()) {
                                 let _title=ui.label(format!("SHA-256 {} · {} bytes · {} members",group.sha256,group.size,group.members.len()));
                                 #[cfg(feature="visual-qa")]
                                 let (mut painted,mut rect,mut paths)=(ui.clip_rect().contains_rect(_title.rect),_title.rect,Vec::new());
@@ -1938,7 +1986,6 @@ impl App {
                                     }
                                 });
                             }
-                            if groups.len()>100 {ui.label(format!("{} more groups; Select includes all",groups.len()-100));}
                         });
                         #[cfg(feature="visual-qa")]
                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-content-groups-details"),details.header_response.rect));
@@ -2777,6 +2824,7 @@ impl App {
         } else if start_check && let Some(state) = self.ui.tools.archive.as_mut() {
             let repaint = ctx.clone();
             state.check_result = None;
+            state.content_group_page = 0;
             state.check_recorded_at = None;
             state.check_strict_snapshot = Some(state.strict_zip_headers);
             let start = if start_content_groups {
@@ -2937,6 +2985,78 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn content_group_page_buttons_reach_final_group_and_return() {
+        let ctx = egui::Context::default();
+        let mut page = 0;
+        let mut frame = |events| {
+            let mut range = 0..0;
+            crate::testutil::discard_egui_output(ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    range = super::content_group_pager(ui, 201, &mut page);
+                },
+            ));
+            range
+        };
+        assert_eq!(frame(vec![]), 0..100);
+        for (label, expected) in [
+            ("Next groups", 100..200),
+            ("Next groups", 200..201),
+            ("Next groups", 200..201),
+            ("Previous groups", 100..200),
+            ("Previous groups", 0..100),
+            ("Previous groups", 0..100),
+        ] {
+            let pos = ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(label)))
+                .unwrap()
+                .center();
+            frame(vec![egui::Event::PointerMoved(pos)]);
+            frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }]);
+            assert_eq!(
+                frame(vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default()
+                }]),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn content_group_pages_cover_all_absolute_ranks_and_clamp_stale_state() {
+        for count in [0usize, 1, 99, 100, 101, 200, 201, 10_001] {
+            let mut visited = Vec::new();
+            for requested in 0..count.div_ceil(super::CONTENT_GROUPS_PER_PAGE).max(1) {
+                let mut page = requested;
+                let range = super::content_group_page_range(count, &mut page);
+                assert!(range.len() <= super::CONTENT_GROUPS_PER_PAGE);
+                assert_eq!(page, requested);
+                visited.extend(range);
+            }
+            assert_eq!(visited, (0..count).collect::<Vec<_>>());
+            let mut page = usize::MAX;
+            let range = super::content_group_page_range(count, &mut page);
+            assert_eq!(range.end, count);
+            assert!(range.len() <= super::CONTENT_GROUPS_PER_PAGE);
+        }
+        let mut page = usize::MAX;
+        let range = super::content_group_page_range(usize::MAX, &mut page);
+        assert_eq!(range.end, usize::MAX);
+        assert!(range.len() <= super::CONTENT_GROUPS_PER_PAGE);
+    }
+
     use super::{
         MemberFilter, extract_all_label, extract_error_summary, extract_selected_label,
         step_member_cursor,

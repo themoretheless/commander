@@ -1,0 +1,88 @@
+{
+  "entries": [
+    {
+      "index": 0,
+      "path": "z-same.txt",
+      "size": 33,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 1,
+      "path": "folder",
+      "size": 0,
+      "regular": false,
+      "sha256": null
+    },
+    {
+      "index": 2,
+      "path": "a-same.txt",
+      "size": 33,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 3,
+      "path": "different.txt",
+      "size": 5,
+      "regular": true,
+      "sha256": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa"
+    },
+    {
+      "index": 4,
+      "path": "empty-one",
+      "size": 0,
+      "regular": true,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "index": 5,
+      "path": "empty-two",
+      "size": 0,
+      "regular": true,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "index": 6,
+      "path": "sym",
+      "size": 0,
+      "regular": false,
+      "sha256": null
+    },
+    {
+      "index": 7,
+      "path": "hard",
+      "size": 0,
+      "regular": false,
+      "sha256": null
+    },
+    {
+      "index": 8,
+      "path": "dup.txt",
+      "size": 33,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 9,
+      "path": "dup.txt",
+      "size": 33,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 10,
+      "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt",
+      "size": 33,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    }
+  ],
+  "files": {
+    "groups.tar.gz": "2103c40167b3c81292832fffc957d273f213890b4d571f1258fb7e4612784924",
+    "groups.tar": "90e8ec8158cf8c140ea775b11ed551597f2ff45a6fa6faff67c73d0afd622d14",
+    "groups.tar.xz": "c0c061138d08d5c119dd607ee925841f8ee0e5384f42718744d875588a1792ab",
+    "groups.tar.zst": "78dc06700a33cc897622294343693b961000c56e5e9fc4263653281935594b80",
+    "groups.tar.bz2": "7bc25bcd7319fadfc7d737110162e14f6cb11bf1fbc079ab00cd8501dfd43fb3"
+  }
+}
