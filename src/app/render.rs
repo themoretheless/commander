@@ -1011,6 +1011,7 @@ impl App {
         reduced_motion: bool,
         nav_locked: bool,
         high_contrast: bool,
+        tab_revision: u64,
     ) -> PanelRenderOutcome {
         let panel_bg = t.bg_panel;
         let mut tree_toggle = false;
@@ -1051,7 +1052,7 @@ impl App {
                         ui.horizontal(|ui| {
                             let can_back = panel.can_go_back();
                             let (back_rect, back_resp) =
-                                path_bar_button(ui, can_back, "Back", "Back (Cmd+[)", None, t);
+                                path_bar_button(ui, can_back, "Back", "Back (Cmd+[) · right-click for earlier folders", None, t);
                             let back_color = if can_back {
                                 t.text_primary
                             } else {
@@ -1060,19 +1061,25 @@ impl App {
                             crate::app::glyphs::navigation_triangle(
                                 ui, back_rect, false, back_color,
                             );
+                            #[cfg(any(test,feature="visual-qa"))]
+                            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("history-button",panel_side,true)),back_rect));
+                            super::navigation_history::history_menu(&back_resp,panel,tab_revision,panel_side,true);
                             if back_resp.clicked() && can_back {
                                 panel.go_back();
                             }
 
                             let can_fwd = panel.can_go_forward();
                             let (fwd_rect, fwd_resp) =
-                                path_bar_button(ui, can_fwd, "Forward", "Forward (Cmd+])", None, t);
+                                path_bar_button(ui, can_fwd, "Forward", "Forward (Cmd+]) · right-click for later folders", None, t);
                             let fwd_color = if can_fwd {
                                 t.text_primary
                             } else {
                                 t.text_muted
                             };
                             crate::app::glyphs::navigation_triangle(ui, fwd_rect, true, fwd_color);
+                            #[cfg(any(test,feature="visual-qa"))]
+                            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("history-button",panel_side,false)),fwd_rect));
+                            super::navigation_history::history_menu(&fwd_resp,panel,tab_revision,panel_side,false);
                             if fwd_resp.clicked() && can_fwd {
                                 panel.go_forward();
                             }
@@ -2270,6 +2277,7 @@ mod tests {
                             true,
                             false,
                             false,
+                            0,
                         );
                     });
                 assert!(

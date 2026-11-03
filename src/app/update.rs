@@ -2760,6 +2760,7 @@ impl App {
             }
             let t = self.colors;
             let is_active = self.ws.active == side;
+            let tab_revision = self.ws.tab_revision();
             let (panel, label) = match side {
                 ActivePanel::Left => (&mut self.ws.left, "left"),
                 ActivePanel::Right => (&mut self.ws.right, "right"),
@@ -2784,6 +2785,7 @@ impl App {
                 self.accessibility_preferences.reduced_motion,
                 self.ws.nav_lock,
                 self.accessibility_preferences.high_contrast,
+                tab_revision,
             )
         })
     }

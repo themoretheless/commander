@@ -10,6 +10,25 @@ use std::path::{Path, PathBuf};
 /// Default maximum remembered jumps; older entries are evicted past this.
 pub const DEFAULT_CAP: usize = 64;
 
+/// Frozen native identities for one menu opening. Text labels never identify entries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub paths: Vec<PathBuf>,
+    pub cursor: Option<usize>,
+}
+impl Snapshot {
+    pub fn choices(&self, back: bool) -> Vec<usize> {
+        let Some(current) = self.cursor else {
+            return Vec::new();
+        };
+        if back {
+            (0..current).rev().collect()
+        } else {
+            (current + 1..self.paths.len()).collect()
+        }
+    }
+}
+
 /// A bounded trail of visited directories with a movable cursor.
 #[derive(Debug)]
 pub struct JumpList {
@@ -137,6 +156,26 @@ impl JumpList {
         self.cursor.map(|c| self.trail[c].as_path())
     }
 
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            paths: self.trail.clone(),
+            cursor: self.cursor,
+        }
+    }
+
+    /// Move within the exact captured trail, retaining both tails and duplicate slots.
+    pub fn select_captured(&mut self, captured: &Snapshot, index: usize) -> Option<PathBuf> {
+        if captured.cursor != self.cursor
+            || captured.paths != self.trail
+            || Some(index) == self.cursor
+        {
+            return None;
+        }
+        let path = self.trail.get(index)?.clone();
+        self.cursor = Some(index);
+        Some(path)
+    }
+
     pub const fn can_back(&self) -> bool {
         matches!(self.cursor, Some(c) if c > 0)
     }
@@ -159,6 +198,32 @@ mod tests {
 
     fn cur(j: &JumpList) -> Option<String> {
         j.current().map(|p| p.to_string_lossy().to_string())
+    }
+
+    #[test]
+    fn captured_history_slots_preserve_tails_duplicates_and_reject_changed_snapshots() {
+        let mut j = JumpList::with_cap(4);
+        for path in ["/a", "/b", "/a", "/c"] {
+            j.push(path);
+        }
+        let before = j.snapshot();
+        assert_eq!(before.choices(true), [2, 1, 0]);
+        assert!(before.choices(false).is_empty());
+        assert_eq!(j.select_captured(&before, 0), Some(PathBuf::from("/a")));
+        assert_eq!(j.snapshot().paths, before.paths);
+        assert!(j.select_captured(&before, 1).is_none());
+        let start = j.snapshot();
+        assert_eq!(start.choices(false), [1, 2, 3]);
+        assert!(j.select_captured(&start, 4).is_none());
+        assert!(j.select_captured(&start, 0).is_none());
+        assert_eq!(j.select_captured(&start, 3), Some(PathBuf::from("/c")));
+        let stale = j.snapshot();
+        j.push("/d");
+        assert!(j.select_captured(&stale, 1).is_none());
+        let current = j.snapshot();
+        j.select_captured(&current, 1).unwrap();
+        j.push("/branch");
+        assert_eq!(trail(&j), ["/b", "/a", "/branch"]);
     }
 
     #[test]

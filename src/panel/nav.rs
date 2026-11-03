@@ -68,6 +68,23 @@ impl PanelState {
         self.history.can_forward()
     }
 
+    /// Jump within a captured history without truncating Forward or probing its folders.
+    /// Missing/unavailable choices use the normal async listing error view.
+    pub fn go_to_history(&mut self, captured: &crate::jumplist::Snapshot, index: usize) -> bool {
+        if self.history.current() != Some(self.current_path.as_path()) {
+            return false;
+        }
+        let Some(path) = self.history.select_captured(captured, index) else {
+            return false;
+        };
+        if path != self.current_path {
+            self.stash_view_settings();
+            self.pending_visit = Some(path.clone());
+            self.load_remembered_path(path);
+        }
+        true
+    }
+
     pub fn go_back(&mut self) {
         // Walk the existing trail without recording a new jump. Directories
         // can disappear after being visited, so prune dead entries on sight.

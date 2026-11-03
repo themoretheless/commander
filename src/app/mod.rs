@@ -21,6 +21,7 @@ mod keyboard_help;
 mod keys;
 mod mask_dialog;
 mod miller_browser;
+mod navigation_history;
 mod omnibar_dialog;
 mod permissions_dialog;
 mod preload;

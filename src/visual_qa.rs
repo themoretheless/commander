@@ -3284,6 +3284,7 @@ struct VisualQaApp {
     disk_tree_phase: u8,
     disk_export_phase: u8,
     empty_file_phase: u8,
+    navigation_menu_phase: u8,
     disk_export_first_json: Option<String>,
     duplicate_phase: u8,
     duplicate_sort_phase: u8,
@@ -3603,6 +3604,7 @@ impl VisualQaApp {
             disk_tree_phase: 0,
             disk_export_phase: 0,
             empty_file_phase: 0,
+            navigation_menu_phase: 0,
             disk_export_first_json: None,
             duplicate_phase: 0,
             duplicate_sort_phase: 0,
@@ -5003,7 +5005,9 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
             && !(self.scenario == Scenario::MillerBrowser
-                && (self.disk_export_phase < 255 || self.empty_file_phase < 14))
+                && (self.disk_export_phase < 255
+                    || self.empty_file_phase < 14
+                    || self.navigation_menu_phase < 15))
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -8162,6 +8166,103 @@ impl eframe::App for VisualQaApp {
                 });
             }
             self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser
+            && self.disk_export_phase == 255
+            && self.empty_file_phase == 14
+            && self.navigation_menu_phase < 15
+        {
+            use crate::workspace::ActivePanel;
+            let phase = self.navigation_menu_phase;
+            let original = self.fixture.left.join("column-A");
+            if phase == 0 {
+                // Fixture setup: seed a short back/forward trail without changing the owner.
+                for path in [
+                    self.fixture.left.clone(),
+                    self.fixture.left.join("Design"),
+                    original.clone(),
+                ] {
+                    self.inner.ws.left.history.push(path);
+                }
+                let trail = self.inner.ws.left.history.snapshot();
+                let record = serde_json::json!({"paths":trail.paths,"cursor":trail.cursor,"path":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path,"left_tabs":self.inner.ws.tab_snapshot(ActivePanel::Left),"right_tabs":self.inner.ws.tab_snapshot(ActivePanel::Right),"focus":format!("{:?}",self.inner.ws.active)});
+                std::fs::write(
+                    self.scenario_dir.join("navigation-menu-before.json"),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                )
+                .unwrap();
+            } else {
+                let before: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(self.scenario_dir.join("navigation-menu-before.json")).unwrap(),
+                )
+                .unwrap();
+                let original_index = before["cursor"].as_u64().unwrap() as usize;
+                let back_index = original_index - 2;
+                let back = phase < 8;
+                let target = if back { back_index } else { original_index };
+                if phase == 7 || phase == 14 {
+                    let path = PathBuf::from(before["paths"][target].as_str().unwrap());
+                    if self.inner.ws.left.current_path != path
+                        || matches!(
+                            self.inner.ws.left.dir_status(),
+                            crate::panel::DirStatus::Loading
+                        )
+                        || egui::Popup::is_any_open(ctx)
+                    {
+                        return;
+                    }
+                    if phase == 14
+                        && self
+                            .inner
+                            .ws
+                            .left
+                            .cursor_entry()
+                            .is_none_or(|e| e.path != original.join("Draft.txt"))
+                    {
+                        return;
+                    }
+                    let trail = self.inner.ws.left.history.snapshot();
+                    let record = serde_json::json!({"paths":trail.paths,"cursor":trail.cursor,"path":self.inner.ws.left.current_path,"entry":self.inner.ws.left.cursor_entry().map(|e|&e.path),"right":self.inner.ws.right.current_path,"left_tabs":self.inner.ws.tab_snapshot(ActivePanel::Left),"right_tabs":self.inner.ws.tab_snapshot(ActivePanel::Right),"focus":format!("{:?}",self.inner.ws.active)});
+                    std::fs::write(
+                        self.scenario_dir.join(if phase == 7 {
+                            "navigation-menu-back.json"
+                        } else {
+                            "navigation-menu-forward.json"
+                        }),
+                        serde_json::to_vec_pretty(&record).unwrap(),
+                    )
+                    .unwrap();
+                } else {
+                    let row = matches!(phase, 4 | 5 | 6 | 11 | 12 | 13);
+                    let id = if row {
+                        egui::Id::new(("history-menu-row", "left", back, target))
+                    } else {
+                        egui::Id::new(("history-button", "left", back))
+                    };
+                    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                        return;
+                    };
+                    if row && !egui::Popup::is_any_open(ctx) {
+                        return;
+                    }
+                    let pos = rect.center();
+                    input.events.push(egui::Event::PointerMoved(pos));
+                    if matches!(phase, 2 | 3 | 5 | 6 | 9 | 10 | 12 | 13) {
+                        input.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: if row {
+                                egui::PointerButton::Primary
+                            } else {
+                                egui::PointerButton::Secondary
+                            },
+                            pressed: matches!(phase, 2 | 5 | 9 | 12),
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+            }
+            self.navigation_menu_phase += 1;
             return;
         }
         if self.scenario == Scenario::MillerBrowser
@@ -27600,7 +27701,7 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==255 && self.empty_file_phase==14 && self.inner.ws.active==crate::workspace::ActivePanel::Left && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Left)==0 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                self.disk_export_phase==255 && self.empty_file_phase==14 && self.navigation_menu_phase==15 && self.inner.ws.active==crate::workspace::ActivePanel::Left && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Left)==0 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.left.current_path==self.fixture.left.join("column-A")
                     && self.inner.ws.left.preview.is_none()
                     && self.fixture.left.join("column-B/Prepared destination").is_dir()

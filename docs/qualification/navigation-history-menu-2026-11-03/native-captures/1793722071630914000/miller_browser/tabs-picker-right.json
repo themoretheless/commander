@@ -1,0 +1,208 @@
+{
+  "entries": [
+    {
+      "current": false,
+      "focused": false,
+      "index": 0,
+      "name": "Workspace Alpha",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left/column-A",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Left"
+    },
+    {
+      "current": true,
+      "focused": false,
+      "index": 1,
+      "name": "column-B",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left/column-B",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Left"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 0,
+      "name": "Design",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left/Design",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 1,
+      "name": "right",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/right",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 2,
+      "name": "column-A",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left/column-A",
+      "pin": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": true,
+      "focused": true,
+      "index": 3,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 4,
+      "name": "commander-visual-qa-72764-miller_browser",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 5,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 6,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 7,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    }
+  ],
+  "input": "#",
+  "matches": [
+    {
+      "current": false,
+      "focused": false,
+      "index": 0,
+      "name": "Design",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left/Design",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 1,
+      "name": "right",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/right",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 2,
+      "name": "column-A",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left/column-A",
+      "pin": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": true,
+      "focused": true,
+      "index": 3,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 4,
+      "name": "commander-visual-qa-72764-miller_browser",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 5,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 6,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    },
+    {
+      "current": false,
+      "focused": false,
+      "index": 7,
+      "name": "left",
+      "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-72764-miller_browser/left",
+      "pin": null,
+      "protected": false,
+      "revision": 22,
+      "side": "Right"
+    }
+  ],
+  "scope": "Right pane",
+  "selected": 0,
+  "too_long": false
+}

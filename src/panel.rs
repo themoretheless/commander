@@ -4697,6 +4697,46 @@ mod tests {
     }
 
     #[test]
+    fn captured_history_jumps_restore_focus_keep_forward_and_report_missing_targets() {
+        let root = TempDir::new();
+        let a = root.dir("a");
+        let b = root.dir("b");
+        let file = root.file("a/keep.txt", "kept");
+        let mut p = PanelState::new(root.path().into());
+        p.refresh();
+        p.navigate_to(a.clone());
+        p.focus_child("keep.txt".into());
+        p.navigate_to(b.clone());
+        let captured = p.history.snapshot();
+        assert!(p.go_to_history(&captured, 1));
+        assert_eq!(p.current_path, a);
+        assert_eq!(p.cursor_entry().unwrap().path, file);
+        assert!(p.can_go_forward());
+        assert_eq!(p.history.snapshot().paths, captured.paths);
+        assert!(!p.go_to_history(&captured, 0));
+        let current = p.history.snapshot();
+        assert!(p.go_to_history(&current, 2));
+        assert_eq!(p.current_path, b);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&a).unwrap();
+        let current = p.history.snapshot();
+        assert!(p.go_to_history(&current, 1));
+        assert_eq!(p.current_path, a);
+        assert!(p.entries().is_empty());
+        assert!(p.can_go_forward());
+        let current = p.history.snapshot();
+        assert!(p.go_to_history(&current, 2));
+        // Repeated path slots move the trail cursor without reloading that folder.
+        p.navigate_to(root.path().into());
+        p.navigate_to(b.clone());
+        let current = p.history.snapshot();
+        let generation = p.entries_gen();
+        assert!(p.go_to_history(&current, 2));
+        assert_eq!(p.current_path, b);
+        assert_eq!(p.entries_gen(), generation);
+    }
+
+    #[test]
     fn history_navigation_walks_back_and_forward() {
         let tmp = TempDir::new();
         let sub = tmp.dir("sub");

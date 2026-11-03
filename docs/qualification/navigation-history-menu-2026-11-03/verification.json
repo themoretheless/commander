@@ -1,0 +1,24 @@
+{
+  "checks": 7,
+  "tests_passed": 3557,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "history_back_menu": true,
+  "history_forward_menu": true,
+  "history_tail_preserved": true,
+  "new_empty_file_created": true,
+  "new_empty_file_renamed": true,
+  "collision_preserved": true,
+  "tab_choices": 10,
+  "pane_scopes": [
+    "Both panes",
+    "Right pane",
+    "Left pane"
+  ],
+  "scope_reset_on_reopen": true,
+  "cancel_preserves_state": true,
+  "title_search": true,
+  "cross_pane_activation": true,
+  "source_hashes_verified": true,
+  "prior_receipts_verified": true
+}

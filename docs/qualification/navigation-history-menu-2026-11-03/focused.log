@@ -1,0 +1,55 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 36.00s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 47 tests
+test app::archive_dialog::tests::archive_history_new_branch_clears_forward_and_same_location_does_not_duplicate ... ok
+test app::archive_dialog::tests::archive_history_caps_encoded_paths_and_entries_and_default_resets_owner ... ok
+test app::archive_dialog::tests::archive_selection_history_round_trips_hidden_ids_noops_and_new_branches ... ok
+test app::find_dialog::tests::history_rows_name_mode_and_folder ... ok
+test app::history_dialog::tests::blocked_reason_keeps_half_the_row_for_the_destination ... ok
+test app::history_dialog::tests::confirmed_replay_names_what_it_applied ... ok
+test app::archive_dialog::tests::archive_history_walks_modes_and_folders_and_restores_visible_cursor ... ok
+test app::archive_dialog::tests::archive_history_keeps_current_filter_sort_and_selection_and_rejects_hidden_cursor ... ok
+test app::history_dialog::tests::sheet_counts_as_opened_after_a_gap_in_passes ... ok
+test app::history_dialog::tests::started_or_empty_replay_does_not_claim_it_applied ... ok
+test app::navigation_history::tests::history_menu_binding_rejects_changed_tab_listing_owner_and_trail ... ok
+test app::archive_dialog::tests::archive_selection_history_bounds_total_ids_and_invalidates_listing_changes ... ok
+test app::history_dialog::tests::long_blocked_reason_stays_inside_the_card ... ok
+test app::queue_dialog::tests::empty_history_without_a_query_is_not_a_filter_miss ... ok
+test assistive_timeline::tests::history_keeps_only_the_newest_max_events ... ok
+test duplicate_history::tests::bounded_history_refuses_unrecordable_and_mismatched_plans ... ok
+test app::history_dialog::tests::large_undo_preview_lays_out_only_visible_paths ... ok
+test hex_preview::tests::hex_history_commits_only_accepted_pages_and_survives_cancel_failure_until_reload ... ok
+test hex_preview::tests::hex_position_history_branches_skips_duplicates_and_bounds_both_stacks ... ok
+test hex_preview::tests::hex_history_records_search_hits_and_new_navigation_discards_forward_branch ... ok
+test jumplist::tests::captured_history_slots_preserve_tails_duplicates_and_reject_changed_snapshots ... ok
+test operation_journal::tests::recovery_inventory_skips_source_and_settled_history_roots ... ok
+test app::navigation_history::tests::history_menu_pointer_selects_the_original_slot_and_refuses_a_stale_popup ... ok
+test panel::nav::tests::history_probe_answers_for_live_and_missing_dirs ... ok
+test panel::nav::tests::a_hung_history_probe_answers_alive_and_is_not_respawned ... ok
+test panel::tests::captured_history_jumps_restore_focus_keep_forward_and_report_missing_targets ... ok
+test panel::tests::history_back_skips_a_repeat_of_the_current_directory ... ok
+test panel::tests::history_navigation_prunes_directories_that_disappeared ... ok
+test panel::tests::history_jump_back_twice_then_forward_and_truncate ... ok
+test search::tests::query_history_is_replayable_deduplicated_and_capped ... ok
+test panel::tests::history_navigation_walks_back_and_forward ... ok
+test session::tests::recent_history_defaults_when_absent ... ok
+test undo::center::tests::begin_is_single_flight_and_empty_history_reserves_nothing ... ok
+test undo::tests::two_phase_history_does_not_advance_before_commit ... ok
+test workspace::tabs::closed_history_persistence_tests::closed_history_is_optional_tolerant_recent_bounded_and_lazy ... ok
+test workspace::tabs::closed_history_management_tests::forgetting_duplicate_locations_is_exact_and_preserves_live_owners ... ok
+test app::tabs::closed_menu_tests::history_menu_remains_actionable_at_capacity_without_reopening ... ok
+test workspace::tabs::tests::reopening_uses_normal_command_guards_and_history_moves_with_its_pane ... ok
+test workspace::tabs::tests::closed_tab_history_is_bounded_and_can_restore_a_specific_entry ... ok
+test workspace::tabs::tests::tabs_preserve_selection_filter_history_and_view_per_pane ... ok
+test workspace::tests::async_history_transition_commits_only_for_a_clean_worker ... ok
+test workspace::tests::blocked_undo_keeps_the_history_pointer_unchanged ... ok
+test workspace::tests::paused_queue_blocks_recovery_history_and_synchronous_mutations ... ok
+test workspace::transfer_queue::tests::clean_retirement_emits_history_exactly_once ... ok
+test workspace::tests::recovery_on_a_history_only_stop_names_the_stop_not_an_operation ... ok
+test hex_preview::tests::position_history_shortcuts_use_guarded_reads_and_preserve_text_focus ... ok
+test workspace::tabs::tests::move_tab_between_panes_preserves_runtime_state_and_history_without_copying_files ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 3513 filtered out; finished in 0.22s
+
