@@ -1,0 +1,95 @@
+{
+  "entries": [
+    {
+      "index": 0,
+      "path": "z-same.txt",
+      "size": 33,
+      "modified": 300,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 1,
+      "path": "folder",
+      "size": 0,
+      "modified": 0,
+      "regular": false,
+      "sha256": null
+    },
+    {
+      "index": 2,
+      "path": "a-same.txt",
+      "size": 33,
+      "modified": 100,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 3,
+      "path": "different.txt",
+      "size": 5,
+      "modified": 0,
+      "regular": true,
+      "sha256": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa"
+    },
+    {
+      "index": 4,
+      "path": "empty-one",
+      "size": 0,
+      "modified": 500,
+      "regular": true,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "index": 5,
+      "path": "empty-two",
+      "size": 0,
+      "modified": 200,
+      "regular": true,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "index": 6,
+      "path": "sym",
+      "size": 0,
+      "modified": 0,
+      "regular": false,
+      "sha256": null
+    },
+    {
+      "index": 7,
+      "path": "hard",
+      "size": 0,
+      "modified": 0,
+      "regular": false,
+      "sha256": null
+    },
+    {
+      "index": 8,
+      "path": "dup.txt",
+      "size": 33,
+      "modified": 400,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 9,
+      "path": "dup.txt",
+      "size": 33,
+      "modified": 50,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    },
+    {
+      "index": 10,
+      "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt",
+      "size": 33,
+      "modified": 250,
+      "regular": true,
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17"
+    }
+  ],
+  "files": {
+    "groups.tar.gz": "e44381b985b9c7e9b15559e05f9971c9a3b458eac9778da87e6d794826d17f29"
+  }
+}

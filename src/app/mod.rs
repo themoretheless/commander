@@ -3,7 +3,7 @@
 //! owns only presentation state (theme, zoom, image cache, tree widget).
 
 mod activity;
-mod archive_dialog;
+pub mod archive_dialog;
 mod batch_rename_dialog;
 mod bookmark_import_dialog;
 mod checksum_list_dialog;
@@ -179,6 +179,7 @@ pub struct App {
     checksum_report: Option<crate::checksum::ChecksumReport>,
     checksum_generation: u64,
     checksum_paths: Vec<PathBuf>,
+    archive_keep_preferences: archive_dialog::ContentKeep,
     checksum_calculation: ChecksumCalculation,
     checksum_chosen_algorithms: crate::checksum::AlgorithmSet,
     checksum_calculated_algorithms: crate::checksum::AlgorithmSet,
@@ -1347,6 +1348,11 @@ impl App {
                 .map(|s| s.sync_profiles.clone())
                 .unwrap_or_default(),
         );
+        app.restore_archive_preferences(
+            session
+                .as_ref()
+                .map_or(&serde_json::Value::Null, |s| &s.archive_copy_preferences),
+        );
         app.restore_checksum_preferences(
             session
                 .as_ref()
@@ -1508,6 +1514,7 @@ impl App {
             checksum_report: None,
             checksum_generation: 0,
             checksum_paths: Vec::new(),
+            archive_keep_preferences: archive_dialog::ContentKeep::default(),
             checksum_calculation: crate::checksum::Preferences::default().calculation,
             checksum_chosen_algorithms: crate::checksum::Preferences::default().checked,
             checksum_calculated_algorithms: crate::checksum::AlgorithmSet::all(),
@@ -1625,6 +1632,7 @@ impl App {
             theme_palette: self.theme_palette.clone(),
             custom_theme: self.custom_theme.saved(),
             sync_profiles: self.sync_profiles.saved(),
+            archive_copy_preferences: self.archive_preferences().saved(),
             checksum_preferences: self.checksum_preferences().saved(),
             ui_scale: self.ui_scale,
             show_tree: self.show_tree,

@@ -1,0 +1,22 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `archive_reopen_preferences_for_qa` is never used
+    --> src/app/archive_dialog.rs:2123:19
+     |
+2101 | impl App {
+     | -------- method in this implementation
+...
+2123 |     pub(crate) fn archive_reopen_preferences_for_qa(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 27.31s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 2 tests
+test session::tests::archive_copy_preferences_survive_atomic_session_reopen_without_saving_archive_state ... ok
+test app::archive_dialog::tests::archive_copy_preferences_round_trip_all_orders_and_refuse_invalid_saved_rules ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3493 filtered out; finished in 0.07s
+

@@ -3298,6 +3298,7 @@ struct VisualQaApp {
     table_phase: u8,
     table_input_pending: bool,
     archive_copy_phase: u8,
+    archive_preferences_phase: u8,
     archive_copy_settle: u8,
     preset_click_phase: u8,
     preset_input_pending: bool,
@@ -3615,6 +3616,7 @@ impl VisualQaApp {
             table_phase: 0,
             table_input_pending: false,
             archive_copy_phase: 0,
+            archive_preferences_phase: 0,
             archive_copy_settle: 0,
             preset_click_phase: 0,
             preset_input_pending: false,
@@ -5100,7 +5102,8 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 52)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
-            && !(self.scenario == Scenario::ArchiveProtectionModes && self.archive_copy_phase < 252)
+            && !(self.scenario == Scenario::ArchiveProtectionModes
+                && (self.archive_copy_phase < 252 || self.archive_preferences_phase < 5))
             && !(self.scenario == Scenario::ArchiveTarContentGroups
                 && self.archive_copy_phase < 149)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
@@ -17290,6 +17293,104 @@ impl eframe::App for VisualQaApp {
                 }
             }
         }
+        if self.scenario == Scenario::ArchiveProtectionModes
+            && self.archive_copy_phase == 252
+            && self.archive_preferences_phase < 5
+        {
+            let phase = self.archive_preferences_phase;
+            if phase == 0 {
+                match self.inner.archive_reopen_preferences_for_qa(ctx) {
+                    Ok(snapshot) => {
+                        let _ = std::fs::write(
+                            self.scenario_dir.join("preferences-session.json"),
+                            serde_json::to_vec_pretty(&snapshot).unwrap(),
+                        );
+                        self.archive_preferences_phase = 1;
+                    }
+                    Err(error) => {
+                        let _ =
+                            std::fs::write(self.scenario_dir.join("preferences-error.txt"), error);
+                    }
+                }
+                return;
+            }
+            let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                return;
+            };
+            if state.listing.is_none() {
+                return;
+            }
+            if phase == 4 {
+                if state.check.is_none() && state.check_result.is_none() {
+                    self.archive_preferences_phase = 1;
+                    self.hex_pointer_target = None;
+                    return;
+                }
+                let Some(Ok(report)) = &state.check_result else {
+                    return;
+                };
+                if !report.content_groups.as_ref().is_some_and(|groups| {
+                    groups.len() == 2 && groups.iter().map(|g| g.members.len()).sum::<usize>() == 7
+                }) {
+                    return;
+                }
+                let saved = std::fs::read(self.scenario_dir.join("preferences-session.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                let current = state.content_keep.saved();
+                if saved
+                    .as_ref()
+                    .is_none_or(|s| s["saved"] != current || s["restored"] != current)
+                    || !state.selected.is_empty()
+                    || state.selection_history.can_undo()
+                    || state.selection_history.can_redo()
+                {
+                    return;
+                }
+                let record = serde_json::json!({"preferences":current,"selected":state.selected,"can_undo":state.selection_history.can_undo(),"can_redo":state.selection_history.can_redo(),"groups":report.content_groups});
+                let _ = std::fs::write(
+                    self.scenario_dir.join("preferences-reopened.json"),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                self.archive_preferences_phase = 5;
+                return;
+            }
+            let id = egui::Id::new("archive-content-groups");
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if phase == 1 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if phase > 1 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: phase == 2,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_preferences_phase += 1;
+            return;
+        }
         if self.scenario == Scenario::ArchiveProtectionModes && self.archive_copy_phase < 8 {
             let phase = self.archive_copy_phase;
             let Some(state) = self.inner.ui.tools.archive.as_ref() else {
@@ -24081,7 +24182,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchiveProtectionModes => self.archive_copy_phase==252 && [231,235,239,243,247,251].into_iter().all(|phase|self.scenario_dir.join(format!("selection-history-{phase}.json")).is_file()) && [183,189,193,199,203,209,215,219,223,227].into_iter().all(|phase|self.scenario_dir.join(format!("copy-candidates-{phase}.json")).is_file()) && [121,127,131,137,141,147,153,157,163,167,173,177].into_iter().all(|phase|self.scenario_dir.join(format!("group-cutoff-{phase}.json")).is_file()) && [75,79,85,91,95,101,105,111,115].into_iter().all(|phase|self.scenario_dir.join(format!("protection-list-{phase}.json")).is_file()) && [154,158,162,166,172,176,180,184,188,192,196,200,206,210].into_iter().all(|phase|self.scenario_dir.join(format!("tar-protection-mode-{phase}.json")).is_file()) && self.scenario_dir.join("modes-initial.json").is_file() && std::fs::read(self.fixture.left.join("groups.tar.gz")).is_ok_and(|bytes|bytes.as_slice()==include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice()),
+            Scenario::ArchiveProtectionModes => self.archive_copy_phase==252 && self.archive_preferences_phase==5 && self.scenario_dir.join("preferences-reopened.json").is_file() && [231,235,239,243,247,251].into_iter().all(|phase|self.scenario_dir.join(format!("selection-history-{phase}.json")).is_file()) && [183,189,193,199,203,209,215,219,223,227].into_iter().all(|phase|self.scenario_dir.join(format!("copy-candidates-{phase}.json")).is_file()) && [121,127,131,137,141,147,153,157,163,167,173,177].into_iter().all(|phase|self.scenario_dir.join(format!("group-cutoff-{phase}.json")).is_file()) && [75,79,85,91,95,101,105,111,115].into_iter().all(|phase|self.scenario_dir.join(format!("protection-list-{phase}.json")).is_file()) && [154,158,162,166,172,176,180,184,188,192,196,200,206,210].into_iter().all(|phase|self.scenario_dir.join(format!("tar-protection-mode-{phase}.json")).is_file()) && self.scenario_dir.join("modes-initial.json").is_file() && std::fs::read(self.fixture.left.join("groups.tar.gz")).is_ok_and(|bytes|bytes.as_slice()==include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice()),
             Scenario::ArchiveTarContentGroups => self.archive_copy_phase==149 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json","tar-keep-time-62.json","tar-keep-time-66.json","tar-keep-time-70.json","tar-keep-time-74.json","tar-keep-depth-78.json","tar-keep-depth-82.json","tar-keep-depth-86.json","tar-keep-depth-90.json","tar-keep-depth-94.json","tar-keep-depth-98.json","tar-protected-104.json","tar-protected-108.json","tar-protected-114.json","tar-protected-118.json","tar-protected-124.json","tar-protected-128.json","tar-protected-134.json","tar-protected-140.json","tar-protected-144.json","tar-protected-148.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
             Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
             Scenario::ArchivePassword => {

@@ -1360,7 +1360,8 @@ fn change_content_group_selection(
 }
 
 /// Runtime-only replica policy shared by the per-group and global actions.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ContentKeepOrder {
     #[default]
     First,
@@ -1392,6 +1393,8 @@ impl ContentKeepOrder {
         }
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContentKeep {
     pub count: usize,
     pub order: ContentKeepOrder,
@@ -1415,6 +1418,31 @@ impl Default for ContentKeep {
     }
 }
 impl ContentKeep {
+    fn rememberable(&self) -> bool {
+        (1..=100_000).contains(&self.count)
+            && self.protection().is_ok()
+            && self.candidates().is_ok()
+            && self.cutoff().is_ok()
+    }
+    pub(crate) fn saved(&self) -> serde_json::Value {
+        if !self.rememberable() {
+            return serde_json::Value::Null;
+        }
+        serde_json::json!({"version":1,"policy":self})
+    }
+    pub(crate) fn from_saved(value: &serde_json::Value) -> Self {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Saved {
+            version: u8,
+            policy: ContentKeep,
+        }
+        serde_json::from_value::<Saved>(value.clone())
+            .ok()
+            .filter(|s| s.version == 1 && s.policy.rememberable())
+            .map(|s| s.policy)
+            .unwrap_or_default()
+    }
     fn label(&self) -> String {
         format!(
             "{}{} {}",
@@ -1503,6 +1531,12 @@ impl ContentKeep {
             .ok_or_else(|| error.into())
     }
     fn ui(&mut self, ui: &mut egui::Ui) -> bool {
+        ui.label(
+            egui::RichText::new(
+                "Valid copy rules are remembered for the next archive and session.",
+            )
+            .small(),
+        );
         ui.horizontal_wrapped(|ui| {
             ui.label("Keep copies per group:");
             ui.add(egui::DragValue::new(&mut self.count).range(1..=100_000).speed(1));
@@ -2065,6 +2099,69 @@ fn step_member_cursor(
 }
 
 impl App {
+    pub(crate) fn archive_preferences(&self) -> &ContentKeep {
+        self.ui
+            .tools
+            .archive
+            .as_ref()
+            .map(|s| &s.content_keep)
+            .filter(|keep| keep.rememberable())
+            .unwrap_or(&self.archive_keep_preferences)
+    }
+    pub(crate) fn restore_archive_preferences(&mut self, value: &serde_json::Value) {
+        self.archive_keep_preferences = ContentKeep::from_saved(value);
+    }
+    fn remember_archive_preferences(&mut self) {
+        if let Some(state) = &self.ui.tools.archive
+            && state.content_keep != self.archive_keep_preferences
+            && state.content_keep.rememberable()
+        {
+            self.archive_keep_preferences = state.content_keep.clone();
+        }
+    }
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn archive_reopen_preferences_for_qa(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> Result<serde_json::Value, String> {
+        let state = self.ui.tools.archive.as_ref().ok_or("Missing archive")?;
+        if state.check.is_some() || state.extract.is_some() || state.run.is_some() {
+            return Err("Archive is busy".into());
+        }
+        let path = state.path.clone();
+        let side = self.ui.tools.side.unwrap_or_else(|| self.ws.active.other());
+        self.remember_archive_preferences();
+        let session = self.to_session();
+        let valid = self.ui.tools.archive.as_ref().unwrap().content_keep.clone();
+        self.ui
+            .tools
+            .archive
+            .as_mut()
+            .unwrap()
+            .content_keep
+            .candidate_globs = "[".into();
+        let invalid_pending_fallback = self.to_session().archive_copy_preferences;
+        self.ui.tools.archive.as_mut().unwrap().content_keep = valid;
+        if invalid_pending_fallback != session.archive_copy_preferences {
+            return Err("Invalid pending policy replaced the last valid preferences".into());
+        }
+        crate::session::save_with(self.persistence.as_ref(), &session, &mut self.session_gate)
+            .map_err(|e| format!("{e:?}"))?;
+        let loaded = crate::session::load_with(self.persistence.as_ref())
+            .value
+            .ok_or("Missing saved session")?;
+        self.ui.tools.archive = None;
+        self.restore_archive_preferences(&serde_json::Value::Null);
+        self.restore_archive_preferences(&loaded.archive_copy_preferences);
+        let restored = self.archive_preferences().saved();
+        if restored != session.archive_copy_preferences {
+            return Err("Archive copy preferences changed on reopen".into());
+        }
+        self.open_archive_on(path, side, ctx);
+        Ok(
+            serde_json::json!({"saved":session.archive_copy_preferences,"restored":restored,"invalid_pending_fallback":invalid_pending_fallback}),
+        )
+    }
     pub(crate) fn open_archive(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.open_archive_on(path, self.ws.active.other(), ctx);
     }
@@ -2073,6 +2170,7 @@ impl App {
     /// side: clicking in the tool makes its pane active, so recomputing it
     /// from focus would flip the tool to the other pane.
     fn open_archive_on(&mut self, path: PathBuf, side: ActivePanel, ctx: &egui::Context) {
+        self.remember_archive_preferences();
         let repaint = ctx.clone();
         let run = crate::archive::start_listing(
             path.clone(),
@@ -2082,7 +2180,7 @@ impl App {
         self.ui.tools.archive = Some(ArchiveState {
             selection_history: SelectionHistory::default(),
             content_group_page: 0,
-            content_keep: ContentKeep::default(),
+            content_keep: self.archive_keep_preferences.clone(),
             content_member_pages: std::collections::BTreeMap::new(),
             strict_zip_headers: false,
             password: zeroize::Zeroizing::new(String::new()),
@@ -3289,6 +3387,7 @@ impl App {
             ctx.request_repaint();
         }
 
+        self.remember_archive_preferences();
         if !window_open || escape_requested {
             // Dropping the run cancels it after the member in progress.
             if self
@@ -3497,6 +3596,65 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn archive_copy_preferences_round_trip_all_orders_and_refuse_invalid_saved_rules() {
+        use super::{ContentKeep, ContentKeepOrder};
+        for order in [
+            ContentKeepOrder::First,
+            ContentKeepOrder::Last,
+            ContentKeepOrder::Newest,
+            ContentKeepOrder::Oldest,
+            ContentKeepOrder::Shallowest,
+            ContentKeepOrder::Deepest,
+        ] {
+            for flag in [false, true] {
+                let keep = ContentKeep {
+                    count: 3,
+                    order,
+                    protected_glob: "originals/**\n*.bak".into(),
+                    protect_basename: flag,
+                    protect_case_sensitive: !flag,
+                    modified_before: "2026-01-01T12:30:00+01:00".into(),
+                    candidate_globs: "backups/**\n*.tmp".into(),
+                };
+                let saved = keep.saved();
+                assert_eq!(ContentKeep::from_saved(&saved), keep);
+                assert_eq!(saved.as_object().unwrap().len(), 2);
+                assert_eq!(saved["policy"].as_object().unwrap().len(), 7);
+                for (key, value) in [
+                    ("count", serde_json::json!(0)),
+                    ("count", serde_json::json!(100_001)),
+                    ("order", serde_json::json!("unknown")),
+                    ("protected_glob", serde_json::json!("[")),
+                    ("candidate_globs", serde_json::json!("[")),
+                    ("modified_before", serde_json::json!("invalid")),
+                ] {
+                    let mut invalid = saved.clone();
+                    invalid["policy"][key] = value;
+                    assert_eq!(ContentKeep::from_saved(&invalid), ContentKeep::default());
+                }
+                let mut invalid = saved.clone();
+                invalid["version"] = serde_json::json!(99);
+                assert_eq!(ContentKeep::from_saved(&invalid), ContentKeep::default());
+                invalid = saved.clone();
+                invalid["policy"]["password"] = serde_json::json!("not-a-setting");
+                assert_eq!(ContentKeep::from_saved(&invalid), ContentKeep::default());
+            }
+        }
+        assert_eq!(
+            ContentKeep::from_saved(&serde_json::Value::Null),
+            ContentKeep::default()
+        );
+        assert!(
+            ContentKeep {
+                candidate_globs: "[".into(),
+                ..Default::default()
+            }
+            .saved()
+            .is_null()
+        );
+    }
+
     #[test]
     fn archive_selection_history_round_trips_hidden_ids_noops_and_new_branches() {
         use super::SelectionHistory;

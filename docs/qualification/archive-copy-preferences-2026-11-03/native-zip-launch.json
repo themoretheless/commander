@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-copy-preferences-2026-11-03/native-captures/1793696895603260000",
+  "binary_sha256": "14de70155831a0d3d1429eb38a9428f67f687ce63497c33b1246fab0258787b4",
+  "core_sha256": "14de70155831a0d3d1429eb38a9428f67f687ce63497c33b1246fab0258787b4",
+  "wrapper_sha256": "15108331ffedf7a372111cd2fbff8c28a25bc7d050b117fc57def52241df9788",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

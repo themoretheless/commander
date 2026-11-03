@@ -1,0 +1,12 @@
+{
+  "src/app/archive_dialog.rs": "378407f7188dd7ac1f2e03dd1fce98734974d9579507321060dfb7e2b8fa9bf2",
+  "src/visual_qa.rs": "1117e288d9ca92300d084292643c2693c7f752e69fca6c25e3996738153c754d",
+  "src/archive.rs": "9c6353689dc4d3684c9a4bf341de152a1869cee46c3b50cb5cb86c8b0878f0b4",
+  "src/archive_check.rs": "423cdf93b2f6ef7bdf93bde1d72c77f0c2111db9275c4766e9ccec69016e64f8",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496",
+  "docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz": "e44381b985b9c7e9b15559e05f9971c9a3b458eac9778da87e6d794826d17f29",
+  "src/archive_filter.rs": "435973a7782528a09566105dd674e1dfef01c3db3596be4d1193496777249404",
+  "src/app/mod.rs": "bcc53c969ca16d8e462a6de80da80610677f7c59f6fdb2c7edd0cca58cff52bc",
+  "src/session.rs": "85d69293b23264ca72e3a983b33d9102cf7cee13ace0d06784e9c44c615329ec"
+}

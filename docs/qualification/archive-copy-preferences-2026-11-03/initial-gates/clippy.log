@@ -1,0 +1,16 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error: pub(crate) module inside private module
+ --> src/app/mod.rs:6:1
+  |
+6 | pub(crate) mod archive_dialog;
+  | ----------^^^^^^^^^^^^^^^^^^^
+  | |
+  | help: consider using: `pub`
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/main/index.html#redundant_pub_crate
+  = note: `-D clippy::redundant-pub-crate` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(clippy::redundant_pub_crate)]`
+
+error: could not compile `commander` (bin "commander") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

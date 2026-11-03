@@ -144,6 +144,9 @@ pub struct Session {
     /// Versioned checksum choices only; file paths and results are transient.
     #[serde(default)]
     pub checksum_preferences: serde_json::Value,
+    /// Valid archive copy rules only; no archive path, password, selection or history.
+    #[serde(default)]
+    pub archive_copy_preferences: serde_json::Value,
     pub ui_scale: f32,
     pub show_tree: bool,
     pub tree_width: f32,
@@ -444,6 +447,7 @@ mod tests {
             custom_theme: serde_json::Value::Null,
             sync_profiles: serde_json::Value::Null,
             checksum_preferences: serde_json::Value::Null,
+            archive_copy_preferences: serde_json::Value::Null,
             ui_scale: 1.1,
             show_tree: true,
             tree_width: 220.0,
@@ -657,6 +661,56 @@ mod tests {
         assert_eq!(persisted[0], PathBuf::from("/deep"));
         assert_eq!(persisted[1], PathBuf::from("/deep/a"));
         assert_eq!(persisted, persisted_tree_expanded(&expanded));
+    }
+
+    #[test]
+    fn archive_copy_preferences_survive_atomic_session_reopen_without_saving_archive_state() {
+        use crate::app::archive_dialog::{ContentKeep, ContentKeepOrder};
+        let temp = TempDir::new();
+        let path = temp.path().join("session.json");
+        let persist = crate::persistence::FsPersist::default();
+        let mut gate = crate::persistence::StoreGate::missing();
+        let mut session = sample(temp.path().into(), temp.path().into());
+        let keep = ContentKeep {
+            count: 2,
+            order: ContentKeepOrder::Newest,
+            protected_glob: "originals/**\n*.bak".into(),
+            candidate_globs: "backups/**".into(),
+            modified_before: "2026-01-01".into(),
+            protect_basename: true,
+            protect_case_sensitive: false,
+        };
+        session.archive_copy_preferences = keep.saved();
+        save_at(&persist, &path, &session, &mut gate).unwrap();
+        let loaded = load_at(&persist, &path).value.unwrap();
+        assert_eq!(
+            ContentKeep::from_saved(&loaded.archive_copy_preferences),
+            keep
+        );
+        assert_eq!(loaded.left_path, session.left_path);
+        let mut legacy = serde_json::to_value(&session).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("archive_copy_preferences");
+        let loaded: Session = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            ContentKeep::from_saved(&loaded.archive_copy_preferences),
+            ContentKeep::default()
+        );
+        for invalid in [
+            serde_json::json!({"version":99}),
+            serde_json::json!(["invalid"]),
+        ] {
+            session.archive_copy_preferences = invalid;
+            save_at(&persist, &path, &session, &mut gate).unwrap();
+            let loaded = load_at(&persist, &path).value.unwrap();
+            assert_eq!(
+                ContentKeep::from_saved(&loaded.archive_copy_preferences),
+                ContentKeep::default()
+            );
+            assert_eq!(loaded.left_path, session.left_path);
+        }
     }
 
     #[test]

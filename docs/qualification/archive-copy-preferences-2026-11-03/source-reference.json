@@ -1,0 +1,6 @@
+{
+  "cohort": 1,
+  "url": "https://github.com/houqp/kiorg#key-features",
+  "feature": "App state persistence",
+  "adaptation": "Remember valid archive copy policy in Commander session and reuse it when opening another archive"
+}
