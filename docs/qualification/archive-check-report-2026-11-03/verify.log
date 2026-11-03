@@ -1,0 +1,28 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "fd1a5506f18b557bce0d6c632364137cc56253958c77082be9fda6cf45b2aed2",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-check-report-2026-11-03/native-captures/1793673663496275000/archive_metadata"
+  },
+  "archive_password": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 4,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "3a4c4d6adbd3810f2916b56dac6d5c89cbfd8c9a3ded025cabb8ee0605363130",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-check-report-2026-11-03/native-captures/1793673632272716000/archive_password"
+  }
+}

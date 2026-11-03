@@ -1,0 +1,45 @@
+[
+  "a-stored.txt",
+  [
+    [
+      "Kind",
+      "Regular file",
+      true
+    ],
+    [
+      "Declared size",
+      "24 bytes",
+      true
+    ],
+    [
+      "Packed size",
+      "24 bytes",
+      true
+    ],
+    [
+      "Modified (UTC)",
+      "Unavailable",
+      true
+    ],
+    [
+      "Unix permissions",
+      "0644",
+      true
+    ],
+    [
+      "Executable",
+      "No",
+      true
+    ],
+    [
+      "Compression method",
+      "Stored",
+      true
+    ],
+    [
+      "Encrypted",
+      "No",
+      true
+    ]
+  ]
+]

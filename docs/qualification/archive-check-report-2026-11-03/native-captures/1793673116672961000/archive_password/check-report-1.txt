@@ -1,0 +1,9 @@
+Commander archive check report (v1)
+Archive: "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-61865-archive_password/left/password.ZIPX"
+Format: ZIP
+Recorded at: 2026-11-03T02:32:10Z
+Status: incomplete
+Strict ZIP headers: false
+Members: unavailable
+Decoded bytes: unavailable
+Error: "Member #0: Invalid ZIP password"

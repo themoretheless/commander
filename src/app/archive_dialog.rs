@@ -1480,6 +1480,8 @@ impl App {
             password: zeroize::Zeroizing::new(String::new()),
             check: None,
             check_result: None,
+            check_strict_snapshot: None,
+            check_recorded_at: None,
             copy_format: crate::archive_export::Format::default(),
             path,
             filter: String::new(),
@@ -1539,6 +1541,7 @@ impl App {
             if let Some(result) = result {
                 state.check = None;
                 state.check_result = Some(result);
+                state.check_recorded_at = Some(chrono::Utc::now());
             }
         }
 
@@ -1610,6 +1613,7 @@ impl App {
         let mut start_check = false;
         let mut stop_check = false;
         let mut copy_members = None;
+        let mut copy_check_report = None;
         let mut sort_requested = None;
         let mut navigate: Option<Option<PathBuf>> = None;
         let mut history_requested = None;
@@ -1780,6 +1784,16 @@ impl App {
                             let _ = label;
                         }
                     }
+                    ui.horizontal_wrapped(|ui| {
+                        for format in crate::archive_check_export::Format::ALL {
+                            let button = ui.small_button(format.label());
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(format.label()), button.rect));
+                            if button.clicked() {
+                                copy_check_report = Some(crate::archive_check_export::format(&state.path, result, state.check_strict_snapshot, state.check_recorded_at.as_ref(), format));
+                            }
+                        }
+                    });
                 }
                 let status = if state.extract.is_some() {
                     ui.horizontal(|ui| {
@@ -2590,15 +2604,24 @@ impl App {
         if stop_check && let Some(state) = self.ui.tools.archive.as_mut() {
             state.check = None;
             state.check_result = Some(Err("Stopped; no complete result.".into()));
+            state.check_recorded_at = Some(chrono::Utc::now());
         } else if start_check && let Some(state) = self.ui.tools.archive.as_mut() {
             let repaint = ctx.clone();
             state.check_result = None;
+            state.check_recorded_at = None;
+            state.check_strict_snapshot = Some(state.strict_zip_headers);
             state.check = Some(crate::archive_check::start(
                 state.path.clone(),
                 Some(std::mem::take(&mut state.password)),
                 state.strict_zip_headers,
                 std::sync::Arc::new(move || repaint.request_repaint()),
             ));
+        }
+        if let Some(result) = copy_check_report {
+            match result {
+                Ok(text) => self.write_clipboard(&text, "archive check report", ctx),
+                Err(error) => self.toast(ctx, crate::toasts::ToastKind::Error, error, false),
+            }
         }
         if let Some(result) = copy_members {
             match result {

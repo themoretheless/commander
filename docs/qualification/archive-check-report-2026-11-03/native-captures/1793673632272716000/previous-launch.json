@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_password",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-check-report-2026-11-03/native-captures/1793673116672961000",
+  "binary_sha256": "72428c27622edd2a7475892a5afc435b357f9fcfb6f54d75b5ded0181b9fcab6",
+  "core_sha256": "72428c27622edd2a7475892a5afc435b357f9fcfb6f54d75b5ded0181b9fcab6",
+  "wrapper_sha256": "a3f31f04cee1bbb67a107ac7a2f32b452241d33cec50e70f151cfb574bc2740d",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

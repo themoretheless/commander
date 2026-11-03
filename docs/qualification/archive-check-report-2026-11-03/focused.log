@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 32.22s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 4 tests
+test archive_check_export::tests::non_utf8_paths_are_refused_without_lossy_replacement ... ok
+test archive_check_export::tests::successful_report_exports_actual_mode_counts_and_timestamp ... ok
+test archive_check_export::tests::incomplete_reports_preserve_mode_and_escape_untrusted_lines ... ok
+test archive_check_export::tests::oversized_escaped_reports_fail_without_truncation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3440 filtered out; finished in 0.16s
+

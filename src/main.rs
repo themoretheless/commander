@@ -10,6 +10,7 @@ mod accessibility;
 mod app;
 mod archive;
 mod archive_check;
+mod archive_check_export;
 mod archive_export;
 mod archive_filter;
 mod archive_order;

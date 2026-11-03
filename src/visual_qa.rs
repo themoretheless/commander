@@ -4964,7 +4964,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 33)
-            && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 43)
+            && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -16685,7 +16685,70 @@ impl eframe::App for VisualQaApp {
             }
         }
         if self.scenario == Scenario::ArchivePassword
-            && self.archive_copy_phase == 43
+            && matches!(self.archive_copy_phase, 38 | 41 | 52 | 55)
+        {
+            let phase = self.archive_copy_phase;
+            let expected = match phase {
+                38 => 1,
+                41 => 2,
+                52 => 3,
+                _ => 4,
+            };
+            if self.counters.clipboard.load(Ordering::Relaxed) != expected {
+                return;
+            }
+            let Some(text) = self
+                .counters
+                .clipboard_text
+                .lock()
+                .ok()
+                .and_then(|v| v.clone())
+            else {
+                return;
+            };
+            let valid = if matches!(phase, 41 | 55) {
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .is_some_and(|v| {
+                        v["schema"] == "commander.archive-check/v1"
+                            && v["archive"]
+                                == self.fixture.left.join("password.ZIPX").to_str().unwrap()
+                            && v["status"]
+                                == if phase == 41 {
+                                    "incomplete"
+                                } else {
+                                    "complete"
+                                }
+                            && v["strict_headers"] == (phase == 55)
+                            && if phase == 41 {
+                                v["members"].is_null()
+                                    && v["decoded_bytes"].is_null()
+                                    && v["error"].as_str().is_some_and(|e| e.contains("password"))
+                            } else {
+                                v["members"] == 1
+                                    && v["decoded_bytes"] == 4352
+                                    && v["error"].is_null()
+                            }
+                    })
+            } else {
+                text.contains(if phase == 38 {
+                    "Status: incomplete\nStrict ZIP headers: false\nMembers: unavailable"
+                } else {
+                    "Status: complete\nStrict ZIP headers: true\nMembers: 1\nDecoded bytes: 4352"
+                })
+            };
+            if !valid || text.contains("fixture-пароль-ёж") || text.contains("wrong-password")
+            {
+                return;
+            }
+            let _ = std::fs::write(
+                self.scenario_dir
+                    .join(format!("check-report-{expected}.txt")),
+                text,
+            );
+        }
+        if self.scenario == Scenario::ArchivePassword
+            && self.archive_copy_phase == 55
             && let Some(clip) =
                 ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
         {
@@ -16719,7 +16782,7 @@ impl eframe::App for VisualQaApp {
                 });
             }
         }
-        if self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 43 {
+        if self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55 {
             let phase = self.archive_copy_phase;
             let Some(state) = self
                 .inner
@@ -16734,7 +16797,7 @@ impl eframe::App for VisualQaApp {
             let field = ctx.data(|d| {
                 d.get_temp::<(egui::Rect, egui::Id)>(egui::Id::new("archive-password-input"))
             });
-            if matches!(phase, 3 | 11 | 19 | 27 | 38) {
+            if matches!(phase, 3 | 11 | 19 | 27 | 44) {
                 if field.is_some_and(|(_, id)| ctx.memory(|m| m.has_focus(id))) {
                     input.events.push(egui::Event::Text(
                         if matches!(phase, 3 | 27) {
@@ -16748,7 +16811,7 @@ impl eframe::App for VisualQaApp {
                 }
                 return;
             }
-            if matches!(phase, 31 | 42) {
+            if matches!(phase, 31 | 48) {
                 if state.check.is_some() || !state.password.is_empty() {
                     return;
                 }
@@ -16757,7 +16820,7 @@ impl eframe::App for VisualQaApp {
                 };
                 let complete = match (phase, result) {
                     (31, Err(error)) => error.contains("password"),
-                    (42, Ok(report)) => report.strict_headers && report.kind == crate::archive::ArchiveKind::Zip && report.members == 1 && report.decoded == include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.txt").len() as u64,
+                    (48, Ok(report)) => report.strict_headers && report.kind == crate::archive::ArchiveKind::Zip && report.members == 1 && report.decoded == include_bytes!("../docs/qualification/zip-password-2026-11-03/fixtures/aes-utf8-password.txt").len() as u64,
                     _ => false,
                 };
                 if complete {
@@ -16794,7 +16857,7 @@ impl eframe::App for VisualQaApp {
                 }
                 return;
             }
-            if matches!(phase, 4 | 12 | 20 | 28 | 39) {
+            if matches!(phase, 4 | 12 | 20 | 28 | 45) {
                 let expected = if matches!(phase, 4 | 28) {
                     "wrong-password"
                 } else {
@@ -16835,11 +16898,31 @@ impl eframe::App for VisualQaApp {
                     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-strict-headers"))),
                     phase - 32,
                 ),
-                35..=37 => ("archive-password-input", field.map(|(r, _)| r), phase - 35),
-                39..=41 => (
+                35..=37 => (
+                    "Copy check report",
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("Copy check report"))),
+                    phase - 35,
+                ),
+                38..=40 => (
+                    "Copy check report JSON",
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("Copy check report JSON"))),
+                    phase - 38,
+                ),
+                41..=43 => ("archive-password-input", field.map(|(r, _)| r), phase - 41),
+                45..=47 => (
                     "archive-test",
                     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-test"))),
-                    phase - 39,
+                    phase - 45,
+                ),
+                49..=51 => (
+                    "Copy check report",
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("Copy check report"))),
+                    phase - 49,
+                ),
+                52..=54 => (
+                    "Copy check report JSON",
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("Copy check report JSON"))),
+                    phase - 52,
                 ),
                 _ => return,
             };
@@ -21145,10 +21228,12 @@ impl eframe::App for VisualQaApp {
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
             Scenario::ArchivePassword => {
-                self.archive_copy_phase == 43
+                self.archive_copy_phase == 55
+                    && (1..=4).all(|index|self.scenario_dir.join(format!("check-report-{index}.txt")).is_file())
+                    && self.counters.clipboard.load(Ordering::Relaxed)==4
                     && [7,15,23].iter().all(|phase| self.scenario_dir.join(format!("password-result-{phase}.json")).is_file())
-                    && [4,12,20,28,39].iter().all(|phase| self.scenario_dir.join(format!("password-input-{phase}.json")).is_file())
-                    && [31,42].iter().all(|phase| self.scenario_dir.join(format!("password-check-{phase}.json")).is_file())
+                    && [4,12,20,28,45].iter().all(|phase| self.scenario_dir.join(format!("password-input-{phase}.json")).is_file())
+                    && [31,48].iter().all(|phase| self.scenario_dir.join(format!("password-check-{phase}.json")).is_file())
                     && self.inner.ui.tools.archive.as_ref().is_some_and(|state| state.password.is_empty() && state.extract.is_none() && state.check.is_none() && state.error.is_none() && state.check_result.as_ref().is_some_and(|r| r.as_ref().is_ok_and(|r| r.strict_headers && r.members==1 && r.decoded==4352)))
                     && ctx.data(|d| {
                         let field = d.get_temp::<(egui::Rect,egui::Id)>(egui::Id::new("archive-password-input"));
@@ -21690,6 +21775,7 @@ struct NativeEffectCalls {
 
 const fn expected_clipboard_writes(scenario: Scenario) -> usize {
     match scenario {
+        Scenario::ArchivePassword => 4,
         Scenario::SymlinkWorkflow
         | Scenario::HexMatchCopy
         | Scenario::DuplicateSort
@@ -22117,6 +22203,7 @@ mod tests {
     fn copy_scenarios_enforce_recording_clipboard_counts() {
         for scenario in Scenario::ALL {
             let expected = match scenario {
+                Scenario::ArchivePassword => 4,
                 Scenario::SymlinkWorkflow
                 | Scenario::HexMatchCopy
                 | Scenario::DuplicateSort

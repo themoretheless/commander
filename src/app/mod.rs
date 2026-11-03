@@ -473,6 +473,8 @@ pub struct ArchiveState {
     pub password: zeroize::Zeroizing<String>,
     pub check: Option<crate::archive_check::Run>,
     pub check_result: Option<Result<crate::archive_check::Report, String>>,
+    pub check_strict_snapshot: Option<bool>,
+    pub check_recorded_at: Option<chrono::DateTime<chrono::Utc>>,
     pub copy_format: crate::archive_export::Format,
     pub path: PathBuf,
     pub filter: String,

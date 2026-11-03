@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-check-report-2026-11-03/verify.py", line 9, in <module>
+    assert hashlib.sha256((root/'target/debug/commander').read_bytes()).hexdigest()==launch['binary_sha256'], 'capture binary differs from final build'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: capture binary differs from final build

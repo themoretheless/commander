@@ -1,0 +1,11 @@
+{
+  "archive": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-61865-archive_password/left/password.ZIPX",
+  "archive_format": "ZIP",
+  "decoded_bytes": null,
+  "error": "Member #0: Invalid ZIP password",
+  "members": null,
+  "recorded_at": "2026-11-03T02:32:10Z",
+  "schema": "commander.archive-check/v1",
+  "status": "incomplete",
+  "strict_headers": false
+}

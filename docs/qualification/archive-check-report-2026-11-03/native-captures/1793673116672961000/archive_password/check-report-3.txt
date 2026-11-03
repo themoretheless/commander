@@ -1,0 +1,8 @@
+Commander archive check report (v1)
+Archive: "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-61865-archive_password/left/password.ZIPX"
+Format: ZIP
+Recorded at: 2026-11-03T02:32:10Z
+Status: complete
+Strict ZIP headers: true
+Members: 1
+Decoded bytes: 4352
