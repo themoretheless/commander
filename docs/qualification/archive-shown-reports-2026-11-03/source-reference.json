@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "repository": "https://github.com/pkolaczk/fclones",
+  "reference": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/README.md",
+  "transfer": "Independent archive-view adaptation of grouped text and JSON reports; no fclones-compatible import/removal protocol is claimed."
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_priority_chains",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-shown-reports-2026-11-03/native-captures/1793700070576595000",
+  "binary_sha256": "b87e457cb8259071e0713384b6fc4bdb9b404e5ec187fd66c0baf8377c523c23",
+  "core_sha256": "b87e457cb8259071e0713384b6fc4bdb9b404e5ec187fd66c0baf8377c523c23",
+  "wrapper_sha256": "46c1b6693287c450ac7ec785e6abbb83abad33d064d4f6e5dc848f31b6623a8e",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

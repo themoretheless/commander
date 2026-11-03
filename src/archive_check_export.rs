@@ -46,7 +46,9 @@ struct JsonReport<'a> {
     decoded_bytes: Option<u64>,
     error: Option<&'a str>,
     content_comparison: Option<&'static str>,
-    content_groups: Option<&'a [crate::archive_check::ContentGroup]>,
+    content_groups: Option<Vec<&'a crate::archive_check::ContentGroup>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_group_indices: Option<&'a [usize]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     content_group_index: Option<usize>,
 }
@@ -60,7 +62,14 @@ pub fn format(
     recorded_at: Option<&chrono::DateTime<chrono::Utc>>,
     format: Format,
 ) -> Result<String, String> {
-    format_scoped(path, result, requested_strict, recorded_at, format, None)
+    format_scoped(
+        path,
+        result,
+        requested_strict,
+        recorded_at,
+        format,
+        Scope::All,
+    )
 }
 
 /// Export exactly one retained group, independent of view pages and row selection.
@@ -80,7 +89,25 @@ pub fn format_group(
     {
         return Err("Archive content group is unavailable; nothing copied.".into());
     }
-    format_scoped(path, result, None, recorded_at, format, Some(group))
+    format_scoped(path, result, None, recorded_at, format, Scope::One(group))
+}
+
+/// Export complete groups in the current filtered display order, with original ranks.
+/// Empty scope is explicit; invalid or repeated ranks refuse the whole report.
+pub fn format_shown_groups(
+    path: &Path,
+    result: &Result<Report, String>,
+    recorded_at: Option<&chrono::DateTime<chrono::Utc>>,
+    ranks: &[usize],
+    format: Format,
+) -> Result<String, String> {
+    format_scoped(path, result, None, recorded_at, format, Scope::Shown(ranks))
+}
+#[derive(Clone, Copy)]
+enum Scope<'a> {
+    All,
+    One(usize),
+    Shown(&'a [usize]),
 }
 
 fn format_scoped(
@@ -89,7 +116,7 @@ fn format_scoped(
     requested_strict: Option<bool>,
     recorded_at: Option<&chrono::DateTime<chrono::Utc>>,
     format: Format,
-    group_index: Option<usize>,
+    scope: Scope<'_>,
 ) -> Result<String, String> {
     let path_text = path
         .to_str()
@@ -118,13 +145,51 @@ fn format_scoped(
         "incomplete"
     };
     let at = recorded_at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-    let groups = result
+    let group_index = if let Scope::One(rank) = scope {
+        Some(rank)
+    } else {
+        None
+    };
+    let group_indices = if let Scope::Shown(ranks) = scope {
+        Some(ranks)
+    } else {
+        None
+    };
+    let source = result
         .as_ref()
         .ok()
-        .and_then(|report| report.content_groups.as_deref())
-        .map(|groups| group_index.map_or(groups, |rank| &groups[rank..rank + 1]));
-    if let Some(groups) = groups {
-        for group in groups {
+        .and_then(|report| report.content_groups.as_deref());
+    let groups = match (source, scope) {
+        (Some(groups), Scope::All) => Some(groups.iter().enumerate().collect::<Vec<_>>()),
+        (Some(groups), Scope::One(rank)) => Some(vec![(
+            rank,
+            groups
+                .get(rank)
+                .ok_or("Archive content group is unavailable; nothing copied.")?,
+        )]),
+        (Some(groups), Scope::Shown(ranks)) => {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut selected = Vec::new();
+            for &rank in ranks {
+                if !seen.insert(rank) {
+                    return Err("Repeated archive content group; nothing copied.".into());
+                }
+                selected.push((
+                    rank,
+                    groups
+                        .get(rank)
+                        .ok_or("Archive content group is unavailable; nothing copied.")?,
+                ));
+            }
+            Some(selected)
+        }
+        (None, Scope::All) => None,
+        (None, _) => {
+            return Err("No completed content-group scan is available; nothing copied.".into());
+        }
+    };
+    if let Some(groups) = &groups {
+        for (_, group) in groups {
             for member in &group.members {
                 if member.path.to_str().is_none() {
                     return Err("Archive check report requires UTF-8 member paths; no lossy name was copied.".into());
@@ -145,8 +210,11 @@ fn format_scoped(
                 members,
                 decoded_bytes: decoded,
                 error,
-                content_comparison: groups.map(|_| "sha256_and_size"),
-                content_groups: groups,
+                content_comparison: groups.as_ref().map(|_| "sha256_and_size"),
+                content_groups: groups
+                    .as_ref()
+                    .map(|groups| groups.iter().map(|(_, group)| *group).collect()),
+                content_group_indices: group_indices,
                 content_group_index: group_index,
             };
             serde_json::to_writer_pretty(&mut output, &value).map_err(|e| e.to_string())?;
@@ -165,6 +233,11 @@ fn format_scoped(
                 )
                 .map_err(|e| e.to_string())?;
             }
+            if let Some(ranks) = group_indices {
+                output.write_all(b"Scope: shown content groups (display order; counts above describe the complete scan)\nContent group indices: ").map_err(|e|e.to_string())?;
+                serde_json::to_writer(&mut output, ranks).map_err(|e| e.to_string())?;
+                output.write_all(b"\n").map_err(|e| e.to_string())?;
+            }
             if let Some(groups) = groups {
                 writeln!(
                     &mut output,
@@ -172,8 +245,7 @@ fn format_scoped(
                     groups.len()
                 )
                 .map_err(|e| e.to_string())?;
-                for (id, group) in groups.iter().enumerate() {
-                    let id = group_index.unwrap_or(id);
+                for (id, group) in groups {
                     write!(&mut output, "Group #{id}\nSHA-256: ").map_err(|e| e.to_string())?;
                     serde_json::to_writer(&mut output, &group.sha256).map_err(|e| e.to_string())?;
                     writeln!(
@@ -235,6 +307,128 @@ mod tests {
                 ],
             }]),
         })
+    }
+    #[test]
+    fn shown_groups_preserve_display_order_original_ranks_and_complete_members() {
+        let mut report = grouped_report();
+        let groups = report.as_mut().unwrap().content_groups.as_mut().unwrap();
+        groups.insert(
+            0,
+            crate::archive_check::ContentGroup {
+                sha256: "hidden".into(),
+                size: 0,
+                members: vec![],
+            },
+        );
+        for index in 10..31 {
+            groups[1].members.push(crate::archive_check::ContentMember {
+                index,
+                path: format!("entry-{index}").into(),
+                size: 3,
+            });
+        }
+        let original = serde_json::to_value(&report.as_ref().unwrap().content_groups).unwrap();
+        for ranks in [vec![1], vec![1, 0], vec![]] {
+            let json = format_shown_groups(
+                Path::new("archive.zip"),
+                &report,
+                None,
+                &ranks,
+                Format::Json,
+            )
+            .unwrap();
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(value["content_group_indices"], serde_json::json!(ranks));
+            assert!(value.get("content_group_index").is_none());
+            assert_eq!(value["members"], 2);
+            assert_eq!(
+                value["content_groups"].as_array().unwrap().len(),
+                ranks.len()
+            );
+            for (shown, &rank) in ranks.iter().enumerate() {
+                assert_eq!(value["content_groups"][shown], original[rank]);
+            }
+            let text = format_shown_groups(
+                Path::new("archive.zip"),
+                &report,
+                None,
+                &ranks,
+                Format::Text,
+            )
+            .unwrap();
+            assert!(text.contains("Scope: shown content groups"));
+            let headers = text
+                .lines()
+                .filter(|line| line.starts_with("Group #"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                headers,
+                ranks
+                    .iter()
+                    .map(|rank| format!("Group #{rank}"))
+                    .collect::<Vec<_>>()
+            );
+            if !ranks.is_empty() {
+                assert!(text.contains("Entry #30 (3 bytes): \"entry-30\""));
+                assert!(text.contains("ёж\\nGroup #9"));
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(&report.as_ref().unwrap().content_groups).unwrap(),
+            original
+        );
+    }
+    #[test]
+    fn shown_groups_refuse_invalid_scopes_and_bounded_or_lossy_output_atomically() {
+        let mut report = grouped_report();
+        for mode in Format::ALL {
+            for ranks in [&[0, usize::MAX][..], &[0, 0][..]] {
+                assert!(
+                    format_shown_groups(Path::new("archive.zip"), &report, None, ranks, mode)
+                        .is_err()
+                );
+            }
+            assert!(
+                format_shown_groups(
+                    Path::new("archive.zip"),
+                    &Err("failed".into()),
+                    None,
+                    &[],
+                    mode
+                )
+                .is_err()
+            );
+            let mut no_scan = grouped_report();
+            no_scan.as_mut().unwrap().content_groups = None;
+            assert!(
+                format_shown_groups(Path::new("archive.zip"), &no_scan, None, &[], mode).is_err()
+            );
+        }
+        report.as_mut().unwrap().content_groups.as_mut().unwrap()[0].members[0].path =
+            "\n".repeat(MAX_BYTES / 2).into();
+        for mode in Format::ALL {
+            assert!(
+                format_shown_groups(Path::new("archive.zip"), &report, None, &[0], mode)
+                    .unwrap_err()
+                    .contains("4 MiB")
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            report.as_mut().unwrap().content_groups.as_mut().unwrap()[0].members[0].path =
+                std::ffi::OsString::from_vec(vec![255]).into();
+            for mode in Format::ALL {
+                assert!(
+                    format_shown_groups(Path::new("archive.zip"), &report, None, &[0], mode)
+                        .unwrap_err()
+                        .contains("UTF-8")
+                );
+                assert!(
+                    format_shown_groups(Path::new("archive.zip"), &report, None, &[], mode).is_ok()
+                );
+            }
+        }
     }
     #[test]
     fn scoped_groups_keep_output_limits_and_refuse_lossy_paths() {

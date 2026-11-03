@@ -1,0 +1,13 @@
+# Export shown archive groups — 2026-11-03
+
+Independent Commander extension inspired by cohort #85 [fclones grouped text and JSON reports](https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/README.md). Copy shown groups report / Copy shown groups JSON export every member of groups retained by the current search, across all group/member pages and in display order. Selection is irrelevant and unchanged. Existing complete-scan and single-group reports retain their formats and scope.
+
+Text identifies the shown-group scope, original group numbers and display order. JSON adds content_group_indices alongside corresponding content_groups; existing complete-scan totals and status remain scan metadata. A one-group shown export uses the indices array, distinguishing it from the existing content_group_index single-group format. No fclones import or removal compatibility is claimed.
+
+The formatter borrows retained groups without cloning member metadata or doing filesystem reads. Invalid/repeated ranks, incomplete/missing scan results, non-UTF-8 exported paths and output exceeding the existing 4 MiB bound refuse the whole export. An explicit empty scope produces a zero-group scoped report; the UI disables both shown-report buttons for zero matches or invalid search. Clipboard writes occur only after complete successful formatting.
+
+Two Rust regressions cover filtered/reordered/empty scope, original group/member IDs, members beyond the first page, escaped Unicode/control names, scan metadata and immutable input; invalid/repeated ranks, missing scan, strict UTF-8 and output bounds are refused. Six native checkpoints append to the priority/search scene, checking filtered and reordered text/JSON exports and unchanged selection. verify.py independently compares exported groups to TAR fixture metadata, original rank ordering and all member identities. Prior search/order/keeper/session/history and TAR/ZIP exports remain covered.
+
+Reproduce run_checks.py, then prepare_capture.py plus CUA launches for the four archive scenes, then verify.py. New report interactions are qualified on TAR; broader native platforms and larger native pagination remain open.
+
+Final qualification: all seven gates passed (3499 tests passed, 0 failed, 3 ignored). Four native scenes passed 14/14 on the exact final binary. All six new scope checkpoints and four clipboard reports passed independent fixture/rank/member verification; all four frames were visually inspected. Clipboard effects priority/modes/TAR/ZIP = 4/0/4/2. Initial test compilation failure from serializing the non-serializable report wrapper is retained; corrected tests serialize only the group data and passed.

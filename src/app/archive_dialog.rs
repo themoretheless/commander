@@ -2858,6 +2858,15 @@ impl App {
                                     if button.clicked(){select_shown_groups=Some((order.clone(),select));}
                                 }
                             });
+                            ui.horizontal_wrapped(|ui| {
+                                for (format,label) in [(crate::archive_check_export::Format::Text,"Copy shown groups report"),(crate::archive_check_export::Format::Json,"Copy shown groups JSON")] {
+                                    let button=ui.add_enabled(!order.is_empty() && state.content_group_view.error.is_none(),egui::Button::new(label).small())
+                                        .on_hover_text("Copy complete matching groups across all pages, in current group order, with original group indices. Scan totals describe the complete scan; selection and archive files stay unchanged.");
+                                    #[cfg(feature="visual-qa")]
+                                    ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new(label),button.rect);d.insert_temp(egui::Id::new((label,"enabled")),button.enabled());});
+                                    if button.clicked(){copy_check_report=Some(crate::archive_check_export::format_shown_groups(&state.path,result,state.check_recorded_at.as_ref(),order,format));}
+                                }
+                            });
                             let range=content_group_pager(ui,order.len(), &mut state.content_group_page);
                             for &_rank in &order[range] {
                                 let group=&groups[_rank];

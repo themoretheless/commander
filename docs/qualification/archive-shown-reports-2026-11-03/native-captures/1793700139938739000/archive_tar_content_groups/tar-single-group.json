@@ -1,0 +1,46 @@
+{
+  "schema": "commander.archive-check/v1",
+  "archive": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-86172-archive_tar_content_groups/left/groups.tar.gz",
+  "archive_format": "tar.gz",
+  "recorded_at": "2026-11-03T10:02:28Z",
+  "status": "complete",
+  "strict_headers": false,
+  "members": 11,
+  "decoded_bytes": 20480,
+  "error": null,
+  "content_comparison": "sha256_and_size",
+  "content_groups": [
+    {
+      "sha256": "c0c5937edebd94c62c597214be77881fd33a1871b585c493d87cd48e5a72fd17",
+      "size": 33,
+      "members": [
+        {
+          "index": 0,
+          "path": "z-same.txt",
+          "size": 33
+        },
+        {
+          "index": 2,
+          "path": "a-same.txt",
+          "size": 33
+        },
+        {
+          "index": 8,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 9,
+          "path": "dup.txt",
+          "size": 33
+        },
+        {
+          "index": 10,
+          "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt",
+          "size": 33
+        }
+      ]
+    }
+  ],
+  "content_group_index": 1
+}
