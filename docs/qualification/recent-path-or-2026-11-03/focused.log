@@ -1,0 +1,24 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 51.74s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 16 tests
+test panel::visit::tests::a_poisoned_visit_log_keeps_recording ... ok
+test panel::visit::tests::forgetting_recent_path_uses_exact_non_utf8_identity ... ok
+test panel::visit::tests::anchored_recent_terms_bind_full_path_edges_and_preserve_order ... ok
+test panel::visit::tests::frecency_frequency_is_capped_at_thirty_two_visits ... ok
+test panel::visit::tests::frecency_ties_go_to_the_more_recent_visit_then_list_order ... ok
+test panel::visit::tests::ordered_path_terms_match_documented_examples_unicode_and_boundaries ... ok
+test panel::visit::tests::ordered_terms_preserve_order_rank_identity_and_refuse_oversized_queries ... ok
+test panel::visit::tests::path_term_alternatives_keep_group_precedence_order_and_inverse_choices ... ok
+test panel::visit::tests::recent_base_scope_retains_exact_non_utf8_paths ... ok
+test panel::visit::tests::forgetting_recent_path_removes_rank_preserves_peers_and_survives_roundtrip ... ok
+test panel::visit::tests::recent_path_exclusions_filter_full_paths_without_changing_order_or_stats ... ok
+test panel::visit::tests::recent_order_changes_projection_without_mutating_visits_or_scores ... ok
+test panel::visit::tests::recent_base_scope_uses_components_and_composes_with_matching_and_ordering ... ok
+test panel::visit::tests::whitespace_only_query_filters_nothing ... ok
+test panel::visit::tests::recent_path_terms_accept_escaped_whitespace_with_anchors_and_exclusions ... ok
+test panel::visit::tests::alternative_frontiers_equal_exhaustive_branch_expansion_and_preserve_rank ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 3467 filtered out; finished in 0.01s
+

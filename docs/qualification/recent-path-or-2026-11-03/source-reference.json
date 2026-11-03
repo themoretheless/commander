@@ -1,0 +1,5 @@
+{
+  "cohort": 75,
+  "reference": "https://github.com/junegunn/fzf#search-syntax",
+  "behavior": "Standalone | creates OR alternatives among adjacent terms; AND groups remain. Commander independently integrates this grouping into its ordered exact path matcher, including inverse and anchored choices."
+}

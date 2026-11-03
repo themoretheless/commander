@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0609]: no field `positive` on type `panel::visit::PathTerms`
+   --> src/panel/visit.rs:535:51
+    |
+535 |             PathTerms::parse(r"folder\").unwrap().positive[0].text,
+    |                                                   ^^^^^^^^ unknown field
+    |
+    = note: available field is: `groups`
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `commander` (bin "commander" test) due to 1 previous error

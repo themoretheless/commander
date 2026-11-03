@@ -84,7 +84,7 @@ fn recent_match_control(
     current: crate::panel::RecentMatchMode,
 ) -> (bool, Option<crate::panel::RecentMatchMode>) {
     let mut ordered = current == crate::panel::RecentMatchMode::OrderedTerms;
-    let response=ui.checkbox(&mut ordered,"Ordered path terms").on_hover_text("Match space-separated path fragments in order, ignoring case. The last positive fragment must occur in the final folder name. Use ^text for the start of a path and text$ for its end. After a positive term, !text, !^text and !text$ exclude matching paths. Escape literal operators with \\. Use backslash before a space to keep it inside one fragment (project\\ alpha). Recent folders only; disable for fuzzy matching.");
+    let response=ui.checkbox(&mut ordered,"Ordered path terms").on_hover_text("Match space-separated path fragments in order, ignoring case. The last positive fragment must occur in the final folder name. Use ^text for the start of a path and text$ for its end. After a positive term, !text, !^text and !text$ exclude matching paths. Use a separate | between alternatives (work src$ | tests$). Escape literal operators with \\. Use backslash before a space to keep it inside one fragment (project\\ alpha). Recent folders only; disable for fuzzy matching.");
     #[cfg(any(test, feature = "visual-qa"))]
     ui.ctx().data_mut(|data| {
         data.insert_temp(egui::Id::new("recent-match-mode"), response.rect);

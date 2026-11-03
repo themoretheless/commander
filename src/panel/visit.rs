@@ -62,8 +62,11 @@ pub enum RecentMatchMode {
 }
 
 struct PathTerms {
-    positive: Vec<PathTerm>,
-    negative: Vec<PathTerm>,
+    groups: Vec<Vec<PathAtom>>,
+}
+struct PathAtom {
+    term: PathTerm,
+    inverse: bool,
 }
 struct PathTerm {
     text: String,
@@ -74,6 +77,8 @@ impl PathTerm {
     fn parse(raw: &str) -> Option<Self> {
         let (text, start) = if let Some(rest) = raw.strip_prefix(r"\!") {
             (format!("!{rest}"), false)
+        } else if let Some(rest) = raw.strip_prefix(r"\|") {
+            (format!("|{rest}"), false)
         } else if let Some(rest) = raw.strip_prefix(r"\^") {
             (format!("^{rest}"), false)
         } else if let Some(rest) = raw.strip_prefix('^') {
@@ -118,7 +123,7 @@ impl PathTerms {
             } else if ch.is_whitespace() {
                 if !token.is_empty() {
                     terms.push(std::mem::take(&mut token));
-                    if terms.len() > 32 {
+                    if terms.len() > 63 {
                         return None;
                     }
                 }
@@ -129,25 +134,38 @@ impl PathTerms {
         if !token.is_empty() {
             terms.push(token);
         }
-        let mut positive = Vec::new();
-        let mut negative = Vec::new();
-        for (index, term) in terms.iter().enumerate() {
-            if index >= 32 {
-                return None;
-            }
-            if let Some(literal) = term.strip_prefix(r"\!") {
-                positive.push(PathTerm::parse(&format!("!{literal}"))?);
-            } else if let Some(excluded) = term.strip_prefix('!') {
-                if excluded.is_empty() {
+        let mut groups: Vec<Vec<PathAtom>> = Vec::new();
+        let mut alternatives = false;
+        let mut count = 0;
+        for raw in terms {
+            if raw == "|" {
+                if groups.is_empty() || alternatives {
                     return None;
                 }
-                negative.push(PathTerm::parse(excluded)?);
-            } else {
-                positive.push(PathTerm::parse(term)?);
+                alternatives = true;
+                continue;
             }
+            count += 1;
+            if count > 32 {
+                return None;
+            }
+            let (text, inverse) = raw
+                .strip_prefix('!')
+                .map_or((raw.as_str(), false), |text| (text, true));
+            let atom = PathAtom {
+                term: PathTerm::parse(text)?,
+                inverse,
+            };
+            if alternatives {
+                groups.last_mut()?.push(atom);
+            } else {
+                groups.push(vec![atom]);
+            }
+            alternatives = false;
         }
-        Some(Self { positive, negative })
+        (!alternatives).then_some(Self { groups })
     }
+
     fn matches(&self, path: &Path) -> bool {
         let label = path
             .to_string_lossy()
@@ -159,37 +177,41 @@ impl PathTerms {
         } else {
             normalized
         };
-        if self.negative.iter().any(|term| {
-            // Edge anchors share positive terms' trailing-separator normalization.
-            // Unanchored exclusions retain their original literal substring scope.
-            let hay = if term.start || term.end {
-                full
-            } else {
-                label.as_str()
-            };
-            term.find_in(hay, hay.len()).is_some()
-        }) {
-            return false;
-        }
-        let mut prefix = full;
-        let Some((last, previous)) = self.positive.split_last() else {
-            return true;
-        };
-        let full_len = prefix.len();
-        let Some(index) = last.find_in(prefix, full_len) else {
-            return false;
-        };
-        if prefix[index + last.text.len()..].contains('/') {
-            return false;
-        }
-        prefix = &prefix[..index];
-        for term in previous.iter().rev() {
-            let Some(index) = term.find_in(prefix, full_len) else {
+        // One frontier has not consumed any positive term, the other has.
+        // The greatest remaining prefix dominates smaller prefixes in the
+        // same state: earlier ordered terms can use every match they could.
+        // This avoids expanding the Cartesian product of OR alternatives.
+        let mut frontier = [Some(full.len()), None];
+        for group in self.groups.iter().rev() {
+            let mut next: [Option<usize>; 2] = [None, None];
+            for (state, bound) in frontier.into_iter().enumerate() {
+                let Some(bound) = bound else {
+                    continue;
+                };
+                for atom in group {
+                    if atom.inverse {
+                        let hay = if atom.term.start || atom.term.end {
+                            full
+                        } else {
+                            label.as_str()
+                        };
+                        if atom.term.find_in(hay, hay.len()).is_none() {
+                            next[state] = Some(next[state].map_or(bound, |old| old.max(bound)));
+                        }
+                    } else if let Some(index) = atom.term.find_in(&full[..bound], full.len()) {
+                        if state == 0 && full[index + atom.term.text.len()..].contains('/') {
+                            continue;
+                        }
+                        next[1] = Some(next[1].map_or(index, |old| old.max(index)));
+                    }
+                }
+            }
+            frontier = next;
+            if frontier.iter().all(Option::is_none) {
                 return false;
-            };
-            prefix = &prefix[..index];
+            }
         }
-        true
+        frontier.iter().any(Option::is_some)
     }
 }
 
@@ -213,7 +235,7 @@ pub fn recent_paths_within(paths: &[PathBuf], base: &Path) -> Vec<PathBuf> {
 
 pub fn recent_match_error(query: &str, mode: RecentMatchMode) -> Option<&'static str> {
     (mode == RecentMatchMode::OrderedTerms && PathTerms::parse(query).is_none())
-        .then_some(r"Use at most 32 path terms and 1024 UTF-8 bytes; !, ^ and $ need text (escape literal operators with \)")
+        .then_some(r"Use at most 32 path terms and 1024 UTF-8 bytes; !, ^ and $ need text; | needs alternatives on both sides (escape literal operators with \)")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -361,6 +383,134 @@ mod tests {
     use super::*;
 
     #[test]
+    fn path_term_alternatives_keep_group_precedence_order_and_inverse_choices() {
+        for (query, path, expected) in [
+            ("^/core go$ | rb$ | py$", "/core/go", true),
+            ("^/core go$ | rb$ | py$", "/core/py", true),
+            ("^/core go$ | rb$ | py$", "/other/py", false),
+            ("work src$ | tests$", "/work/tests", true),
+            ("work src$ | tests$", "/other/tests", false),
+            ("work src$ | tests$", "/work/src/nested", false),
+            ("work | other src$", "/other/src", true),
+            ("work | other src$", "/other/tests", false),
+            ("src$ | !src$", "/work/src", true),
+            ("src$ | !src$", "/work/tests", true),
+            ("work src | !src$", "/work/tests", false),
+            ("work src | !src$", "/work/src", true),
+            ("work | !missing src$", "/other/src", true),
+            ("work | !missing src$", "/missing/src", false),
+            ("work src$ | tests$ !archive", "/work/archive/tests", false),
+            ("ёж$ | src$", "/work/ЁЖ", true),
+            (r"work \|", "/work/|", true),
+            ("work a|b", "/work/a|b", true),
+            (r"work !\|", "/work/|", false),
+            (r"work\ alpha src$ | tests$", "/work alpha/tests/", true),
+        ] {
+            assert_eq!(
+                PathTerms::parse(query).unwrap().matches(Path::new(path)),
+                expected,
+                "{query} :: {path}"
+            );
+        }
+        for query in [
+            "|",
+            "| src",
+            "src |",
+            "src | | tests",
+            "src | !",
+            "src | ^$",
+        ] {
+            assert!(PathTerms::parse(query).is_none(), "{query}");
+            assert!(recent_match_error(query, RecentMatchMode::OrderedTerms).is_some());
+        }
+        assert!(PathTerms::parse(&vec!["src"; 32].join(" | ")).is_some());
+        assert!(PathTerms::parse(&vec!["src"; 33].join(" | ")).is_none());
+    }
+
+    #[test]
+    fn alternative_frontiers_equal_exhaustive_branch_expansion_and_preserve_rank() {
+        let groups = [
+            vec!["a", "bb", "!missing"],
+            vec!["a$", "bb$", "!a$"],
+            vec!["^/", "!bb", "bb$"],
+        ];
+        let mut paths = Vec::new();
+        for parent in ["a", "bb", "missing", "work"] {
+            for name in ["a", "bb", "abb", "aa", "missing"] {
+                paths.push(PathBuf::from(format!("/{parent}/{name}")));
+            }
+        }
+        // Evaluate each product branch as a pre-existing conjunction, rather
+        // than using the two-state OR implementation as its own oracle.
+        for mask in 1..8 {
+            let selected: Vec<_> = groups
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, g)| g)
+                .collect();
+            let query = selected
+                .iter()
+                .map(|g| g.join(" | "))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut branches = vec![String::new()];
+            for group in selected {
+                branches = branches
+                    .into_iter()
+                    .flat_map(|prefix| group.iter().map(move |term| format!("{prefix} {term}")))
+                    .collect();
+            }
+            let matcher = PathTerms::parse(&query).unwrap();
+            for path in &paths {
+                assert_eq!(
+                    matcher.matches(path),
+                    branches
+                        .iter()
+                        .any(|branch| PathTerms::parse(branch).unwrap().matches(path)),
+                    "{query} :: {}",
+                    path.display()
+                );
+            }
+        }
+        let mut stats = VisitStats::default();
+        for path in &paths {
+            stats.record(path);
+        }
+        let before = stats.clone();
+        for order in [RecentOrder::Chronological, RecentOrder::Frecency] {
+            let all =
+                rank_visited_with_mode(&paths, "", order, &stats, RecentMatchMode::OrderedTerms);
+            let selected = rank_visited_with_mode(
+                &paths,
+                "a$ | bb$",
+                order,
+                &stats,
+                RecentMatchMode::OrderedTerms,
+            );
+            let expected: Vec<_> = all
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|name| name.ends_with('a') || name.ends_with("bb"))
+                })
+                .map(|entry| entry.path)
+                .collect();
+            assert_eq!(
+                selected
+                    .into_iter()
+                    .map(|entry| entry.path)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        assert_eq!(stats, before);
+    }
+
+    #[test]
     fn recent_path_terms_accept_escaped_whitespace_with_anchors_and_exclusions() {
         for (query, path, expected) in [
             (r"project\ alpha src$", "/work/project alpha/src", true),
@@ -383,7 +533,7 @@ mod tests {
             );
         }
         assert_eq!(
-            PathTerms::parse(r"folder\").unwrap().positive[0].text,
+            PathTerms::parse(r"folder\").unwrap().groups[0][0].term.text,
             r"folder\"
         );
         assert!(PathTerms::parse(&vec![r"a\ b"; 32].join(" ")).is_some());
