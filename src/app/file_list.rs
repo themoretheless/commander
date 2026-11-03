@@ -805,6 +805,12 @@ impl App {
                         egui::Id::new(("file_list_parent_row", panel_side)),
                         Sense::click(),
                     );
+                    #[cfg(any(test, feature="visual-qa"))]
+                    ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("folder-parent-row",panel_side)),up_row.rect));
+                    let up_row=up_row.on_hover_text("Parent folder · Middle-click for a background tab; right-click for tab actions");
+                    if let Some(parent)=panel.current_path.parent() {
+                        super::miller_browser::folder_tab_actions(&up_row,&panel.current_path,panel.entries_gen(),parent,false,folder_tab);
+                    }
                     // Same semantics as file rows, so AT hears when the
                     // cursor sits on the parent row.
                     up_row.widget_info(|| {

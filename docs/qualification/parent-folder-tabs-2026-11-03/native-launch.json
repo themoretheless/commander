@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/parent-folder-tabs-2026-11-03/native-captures/1793719447156992000",
+  "binary_sha256": "4636dfac57e2ac64df67bed4ddd0560de55ff5cf274cddfd053a39dac84a9410",
+  "core_sha256": "4636dfac57e2ac64df67bed4ddd0560de55ff5cf274cddfd053a39dac84a9410",
+  "wrapper_sha256": "50eb62d365a2f5a34880b704db56604590472b21e855a2f476efeaaccb2fd55f",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

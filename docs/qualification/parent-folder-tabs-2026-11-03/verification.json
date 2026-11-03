@@ -1,0 +1,12 @@
+{
+  "checks": 7,
+  "tests_passed": 3544,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "parent_middle_views": 3,
+  "parent_foreground_menu": true,
+  "parent_background_menu": true,
+  "source_owner_preserved": true,
+  "source_hashes_verified": true,
+  "prior_receipts_verified": true
+}

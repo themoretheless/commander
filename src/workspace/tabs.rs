@@ -730,7 +730,7 @@ impl Workspace {
         Ok(count)
     }
 
-    /// Validate a captured current-list folder row before changing tab ownership.
+    /// Validate a captured current-list folder or its synthetic parent row.
     pub(crate) fn open_listed_folder_tab(
         &mut self,
         side: ActivePanel,
@@ -745,12 +745,13 @@ impl Workspace {
         };
         if panel.current_path != owner
             || panel.entries_gen() != generation
-            || !panel.filtered_indices().iter().any(|&index| {
-                panel
-                    .entries()
-                    .get(index)
-                    .is_some_and(|entry| entry.is_dir && entry.path == folder)
-            })
+            || !(folder.is_absolute() && panel.current_path.parent() == Some(folder.as_path())
+                || panel.filtered_indices().iter().any(|&index| {
+                    panel
+                        .entries()
+                        .get(index)
+                        .is_some_and(|entry| entry.is_dir && entry.path == folder)
+                }))
         {
             return false;
         }
@@ -1405,6 +1406,144 @@ mod tests {
         ));
         assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
     }
+    #[test]
+    fn parent_row_tabs_keep_source_state_and_activate_only_the_requested_destination() {
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            for mode in [
+                crate::panel::BrowserMode::List,
+                crate::panel::BrowserMode::Icons,
+                crate::panel::BrowserMode::Miller,
+            ] {
+                for activate in [false, true] {
+                    let temp = TempDir::new();
+                    let owner = temp.dir("owner");
+                    let other = temp.dir("other");
+                    let keep = temp.file("owner/keep.txt", "kept");
+                    let mut ws = if side == ActivePanel::Left {
+                        Workspace::new(owner.clone(), other.clone())
+                    } else {
+                        Workspace::new(other.clone(), owner.clone())
+                    };
+                    {
+                        let (_, p) = ws.tabs_and_panel(side);
+                        p.refresh();
+                        p.set_browser_mode(mode);
+                        p.set_search_query("keep");
+                        p.focus_child("keep.txt".into());
+                        p.select_path(keep.clone());
+                    }
+                    assert!(ws.set_tab_title(side, 0, "Keep source"));
+                    assert!(ws.set_tab_close_protection(side, 0, true));
+                    ws.left.preview = Some(crate::panel::PreviewContent::Image(keep.clone()));
+                    ws.right.preview = ws.left.preview.clone();
+                    let before = ws.tab_snapshot(side);
+                    let opposite = ws.tab_snapshot(side.other());
+                    let generation = ws.tabs_and_panel(side).1.entries_gen();
+                    ws.active = side.other();
+                    assert!(ws.open_listed_folder_tab(
+                        side,
+                        &owner,
+                        generation,
+                        temp.path().into(),
+                        activate
+                    ));
+                    assert_eq!(ws.active, side.other());
+                    assert_eq!(ws.tab_count(side), 2);
+                    assert_eq!(ws.active_tab_index(side), usize::from(activate));
+                    assert_eq!(ws.tab_snapshot(side).entries[0], before.entries[0]);
+                    assert_eq!(ws.tab_snapshot(side.other()), opposite);
+                    if activate {
+                        let (_, p) = ws.tabs_and_panel(side);
+                        assert_eq!(p.current_path, temp.path());
+                        assert!(p.entries().is_empty());
+                        assert!(!p.has_notify());
+                        assert!(ws.close_tab(side));
+                        ws.tabs_and_panel(side).1.refresh();
+                    } else {
+                        assert!(ws.left.preview.is_some() && ws.right.preview.is_some());
+                        let (tabs, p) = ws.tabs_and_panel(side);
+                        assert_eq!(p.entries_gen(), generation);
+                        let background = tabs.slots[1].as_ref().unwrap();
+                        assert_eq!(background.current_path, temp.path());
+                        assert!(background.entries().is_empty());
+                        assert!(!background.has_notify());
+                    }
+                    let (_, p) = ws.tabs_and_panel(side);
+                    assert_eq!(p.current_path, owner);
+                    assert_eq!(p.cursor_entry().unwrap().path, keep);
+                    assert!(p.is_selected(&keep));
+                    assert_eq!(p.search_query(), "keep");
+                    assert_eq!(p.browser_mode(), mode);
+                    assert_eq!(std::fs::read(keep).unwrap(), b"kept");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parent_row_tabs_refuse_stale_owner_revision_root_modal_and_capacity() {
+        let temp = TempDir::new();
+        let owner = temp.dir("owner");
+        let other = temp.dir("other");
+        let file = temp.file("owner/keep.txt", "kept");
+        let mut ws = Workspace::new(owner.clone(), other.clone());
+        ws.left.refresh();
+        let generation = ws.left.entries_gen();
+        let before = ws.tab_snapshot(ActivePanel::Left);
+        for (captured, revision, target) in [
+            (other.clone(), generation, temp.path().into()),
+            (
+                owner.clone(),
+                generation.wrapping_add(1),
+                temp.path().into(),
+            ),
+            (owner.clone(), generation, other),
+            (owner.clone(), generation, owner.clone()),
+            (owner.clone(), generation, file.clone()),
+        ] {
+            assert!(!ws.open_listed_folder_tab(
+                ActivePanel::Left,
+                &captured,
+                revision,
+                target,
+                false
+            ));
+            assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
+        }
+        ws.emit_ui_request(crate::ui_request::UiRequest::Rename(file));
+        assert!(!ws.open_listed_folder_tab(
+            ActivePanel::Left,
+            &owner,
+            generation,
+            temp.path().into(),
+            false
+        ));
+        ws.drain_ui_requests();
+        while ws.tab_count(ActivePanel::Left) < MAX_TABS {
+            assert!(ws.new_background_tab(ActivePanel::Left, temp.path().into()));
+        }
+        let full = ws.tab_snapshot(ActivePanel::Left);
+        for activate in [false, true] {
+            assert!(!ws.open_listed_folder_tab(
+                ActivePanel::Left,
+                &owner,
+                generation,
+                temp.path().into(),
+                activate
+            ));
+            assert_eq!(ws.tab_snapshot(ActivePanel::Left), full);
+        }
+        let mut root = Workspace::new(PathBuf::from("/"), PathBuf::from("/"));
+        assert!(!root.open_listed_folder_tab(
+            ActivePanel::Left,
+            std::path::Path::new("/"),
+            root.left.entries_gen(),
+            PathBuf::from("/"),
+            false
+        ));
+        assert_eq!(root.tab_count(ActivePanel::Left), 1);
+    }
+
     #[test]
     fn listed_folder_tabs_revalidate_visible_directory_and_preserve_source_for_all_views() {
         for mode in [

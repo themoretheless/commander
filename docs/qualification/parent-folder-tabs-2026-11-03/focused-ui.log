@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized] target(s) in 0.28s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 5 tests
+test app::miller_browser::tests::folder_menu_routes_both_tab_actions_with_the_original_popup_binding ... ok
+test app::miller_browser::tests::middle_click_ancestor_folder_requests_tab_without_promoting_the_action_owner ... ok
+test app::miller_browser::tests::current_folder_middle_click_preserves_owner_in_list_icons_and_columns ... ok
+test app::miller_browser::tests::pointer_resize_and_double_click_reset_keep_the_action_owner ... ok
+test app::miller_browser::tests::miller_layout_stays_finite_with_ancestors_and_mode_round_trip ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3542 filtered out; finished in 0.29s
+

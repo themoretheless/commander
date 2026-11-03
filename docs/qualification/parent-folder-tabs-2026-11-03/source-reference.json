@@ -1,0 +1,7 @@
+{
+  "cohort": 6,
+  "repository": "files-community/Files",
+  "source": "https://files.community/docs/features/tabs",
+  "observed_contract": "Middle-click folders or use their context menu to open tabs",
+  "adaptation": "Independent Commander extension of that workflow to its synthetic parent row in List, Icons and Columns; parent identity is bound to current owner path and generation"
+}

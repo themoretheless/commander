@@ -10,11 +10,12 @@ pub struct FolderTabRequest {
     pub ancestor: bool,
 }
 
-fn folder_tab_actions(
+pub(super) fn folder_tab_actions(
     response: &egui::Response,
     owner: &std::path::Path,
     generation: u64,
     folder: &std::path::Path,
+    ancestor: bool,
     request: &mut Option<FolderTabRequest>,
 ) {
     if response.clicked_by(egui::PointerButton::Middle) {
@@ -23,7 +24,7 @@ fn folder_tab_actions(
             generation,
             folder: folder.into(),
             activate: false,
-            ancestor: true,
+            ancestor,
         });
     }
     let binding = response.id.with("miller-tab-binding");
@@ -63,7 +64,7 @@ fn folder_tab_actions(
                         generation,
                         folder: folder.clone(),
                         activate,
-                        ancestor: true,
+                        ancestor,
                     });
                     ui.close();
                 }
@@ -234,7 +235,7 @@ impl App {
                         ui.set_min_size(egui::vec2(width,height));ui.set_max_size(egui::vec2(width,height));
                         let label=col.current_path.file_name().map_or_else(||col.current_path.display().to_string(),|n|n.to_string_lossy().into_owned());
                         let header=ui.add_sized([width,24.0],egui::Button::new(label).truncate().sense(Sense::CLICK)).on_hover_text(format!("{}\nMiddle-click for a background tab; right-click for tab actions",col.current_path.display()));
-                        folder_tab_actions(&header,&current,generation,&col.current_path,tab_request);
+                        folder_tab_actions(&header,&current,generation,&col.current_path,true,tab_request);
                         if header.clicked() {navigation=Some((col.current_path.clone(),None));}
                         ui.separator();
                         let row_h=(metrics.name_pt+2.0*metrics.row_pad_y+6.0).max(24.0);
@@ -246,7 +247,7 @@ impl App {
                                 let response=ui.add_sized([ui.available_width(),row_h],egui::Button::selectable(entry.path==child,label).truncate().sense(Sense::CLICK)).on_hover_text(if entry.is_dir { format!("{}\nMiddle-click for a background tab; right-click for tab actions",entry.path.display()) } else { entry.path.display().to_string() });
                                 #[cfg(any(test,feature="visual-qa"))]
                                 ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("miller-context",panel_side,&col.current_path,&entry.path)),response.rect));
-                                if entry.is_dir { folder_tab_actions(&response,&current,generation,&entry.path,tab_request); }
+                                if entry.is_dir { folder_tab_actions(&response,&current,generation,&entry.path,true,tab_request); }
                                 if response.clicked() {
                                     navigation=Some(if entry.is_dir {(entry.path.clone(),None)} else {(col.current_path.clone(),Some(entry.path.clone()))});
                                 }
@@ -346,10 +347,26 @@ mod tests {
             }
             let generation = panel.entries_gen();
             let cursor = panel.cursor_entry().unwrap().path.clone();
-            for (target, expected) in [(&folder, true), (&file, false)] {
+            let parent = temp.path().parent().unwrap().to_path_buf();
+            for (target, expected, parent_row) in [
+                (&folder, true, false),
+                (&file, false, false),
+                (&parent, true, true),
+            ] {
                 let pos = ctx
                     .data(|data| {
-                        data.get_temp::<egui::Rect>(egui::Id::new(("folder-row", "left", target)))
+                        if parent_row {
+                            data.get_temp::<egui::Rect>(egui::Id::new((
+                                "folder-parent-row",
+                                "left",
+                            )))
+                        } else {
+                            data.get_temp::<egui::Rect>(egui::Id::new((
+                                "folder-row",
+                                "left",
+                                target,
+                            )))
+                        }
                     })
                     .unwrap()
                     .center();
@@ -372,7 +389,7 @@ mod tests {
                 assert_eq!(request.is_some(), expected, "{mode:?}");
                 if let Some(request) = request {
                     assert_eq!(request.owner, temp.path());
-                    assert_eq!(request.folder, folder);
+                    assert_eq!(&request.folder, target);
                     assert_eq!(request.generation, generation);
                     assert!(!request.activate && !request.ancestor);
                 }
@@ -385,7 +402,12 @@ mod tests {
     }
     #[test]
     fn folder_menu_routes_both_tab_actions_with_the_original_popup_binding() {
-        for (label, activate) in [("Open in new tab", true), ("Open in background tab", false)] {
+        for (label, activate, ancestor) in [
+            ("Open in new tab", true, true),
+            ("Open in background tab", false, true),
+            ("Open in new tab", true, false),
+            ("Open in background tab", false, false),
+        ] {
             let ctx = egui::Context::default();
             let mut tick = 0.0;
             let mut render = |owner: &str, generation, folder: &str, events| {
@@ -411,6 +433,7 @@ mod tests {
                             std::path::Path::new(owner),
                             generation,
                             std::path::Path::new(folder),
+                            ancestor,
                             &mut request,
                         );
                     },
@@ -474,6 +497,7 @@ mod tests {
             assert_eq!(request.generation, 7);
             assert_eq!(request.folder, std::path::Path::new("/folder"));
             assert_eq!(request.activate, activate);
+            assert_eq!(request.ancestor, ancestor);
         }
     }
     #[test]
