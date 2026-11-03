@@ -1,0 +1,23 @@
+{
+  "columns": [
+    "/",
+    "/var",
+    "/var/folders",
+    "/var/folders/jx",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-90645-miller_browser",
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-90645-miller_browser/left"
+  ],
+  "current_width": 300.0,
+  "cursor": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-90645-miller_browser/left/column-A/a.txt",
+  "mode": "Miller",
+  "parent_width": 280.0,
+  "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-90645-miller_browser/left/column-A",
+  "phase": 60,
+  "revision": 11,
+  "right_path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-90645-miller_browser/right",
+  "selected": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-90645-miller_browser/left/column-A/a.txt"
+  ]
+}

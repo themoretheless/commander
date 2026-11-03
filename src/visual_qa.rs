@@ -3285,6 +3285,7 @@ struct VisualQaApp {
     disk_export_phase: u8,
     empty_file_phase: u8,
     navigation_menu_phase: u8,
+    breadcrumb_tab_phase: u8,
     disk_export_first_json: Option<String>,
     duplicate_phase: u8,
     duplicate_sort_phase: u8,
@@ -3605,6 +3606,7 @@ impl VisualQaApp {
             disk_export_phase: 0,
             empty_file_phase: 0,
             navigation_menu_phase: 0,
+            breadcrumb_tab_phase: 0,
             disk_export_first_json: None,
             duplicate_phase: 0,
             duplicate_sort_phase: 0,
@@ -5007,7 +5009,8 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::MillerBrowser
                 && (self.disk_export_phase < 255
                     || self.empty_file_phase < 14
-                    || self.navigation_menu_phase < 15))
+                    || self.navigation_menu_phase < 15
+                    || self.breadcrumb_tab_phase < 43))
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -8166,6 +8169,188 @@ impl eframe::App for VisualQaApp {
                 });
             }
             self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser
+            && self.disk_export_phase == 255
+            && self.empty_file_phase == 14
+            && self.navigation_menu_phase == 15
+            && self.breadcrumb_tab_phase < 43
+        {
+            use crate::workspace::ActivePanel;
+            let phase = self.breadcrumb_tab_phase;
+            let original = self.fixture.left.join("column-A");
+            let debug_key = egui::Id::new("breadcrumb-debug-phase");
+            if ctx.data(|d| d.get_temp::<u8>(debug_key)) != Some(phase) {
+                ctx.data_mut(|d| d.insert_temp(debug_key, phase));
+                let probe = ctx
+                    .data(|d| {
+                        d.get_temp::<egui::Rect>(egui::Id::new((
+                            "breadcrumb-tab-target",
+                            "left",
+                            original.as_path(),
+                        )))
+                    })
+                    .map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]);
+                let record = serde_json::json!({"phase":phase,"probe":probe,"left":self.inner.ws.left.current_path,"tabs":self.inner.ws.tab_count(ActivePanel::Left),"active":self.inner.ws.active_tab_index(ActivePanel::Left),"revision":self.inner.ws.tab_revision(),"generation":self.inner.ws.left.entries_gen(),"focus":format!("{:?}",self.inner.ws.active),"pending_op":self.inner.ws.pending_op.is_some()});
+                let _ = std::fs::write(
+                    self.scenario_dir
+                        .join(format!("breadcrumb-debug-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+            }
+            let owner = |p: &crate::panel::PanelState| serde_json::json!({"path":p.current_path,"mode":p.browser_mode(),"generation":p.entries_gen(),"cursor":p.cursor_entry().map(|e|&e.path),"selected":p.selected_entries().iter().map(|e|&e.path).collect::<Vec<_>>(),"preview":p.preview.is_some()});
+            let record = || serde_json::json!({"owner":owner(&self.inner.ws.left),"left_tabs":self.inner.ws.tab_snapshot(ActivePanel::Left),"right":self.inner.ws.right.current_path,"right_tabs":self.inner.ws.tab_snapshot(ActivePanel::Right),"focus":format!("{:?}",self.inner.ws.active)});
+            if matches!(phase, 4 | 12 | 20) {
+                let mode = if phase == 4 {
+                    "List"
+                } else if phase == 12 {
+                    "Icons"
+                } else {
+                    "Miller"
+                };
+                if format!("{:?}", self.inner.ws.left.browser_mode()) != mode
+                    || self.inner.ws.left.current_path != original
+                    || matches!(
+                        self.inner.ws.left.dir_status(),
+                        crate::panel::DirStatus::Loading
+                    )
+                {
+                    return;
+                }
+                std::fs::write(
+                    self.scenario_dir
+                        .join(format!("breadcrumb-before-{mode}.json")),
+                    serde_json::to_vec_pretty(&record()).unwrap(),
+                )
+                .unwrap();
+            } else if matches!(phase, 8 | 16 | 24 | 28 | 35 | 42) {
+                let count = match phase {
+                    8 => 3,
+                    16 => 4,
+                    24 => 5,
+                    28 => 6,
+                    35 => 7,
+                    _ => 8,
+                };
+                let active = usize::from(phase >= 35);
+                let expected = if phase >= 35 {
+                    &self.fixture.left
+                } else {
+                    &original
+                };
+                if self.inner.ws.tab_count(ActivePanel::Left) != count
+                    || self.inner.ws.active_tab_index(ActivePanel::Left) != active
+                    || self.inner.ws.left.current_path != *expected
+                    || matches!(
+                        self.inner.ws.left.dir_status(),
+                        crate::panel::DirStatus::Loading
+                    )
+                    || egui::Popup::is_any_open(ctx)
+                {
+                    return;
+                }
+                if phase >= 35
+                    && self
+                        .inner
+                        .ws
+                        .left
+                        .miller
+                        .columns
+                        .iter()
+                        .any(|c| matches!(c.dir_status(), crate::panel::DirStatus::Loading))
+                {
+                    return;
+                }
+                let name = match phase {
+                    8 => "breadcrumb-middle-List.json",
+                    16 => "breadcrumb-middle-Icons.json",
+                    24 => "breadcrumb-middle-Miller.json",
+                    28 => "breadcrumb-root.json",
+                    35 => "breadcrumb-foreground.json",
+                    _ => "breadcrumb-background.json",
+                };
+                std::fs::write(
+                    self.scenario_dir.join(name),
+                    serde_json::to_vec_pretty(&record()).unwrap(),
+                )
+                .unwrap();
+            } else if phase != 0 {
+                let (id, local, button) = match phase {
+                    1..=3 => (
+                        egui::Id::new(("browser-mode", "left", "List")),
+                        phase - 1,
+                        egui::PointerButton::Primary,
+                    ),
+                    9..=11 => (
+                        egui::Id::new(("browser-mode", "left", "Icons")),
+                        phase - 9,
+                        egui::PointerButton::Primary,
+                    ),
+                    17..=19 => (
+                        egui::Id::new(("browser-mode", "left", "Columns")),
+                        phase - 17,
+                        egui::PointerButton::Primary,
+                    ),
+                    5..=7 | 13..=15 | 21..=23 => (
+                        egui::Id::new(("breadcrumb-tab-target", "left", original.as_path())),
+                        if phase < 9 {
+                            phase - 5
+                        } else if phase < 17 {
+                            phase - 13
+                        } else {
+                            phase - 21
+                        },
+                        egui::PointerButton::Middle,
+                    ),
+                    25..=27 => (
+                        egui::Id::new(("breadcrumb-tab-target", "left", std::path::Path::new("/"))),
+                        phase - 25,
+                        egui::PointerButton::Middle,
+                    ),
+                    29..=31 | 36..=38 => (
+                        egui::Id::new((
+                            "breadcrumb-tab-target",
+                            "left",
+                            self.fixture.left.as_path(),
+                        )),
+                        if phase < 35 { phase - 29 } else { phase - 36 },
+                        egui::PointerButton::Secondary,
+                    ),
+                    32..=34 => (
+                        egui::Id::new((
+                            "miller-open-menu",
+                            self.fixture.left.as_path(),
+                            "Open in new tab",
+                        )),
+                        phase - 32,
+                        egui::PointerButton::Primary,
+                    ),
+                    _ => (
+                        egui::Id::new((
+                            "miller-open-menu",
+                            self.fixture.left.as_path(),
+                            "Open in background tab",
+                        )),
+                        phase - 39,
+                        egui::PointerButton::Primary,
+                    ),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                let pos = rect.center();
+                input.events.push(egui::Event::PointerMoved(pos));
+                if local != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed: local == 1,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            self.breadcrumb_tab_phase += 1;
             return;
         }
         if self.scenario == Scenario::MillerBrowser
@@ -27701,14 +27886,14 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==255 && self.empty_file_phase==14 && self.navigation_menu_phase==15 && self.inner.ws.active==crate::workspace::ActivePanel::Left && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Left)==0 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
-                    && self.inner.ws.left.current_path==self.fixture.left.join("column-A")
+                self.disk_export_phase==255 && self.empty_file_phase==14 && self.navigation_menu_phase==15 && self.breadcrumb_tab_phase==43 && self.inner.ws.active==crate::workspace::ActivePanel::Left && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Left)==1 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                    && self.inner.ws.left.current_path==self.fixture.left
                     && self.inner.ws.left.preview.is_none()
                     && self.fixture.left.join("column-B/Prepared destination").is_dir()
                     && std::fs::canonicalize(&self.fixture.left).is_ok_and(|path|self.inner.ws.right.current_path==path)
                     && self.inner.ws.right.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.right.miller.columns.iter().all(|c|!matches!(c.dir_status(),crate::panel::DirStatus::Loading))
-                    && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)==2
+                    && self.inner.ws.tab_count(crate::workspace::ActivePanel::Left)==8
                     && self.inner.ws.tab_count(crate::workspace::ActivePanel::Right)==8
                     && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Right)==3
                     && self.inner.ws.left.miller.columns.iter().all(|c|!matches!(c.dir_status(),crate::panel::DirStatus::Loading))

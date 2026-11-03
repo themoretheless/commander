@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/breadcrumb-tabs-2026-11-03/native-captures/1793727213470950000",
+  "binary_sha256": "2eb91d7f90dace491fb82e6e617d344c27a9e47ae2749faad30d2572ee128cca",
+  "core_sha256": "2eb91d7f90dace491fb82e6e617d344c27a9e47ae2749faad30d2572ee128cca",
+  "wrapper_sha256": "9095acdd48c5df958860de116af5fd687deee01c05b37189421c4cbd42b0222d",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

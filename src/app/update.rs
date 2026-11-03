@@ -2669,22 +2669,44 @@ impl App {
             (ActivePanel::Right, right_outcome.folder_tab),
         ] {
             if let Some(request) = request {
-                let opened = if request.ancestor {
-                    self.ws.open_miller_tab(
+                use super::miller_browser::FolderOrigin;
+                #[cfg(feature = "visual-qa")]
+                log::info!(
+                    "folder tab request side={side:?} origin={:?} owner={} folder={} captured_generation={} current_generation={} revision={}",
+                    request.origin,
+                    request.owner.display(),
+                    request.folder.display(),
+                    request.generation,
+                    match side {
+                        ActivePanel::Left => self.ws.left.entries_gen(),
+                        ActivePanel::Right => self.ws.right.entries_gen(),
+                    },
+                    self.ws.tab_revision()
+                );
+                let opened = match request.origin {
+                    FolderOrigin::MillerAncestor => self.ws.open_miller_tab(
                         side,
                         &request.owner,
                         request.generation,
                         request.folder,
                         request.activate,
-                    )
-                } else {
-                    self.ws.open_listed_folder_tab(
+                    ),
+                    FolderOrigin::CurrentListing => self.ws.open_listed_folder_tab(
                         side,
                         &request.owner,
                         request.generation,
                         request.folder,
                         request.activate,
-                    )
+                    ),
+                    FolderOrigin::Breadcrumb(revision)
+                    | FolderOrigin::CollapsedBreadcrumb(revision) => self.ws.open_breadcrumb_tab(
+                        side,
+                        &request.owner,
+                        request.generation,
+                        revision,
+                        request.folder,
+                        request.activate,
+                    ),
                 };
                 if !opened {
                     self.toast(&ctx, crate::toasts::ToastKind::Info, "Could not open folder tab: view changed, operation pending or tab limit reached", false);

@@ -817,6 +817,35 @@ impl Workspace {
         }
     }
 
+    /// Admit only a captured lexical path component, including the current folder/root.
+    pub(crate) fn open_breadcrumb_tab(
+        &mut self,
+        side: ActivePanel,
+        owner: &std::path::Path,
+        generation: u64,
+        revision: u64,
+        folder: PathBuf,
+        activate: bool,
+    ) -> bool {
+        let panel = match side {
+            ActivePanel::Left => &self.left,
+            ActivePanel::Right => &self.right,
+        };
+        if self.tab_revision() != revision
+            || panel.current_path != owner
+            || panel.entries_gen() != generation
+            || !folder.is_absolute()
+            || !owner.ancestors().any(|path| path == folder)
+        {
+            return false;
+        }
+        if activate {
+            self.new_tab(side, Some(folder))
+        } else {
+            self.new_background_tab(side, folder)
+        }
+    }
+
     /// Only a currently displayed Miller ancestor directory may request a tab.
     #[cfg(test)]
     fn open_miller_background_tab(
@@ -1567,6 +1596,156 @@ mod tests {
             ));
             assert_eq!(ws.left.current_path, native);
         }
+    }
+
+    #[test]
+    fn breadcrumb_tabs_cover_every_component_view_side_and_activation_without_replacing_the_owner()
+    {
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            for mode in [
+                crate::panel::BrowserMode::List,
+                crate::panel::BrowserMode::Icons,
+                crate::panel::BrowserMode::Miller,
+            ] {
+                for activate in [false, true] {
+                    let temp = TempDir::new();
+                    let owner = temp.dir("one/two");
+                    let other = temp.dir("other");
+                    let file = temp.file("one/two/keep.txt", "keep");
+                    for target in crate::crumbs::crumbs(&owner)
+                        .into_iter()
+                        .map(|c| c.full_path)
+                    {
+                        let mut ws = if side == ActivePanel::Left {
+                            Workspace::new(owner.clone(), other.clone())
+                        } else {
+                            Workspace::new(other.clone(), owner.clone())
+                        };
+                        {
+                            let panel = match side {
+                                ActivePanel::Left => &mut ws.left,
+                                ActivePanel::Right => &mut ws.right,
+                            };
+                            panel.set_browser_mode(mode);
+                            panel.refresh();
+                            panel.focus_child("keep.txt".into());
+                            panel.select_path(file.clone());
+                        }
+                        ws.set_tab_title(side, 0, "Source");
+                        ws.set_tab_close_protection(side, 0, true);
+                        let before = ws.tab_snapshot(side);
+                        let opposite = ws.tab_snapshot(side.other());
+                        let generation = ws.tabs_and_panel(side).1.entries_gen();
+                        let revision = ws.tab_revision();
+                        assert!(ws.open_breadcrumb_tab(
+                            side,
+                            &owner,
+                            generation,
+                            revision,
+                            target.clone(),
+                            activate
+                        ));
+                        assert_eq!(ws.tab_count(side), 2);
+                        assert_eq!(ws.active_tab_index(side), usize::from(activate));
+                        assert_eq!(ws.tab_snapshot(side).entries[0], before.entries[0]);
+                        assert_eq!(ws.tab_snapshot(side.other()), opposite);
+                        if activate {
+                            assert_eq!(ws.tabs_and_panel(side).1.current_path, target);
+                            assert!(ws.close_tab(side));
+                            ws.tabs_and_panel(side).1.refresh();
+                        } else {
+                            assert!(
+                                ws.tabs[if side == ActivePanel::Left { 0 } else { 1 }].slots[1]
+                                    .as_ref()
+                                    .unwrap()
+                                    .entries()
+                                    .is_empty()
+                            );
+                        }
+                        let panel = ws.tabs_and_panel(side).1;
+                        assert_eq!(panel.current_path, owner);
+                        if activate {
+                            assert!(panel.entries_gen() >= generation);
+                        } else {
+                            assert_eq!(panel.entries_gen(), generation);
+                        }
+                        assert_eq!(panel.cursor_entry().unwrap().path, file);
+                        assert!(panel.is_selected(&file));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn breadcrumb_tabs_refuse_stale_forged_relative_pending_and_full_requests() {
+        let temp = TempDir::new();
+        let owner = temp.dir("owner/deep");
+        let mut ws = Workspace::new(owner.clone(), temp.path().into());
+        let generation = ws.left.entries_gen();
+        let revision = ws.tab_revision();
+        for target in [
+            temp.path().join("sibling"),
+            owner.join("child"),
+            std::path::PathBuf::from(".."),
+            std::path::PathBuf::new(),
+        ] {
+            assert!(!ws.open_breadcrumb_tab(
+                ActivePanel::Left,
+                &owner,
+                generation,
+                revision,
+                target,
+                false
+            ));
+        }
+        assert!(!ws.open_breadcrumb_tab(
+            ActivePanel::Left,
+            temp.path(),
+            generation,
+            revision,
+            owner.clone(),
+            false
+        ));
+        assert!(!ws.open_breadcrumb_tab(
+            ActivePanel::Left,
+            &owner,
+            generation + 1,
+            revision,
+            owner.clone(),
+            false
+        ));
+        assert!(!ws.open_breadcrumb_tab(
+            ActivePanel::Left,
+            &owner,
+            generation,
+            revision + 1,
+            owner.clone(),
+            false
+        ));
+        ws.emit_ui_request(crate::ui_request::UiRequest::SelectMask);
+        assert!(!ws.open_breadcrumb_tab(
+            ActivePanel::Left,
+            &owner,
+            generation,
+            revision,
+            owner.clone(),
+            false
+        ));
+        ws.drain_ui_requests();
+        for _ in 1..MAX_TABS {
+            assert!(ws.new_background_tab(ActivePanel::Left, owner.clone()));
+        }
+        let before = ws.tab_snapshot(ActivePanel::Left);
+        assert!(!ws.open_breadcrumb_tab(
+            ActivePanel::Left,
+            &owner,
+            generation,
+            ws.tab_revision(),
+            owner.clone(),
+            true
+        ));
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
     }
 
     #[test]

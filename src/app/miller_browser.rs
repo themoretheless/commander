@@ -1,13 +1,33 @@
 //! Miller columns: context listings are separate cancellable owners; file
 //! operations always target the main panel's current actionable column.
 use super::*;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderOrigin {
+    CurrentListing,
+    MillerAncestor,
+    Breadcrumb(u64),
+    CollapsedBreadcrumb(u64),
+}
+
 #[derive(Clone, Debug)]
 pub struct FolderTabRequest {
     pub owner: PathBuf,
     pub generation: u64,
     pub folder: PathBuf,
     pub activate: bool,
-    pub ancestor: bool,
+    pub origin: FolderOrigin,
+}
+
+/// Preserve the tracked outer menu while an independently owned child popup is open.
+pub(super) fn path_components_menu(
+    ui: &mut egui::Ui,
+    contents: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    let response = ui.button("\u{2026}");
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(contents);
+    response
 }
 
 pub(super) fn folder_tab_actions(
@@ -15,16 +35,40 @@ pub(super) fn folder_tab_actions(
     owner: &std::path::Path,
     generation: u64,
     folder: &std::path::Path,
-    ancestor: bool,
+    origin: FolderOrigin,
     request: &mut Option<FolderTabRequest>,
 ) {
+    #[cfg(feature = "visual-qa")]
+    if matches!(
+        origin,
+        FolderOrigin::Breadcrumb(_) | FolderOrigin::CollapsedBreadcrumb(_)
+    ) && response.ctx.input(|i| {
+        i.pointer.button_pressed(egui::PointerButton::Middle)
+            || i.pointer.button_released(egui::PointerButton::Middle)
+    }) {
+        log::info!(
+            "breadcrumb pointer folder={} rect={:?} enabled={} hovered={} contains={} clicked={} position={:?} layer={:?} top={:?}",
+            folder.display(),
+            response.rect,
+            response.enabled(),
+            response.hovered(),
+            response.contains_pointer(),
+            response.clicked_by(egui::PointerButton::Middle),
+            response.ctx.input(|i| i.pointer.interact_pos()),
+            response.layer_id,
+            response
+                .ctx
+                .input(|i| i.pointer.interact_pos())
+                .and_then(|pos| response.ctx.layer_id_at(pos))
+        );
+    }
     if response.clicked_by(egui::PointerButton::Middle) {
         *request = Some(FolderTabRequest {
             owner: owner.into(),
             generation,
             folder: folder.into(),
             activate: false,
-            ancestor,
+            origin,
         });
     }
     let binding = response.id.with("miller-tab-binding");
@@ -32,18 +76,54 @@ pub(super) fn folder_tab_actions(
         response.ctx.data_mut(|data| {
             data.insert_temp(
                 binding,
-                (owner.to_path_buf(), generation, folder.to_path_buf()),
+                (
+                    owner.to_path_buf(),
+                    generation,
+                    folder.to_path_buf(),
+                    origin,
+                ),
             )
         });
     }
-    let popup = egui::Popup::context_menu(response)
+    let nested = matches!(origin, FolderOrigin::CollapsedBreadcrumb(_));
+    let open_key = response.id.with("crumb-context-open");
+    let pos_key = response.id.with("crumb-context-position");
+    let mut nested_open = response
+        .ctx
+        .data(|d| d.get_temp::<bool>(open_key))
+        .unwrap_or(false);
+    if response.secondary_clicked() {
+        nested_open = true;
+        let pos = response
+            .interact_pointer_pos()
+            .unwrap_or(response.rect.center());
+        response.ctx.data_mut(|d| d.insert_temp(pos_key, pos));
+    }
+    let popup = egui::Popup::context_menu(response);
+    let popup = if nested {
+        let pos = response
+            .ctx
+            .data(|d| d.get_temp::<egui::Pos2>(pos_key))
+            .unwrap_or(response.rect.center());
+        popup.open_bool(&mut nested_open).at_position(pos)
+    } else {
+        popup
+    };
+    let popup = popup
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            let (owner, generation, folder) = ui.ctx().data_mut(|data| {
-                if let Some(binding) = data.get_temp::<(PathBuf, u64, PathBuf)>(binding) {
+            let (owner, generation, folder, origin) = ui.ctx().data_mut(|data| {
+                if let Some(binding) =
+                    data.get_temp::<(PathBuf, u64, PathBuf, FolderOrigin)>(binding)
+                {
                     binding
                 } else {
-                    let captured = (owner.to_path_buf(), generation, folder.to_path_buf());
+                    let captured = (
+                        owner.to_path_buf(),
+                        generation,
+                        folder.to_path_buf(),
+                        origin,
+                    );
                     data.insert_temp(binding, captured.clone());
                     captured
                 }
@@ -64,16 +144,21 @@ pub(super) fn folder_tab_actions(
                         generation,
                         folder: folder.clone(),
                         activate,
-                        ancestor,
+                        origin,
                     });
                     ui.close();
                 }
             }
         });
+    if nested {
+        response
+            .ctx
+            .data_mut(|d| d.insert_temp(open_key, nested_open));
+    }
     if popup.is_none() {
         response
             .ctx
-            .data_mut(|data| data.remove::<(PathBuf, u64, PathBuf)>(binding));
+            .data_mut(|data| data.remove::<(PathBuf, u64, PathBuf, FolderOrigin)>(binding));
     }
 }
 
@@ -235,7 +320,7 @@ impl App {
                         ui.set_min_size(egui::vec2(width,height));ui.set_max_size(egui::vec2(width,height));
                         let label=col.current_path.file_name().map_or_else(||col.current_path.display().to_string(),|n|n.to_string_lossy().into_owned());
                         let header=ui.add_sized([width,24.0],egui::Button::new(label).truncate().sense(Sense::CLICK)).on_hover_text(format!("{}\nMiddle-click for a background tab; right-click for tab actions",col.current_path.display()));
-                        folder_tab_actions(&header,&current,generation,&col.current_path,true,tab_request);
+                        folder_tab_actions(&header,&current,generation,&col.current_path,FolderOrigin::MillerAncestor,tab_request);
                         if header.clicked() {navigation=Some((col.current_path.clone(),None));}
                         ui.separator();
                         let row_h=(metrics.name_pt+2.0*metrics.row_pad_y+6.0).max(24.0);
@@ -247,7 +332,7 @@ impl App {
                                 let response=ui.add_sized([ui.available_width(),row_h],egui::Button::selectable(entry.path==child,label).truncate().sense(Sense::CLICK)).on_hover_text(if entry.is_dir { format!("{}\nMiddle-click for a background tab; right-click for tab actions",entry.path.display()) } else { entry.path.display().to_string() });
                                 #[cfg(any(test,feature="visual-qa"))]
                                 ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("miller-context",panel_side,&col.current_path,&entry.path)),response.rect));
-                                if entry.is_dir { folder_tab_actions(&response,&current,generation,&entry.path,true,tab_request); }
+                                if entry.is_dir { folder_tab_actions(&response,&current,generation,&entry.path,FolderOrigin::MillerAncestor,tab_request); }
                                 if response.clicked() {
                                     navigation=Some(if entry.is_dir {(entry.path.clone(),None)} else {(col.current_path.clone(),Some(entry.path.clone()))});
                                 }
@@ -391,7 +476,7 @@ mod tests {
                     assert_eq!(request.owner, temp.path());
                     assert_eq!(&request.folder, target);
                     assert_eq!(request.generation, generation);
-                    assert!(!request.activate && !request.ancestor);
+                    assert!(!request.activate && request.origin == FolderOrigin::CurrentListing);
                 }
                 assert_eq!(panel.current_path, temp.path());
                 assert_eq!(panel.entries_gen(), generation);
@@ -402,11 +487,21 @@ mod tests {
     }
     #[test]
     fn folder_menu_routes_both_tab_actions_with_the_original_popup_binding() {
-        for (label, activate, ancestor) in [
-            ("Open in new tab", true, true),
-            ("Open in background tab", false, true),
-            ("Open in new tab", true, false),
-            ("Open in background tab", false, false),
+        for (label, activate, origin) in [
+            ("Open in new tab", true, FolderOrigin::MillerAncestor),
+            (
+                "Open in background tab",
+                false,
+                FolderOrigin::MillerAncestor,
+            ),
+            ("Open in new tab", true, FolderOrigin::CurrentListing),
+            (
+                "Open in background tab",
+                false,
+                FolderOrigin::CurrentListing,
+            ),
+            ("Open in new tab", true, FolderOrigin::Breadcrumb(7)),
+            ("Open in background tab", false, FolderOrigin::Breadcrumb(7)),
         ] {
             let ctx = egui::Context::default();
             let mut tick = 0.0;
@@ -433,7 +528,11 @@ mod tests {
                             std::path::Path::new(owner),
                             generation,
                             std::path::Path::new(folder),
-                            ancestor,
+                            if owner == "/changed" {
+                                FolderOrigin::Breadcrumb(99)
+                            } else {
+                                origin
+                            },
                             &mut request,
                         );
                     },
@@ -497,7 +596,7 @@ mod tests {
             assert_eq!(request.generation, 7);
             assert_eq!(request.folder, std::path::Path::new("/folder"));
             assert_eq!(request.activate, activate);
-            assert_eq!(request.ancestor, ancestor);
+            assert_eq!(request.origin, origin);
         }
     }
     #[test]
@@ -795,6 +894,111 @@ mod tests {
             if mode == crate::panel::BrowserMode::List {
                 assert!(panel.miller.columns.is_empty());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod collapsed_crumb_tests {
+    use super::*;
+    #[test]
+    fn collapsed_breadcrumb_menu_supports_middle_click_and_nested_tab_actions() {
+        for action in [
+            None,
+            Some("Open in new tab"),
+            Some("Open in background tab"),
+        ] {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            let mut frame = |events| {
+                time += 0.1;
+                let mut request = None;
+                crate::testutil::discard_egui_output(ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(640.0, 480.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let menu = path_components_menu(ui, |ui| {
+                            let row = ui.button("Ancestor");
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("collapsed-row"), row.rect)
+                            });
+                            folder_tab_actions(
+                                &row,
+                                std::path::Path::new("/a/b/c"),
+                                5,
+                                std::path::Path::new("/a"),
+                                FolderOrigin::CollapsedBreadcrumb(7),
+                                &mut request,
+                            );
+                        });
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("collapsed-open"), menu.rect)
+                        });
+                    },
+                ));
+                request
+            };
+            let pointer = |pos, button, pressed| {
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            };
+            for _ in 0..3 {
+                frame(vec![]);
+            }
+            let pos = ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("collapsed-open")))
+                .unwrap()
+                .center();
+            frame(pointer(pos, egui::PointerButton::Primary, true));
+            frame(pointer(pos, egui::PointerButton::Primary, false));
+            frame(vec![]);
+            let pos = ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("collapsed-row")))
+                .unwrap()
+                .center();
+            let button = if action.is_some() {
+                egui::PointerButton::Secondary
+            } else {
+                egui::PointerButton::Middle
+            };
+            let mut result = frame(pointer(pos, button, true));
+            result = frame(pointer(pos, button, false)).or(result);
+            if let Some(action) = action {
+                frame(vec![]);
+                let pos = ctx
+                    .data(|d| {
+                        d.get_temp::<egui::Rect>(egui::Id::new((
+                            "miller-open-menu",
+                            std::path::Path::new("/a"),
+                            action,
+                        )))
+                    })
+                    .unwrap()
+                    .center();
+                result = frame(pointer(pos, egui::PointerButton::Primary, true)).or(result);
+                result = frame(pointer(pos, egui::PointerButton::Primary, false)).or(result);
+            }
+            let request = result
+                .unwrap_or_else(|| panic!("collapsed breadcrumb must retain action {action:?}"));
+            assert_eq!(request.owner, std::path::Path::new("/a/b/c"));
+            assert_eq!(request.folder, std::path::Path::new("/a"));
+            assert_eq!(request.origin, FolderOrigin::CollapsedBreadcrumb(7));
+            assert_eq!(request.generation, 5);
+            assert_eq!(request.activate, action == Some("Open in new tab"));
         }
     }
 }

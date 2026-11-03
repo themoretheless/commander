@@ -1,0 +1,70 @@
+{
+  "columns": [
+    {
+      "entries": [],
+      "mode": "List",
+      "path": "/var",
+      "status": "Listed"
+    },
+    {
+      "entries": [],
+      "mode": "List",
+      "path": "/var/folders",
+      "status": "Listed"
+    },
+    {
+      "entries": [],
+      "mode": "List",
+      "path": "/var/folders/jx",
+      "status": "Listed"
+    },
+    {
+      "entries": [],
+      "mode": "List",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn",
+      "status": "Listed"
+    },
+    {
+      "entries": [],
+      "mode": "List",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T",
+      "status": "Listed"
+    },
+    {
+      "entries": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left"
+      ],
+      "mode": "List",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser",
+      "status": "Listed"
+    },
+    {
+      "entries": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/column-A",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/column-B",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/Design",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/notes.md",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/photo.png",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/quarterly-design-review-with-a-deliberately-long-filename-for-layout.txt",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/README.txt"
+      ],
+      "mode": "List",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left",
+      "status": "Listed"
+    },
+    {
+      "entries": [
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/column-A/inner",
+        "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/column-A/a.txt"
+      ],
+      "mode": "List",
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/column-A",
+      "status": "Listed"
+    }
+  ],
+  "cursor": null,
+  "mode": "Miller",
+  "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/column-A/inner",
+  "phase": 9,
+  "selected": []
+}

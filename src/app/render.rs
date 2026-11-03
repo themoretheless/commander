@@ -635,6 +635,33 @@ const HIDDEN_CRUMBS_LABEL: &str = "Show hidden parent folders";
 
 /// What a breadcrumb chip announces: a link to its folder, or the current
 /// folder itself.
+fn crumb_chip(
+    ui: &mut egui::Ui,
+    crumb: &crate::crumbs::Crumb,
+    fg: Color32,
+    is_current: bool,
+    t: &ThemeColors,
+) -> egui::Response {
+    // One widget owns the entire chip, including its text. A child Label can
+    // consume pointer clicks before a surrounding Frame receives them.
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+            ui.add(
+                egui::Button::new(egui::RichText::new(&crumb.label).size(12.0).color(fg))
+                    .fill(Color32::TRANSPARENT)
+                    .corner_radius(CornerRadius::ZERO)
+                    .stroke(Stroke::new(1.0, t.border)),
+            )
+        })
+        .inner;
+    let accessible = crumb_accessible_label(&crumb.full_path, is_current);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &accessible)
+    });
+    response.on_hover_text("Middle-click for a background tab; right-click for tab actions")
+}
+
 fn crumb_accessible_label(path: &std::path::Path, is_current: bool) -> String {
     if is_current {
         format!("Current folder {}", path.display())
@@ -1017,6 +1044,7 @@ impl App {
         let mut tree_toggle = false;
         let mut context_menu_request = None;
         let mut folder_tab = None;
+        let mut listed_folder_tab = None;
         let mut copy_preview_text = None;
 
         // The mouse's side buttons step through this pane's history while
@@ -1188,53 +1216,18 @@ impl App {
                             );
                             let layout = crate::crumbs::elide_crumbs(&all, max_visible);
 
-                            // Draw one crumb chip; returns its response. The
-                            // current folder's chip is not a link, so it only
-                            // senses hover and never takes keyboard focus.
-                            let chip = |ui: &mut egui::Ui,
-                                        crumb: &crate::crumbs::Crumb,
-                                        fg: Color32,
-                                        is_current: bool| {
-                                let response = Frame::NONE
-                                    .fill(Color32::TRANSPARENT)
-                                    .corner_radius(CornerRadius::ZERO)
-                                    .stroke(Stroke::new(1.0_f32, t.border))
-                                    .inner_margin(Margin::symmetric(8, 3))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(&crumb.label).size(12.0).color(fg),
-                                        );
-                                    })
-                                    .response
-                                    .interact(if is_current {
-                                        Sense::hover()
-                                    } else {
-                                        Sense::click()
-                                    });
-                                let accessible =
-                                    crumb_accessible_label(&crumb.full_path, is_current);
-                                let kind = if is_current {
-                                    egui::WidgetType::Label
-                                } else {
-                                    egui::WidgetType::Button
-                                };
-                                response.widget_info(|| {
-                                    egui::WidgetInfo::labeled(kind, ui.is_enabled(), &accessible)
-                                });
-                                if response.has_focus() {
-                                    ui.painter().rect_stroke(
-                                        response.rect.shrink(1.0),
-                                        CornerRadius::ZERO,
-                                        ui.visuals().selection.stroke,
-                                        egui::StrokeKind::Inside,
-                                    );
-                                }
-                                response
-                            };
+                            let chip=|ui:&mut egui::Ui,crumb:&crate::crumbs::Crumb,fg:Color32,is_current:bool|crumb_chip(ui,crumb,fg,is_current,t);
                             let sep = |ui: &mut egui::Ui| {
                                 crate::app::glyphs::breadcrumb_chevron(ui, t.text_muted);
                             };
 
+                            let crumb_owner=panel.current_path.clone();
+                            let crumb_generation=panel.entries_gen();
+                            let mut crumb_actions=|response:&egui::Response,path:&std::path::Path,collapsed:bool| {
+                                super::miller_browser::folder_tab_actions(response,&crumb_owner,crumb_generation,path,if collapsed {super::miller_browser::FolderOrigin::CollapsedBreadcrumb(tab_revision)}else{super::miller_browser::FolderOrigin::Breadcrumb(tab_revision)},&mut folder_tab);
+                                #[cfg(any(test,feature="visual-qa"))]
+                                response.ctx.data_mut(|d|d.insert_temp(egui::Id::new(("breadcrumb-tab-target",panel_side,path)),response.rect));
+                            };
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
 
@@ -1247,6 +1240,7 @@ impl App {
                                     t.text_secondary
                                 };
                                 let resp = chip(ui, &layout.head, fg, head_is_current);
+                                crumb_actions(&resp,&layout.head.full_path,false);
                                 if resp.clicked() && !head_is_current {
                                     nav_to_crumb = Some(layout.head.full_path.clone());
                                 }
@@ -1259,22 +1253,24 @@ impl App {
 
                                 // Collapsed ancestors behind a "..." menu.
                                 if layout.is_elided() {
-                                    let menu = ui.menu_button("\u{2026}", |ui| {
+                                    let menu = super::miller_browser::path_components_menu(ui, |ui| {
                                         for c in &layout.collapsed {
-                                            if ui.button(&c.label).clicked() {
+                                            let row=ui.button(&c.label);
+                                            crumb_actions(&row,&c.full_path,true);
+                                            if row.clicked() {
                                                 nav_to_crumb = Some(c.full_path.clone());
                                                 ui.close();
                                             }
                                         }
                                     });
-                                    menu.response.widget_info(|| {
+                                    menu.widget_info(|| {
                                         egui::WidgetInfo::labeled(
                                             egui::WidgetType::Button,
                                             ui.is_enabled(),
                                             HIDDEN_CRUMBS_LABEL,
                                         )
                                     });
-                                    menu.response.on_hover_text(HIDDEN_CRUMBS_LABEL);
+                                    menu.on_hover_text(HIDDEN_CRUMBS_LABEL);
                                     sep(ui);
                                 }
 
@@ -1288,6 +1284,7 @@ impl App {
                                         t.text_secondary
                                     };
                                     let resp = chip(ui, c, fg, is_last);
+                                    crumb_actions(&resp,&c.full_path,false);
                                     if resp.clicked() && !is_last {
                                         nav_to_crumb = Some(c.full_path.clone());
                                     }
@@ -1614,7 +1611,7 @@ impl App {
                         dragged,
                         metrics,
                         reduced_motion,
-                        &mut folder_tab,
+                        &mut listed_folder_tab,
                     );
                 });
             });
@@ -1623,7 +1620,9 @@ impl App {
             tree_toggle,
             context_menu_request,
             copy_preview_text,
-            folder_tab,
+            // The list renderer resets its own output; it must not discard
+            // an action already emitted by the path bar in this frame.
+            folder_tab: folder_tab.or(listed_folder_tab),
         }
     }
 }
@@ -1631,6 +1630,108 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breadcrumb_header_action_survives_body_render_in_all_views() {
+        let temp = crate::testutil::TempDir::new();
+        let owner = temp.dir("owner");
+        temp.file("owner/keep.txt", "kept");
+        for mode in [
+            crate::panel::BrowserMode::List,
+            crate::panel::BrowserMode::Icons,
+            crate::panel::BrowserMode::Miller,
+        ] {
+            for target in [
+                owner.clone(),
+                owner.ancestors().last().unwrap().to_path_buf(),
+            ] {
+                let ctx = egui::Context::default();
+                let mut time = 0.0;
+                let mut panel = PanelState::new(owner.clone());
+                panel.set_browser_mode(mode);
+                panel.refresh();
+                let mut images = crate::image_cache::ImageCache::new();
+                let mut pdf = crate::pdf_preview::Cache::default();
+                let mut metadata = crate::image_metadata::Cache::default();
+                let mut frame = |events| {
+                    time += 0.1;
+                    let mut request = None;
+                    crate::testutil::discard_egui_output(ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(637.0, 760.0),
+                            )),
+                            time: Some(time),
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            let colors = ThemeColors::dark();
+                            request = App::render_panel(
+                                &mut panel,
+                                ui,
+                                true,
+                                false,
+                                &colors,
+                                &mut images,
+                                &mut pdf,
+                                &mut metadata,
+                                "left",
+                                false,
+                                false,
+                                None,
+                                &|_| {},
+                                false,
+                                &[],
+                                crate::density::metrics(crate::density::Density::Comfortable),
+                                true,
+                                false,
+                                false,
+                                7,
+                            )
+                            .folder_tab;
+                        },
+                    ));
+                    request
+                };
+                for _ in 0..3 {
+                    assert!(frame(vec![]).is_none());
+                }
+                let pos = ctx
+                    .data(|d| {
+                        d.get_temp::<egui::Rect>(egui::Id::new((
+                            "breadcrumb-tab-target",
+                            "left",
+                            target.as_path(),
+                        )))
+                    })
+                    .unwrap()
+                    .center();
+                let mut request = None;
+                for pressed in [true, false] {
+                    request = frame(vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Middle,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ])
+                    .or(request);
+                }
+                let request = request.expect("body rendering must retain the path-bar action");
+                assert_eq!(request.owner, owner);
+                assert_eq!(request.folder, target);
+                assert_eq!(
+                    request.origin,
+                    super::super::miller_browser::FolderOrigin::Breadcrumb(7)
+                );
+                assert!(!request.activate);
+            }
+        }
+    }
 
     #[test]
     fn book_picker_switches_real_menu_copy_owner_and_resets_on_new_collection() {

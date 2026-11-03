@@ -1,0 +1,16 @@
+{
+  "active": 0,
+  "focus": "Left",
+  "generation": 14,
+  "left": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-98215-miller_browser/left/column-A",
+  "pending_op": false,
+  "phase": 23,
+  "probe": [
+    537.0,
+    79.5,
+    603.65625,
+    103.5
+  ],
+  "revision": 25,
+  "tabs": 4
+}

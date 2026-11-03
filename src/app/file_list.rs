@@ -809,7 +809,7 @@ impl App {
                     ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(("folder-parent-row",panel_side)),up_row.rect));
                     let up_row=up_row.on_hover_text("Parent folder · Middle-click for a background tab; right-click for tab actions");
                     if let Some(parent)=panel.current_path.parent() {
-                        super::miller_browser::folder_tab_actions(&up_row,&panel.current_path,panel.entries_gen(),parent,false,folder_tab);
+                        super::miller_browser::folder_tab_actions(&up_row,&panel.current_path,panel.entries_gen(),parent,super::miller_browser::FolderOrigin::CurrentListing,folder_tab);
                     }
                     // Same semantics as file rows, so AT hears when the
                     // cursor sits on the parent row.
@@ -1604,7 +1604,7 @@ impl App {
                     if row_resp.clicked_by(egui::PointerButton::Middle) {
                         if entry.is_dir {
                             *folder_tab=Some(super::miller_browser::FolderTabRequest {
-                                owner:panel.current_path.clone(),generation:panel.entries_gen(),folder:entry.path.clone(),activate:false,ancestor:false,
+                                owner:panel.current_path.clone(),generation:panel.entries_gen(),folder:entry.path.clone(),activate:false,origin:super::miller_browser::FolderOrigin::CurrentListing,
                             });
                         }
                     } else if row_resp.double_clicked() {
