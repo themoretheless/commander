@@ -1,0 +1,4 @@
+{
+  "pid": 70167,
+  "reason": "Owned QA process remained asleep beyond deadline after missing the initial scan click; stopped before testing visible-window and outcome-driven input retries. This run is incomplete."
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_tar_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-protected-paths-2026-11-03/native-captures/1793690386028834000",
+  "binary_sha256": "a0d831e5b725dc92a673eea5483009b7481698edb42a5d08435b7a4d8b2a1f61",
+  "core_sha256": "a0d831e5b725dc92a673eea5483009b7481698edb42a5d08435b7a4d8b2a1f61",
+  "wrapper_sha256": "13c3a35a66932b2be37bd26523031dd9b5fe7c920129042ddd092b26b760d652",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

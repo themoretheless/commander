@@ -1322,20 +1322,45 @@ impl ContentKeepOrder {
 pub struct ContentKeep {
     pub count: usize,
     pub order: ContentKeepOrder,
+    pub protected_glob: String,
 }
 impl Default for ContentKeep {
     fn default() -> Self {
         Self {
             count: 1,
             order: ContentKeepOrder::First,
+            protected_glob: String::new(),
         }
     }
 }
 impl ContentKeep {
     fn label(&self) -> String {
-        format!("{} {}", self.count, self.order.short_label())
+        format!(
+            "{}{} {}",
+            if self.protected_glob.is_empty() {
+                ""
+            } else {
+                "at least "
+            },
+            self.count,
+            self.order.short_label()
+        )
     }
-    fn ui(&mut self, ui: &mut egui::Ui) {
+    fn protection(&self) -> Result<Option<crate::archive_filter::Pattern>, String> {
+        if self.protected_glob.is_empty() {
+            return Ok(None);
+        }
+        crate::archive_filter::Pattern::compile(
+            &self.protected_glob,
+            crate::archive_filter::Options {
+                glob: true,
+                case_sensitive: true,
+                ..Default::default()
+            },
+        )
+        .map(Some)
+    }
+    fn ui(&mut self, ui: &mut egui::Ui) -> bool {
         ui.horizontal_wrapped(|ui| {
             ui.label("Keep copies per group:");
             ui.add(egui::DragValue::new(&mut self.count).range(1..=100_000).speed(1));
@@ -1347,6 +1372,26 @@ impl ContentKeep {
                 let _=button;
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Protect paths (glob):");
+            let input = ui.add(
+                egui::TextEdit::singleline(&mut self.protected_glob)
+                    .id(egui::Id::new("archive-protected-path-glob"))
+                    .desired_width(260.0)
+                    .char_limit(1024)
+                    .hint_text("originals/**"),
+            );
+            #[cfg(feature = "visual-qa")]
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("archive-protect-glob"), input.rect));
+            let _ = input;
+        });
+        ui.add(egui::Label::new(egui::RichText::new("All matching paths are kept; copy count is a minimum.").small()).wrap()).on_hover_text("Case-sensitive archive-relative glob, up to 256 characters. * stays within a folder; ** crosses folders. Empty disables protection. Editing the pattern leaves selection unchanged until Select copies.");
+        let error = self.protection().err();
+        if let Some(error) = &error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        error.is_none()
     }
 }
 
@@ -1369,6 +1414,7 @@ fn select_redundant_content_groups(
     if keep.count == 0 {
         return Err("Keep at least one representative per group.".into());
     }
+    let protection = keep.protection()?;
     let groups = report
         .content_groups
         .as_deref()
@@ -1421,10 +1467,24 @@ fn select_redundant_content_groups(
                 time.then_with(|| a.index.cmp(&b.index))
             }
         });
+        let mut protected = vec![false; group.members.len()];
+        if let Some(pattern) = &protection {
+            for (rank, member) in group.members.iter().enumerate() {
+                let path=member.path.to_str().ok_or("Protected path matching requires UTF-8 member paths; selection was not changed.")?;
+                if pattern.matches(path, path) {
+                    protected[rank] = true;
+                    keepers.push(rows[offset + rank]);
+                }
+            }
+        }
+        let additional = keep
+            .count
+            .saturating_sub(protected.iter().filter(|&&p| p).count());
         keepers.extend(
             ranked
                 .into_iter()
-                .take(keep.count)
+                .filter(|(rank, _)| !protected[*rank])
+                .take(additional)
                 .map(|(rank, _)| rows[offset + rank]),
         );
         offset += group.members.len();
@@ -2146,11 +2206,11 @@ impl App {
                         #[cfg(feature="visual-qa")]
                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-select-content-groups"),select.rect));
                         select_content_groups=select.clicked();
-                        state.content_keep.ui(ui);
-                        let redundant=ui.add_enabled(!groups.is_empty(),egui::Button::new(format!("Select copies; keep {} in each group",state.content_keep.label())))
+                        let keep_valid=state.content_keep.ui(ui);
+                        let redundant=ui.add_enabled(!groups.is_empty() && keep_valid,egui::Button::new(format!("Select copies; keep {} in each group",state.content_keep.label())))
                             .on_hover_text("Select extra copies using the configured count and keep order. Kept entries are deselected even if previously selected. Unrelated selections stay unchanged. Includes hidden members and all pages; no archive files are changed.");
                         #[cfg(feature="visual-qa")]
-                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-select-redundant-groups"),redundant.rect));
+                        ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new("archive-select-redundant-groups"),redundant.rect);d.insert_temp(egui::Id::new("archive-select-redundant-groups-enabled"),redundant.enabled());});
                         if redundant.clicked(){select_redundant_groups=Some(None);}
 
                         let details=egui::CollapsingHeader::new(format!("Matching content groups ({})",groups.len())).show(ui,|ui| {
@@ -2178,9 +2238,9 @@ impl App {
                                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-content-group-selection",_rank,select)),button.rect));
                                         if button.clicked(){select_content_group=Some((_rank,select));}
                                     }
-                                    let redundant=ui.small_button(format!("Select copies; keep {}",state.content_keep.label())).on_hover_text("Apply the configured keep count and keep order to this group. Kept entries are deselected; other groups and unrelated selections stay unchanged. Includes hidden members and every page. No files are changed.");
+                                    let redundant=ui.add_enabled(keep_valid,egui::Button::new(format!("Select copies; keep {}",state.content_keep.label())).small()).on_hover_text("Apply the configured keep count and keep order to this group. Kept entries are deselected; other groups and unrelated selections stay unchanged. Includes hidden members and every page. No files are changed.");
                                     #[cfg(feature="visual-qa")]
-                                    ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-select-redundant-group",_rank)),redundant.rect));
+                                    ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new(("archive-select-redundant-group",_rank)),redundant.rect);d.insert_temp(egui::Id::new(("archive-select-redundant-group-enabled",_rank)),redundant.enabled());});
                                     if redundant.clicked(){select_redundant_groups=Some(Some(_rank));}
                                     for (format,label) in [(crate::archive_check_export::Format::Text,"Copy group report"),(crate::archive_check_export::Format::Json,"Copy group JSON")] {
                                         let button=ui.small_button(label).on_hover_text("Copy every retained member of this group, including other pages. Scan totals remain complete-scan metadata; the report identifies this group's original index.");
@@ -3204,6 +3264,128 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn protected_archive_paths_are_always_kept_and_fill_the_total_minimum() {
+        use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};
+        use std::collections::BTreeSet;
+        let mut listing = listing(&[
+            "keep/a",
+            "keep/b",
+            "other/c",
+            "KEEP/d",
+            "nested/ёж",
+            "unrelated",
+        ]);
+        for (row, member) in listing.members.iter_mut().enumerate() {
+            member.index = [9, 2, 8, 4, 1, 99][row];
+            member.size = 3;
+        }
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 6,
+            decoded: 18,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..5]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        for (glob, count, wanted) in [
+            ("keep/*", 1, vec![2, 3, 4, 5]),
+            ("keep/*", 3, vec![2, 3, 5]),
+            ("keep/*", usize::MAX, vec![5]),
+            ("KEEP/*", 1, vec![0, 1, 2, 4, 5]),
+            ("**", 1, vec![5]),
+            ("*", 1, vec![0, 1, 2, 3, 5]),
+            ("{keep,nested}/**", 1, vec![2, 3, 5]),
+            ("keep/[ab]", 1, vec![2, 3, 4, 5]),
+            ("nested/ёж", 1, vec![0, 1, 2, 3, 5]),
+            ("", 1, vec![0, 1, 2, 3, 5]),
+        ] {
+            for group in [None, Some(0)] {
+                let keep = ContentKeep {
+                    count,
+                    order: ContentKeepOrder::First,
+                    protected_glob: glob.into(),
+                };
+                let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
+                select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                    .unwrap();
+                assert_eq!(
+                    selected.into_iter().collect::<Vec<_>>(),
+                    wanted,
+                    "{glob} keep {count}"
+                );
+            }
+        }
+        for glob in ["[".to_owned(), "a".repeat(257)] {
+            let mut selected = BTreeSet::from([2, 5]);
+            assert!(
+                select_redundant_content_groups(
+                    &report,
+                    &listing,
+                    None,
+                    &ContentKeep {
+                        count: 1,
+                        order: ContentKeepOrder::First,
+                        protected_glob: glob
+                    },
+                    &mut selected
+                )
+                .is_err()
+            );
+            assert_eq!(selected, BTreeSet::from([2, 5]));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let invalid = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'x', 0xff]));
+            listing.members[0].path = invalid.clone();
+            report.content_groups.as_mut().unwrap()[0].members[0].path = invalid;
+            let mut selected = BTreeSet::from([2, 5]);
+            assert!(
+                select_redundant_content_groups(
+                    &report,
+                    &listing,
+                    None,
+                    &ContentKeep {
+                        count: 1,
+                        order: ContentKeepOrder::First,
+                        protected_glob: "**".into()
+                    },
+                    &mut selected
+                )
+                .is_err()
+            );
+            assert_eq!(selected, BTreeSet::from([2, 5]));
+        }
+        report.content_groups.as_mut().unwrap()[0].members[1].path = "stale".into();
+        let mut selected = BTreeSet::from([2, 5]);
+        assert!(
+            select_redundant_content_groups(
+                &report,
+                &listing,
+                None,
+                &ContentKeep {
+                    count: 1,
+                    order: ContentKeepOrder::First,
+                    protected_glob: "keep/*".into()
+                },
+                &mut selected
+            )
+            .is_err()
+        );
+        assert_eq!(selected, BTreeSet::from([2, 5]));
+    }
+
+    #[test]
     fn archive_depth_keepers_count_folders_and_preserve_stable_identity() {
         use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};
         use std::collections::BTreeSet;
@@ -3258,7 +3440,11 @@ mod tests {
                     &report,
                     &listing,
                     group,
-                    &ContentKeep { count, order },
+                    &ContentKeep {
+                        count,
+                        order,
+                        protected_glob: String::new(),
+                    },
                     &mut selected,
                 )
                 .unwrap();
@@ -3278,7 +3464,8 @@ mod tests {
                 None,
                 &ContentKeep {
                     count: 1,
-                    order: ContentKeepOrder::Deepest
+                    order: ContentKeepOrder::Deepest,
+                    protected_glob: String::new(),
                 },
                 &mut selected
             )
@@ -3332,7 +3519,11 @@ mod tests {
                     &report,
                     &listing,
                     group,
-                    &ContentKeep { count, order },
+                    &ContentKeep {
+                        count,
+                        order,
+                        protected_glob: String::new(),
+                    },
                     &mut selected,
                 )
                 .unwrap();
@@ -3353,6 +3544,7 @@ mod tests {
             &ContentKeep {
                 count: 1,
                 order: ContentKeepOrder::Newest,
+                protected_glob: String::new(),
             },
             &mut selected,
         )
@@ -3367,6 +3559,7 @@ mod tests {
             &ContentKeep {
                 count: 1,
                 order: ContentKeepOrder::Oldest,
+                protected_glob: String::new(),
             },
             &mut selected,
         )
@@ -3381,7 +3574,11 @@ mod tests {
                 &report,
                 &listing,
                 None,
-                &ContentKeep { count: 1, order },
+                &ContentKeep {
+                    count: 1,
+                    order,
+                    protected_glob: String::new(),
+                },
                 &mut selected,
             )
             .unwrap();
@@ -3396,7 +3593,8 @@ mod tests {
                 None,
                 &ContentKeep {
                     count: 1,
-                    order: ContentKeepOrder::Newest
+                    order: ContentKeepOrder::Newest,
+                    protected_glob: String::new(),
                 },
                 &mut selected
             )
@@ -3453,6 +3651,7 @@ mod tests {
                     } else {
                         super::ContentKeepOrder::First
                     },
+                    protected_glob: String::new(),
                 },
                 &mut selected,
             )
@@ -3467,7 +3666,8 @@ mod tests {
                 None,
                 &super::ContentKeep {
                     count: 0,
-                    order: super::ContentKeepOrder::First
+                    order: super::ContentKeepOrder::First,
+                    protected_glob: String::new(),
                 },
                 &mut selected
             )

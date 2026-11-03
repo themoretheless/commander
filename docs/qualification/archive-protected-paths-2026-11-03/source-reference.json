@@ -1,0 +1,5 @@
+{
+  "cohort": 85,
+  "reference": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "behavior": "fclones keep-path patterns preserve every matching file. Commander independently adds a case-sensitive archive-relative protected glob to content-group selection, preserving all matches and treating the configured count as a total minimum."
+}

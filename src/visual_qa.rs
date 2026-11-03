@@ -1193,6 +1193,7 @@ fn run(request: Request) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
+            .with_always_on_top()
             .with_title(format!("Commander Visual QA: {}", request.scenario.name()))
             .with_inner_size(viewport)
             .with_min_inner_size(viewport)
@@ -3647,6 +3648,19 @@ impl VisualQaApp {
         ]
     }
 
+    fn retry_archive_input(&mut self, phase: u8) {
+        use std::io::Write;
+        if let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.scenario_dir.join("input-retries.log"))
+        {
+            let _ = writeln!(log, "{} -> {}", self.archive_copy_phase, phase);
+        }
+        self.archive_copy_phase = phase;
+        self.hex_pointer_target = None;
+    }
+
     fn hex_target_settled(&mut self, id: egui::Id, rect: egui::Rect) -> bool {
         if let Some((old_id, old_rect, since)) = self.hex_pointer_target
             && old_id == id
@@ -5068,7 +5082,8 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 52)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
-            && !(self.scenario == Scenario::ArchiveTarContentGroups && self.archive_copy_phase < 99)
+            && !(self.scenario == Scenario::ArchiveTarContentGroups
+                && self.archive_copy_phase < 149)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -17264,8 +17279,18 @@ impl eframe::App for VisualQaApp {
             if state.listing.is_none() {
                 return;
             }
+            let rendered=ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group"))).map(|(_,_,visible,r)|serde_json::json!({"visible":visible,"rect":[r.min.x,r.min.y,r.max.x,r.max.y]}));
+            let _ = std::fs::write(
+                self.scenario_dir.join("initial-progress.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({"phase":phase,"rendered":rendered}))
+                    .unwrap(),
+            );
             if matches!(phase, 3 | 7) {
                 if state.check.is_some() {
+                    return;
+                }
+                if phase == 3 && state.check.is_none() && state.check_result.is_none() {
+                    self.retry_archive_input(0);
                     return;
                 }
                 let Some(Ok(report)) = &state.check_result else {
@@ -17289,6 +17314,7 @@ impl eframe::App for VisualQaApp {
                     .collect::<Vec<_>>();
                 selected_indexes.sort_unstable();
                 if phase == 7 && selected_indexes != [0, 2, 4, 5, 8, 9, 10] {
+                    self.retry_archive_input(4);
                     return;
                 }
                 let unchanged=std::fs::read(self.fixture.left.join("groups.tar.gz")).ok().as_deref()==Some(include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice());
@@ -17329,6 +17355,7 @@ impl eframe::App for VisualQaApp {
                     ))
                 });
                 let Some((digest, paths, visible, rect)) = observed else {
+                    self.retry_archive_input(8);
                     return;
                 };
                 if !visible {
@@ -17366,6 +17393,10 @@ impl eframe::App for VisualQaApp {
                 } else {
                     (2, "tar-content-report.json")
                 };
+                if self.counters.clipboard.load(Ordering::Relaxed) == count - 1 {
+                    self.retry_archive_input(if phase == 15 { 12 } else { 16 });
+                    return;
+                }
                 if self.counters.clipboard.load(Ordering::Relaxed) != count
                     || !self.recorded_clipboard_dump(name)
                 {
@@ -17387,7 +17418,11 @@ impl eframe::App for VisualQaApp {
             };
             if let Some(clip) =
                 ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
-                && !clip.contains_rect(rect.shrink(0.5))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
             {
                 input.events.push(egui::Event::PointerMoved(clip.center()));
                 input.events.push(egui::Event::MouseWheel {
@@ -17413,10 +17448,28 @@ impl eframe::App for VisualQaApp {
             self.archive_copy_phase += 1;
         }
         if self.scenario == Scenario::ArchiveTarContentGroups
-            && (20..=99).contains(&self.archive_copy_phase)
+            && (20..=149).contains(&self.archive_copy_phase)
         {
             let phase = self.archive_copy_phase;
-            if phase == 99 {
+            if let Some(state) = self.inner.ui.tools.archive.as_ref() {
+                let rect = |key: &str| {
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key)))
+                        .map(|r| [r.min.x, r.min.y, r.max.x, r.max.y])
+                };
+                let indexes = state.listing.as_ref().map(|l| {
+                    state
+                        .selected
+                        .iter()
+                        .map(|id| l.members[*id].index)
+                        .collect::<Vec<_>>()
+                });
+                let record = serde_json::json!({"phase":phase,"glob":state.content_keep.protected_glob,"order":state.content_keep.order.label(),"error":state.error,"indexes":indexes,"button":rect("archive-select-redundant-groups"),"clip":rect("archive-sheet-clip")});
+                let _ = std::fs::write(
+                    self.scenario_dir.join("archive-action-progress.json"),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+            }
+            if phase == 149 {
                 if let Some((_, _, visible, rect)) = ctx.data(|d| {
                     d.get_temp::<(String, Vec<PathBuf>, bool, egui::Rect)>(egui::Id::new(
                         "archive-rendered-content-group",
@@ -17454,6 +17507,10 @@ impl eframe::App for VisualQaApp {
                     31 => &[4, 5],
                     _ => &[0, 2, 4, 5, 8, 9, 10],
                 };
+                if indexes != expected && state.error.is_none() {
+                    self.retry_archive_input(phase - 3);
+                    return;
+                }
                 if indexes != expected || state.error.is_some() {
                     return;
                 }
@@ -17463,6 +17520,196 @@ impl eframe::App for VisualQaApp {
                         .join(format!("tar-group-action-{phase}.json")),
                     serde_json::to_vec_pretty(&record).unwrap(),
                 );
+                self.archive_copy_phase += 1;
+                return;
+            }
+            if (99..149).contains(&phase) {
+                if let Some(state) = self.inner.ui.tools.archive.as_ref() {
+                    let record = serde_json::json!({"phase":phase,"glob":state.content_keep.protected_glob,"selected":state.selected,"rect":ctx.data(|d|d.get_temp::<egui::Rect>(egui::Id::new("archive-protect-glob"))).map(|r|[r.min.x,r.min.y,r.max.x,r.max.y])});
+                    let _ = std::fs::write(
+                        self.scenario_dir.join("protected-progress.json"),
+                        serde_json::to_vec_pretty(&record).unwrap(),
+                    );
+                }
+                if matches!(
+                    phase,
+                    104 | 108 | 114 | 118 | 124 | 128 | 134 | 140 | 144 | 148
+                ) {
+                    let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                        return;
+                    };
+                    let Some(listing) = state.listing.as_ref() else {
+                        return;
+                    };
+                    let mut indexes = state
+                        .selected
+                        .iter()
+                        .map(|id| listing.members[*id].index)
+                        .collect::<Vec<_>>();
+                    indexes.sort_unstable();
+                    let wanted = match phase {
+                        104 => vec![0, 2, 5, 8, 9],
+                        108 | 114 | 148 => vec![0, 2, 5, 10],
+                        118 | 124 => vec![10],
+                        144 => vec![0, 2, 10],
+                        _ => vec![],
+                    };
+                    let glob = match phase {
+                        114 | 118 => "*",
+                        124 | 128 => "**",
+                        134 => "[",
+                        _ => "dup.txt",
+                    };
+                    let global = ctx.data(|d| {
+                        d.get_temp::<bool>(egui::Id::new("archive-select-redundant-groups-enabled"))
+                    });
+                    let group = ctx.data(|d| {
+                        d.get_temp::<bool>(egui::Id::new((
+                            "archive-select-redundant-group-enabled",
+                            1usize,
+                        )))
+                    });
+                    if state.error.is_none()
+                        && matches!(phase, 104 | 114 | 124 | 134 | 140)
+                        && indexes == wanted
+                        && state.content_keep.protected_glob != glob
+                    {
+                        self.retry_archive_input(match phase {
+                            104 => 99,
+                            114 => 109,
+                            124 => 119,
+                            134 => 129,
+                            _ => 135,
+                        });
+                        return;
+                    }
+                    if state.error.is_none()
+                        && matches!(phase, 108 | 118 | 128 | 144 | 148)
+                        && state.content_keep.protected_glob == glob
+                        && indexes != wanted
+                    {
+                        self.retry_archive_input(match phase {
+                            108 => 105,
+                            118 => 115,
+                            128 => 125,
+                            144 => 141,
+                            _ => 145,
+                        });
+                        return;
+                    }
+                    if indexes != wanted
+                        || state.content_keep.protected_glob != glob
+                        || global != Some(phase != 134)
+                        || group != Some(phase != 134)
+                        || state.error.is_some()
+                    {
+                        return;
+                    }
+                    let record = serde_json::json!({"phase":phase,"keep_count":state.content_keep.count,"order":state.content_keep.order.label(),"glob":glob,"global_enabled":global,"group_enabled":group,"selected":state.selected,"selected_indexes":indexes,"listing":listing.members.iter().enumerate().map(|(id,m)|serde_json::json!({"id":id,"index":m.index,"path":m.path})).collect::<Vec<_>>()});
+                    let _ = std::fs::write(
+                        self.scenario_dir
+                            .join(format!("tar-protected-{phase}.json")),
+                        serde_json::to_vec_pretty(&record).unwrap(),
+                    );
+                    self.archive_copy_phase += 1;
+                    return;
+                }
+                let (id, step, text) = match phase {
+                    99..=103 => (
+                        egui::Id::new("archive-protect-glob"),
+                        phase - 99,
+                        Some("dup.txt"),
+                    ),
+                    105..=107 => (
+                        egui::Id::new("archive-select-redundant-groups"),
+                        phase - 105,
+                        None,
+                    ),
+                    109..=113 => (
+                        egui::Id::new("archive-protect-glob"),
+                        phase - 109,
+                        Some("*"),
+                    ),
+                    115..=117 => (
+                        egui::Id::new("archive-select-redundant-groups"),
+                        phase - 115,
+                        None,
+                    ),
+                    119..=123 => (
+                        egui::Id::new("archive-protect-glob"),
+                        phase - 119,
+                        Some("**"),
+                    ),
+                    125..=127 => (
+                        egui::Id::new("archive-select-redundant-groups"),
+                        phase - 125,
+                        None,
+                    ),
+                    129..=133 => (
+                        egui::Id::new("archive-protect-glob"),
+                        phase - 129,
+                        Some("["),
+                    ),
+                    135..=139 => (
+                        egui::Id::new("archive-protect-glob"),
+                        phase - 135,
+                        Some("dup.txt"),
+                    ),
+                    141..=143 => (
+                        egui::Id::new(("archive-select-redundant-group", 1usize)),
+                        phase - 141,
+                        None,
+                    ),
+                    _ => (
+                        egui::Id::new("archive-select-redundant-groups"),
+                        phase - 145,
+                        None,
+                    ),
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if let Some(clip) =
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                    && !egui::Rect::from_min_max(
+                        clip.min,
+                        egui::pos2(clip.right(), clip.bottom() - 100.0),
+                    )
+                    .contains_rect(rect.shrink(0.5))
+                {
+                    input.events.push(egui::Event::PointerMoved(clip.center()));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                if step == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                if step == 3 {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    });
+                } else if step == 4 {
+                    input
+                        .events
+                        .push(egui::Event::Text(text.unwrap_or_default().into()));
+                } else if step > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: step == 1,
+                        modifiers: Default::default(),
+                    });
+                }
                 self.archive_copy_phase += 1;
                 return;
             }
@@ -17491,6 +17738,32 @@ impl eframe::App for VisualQaApp {
                     } else {
                         "Deepest paths"
                     };
+                    if state.error.is_none()
+                        && matches!(phase, 78 | 90)
+                        && indexes == wanted
+                        && state.content_keep.order.label() != order
+                    {
+                        self.retry_archive_input(match phase {
+                            78 => 75,
+                            90 => 87,
+                            _ => unreachable!(),
+                        });
+                        return;
+                    }
+                    if state.error.is_none()
+                        && matches!(phase, 82 | 86 | 94 | 98)
+                        && state.content_keep.order.label() == order
+                        && indexes != wanted
+                    {
+                        self.retry_archive_input(match phase {
+                            82 => 79,
+                            86 => 83,
+                            94 => 91,
+                            98 => 95,
+                            _ => unreachable!(),
+                        });
+                        return;
+                    }
                     if indexes != wanted
                         || state.content_keep.order.label() != order
                         || state.error.is_some()
@@ -17531,7 +17804,11 @@ impl eframe::App for VisualQaApp {
                 };
                 if let Some(clip) =
                     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
-                    && !clip.contains_rect(rect.shrink(0.5))
+                    && !egui::Rect::from_min_max(
+                        clip.min,
+                        egui::pos2(clip.right(), clip.bottom() - 100.0),
+                    )
+                    .contains_rect(rect.shrink(0.5))
                 {
                     input.events.push(egui::Event::PointerMoved(clip.center()));
                     input.events.push(egui::Event::MouseWheel {
@@ -17581,6 +17858,30 @@ impl eframe::App for VisualQaApp {
                     } else {
                         "Oldest timestamps"
                     };
+                    if state.error.is_none()
+                        && matches!(phase, 62 | 70)
+                        && indexes == wanted
+                        && state.content_keep.order.label() != order
+                    {
+                        self.retry_archive_input(match phase {
+                            62 => 59,
+                            70 => 67,
+                            _ => unreachable!(),
+                        });
+                        return;
+                    }
+                    if state.error.is_none()
+                        && matches!(phase, 66 | 74)
+                        && state.content_keep.order.label() == order
+                        && indexes != wanted
+                    {
+                        self.retry_archive_input(match phase {
+                            66 => 63,
+                            74 => 71,
+                            _ => unreachable!(),
+                        });
+                        return;
+                    }
                     if indexes != wanted
                         || state.content_keep.order.label() != order
                         || state.error.is_some()
@@ -17613,7 +17914,11 @@ impl eframe::App for VisualQaApp {
                 };
                 if let Some(clip) =
                     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
-                    && !clip.contains_rect(rect.shrink(0.5))
+                    && !egui::Rect::from_min_max(
+                        clip.min,
+                        egui::pos2(clip.right(), clip.bottom() - 100.0),
+                    )
+                    .contains_rect(rect.shrink(0.5))
                 {
                     input.events.push(egui::Event::PointerMoved(clip.center()));
                     input.events.push(egui::Event::MouseWheel {
@@ -17653,6 +17958,14 @@ impl eframe::App for VisualQaApp {
                         .filter_map(|id| listing.members.get(*id).map(|m| m.index))
                         .collect::<Vec<_>>();
                     indexes.sort_unstable();
+                    if state.error.is_none() && state.content_keep.order.label() != "Last entries" {
+                        self.retry_archive_input(52);
+                        return;
+                    }
+                    if state.error.is_none() && indexes != [0, 2, 4, 8, 9] {
+                        self.retry_archive_input(55);
+                        return;
+                    }
                     if indexes != [0, 2, 4, 8, 9]
                         || state.error.is_some()
                         || state.content_keep.order.label() != "Last entries"
@@ -17681,7 +17994,11 @@ impl eframe::App for VisualQaApp {
                 };
                 if let Some(clip) =
                     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
-                    && !clip.contains_rect(rect.shrink(0.5))
+                    && !egui::Rect::from_min_max(
+                        clip.min,
+                        egui::pos2(clip.right(), clip.bottom() - 100.0),
+                    )
+                    .contains_rect(rect.shrink(0.5))
                 {
                     input.events.push(egui::Event::PointerMoved(clip.center()));
                     input.events.push(egui::Event::MouseWheel {
@@ -17751,7 +18068,11 @@ impl eframe::App for VisualQaApp {
                 };
                 if let Some(clip) =
                     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
-                    && !clip.contains_rect(rect.shrink(0.5))
+                    && !egui::Rect::from_min_max(
+                        clip.min,
+                        egui::pos2(clip.right(), clip.bottom() - 100.0),
+                    )
+                    .contains_rect(rect.shrink(0.5))
                 {
                     input.events.push(egui::Event::PointerMoved(clip.center()));
                     input.events.push(egui::Event::MouseWheel {
@@ -17784,6 +18105,10 @@ impl eframe::App for VisualQaApp {
                     } else {
                         (4, "tar-single-group.json")
                     };
+                    if self.counters.clipboard.load(Ordering::Relaxed) == count - 1 {
+                        self.retry_archive_input(if phase == 39 { 36 } else { 40 });
+                        return;
+                    }
                     if self.counters.clipboard.load(Ordering::Relaxed) == count
                         && self.recorded_clipboard_dump(name)
                     {
@@ -17802,7 +18127,11 @@ impl eframe::App for VisualQaApp {
                 };
                 if let Some(clip) =
                     ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
-                    && !clip.contains_rect(rect.shrink(0.5))
+                    && !egui::Rect::from_min_max(
+                        clip.min,
+                        egui::pos2(clip.right(), clip.bottom() - 100.0),
+                    )
+                    .contains_rect(rect.shrink(0.5))
                 {
                     input.events.push(egui::Event::PointerMoved(clip.center()));
                     input.events.push(egui::Event::MouseWheel {
@@ -17840,7 +18169,11 @@ impl eframe::App for VisualQaApp {
             };
             if let Some(clip) =
                 ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
-                && !clip.contains_rect(rect.shrink(0.5))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
             {
                 input.events.push(egui::Event::PointerMoved(clip.center()));
                 input.events.push(egui::Event::MouseWheel {
@@ -22835,7 +23168,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchiveTarContentGroups => self.archive_copy_phase==99 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json","tar-keep-time-62.json","tar-keep-time-66.json","tar-keep-time-70.json","tar-keep-time-74.json","tar-keep-depth-78.json","tar-keep-depth-82.json","tar-keep-depth-86.json","tar-keep-depth-90.json","tar-keep-depth-94.json","tar-keep-depth-98.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
+            Scenario::ArchiveTarContentGroups => self.archive_copy_phase==149 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json","tar-keep-time-62.json","tar-keep-time-66.json","tar-keep-time-70.json","tar-keep-time-74.json","tar-keep-depth-78.json","tar-keep-depth-82.json","tar-keep-depth-86.json","tar-keep-depth-90.json","tar-keep-depth-94.json","tar-keep-depth-98.json","tar-protected-104.json","tar-protected-108.json","tar-protected-114.json","tar-protected-118.json","tar-protected-124.json","tar-protected-128.json","tar-protected-134.json","tar-protected-140.json","tar-protected-144.json","tar-protected-148.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
             Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
             Scenario::ArchivePassword => {
                 self.archive_copy_phase == 55

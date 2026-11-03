@@ -1,0 +1,4 @@
+{
+  "pid": 64385,
+  "reason": "Owned QA run remained asleep at report-copy checkpoint 39 after a missed click; stopped to test notification-clear targeting. This run is incomplete."
+}

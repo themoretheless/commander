@@ -1,0 +1,4 @@
+{
+  "pid": 43322,
+  "reason": "Disposable owned QA process remained asleep beyond the capture deadline; stopped before testing the stable-control build. This run is incomplete, not a passing capture."
+}

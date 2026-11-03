@@ -1,0 +1,35 @@
+{
+  "schema": "commander.archive-check/v1",
+  "archive": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-73211-archive_content_groups/left/groups.ZIPX",
+  "archive_format": "ZIP",
+  "recorded_at": "2026-11-03T07:43:54Z",
+  "status": "complete",
+  "strict_headers": true,
+  "members": 4,
+  "decoded_bytes": 13074,
+  "error": null,
+  "content_comparison": "sha256_and_size",
+  "content_groups": [
+    {
+      "sha256": "c08e539674caaec61f0544f56572a64ab06f2167ae77ad03758eeae28a5504c3",
+      "size": 4352,
+      "members": [
+        {
+          "index": 0,
+          "path": "plain.txt",
+          "size": 4352
+        },
+        {
+          "index": 1,
+          "path": "enc-one.txt",
+          "size": 4352
+        },
+        {
+          "index": 2,
+          "path": "enc-two.txt",
+          "size": 4352
+        }
+      ]
+    }
+  ]
+}
