@@ -1286,6 +1286,54 @@ fn change_content_group_selection(
     Ok(())
 }
 
+/// Resolve the entire proposal before removing keepers from the selection.
+fn select_redundant_content_groups(
+    report: &crate::archive_check::Report,
+    listing: &crate::archive::ArchiveListing,
+    group: Option<usize>,
+    selected: &mut std::collections::BTreeSet<usize>,
+) -> Result<(), String> {
+    let groups = report
+        .content_groups
+        .as_deref()
+        .ok_or("No completed content-group scan is available.")?;
+    let groups = if let Some(rank) = group {
+        std::slice::from_ref(
+            groups
+                .get(rank)
+                .ok_or("Content group is no longer available; run the scan again.")?,
+        )
+    } else {
+        groups
+    };
+    let rows = content_groups_rows(groups, listing)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut keepers = Vec::new();
+    let mut offset = 0;
+    for group in groups {
+        if group.members.len() < 2 {
+            return Err("Content group has fewer than two members; run the scan again.".into());
+        }
+        let keeper = group
+            .members
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, member)| member.index)
+            .unwrap()
+            .0;
+        keepers.push(rows[offset + keeper]);
+        offset += group.members.len();
+    }
+    if rows.iter().any(|id| !seen.insert(*id)) {
+        return Err("Content groups overlap; run the scan again.".into());
+    }
+    selected.extend(rows);
+    for keeper in keepers {
+        selected.remove(&keeper);
+    }
+    Ok(())
+}
+
 /// Visible regular-file candidates only; declared CRC/size is not byte equality.
 fn repeated_crc_rows(listing: &crate::archive::ArchiveListing, visible: &[usize]) -> Vec<usize> {
     if listing.kind != crate::archive::ArchiveKind::Zip {
@@ -1804,6 +1852,7 @@ impl App {
         let mut start_content_groups = false;
         let mut select_content_groups = false;
         let mut select_content_group = None;
+        let mut select_redundant_groups = None;
         let mut stop_check = false;
         let mut copy_members = None;
         let mut copy_check_report = None;
@@ -1991,6 +2040,12 @@ impl App {
                         #[cfg(feature="visual-qa")]
                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-select-content-groups"),select.rect));
                         select_content_groups=select.clicked();
+                        let redundant=ui.add_enabled(!groups.is_empty(),egui::Button::new("Select copies; keep first in each group"))
+                            .on_hover_text("Select every group member except the lowest original archive entry index. Those keepers are deselected even if previously selected. Unrelated selections stay unchanged. Includes hidden members and all pages; no archive files are changed.");
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-select-redundant-groups"),redundant.rect));
+                        if redundant.clicked(){select_redundant_groups=Some(None);}
+
                         let details=egui::CollapsingHeader::new(format!("Matching content groups ({})",groups.len())).show(ui,|ui| {
                             let range=content_group_pager(ui,groups.len(), &mut state.content_group_page);
                             for (_rank,group) in groups.iter().enumerate().skip(range.start).take(range.len()) {
@@ -2016,6 +2071,10 @@ impl App {
                                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-content-group-selection",_rank,select)),button.rect));
                                         if button.clicked(){select_content_group=Some((_rank,select));}
                                     }
+                                    let redundant=ui.small_button("Select all but first entry").on_hover_text("Select this group's copies and deselect its lowest original archive entry index. Other groups and unrelated selections stay unchanged; includes hidden members and every page. No files are changed.");
+                                    #[cfg(feature="visual-qa")]
+                                    ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-select-redundant-group",_rank)),redundant.rect));
+                                    if redundant.clicked(){select_redundant_groups=Some(Some(_rank));}
                                     for (format,label) in [(crate::archive_check_export::Format::Text,"Copy group report"),(crate::archive_check_export::Format::Json,"Copy group JSON")] {
                                         let button=ui.small_button(label).on_hover_text("Copy every retained member of this group, including other pages. Scan totals remain complete-scan metadata; the report identifies this group's original index.");
                                         #[cfg(feature="visual-qa")]
@@ -2899,6 +2958,14 @@ impl App {
         {
             state.error = Some(error);
         }
+        if let Some(group) = select_redundant_groups
+            && let Some(state) = self.ui.tools.archive.as_mut()
+            && let (Some(Ok(report)), Some(listing)) = (&state.check_result, &state.listing)
+            && let Err(error) =
+                select_redundant_content_groups(report, listing, group, &mut state.selected)
+        {
+            state.error = Some(error);
+        }
         if let Some(result) = copy_check_report {
             match result {
                 Ok(text) => self.write_clipboard(&text, "archive check report", ctx),
@@ -3024,6 +3091,63 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn redundant_archive_selection_preserves_lowest_original_index_and_refuses_stale_groups() {
+        let mut listing = listing(&["same", "same", "empty-a", "empty-b", "unrelated"]);
+        for (row, m) in listing.members.iter_mut().enumerate() {
+            m.index = [9, 2, 20, 1, 99][row];
+            m.size = if row < 2 { 3 } else { 0 };
+        }
+        let groups = vec![vec![0, 1], vec![2, 3]]
+            .into_iter()
+            .map(|rows| crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: listing.members[rows[0]].size,
+                members: rows
+                    .into_iter()
+                    .map(|row| {
+                        let m = &listing.members[row];
+                        crate::archive_check::ContentMember {
+                            index: m.index,
+                            path: m.path.clone(),
+                            size: m.size,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 5,
+            decoded: 6,
+            strict_headers: false,
+            content_groups: Some(groups),
+        };
+        let mut selected = std::collections::BTreeSet::from([1, 3, 4]);
+        super::select_redundant_content_groups(&report, &listing, Some(0), &mut selected).unwrap();
+        assert_eq!(selected, std::collections::BTreeSet::from([0, 3, 4]));
+        super::select_redundant_content_groups(&report, &listing, None, &mut selected).unwrap();
+        assert_eq!(selected, std::collections::BTreeSet::from([0, 2, 4]));
+        let before = selected.clone();
+        assert!(
+            super::select_redundant_content_groups(&report, &listing, Some(99), &mut selected)
+                .is_err()
+        );
+        listing.members[2].size = 42;
+        assert!(
+            super::select_redundant_content_groups(&report, &listing, None, &mut selected).is_err()
+        );
+        assert_eq!(selected, before);
+        listing.members[2].size = 0;
+        report.content_groups.as_mut().unwrap()[1].members[0].index = 9;
+        report.content_groups.as_mut().unwrap()[1].members[0].path = "same".into();
+        report.content_groups.as_mut().unwrap()[1].members[0].size = 3;
+        assert!(
+            super::select_redundant_content_groups(&report, &listing, None, &mut selected).is_err()
+        );
+        assert_eq!(selected, before);
+    }
+
     #[test]
     fn content_member_pages_are_independent_and_keep_original_entry_order() {
         let ctx = egui::Context::default();

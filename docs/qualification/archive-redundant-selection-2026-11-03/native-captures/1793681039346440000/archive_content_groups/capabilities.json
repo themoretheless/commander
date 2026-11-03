@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "platform": "macos",
+  "status": "captured",
+  "framebuffer": "captured",
+  "failure_kind": "capture_validated",
+  "detail": "native eframe/Glow framebuffer captured and validated",
+  "renderer": {
+    "renderer": "glow",
+    "adapter_name": "system OpenGL context",
+    "backend": "OpenGL",
+    "device_type": "native_window",
+    "target_format": "RGBA8 framebuffer readback"
+  },
+  "native_menu_model": "automated_pure_contract",
+  "native_menu_pixels": "excluded_use_native_release_qa_evidence",
+  "whole_window_capture": "excluded_use_native_release_qa_evidence",
+  "voice_over": "excluded_use_native_release_qa_attestation"
+}

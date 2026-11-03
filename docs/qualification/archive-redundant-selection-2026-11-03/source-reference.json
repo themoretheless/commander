@@ -1,0 +1,7 @@
+{
+  "cohort": 85,
+  "repository": "https://github.com/pkolaczk/fclones",
+  "reference": "https://github.com/pkolaczk/fclones#removing-duplicates",
+  "observed": "2026-11-03",
+  "behavior": "One replica is preserved by default; input ordering determines which replicas are kept. Commander independently adapts this to selecting archive copies while leaving the lowest original entry index unselected."
+}
