@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_tar_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-replica-policy-2026-11-03/native-captures/1793681302702182000",
+  "binary_sha256": "b71f50a7ec22c104ca2a6a1fbb7a2008efa9bcaae55962d44eb1de16ff70bf8a",
+  "core_sha256": "b71f50a7ec22c104ca2a6a1fbb7a2008efa9bcaae55962d44eb1de16ff70bf8a",
+  "wrapper_sha256": "371fd67584fef09299029c9623cc30524a9d2868a5cfdcbab78e8dd21b0ae1a1",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

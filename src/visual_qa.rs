@@ -5053,7 +5053,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 52)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
-            && !(self.scenario == Scenario::ArchiveTarContentGroups && self.archive_copy_phase < 52)
+            && !(self.scenario == Scenario::ArchiveTarContentGroups && self.archive_copy_phase < 59)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -17035,10 +17035,10 @@ impl eframe::App for VisualQaApp {
             self.archive_copy_phase += 1;
         }
         if self.scenario == Scenario::ArchiveTarContentGroups
-            && (20..=52).contains(&self.archive_copy_phase)
+            && (20..=59).contains(&self.archive_copy_phase)
         {
             let phase = self.archive_copy_phase;
-            if phase == 52 {
+            if phase == 59 {
                 if let Some((_, _, visible, rect)) = ctx.data(|d| {
                     d.get_temp::<(String, Vec<PathBuf>, bool, egui::Rect)>(egui::Id::new(
                         "archive-rendered-content-group",
@@ -17085,6 +17085,71 @@ impl eframe::App for VisualQaApp {
                         .join(format!("tar-group-action-{phase}.json")),
                     serde_json::to_vec_pretty(&record).unwrap(),
                 );
+                self.archive_copy_phase += 1;
+                return;
+            }
+            if (52..59).contains(&phase) {
+                if phase == 58 {
+                    let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                        return;
+                    };
+                    let Some(listing) = state.listing.as_ref() else {
+                        return;
+                    };
+                    let mut indexes = state
+                        .selected
+                        .iter()
+                        .filter_map(|id| listing.members.get(*id).map(|m| m.index))
+                        .collect::<Vec<_>>();
+                    indexes.sort_unstable();
+                    if indexes != [0, 2, 4, 8, 9]
+                        || state.error.is_some()
+                        || !state.content_keep.last
+                        || state.content_keep.count != 1
+                    {
+                        return;
+                    }
+                    let record = serde_json::json!({"keep_count":state.content_keep.count,"keep_last":state.content_keep.last,"selected":state.selected,"selected_indexes":indexes,"listing":listing.members.iter().enumerate().map(|(id,m)|serde_json::json!({"id":id,"index":m.index,"path":m.path})).collect::<Vec<_>>()});
+                    let _ = std::fs::write(
+                        self.scenario_dir.join("tar-keep-last.json"),
+                        serde_json::to_vec_pretty(&record).unwrap(),
+                    );
+                    self.archive_copy_phase += 1;
+                    return;
+                }
+                let (id, step) = if phase < 55 {
+                    (egui::Id::new(("archive-keep-order", true)), phase - 52)
+                } else {
+                    (egui::Id::new("archive-select-redundant-groups"), phase - 55)
+                };
+                let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                    return;
+                };
+                if let Some(clip) =
+                    ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                    && !clip.contains_rect(rect.shrink(0.5))
+                {
+                    input.events.push(egui::Event::PointerMoved(clip.center()));
+                    input.events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                        modifiers: Default::default(),
+                    });
+                    return;
+                }
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                if step == 0 && !self.hex_target_settled(id, rect) {
+                    return;
+                }
+                if step != 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: step == 1,
+                        modifiers: Default::default(),
+                    });
+                }
                 self.archive_copy_phase += 1;
                 return;
             }
@@ -22206,7 +22271,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchiveTarContentGroups => self.archive_copy_phase==52 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
+            Scenario::ArchiveTarContentGroups => self.archive_copy_phase==59 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
             Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
             Scenario::ArchivePassword => {
                 self.archive_copy_phase == 55

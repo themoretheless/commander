@@ -1,0 +1,7 @@
+{
+  "cohort": 85,
+  "repository": "https://github.com/pkolaczk/fclones",
+  "reference": "https://github.com/pkolaczk/fclones#removing-duplicates",
+  "observed": "2026-11-03",
+  "behavior": "fclones supports a preserved replica count and uses group ordering to choose kept files. Commander independently adapts this to a runtime count and first/last original archive entry policy for selection."
+}

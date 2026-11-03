@@ -1,0 +1,28 @@
+{
+  "archive_tar_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 4,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "a9a6731c26875ed87645423b13b0a1e156c486767943b030bdc29366f25c0ae8",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-replica-policy-2026-11-03/native-captures/1793681302702182000/archive_tar_content_groups"
+  },
+  "archive_content_groups": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 2,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "e36bb8def80fe5807eaf91f6f2f3f43cb5d1a0e774d50b83f2f7e6bdc9187869",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-replica-policy-2026-11-03/native-captures/1793681341191499000/archive_content_groups"
+  }
+}
