@@ -1,0 +1,5 @@
+{
+  "cohort": 85,
+  "reference": "https://github.com/pkolaczk/fclones/blob/main/fclones/src/config.rs",
+  "behavior": "fclones offers a hash_fn choice for file digests. Commander independently adds selected-only execution within its own checksum worker and list verification."
+}

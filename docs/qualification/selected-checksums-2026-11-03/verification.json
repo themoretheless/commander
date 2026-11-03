@@ -1,0 +1,14 @@
+{
+  "selected_native_checks": 14,
+  "selected_clipboard_calls": 0,
+  "all_native_checks": 14,
+  "all_clipboard_calls": 38,
+  "scopes": [
+    "XXH3-128",
+    "unrequested SHA-256",
+    "all 14",
+    "XXH3-64"
+  ],
+  "captured_paths_preserved": true,
+  "source_and_binary_hashes_match": true
+}

@@ -1,0 +1,7 @@
+{
+  "native_checks": 14,
+  "observations": 393,
+  "clipboard_calls": 38,
+  "oracle": "Official xxHash C v0.8.3 plus Python Base64",
+  "source_and_binary_hashes_match": true
+}

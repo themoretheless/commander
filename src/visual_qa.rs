@@ -213,6 +213,7 @@ enum Scenario {
     PdfSearch,
     PdfRegex,
     Checksums,
+    ChecksumSelected,
     ChecksumList,
     DiskTreeFilter,
     SyncReview,
@@ -410,7 +411,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 141] = [
+    const ALL: [Self; 142] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -419,6 +420,7 @@ impl Scenario {
         Self::PdfSearch,
         Self::PdfRegex,
         Self::Checksums,
+        Self::ChecksumSelected,
         Self::ChecksumList,
         Self::DiskTreeFilter,
         Self::SyncReview,
@@ -570,6 +572,7 @@ impl Scenario {
             Self::PdfSearch => "pdf_search",
             Self::PdfRegex => "pdf_regex",
             Self::Checksums => "checksums",
+            Self::ChecksumSelected => "checksum_selected",
             Self::ChecksumList => "checksum_list",
             Self::DiskTreeFilter => "disk_tree_filter",
             Self::SyncReview => "sync_review",
@@ -718,6 +721,7 @@ impl Scenario {
             | Self::PdfSearch
             | Self::PdfRegex
             | Self::Checksums
+            | Self::ChecksumSelected
             | Self::ChecksumList
             | Self::DiffNavigation
             | Self::DiffOptions
@@ -875,6 +879,7 @@ impl Scenario {
             | Self::PdfSearch
             | Self::PdfRegex
             | Self::Checksums
+            | Self::ChecksumSelected
             | Self::ChecksumList
             | Self::DiffNavigation
             | Self::DiffOptions
@@ -2444,7 +2449,7 @@ impl Fixture {
                     .map_err(|error| error.to_string())?;
             }
         }
-        if scenario == Scenario::Checksums {
+        if matches!(scenario, Scenario::Checksums | Scenario::ChecksumSelected) {
             std::fs::write(left.join("checksum.txt"), "abc").map_err(|error| error.to_string())?;
         }
         if matches!(
@@ -4972,6 +4977,7 @@ impl eframe::App for VisualQaApp {
             ) && self.json_mode_phase < 3)
             && !(self.scenario == Scenario::CodePreview && self.text_size_click_phase < 27)
             && !(self.scenario == Scenario::Checksums && self.checksum_click_phase < 392)
+            && !(self.scenario == Scenario::ChecksumSelected && self.checksum_click_phase < 22)
             && !(self.scenario == Scenario::ChecksumList && self.checksum_list_phase < 50)
             && !(self.scenario == Scenario::DiffNavigation && self.diff_navigation_phase < 83)
             && !(self.scenario == Scenario::DiffOptions && self.diff_options_phase < 57)
@@ -15204,6 +15210,86 @@ impl eframe::App for VisualQaApp {
                 return;
             }
         }
+        if self.scenario == Scenario::ChecksumSelected
+            && self.pane_tool_opened
+            && self.checksum_click_phase < 22
+        {
+            let phase = self.checksum_click_phase;
+            let observed = self.inner.checksum_calculation_snapshot();
+            if observed["busy"] == true || observed["rows"].is_null() {
+                return;
+            }
+            if matches!(phase, 6 | 10 | 14 | 21) {
+                let expected = match phase {
+                    6 | 10 => Some("XXH3-128"),
+                    21 => Some("XXH3-64"),
+                    _ => None,
+                };
+                if observed["only"].as_str() != expected {
+                    return;
+                }
+                let Some(rows) = observed["rows"].as_array() else {
+                    return;
+                };
+                if rows.len() != 1 || !rows[0]["error"].is_null() {
+                    return;
+                }
+                let algorithms = rows[0]["algorithms"].as_array().unwrap();
+                if algorithms.len()
+                    != if expected.is_some() {
+                        1
+                    } else {
+                        crate::checksum::Algorithm::ALL.len()
+                    }
+                {
+                    return;
+                }
+                if let Some(expected) = expected
+                    && algorithms[0].as_str() != Some(expected)
+                {
+                    return;
+                }
+                if observed["summary"] != "Calculated 1 file(s)" {
+                    return;
+                }
+                if phase == 10
+                    && (observed["selected"] != "SHA-256" || observed["comparable"] != false)
+                {
+                    return;
+                }
+                let _ = std::fs::write(
+                    self.scenario_dir.join(format!("selected-{phase}.json")),
+                    serde_json::to_vec_pretty(&observed).unwrap(),
+                );
+                let _ = std::fs::copy(
+                    self.fixture.left.join("checksum.txt"),
+                    self.scenario_dir.join("checksum.txt"),
+                );
+                self.checksum_click_phase += 1;
+                return;
+            }
+            let (id, step) = match phase {
+                0..=2 => (egui::Id::new(("checksum-algorithm", "XXH3-128")), phase),
+                3..=5 => (egui::Id::new("Recalculate selected only"), phase - 3),
+                7..=9 => (egui::Id::new(("checksum-algorithm", "SHA-256")), phase - 7),
+                11..=13 => (egui::Id::new("Recalculate all"), phase - 11),
+                15..=17 => (egui::Id::new(("checksum-algorithm", "XXH3-64")), phase - 15),
+                _ => (egui::Id::new("Recalculate selected only"), phase - 18),
+            };
+            if let Some(rect) = checksum_input_rect(ctx, id, input) {
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+                if step > 0 {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: step == 1,
+                        modifiers: Default::default(),
+                    });
+                }
+                self.checksum_input_pending = true;
+            }
+            return;
+        }
         if self.scenario == Scenario::Checksums {
             let clipboard = self
                 .counters
@@ -19860,6 +19946,7 @@ impl eframe::App for VisualQaApp {
             Scenario::TableDialect
                 | Scenario::TableAmbiguous
                 | Scenario::Checksums
+                | Scenario::ChecksumSelected
                 | Scenario::CopyDetails
         ) {
             // These scenes deliberately wait for the last copy toast to expire
@@ -19904,7 +19991,11 @@ impl eframe::App for VisualQaApp {
             self.details_phase += 1;
             self.details_input_pending = false;
         }
-        if self.scenario == Scenario::Checksums && self.checksum_input_pending {
+        if matches!(
+            self.scenario,
+            Scenario::Checksums | Scenario::ChecksumSelected
+        ) && self.checksum_input_pending
+        {
             self.checksum_click_phase += 1;
             self.checksum_input_pending = false;
         }
@@ -20659,7 +20750,11 @@ impl eframe::App for VisualQaApp {
             ctx.request_repaint();
             return;
         }
-        if self.scenario == Scenario::Checksums && !self.pane_tool_opened {
+        if matches!(
+            self.scenario,
+            Scenario::Checksums | Scenario::ChecksumSelected
+        ) && !self.pane_tool_opened
+        {
             let path = self.fixture.left.join("checksum.txt");
             self.inner.ws.left.focus_child("checksum.txt".into());
             self.inner.start_checksum(vec![path], &ctx);
@@ -22185,6 +22280,7 @@ impl eframe::App for VisualQaApp {
                     && self.checksum_list_filtered_copy_ready(false, 6)
                     && self.recorded_clipboard_dump("matching-name-report.txt")
             }
+            Scenario::ChecksumSelected => self.checksum_click_phase==22 && self.inner.toasts.is_empty() && [6,10,14,21].into_iter().all(|phase|self.scenario_dir.join(format!("selected-{phase}.json")).is_file()),
             Scenario::Checksums => {
                 let expected=ABC_XXH3_128_BASE64;
                 self.checksum_click_phase==392 && self.counters.clipboard.load(Ordering::Relaxed)==38
@@ -23412,6 +23508,7 @@ mod tests {
                 "pdf_search",
                 "pdf_regex",
                 "checksums",
+                "checksum_selected",
                 "checksum_list",
                 "disk_tree_filter",
                 "sync_review",

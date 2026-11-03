@@ -406,7 +406,8 @@ pub fn verify(
         let (actual, status) = match resolve(&root, &canonical_root, &record.name) {
             Err(error) => (None, Status::Error(error)),
             Ok(target) => {
-                let row = crate::checksum::verify_one(&target, cancelled);
+                let row =
+                    crate::checksum::verify_one_algorithm(&target, cancelled, Some(algorithm));
                 let actual = algorithm.digest(&row).map(str::to_owned);
                 let status = if let Some(error) = row.error.or(row.skipped) {
                     Status::Error(error)

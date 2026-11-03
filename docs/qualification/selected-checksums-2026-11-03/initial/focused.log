@@ -1,0 +1,150 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: the trait bound `Array<u8, UInt<UInt<UInt<UInt<_, B0>, B0>, B0>, B0>>: LowerHex` is not satisfied
+   --> src/checksum.rs:697:50
+    |
+697 |         sha256: sha.map(|hasher| format!("{:x}", hasher.finalize())),
+    |                                           ----   ^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `aes::cipher::Array<u8, UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>>`
+    |                                           |
+    |                                           required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              AccelerationStructureBuildFlags
+              AccelerationStructureGeometryFlags
+              AccelerationStructureUses
+              AttachmentOps
+              Backends
+              BindGroupLayoutFlags
+            and 329 others
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122.long-type-13864555874611726508.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `Array<u8, UInt<UInt<UInt<UInt<_, B0>, B0>, B0>, B0>>: LowerHex` is not satisfied
+   --> src/checksum.rs:698:53
+    |
+698 |         sha384: sha384.map(|hasher| format!("{:x}", hasher.finalize())),
+    |                                              ----   ^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `aes::cipher::Array<u8, UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B1>, B0>, B0>, B0>, B0>>`
+    |                                              |
+    |                                              required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              AccelerationStructureBuildFlags
+              AccelerationStructureGeometryFlags
+              AccelerationStructureUses
+              AttachmentOps
+              Backends
+              BindGroupLayoutFlags
+            and 329 others
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122.long-type-12226070908327462504.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `Array<u8, UInt<UInt<UInt<UInt<_, B0>, B0>, B0>, B0>>: LowerHex` is not satisfied
+   --> src/checksum.rs:699:53
+    |
+699 |         sha512: sha512.map(|hasher| format!("{:x}", hasher.finalize())),
+    |                                              ----   ^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `Array<u8, UInt<UInt<UInt<UInt<UInt<_, B0>, B0>, B0>, B0>, B0>>`
+    |                                              |
+    |                                              required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              AccelerationStructureBuildFlags
+              AccelerationStructureGeometryFlags
+              AccelerationStructureUses
+              AttachmentOps
+              Backends
+              BindGroupLayoutFlags
+            and 329 others
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122.long-type-3254635601267722616.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `Array<u8, UInt<UInt<UInt<UInt<_, B0>, B0>, B0>, B0>>: LowerHex` is not satisfied
+   --> src/checksum.rs:700:57
+    |
+700 |         sha3_256: sha3_256.map(|hasher| format!("{:x}", hasher.finalize())),
+    |                                                  ----   ^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `aes::cipher::Array<u8, UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>>`
+    |                                                  |
+    |                                                  required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              AccelerationStructureBuildFlags
+              AccelerationStructureGeometryFlags
+              AccelerationStructureUses
+              AttachmentOps
+              Backends
+              BindGroupLayoutFlags
+            and 329 others
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122.long-type-13864555874611726508.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `Array<u8, UInt<UInt<UInt<UInt<_, B0>, B0>, B0>, B0>>: LowerHex` is not satisfied
+   --> src/checksum.rs:701:57
+    |
+701 |         sha3_512: sha3_512.map(|hasher| format!("{:x}", hasher.finalize())),
+    |                                                  ----   ^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `Array<u8, UInt<UInt<UInt<UInt<UInt<_, B0>, B0>, B0>, B0>, B0>>`
+    |                                                  |
+    |                                                  required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              AccelerationStructureBuildFlags
+              AccelerationStructureGeometryFlags
+              AccelerationStructureUses
+              AttachmentOps
+              Backends
+              BindGroupLayoutFlags
+            and 329 others
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122.long-type-3254635601267722616.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `aes::cipher::Array<u8, UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>>: LowerHex` is not satisfied
+   --> src/checksum.rs:705:47
+    |
+705 |         md5: md5.map(|hasher| format!("{:x}", hasher.finalize())),
+    |                                        ----   ^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `aes::cipher::Array<u8, UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>>`
+    |                                        |
+    |                                        required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              AccelerationStructureBuildFlags
+              AccelerationStructureGeometryFlags
+              AccelerationStructureUses
+              AttachmentOps
+              Backends
+              BindGroupLayoutFlags
+            and 329 others
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122.long-type-11481795164241229897.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `aes::cipher::Array<u8, UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B1>, B0>, B0>>: LowerHex` is not satisfied
+   --> src/checksum.rs:706:49
+    |
+706 |         sha1: sha1.map(|hasher| format!("{:x}", hasher.finalize())),
+    |                                          ----   ^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `aes::cipher::Array<u8, UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B1>, B0>, B0>>`
+    |                                          |
+    |                                          required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              AccelerationStructureBuildFlags
+              AccelerationStructureGeometryFlags
+              AccelerationStructureUses
+              AttachmentOps
+              Backends
+              BindGroupLayoutFlags
+            and 329 others
+    = note: the full name for the type has been written to '/Users/themoretheless/Documents/Sources/commander/target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122.long-type-11481795164241229897.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander" test) due to 7 previous errors

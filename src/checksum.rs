@@ -192,7 +192,13 @@ impl ChecksumReport {
     pub fn successful(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| row.error.is_none() && row.skipped.is_none() && row.sha256_hex.is_some())
+            .filter(|row| {
+                row.error.is_none()
+                    && row.skipped.is_none()
+                    && Algorithm::ALL
+                        .into_iter()
+                        .any(|algorithm| algorithm.digest(row).is_some())
+            })
             .count()
     }
     pub fn summary_line(&self) -> String {
@@ -478,6 +484,7 @@ pub fn verify_paths_cancellable(
     paths: Vec<PathBuf>,
     cancelled: &crate::workload::CancellationToken,
     completed: &std::sync::atomic::AtomicUsize,
+    only: Option<Algorithm>,
 ) -> ChecksumReport {
     let mut report = ChecksumReport::default();
     for path in paths {
@@ -485,7 +492,11 @@ pub fn verify_paths_cancellable(
             report.cancelled = true;
             break;
         }
-        let row = verify_one(&path, &|| cancelled.is_cancelled());
+        let row = if only.is_some() {
+            verify_one_algorithm(&path, &|| cancelled.is_cancelled(), only)
+        } else {
+            verify_one(&path, &|| cancelled.is_cancelled())
+        };
         if cancelled.is_cancelled() {
             report.cancelled = true;
             break;
@@ -496,6 +507,15 @@ pub fn verify_paths_cancellable(
     report
 }
 pub fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
+    verify_one_algorithm(path, cancelled, None)
+}
+
+/// A requested single algorithm never initializes or updates the others.
+pub fn verify_one_algorithm(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    only: Option<Algorithm>,
+) -> ChecksumRow {
     let mut row = ChecksumRow {
         path: path.into(),
         ..Default::default()
@@ -519,23 +539,25 @@ pub fn verify_one(path: &Path, cancelled: &dyn Fn() -> bool) -> ChecksumRow {
         row.skipped = Some("only regular files are hashed".into());
         return row;
     }
-    match digests(path, &meta, cancelled) {
+    match digests(path, &meta, cancelled, only) {
         Ok(digests) => {
-            row.content_hash = Some(content_hash_of(&digests.blake3));
-            row.blake3_hex = Some(blake3::Hash::from(digests.blake3).to_hex().to_string());
-            row.sha256_hex = Some(digests.sha256);
-            row.sha384_hex = Some(digests.sha384);
-            row.sha512_hex = Some(digests.sha512);
-            row.sha3_256_hex = Some(digests.sha3_256);
-            row.sha3_512_hex = Some(digests.sha3_512);
-            row.blake2s_hex = Some(digests.blake2s);
-            row.blake2b_hex = Some(digests.blake2b);
-            row.crc32_hex = Some(digests.crc32);
-            row.md5_hex = Some(digests.md5);
-            row.sha1_hex = Some(digests.sha1);
-            row.adler32_hex = Some(digests.adler32);
-            row.xxh3_64_hex = Some(digests.xxh3_64);
-            row.xxh3_128_hex = Some(digests.xxh3_128);
+            row.content_hash = digests.blake3.as_ref().map(content_hash_of);
+            row.blake3_hex = digests
+                .blake3
+                .map(|value| blake3::Hash::from(value).to_hex().to_string());
+            row.sha256_hex = digests.sha256;
+            row.sha384_hex = digests.sha384;
+            row.sha512_hex = digests.sha512;
+            row.sha3_256_hex = digests.sha3_256;
+            row.sha3_512_hex = digests.sha3_512;
+            row.blake2s_hex = digests.blake2s;
+            row.blake2b_hex = digests.blake2b;
+            row.crc32_hex = digests.crc32;
+            row.md5_hex = digests.md5;
+            row.sha1_hex = digests.sha1;
+            row.adler32_hex = digests.adler32;
+            row.xxh3_64_hex = digests.xxh3_64;
+            row.xxh3_128_hex = digests.xxh3_128;
         }
         Err(error) => row.error = Some(error.to_string()),
     }
@@ -548,25 +570,26 @@ fn changed() -> io::Error {
     )
 }
 struct FileDigests {
-    blake3: [u8; 32],
-    sha256: String,
-    sha384: String,
-    sha512: String,
-    sha3_256: String,
-    sha3_512: String,
-    blake2s: String,
-    blake2b: String,
-    crc32: String,
-    md5: String,
-    sha1: String,
-    adler32: String,
-    xxh3_64: String,
-    xxh3_128: String,
+    blake3: Option<[u8; 32]>,
+    sha256: Option<String>,
+    sha384: Option<String>,
+    sha512: Option<String>,
+    sha3_256: Option<String>,
+    sha3_512: Option<String>,
+    blake2s: Option<String>,
+    blake2b: Option<String>,
+    crc32: Option<String>,
+    md5: Option<String>,
+    sha1: Option<String>,
+    adler32: Option<String>,
+    xxh3_64: Option<String>,
+    xxh3_128: Option<String>,
 }
 fn digests(
     path: &Path,
     expected: &std::fs::Metadata,
     cancelled: &dyn Fn() -> bool,
+    only: Option<Algorithm>,
 ) -> io::Result<FileDigests> {
     use crate::path_identity::PathIdentity;
     let cancel = || {
@@ -598,19 +621,21 @@ fn digests(
     }
     let mut remaining = opened.len();
     let mut buffer = [0u8; 64 * 1024];
-    let mut blake = blake3::Hasher::new();
-    let mut sha = Sha256::new();
-    let mut sha384 = Sha384::new();
-    let mut sha512 = Sha512::new();
-    let mut sha3_256 = Sha3_256::new();
-    let mut sha3_512 = Sha3_512::new();
-    let mut blake2s = Blake2s256::new();
-    let mut blake2b = Blake2b512::new();
-    let mut crc32 = crc32fast::Hasher::new();
-    let mut md5 = md5::Md5::new();
-    let mut sha1 = sha1::Sha1::new();
-    let mut adler32 = adler2::Adler32::new();
-    let mut xxh3 = xxhash_rust::xxh3::Xxh3::new();
+    let want = |algorithm| only.is_none_or(|selected| selected == algorithm);
+    let mut blake = want(Algorithm::Blake3).then(blake3::Hasher::new);
+    let mut sha = want(Algorithm::Sha256).then(Sha256::new);
+    let mut sha384 = want(Algorithm::Sha384).then(Sha384::new);
+    let mut sha512 = want(Algorithm::Sha512).then(Sha512::new);
+    let mut sha3_256 = want(Algorithm::Sha3_256).then(Sha3_256::new);
+    let mut sha3_512 = want(Algorithm::Sha3_512).then(Sha3_512::new);
+    let mut blake2s = want(Algorithm::Blake2s).then(Blake2s256::new);
+    let mut blake2b = want(Algorithm::Blake2b).then(Blake2b512::new);
+    let mut crc32 = want(Algorithm::Crc32).then(crc32fast::Hasher::new);
+    let mut md5 = want(Algorithm::Md5).then(md5::Md5::new);
+    let mut sha1 = want(Algorithm::Sha1).then(sha1::Sha1::new);
+    let mut adler32 = want(Algorithm::Adler32).then(adler2::Adler32::new);
+    let mut xxh3 =
+        (want(Algorithm::Xxh3_64) || want(Algorithm::Xxh3_128)).then(xxhash_rust::xxh3::Xxh3::new);
     loop {
         cancel()?;
         let limit = remaining.saturating_add(1).min(buffer.len() as u64) as usize;
@@ -625,19 +650,45 @@ fn digests(
             return Err(changed());
         }
         remaining -= count as u64;
-        blake.update(&buffer[..count]);
-        sha.update(&buffer[..count]);
-        sha384.update(&buffer[..count]);
-        sha512.update(&buffer[..count]);
-        sha3_256.update(&buffer[..count]);
-        sha3_512.update(&buffer[..count]);
-        blake2s.update(&buffer[..count]);
-        blake2b.update(&buffer[..count]);
-        crc32.update(&buffer[..count]);
-        md5.update(&buffer[..count]);
-        sha1.update(&buffer[..count]);
-        adler32.write_slice(&buffer[..count]);
-        xxh3.update(&buffer[..count]);
+        if let Some(hasher) = &mut blake {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut sha {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut sha384 {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut sha512 {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut sha3_256 {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut sha3_512 {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut blake2s {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut blake2b {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut crc32 {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut md5 {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut sha1 {
+            hasher.update(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut adler32 {
+            hasher.write_slice(&buffer[..count]);
+        }
+        if let Some(hasher) = &mut xxh3 {
+            hasher.update(&buffer[..count]);
+        }
     }
     let after = file.metadata()?;
     if remaining != 0
@@ -647,58 +698,32 @@ fn digests(
         return Err(changed());
     }
     cancel()?;
-    let sha = sha.finalize();
-    let hex = sha.iter().map(|byte| format!("{byte:02x}")).collect();
-    let hex384 = sha384
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    let hex512 = sha512
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
     Ok(FileDigests {
-        xxh3_64: format!("{:016x}", xxh3.digest()),
-        xxh3_128: format!("{:032x}", xxh3.digest128()),
-        adler32: format!("{:08x}", adler32.checksum()),
-        sha1: sha1
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-        blake3: *blake.finalize().as_bytes(),
-        blake2s: blake2s
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-        blake2b: blake2b
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-        sha256: hex,
-        sha384: hex384,
-        sha512: hex512,
-        sha3_256: sha3_256
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-        sha3_512: sha3_512
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-        crc32: format!("{:08x}", crc32.finalize()),
-        md5: md5
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
+        blake3: blake.map(|hasher| *hasher.finalize().as_bytes()),
+        sha256: sha.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        sha384: sha384.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        sha512: sha512.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        sha3_256: sha3_256.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        sha3_512: sha3_512.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        blake2s: blake2s.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        blake2b: blake2b.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        crc32: crc32.map(|hasher| format!("{:08x}", hasher.finalize())),
+        md5: md5.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        sha1: sha1.map(|hasher| checksum_hex(hasher.finalize().as_ref())),
+        adler32: adler32.map(|hasher| format!("{:08x}", hasher.checksum())),
+        xxh3_64: xxh3
+            .as_ref()
+            .filter(|_| want(Algorithm::Xxh3_64))
+            .map(|hasher| format!("{:016x}", hasher.digest())),
+        xxh3_128: xxh3
+            .as_ref()
+            .filter(|_| want(Algorithm::Xxh3_128))
+            .map(|hasher| format!("{:032x}", hasher.digest128())),
     })
+}
+
+fn checksum_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 fn content_hash_of(blake3: &[u8; 32]) -> u64 {
     let mut prefix = [0u8; 8];
@@ -714,6 +739,86 @@ mod tests {
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const ABC_SHA384: &str = "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
     const ABC_SHA512: &str = "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
+
+    #[test]
+    fn selected_checksum_rejects_replaced_source_without_any_digest() {
+        let temp = TempDir::new();
+        for algorithm in Algorithm::ALL {
+            let path = temp.file("data", &"abc".repeat(70_000));
+            let original = temp.path().join(format!("old-{}", algorithm.label()));
+            let ticks = std::cell::Cell::new(0);
+            let row = verify_one_algorithm(
+                &path,
+                &|| {
+                    ticks.set(ticks.get() + 1);
+                    if ticks.get() == 3 {
+                        std::fs::rename(&path, &original).unwrap();
+                        std::fs::write(&path, "changed").unwrap();
+                    }
+                    false
+                },
+                Some(algorithm),
+            );
+            assert!(row.error.as_deref().unwrap().contains("changed"));
+            assert!(Algorithm::ALL.into_iter().all(|a| a.digest(&row).is_none()));
+            assert!(row.content_hash.is_none());
+        }
+    }
+
+    #[test]
+    fn selected_checksums_match_all_mode_without_publishing_unrequested_digests() {
+        let temp = TempDir::new();
+        let path = temp.file("data", &"abc".repeat(30_000));
+        let all = verify_one(&path, &|| false);
+        for algorithm in Algorithm::ALL {
+            let row = verify_one_algorithm(&path, &|| false, Some(algorithm));
+            assert!(row.error.is_none());
+            for candidate in Algorithm::ALL {
+                assert_eq!(
+                    candidate.digest(&row),
+                    if candidate == algorithm {
+                        candidate.digest(&all)
+                    } else {
+                        None
+                    }
+                );
+            }
+            assert_eq!(row.content_hash.is_some(), algorithm == Algorithm::Blake3);
+            let report = ChecksumReport {
+                rows: vec![row.clone()],
+                cancelled: false,
+            };
+            assert_eq!(report.successful(), 1);
+            assert_eq!(report.summary_line(), "Calculated 1 file(s)");
+            assert_eq!(
+                report.compare_expected_algorithm(
+                    all.sha256_hex.as_ref().unwrap(),
+                    Algorithm::Sha256
+                ),
+                if algorithm == Algorithm::Sha256 {
+                    ExpectedMatch::Match
+                } else {
+                    ExpectedMatch::Unavailable
+                }
+            );
+
+            let ticks = std::cell::Cell::new(0);
+            let stopped = verify_one_algorithm(
+                &path,
+                &|| {
+                    ticks.set(ticks.get() + 1);
+                    ticks.get() >= 3
+                },
+                Some(algorithm),
+            );
+            assert!(stopped.error.as_deref().unwrap().contains("cancelled"));
+            assert!(
+                Algorithm::ALL
+                    .into_iter()
+                    .all(|a| a.digest(&stopped).is_none())
+            );
+        }
+    }
 
     #[test]
     fn xxh3_streams_c_reference_vectors_compares_encodings_and_exports_lists() {

@@ -1,0 +1,21 @@
+{
+  "busy": false,
+  "comparable": false,
+  "only": "XXH3-128",
+  "paths": [
+    "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-26772-checksum_selected/left/checksum.txt"
+  ],
+  "rows": [
+    {
+      "algorithms": [
+        "XXH3-128"
+      ],
+      "content": null,
+      "error": null,
+      "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-26772-checksum_selected/left/checksum.txt",
+      "skipped": null
+    }
+  ],
+  "selected": "SHA-256",
+  "summary": "Calculated 1 file(s)"
+}

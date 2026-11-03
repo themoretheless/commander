@@ -1629,6 +1629,10 @@ impl App {
         self.checksum_generation = self.checksum_generation.wrapping_add(1).max(1);
         let generation = self.checksum_generation;
         let total = paths.len();
+        let captured_paths = paths.clone();
+        let only = self
+            .checksum_selected_only
+            .then_some(self.checksum_algorithm);
         let root = paths
             .first()
             .and_then(|path| path.parent())
@@ -1646,6 +1650,7 @@ impl App {
                     paths,
                     &cancelled,
                     worker_completed.as_ref(),
+                    only,
                 );
                 let _ = sender.send(report);
                 repaint.request_repaint();
@@ -1655,7 +1660,9 @@ impl App {
                 self.checksum_report = None;
                 self.checksum_expected.clear();
                 self.checksum_encoding = crate::checksum::DigestEncoding::default();
-                self.checksum_algorithm = crate::checksum::Algorithm::default();
+                self.checksum_algorithm = only.unwrap_or_default();
+                self.checksum_calculated_algorithm = only;
+                self.checksum_paths = captured_paths;
                 self.checksum_relative_paths = false;
                 self.checksum_relative_base = None;
                 self.checksum_task = Some(super::ChecksumTask {
@@ -1761,6 +1768,11 @@ impl App {
             })
     }
 
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn checksum_calculation_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"selected":self.checksum_algorithm.label(),"comparable":self.checksum_report.as_ref().is_some_and(|report|report.single_digest(self.checksum_algorithm).is_some()),"summary":self.checksum_report.as_ref().map(|report|report.summary_line()),"busy":self.checksum_task.is_some(),"only":self.checksum_calculated_algorithm.map(|a|a.label()),"paths":self.checksum_paths,"rows":self.checksum_report.as_ref().map(|report|report.rows.iter().map(|row|serde_json::json!({"path":row.path,"algorithms":crate::checksum::Algorithm::ALL.into_iter().filter(|a|a.digest(row).is_some()).map(|a|a.label()).collect::<Vec<_>>(),"error":row.error,"skipped":row.skipped,"content":row.content_hash})).collect::<Vec<_>>())})
+    }
+
     fn show_checksum_dialog(&mut self, ctx: &egui::Context) {
         if self.checksum_task.is_none() && self.checksum_report.is_none() {
             return;
@@ -1769,6 +1781,7 @@ impl App {
         let mut copy = None;
         let mut cancel = false;
         let mut export_error = None;
+        let mut recalculate = None;
         egui::Window::new("Checksums").default_width(590.0)
             .default_pos(egui::pos2((ctx.input(|input| input.viewport_rect().right()) - 620.0).max(16.0), 96.0))
             .open(&mut open)
@@ -1788,7 +1801,8 @@ impl App {
                 }
                 if let Some(report) = &self.checksum_report {
                     ui.label(report.summary_line());
-                    let digest_lines = (crate::checksum::Algorithm::ALL.len() + 1) as f32;
+                    if let Some(algorithm)=self.checksum_calculated_algorithm {ui.small(format!("Calculated only {}",algorithm.label()));}
+                    let digest_lines = if self.checksum_calculated_algorithm.is_some(){1.0}else{(crate::checksum::Algorithm::ALL.len() + 1) as f32};
                     let row_height = ui.text_style_height(&egui::TextStyle::Body) + digest_lines * ui.text_style_height(&egui::TextStyle::Monospace) + 2.0 * ui.spacing().item_spacing.y + 8.0;
                     egui::ScrollArea::both().max_height(320.0).show_rows(ui, row_height, report.rows.len(), |ui, range| {
                         ui.set_min_width(550.0);
@@ -1798,7 +1812,7 @@ impl App {
                                 let path = row.path.to_string_lossy().escape_debug().to_string();
                                 ui.add(egui::Label::new(&path).truncate()).on_hover_text(&path);
                                 if let Some(message) = row.error.as_ref().or(row.skipped.as_ref()) { ui.add(egui::Label::new(message).truncate()).on_hover_text(message); }
-                                else { ui.add(egui::Label::new(egui::RichText::new(row.display_digests()).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
+                                else { ui.add(egui::Label::new(egui::RichText::new(self.checksum_calculated_algorithm.map_or_else(||row.display_digests(),|algorithm|format!("{} {}",algorithm.label(),algorithm.digest(row).unwrap_or("-")))).monospace()).wrap_mode(egui::TextWrapMode::Extend)); }
                             });
                         }
                     });
@@ -1815,6 +1829,14 @@ impl App {
                     });
                     if self.checksum_algorithm == crate::checksum::Algorithm::Sha1 { ui.small("SHA-1: legacy checksum compatibility; use SHA-256 for new security-sensitive checks."); }
                     if matches!(self.checksum_algorithm,crate::checksum::Algorithm::Xxh3_64|crate::checksum::Algorithm::Xxh3_128) {ui.small("XXH3: non-cryptographic checksum; use SHA-256 for security-sensitive checks.");}
+                    ui.horizontal_wrapped(|ui| {
+                        for (selected,label) in [(true,"Recalculate selected only"),(false,"Recalculate all")] {
+                            let button=ui.add_enabled(!self.checksum_paths.is_empty(),egui::Button::new(label)).on_hover_text("Read the captured files afresh with the selected scope. This calculation mode is reused for later checksum requests in this session. Cancellation and changed-file checks remain enabled.");
+                            #[cfg(feature="visual-qa")]
+                            ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new(label),button.rect));
+                            if button.clicked(){recalculate=Some(selected);}
+                        }
+                    });
                     let algorithm = self.checksum_algorithm;
                     let comparable = report.single_digest(algorithm).is_some();
                     let expected_label = format!("Expected {}", algorithm.label());
@@ -1902,7 +1924,12 @@ impl App {
             task.cancel_requested = true;
             task.task.cancel();
         }
+        if let Some(selected) = recalculate {
+            self.checksum_selected_only = selected;
+            self.start_checksum(self.checksum_paths.clone(), ctx);
+        }
         if !open {
+            self.checksum_paths.clear();
             if let Some(task) = self.checksum_task.take() {
                 task.task.cancel();
             }
