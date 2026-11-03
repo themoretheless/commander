@@ -149,6 +149,7 @@ mod sync_guard;
 mod sync_profiles;
 mod sync_report;
 mod sync_review;
+mod tab_search;
 mod table_preview;
 mod template_browser;
 mod template_exchange;

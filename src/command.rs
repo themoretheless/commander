@@ -56,6 +56,7 @@ pub enum Command {
     BookmarkCurrentDir,
     BookmarkSelectedFolders,
     OpenFavorites,
+    OpenTabs,
     SortFavorites(crate::bookmarks::FavoriteOrder),
     ImportFavoritesGtk,
     ExportFavoritesGtk,
@@ -695,6 +696,7 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         CursorNextSelected => &[P::ConfirmationClosed, P::CanNextSelected],
         CursorPreviousSelected => &[P::ConfirmationClosed, P::CanPreviousSelected],
         EqualizePanels | MatchOtherPane => &[P::ConfirmationClosed, P::PaneFoldersDiffer],
+        OpenTabs => &[P::ConfirmationClosed],
         FocusLeftPanel | FocusRightPanel => &[P::ConfirmationClosed],
         SaveSelection => &[P::ConfirmationClosed, P::CanSaveSelection],
         RestoreSelection => &[P::ConfirmationClosed, P::CanRestoreSelection],
@@ -1070,6 +1072,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Sort by kind", "", "sort kind category group images docs code archives", Command::SortByKind),
     entry("Reverse sort order", "", "sort reverse flip order ascending descending invert", Command::ReverseSort),
     entry("Compare panels (toggle)", "", "compare panels differences diff highlight mirror", Command::ToggleCompare),
+    entry("Switch folder tab", "Cmd+Shift+A", "view tabs list all open search switch left right chooser", Command::OpenTabs),
     entry("New folder tab", "Cmd+T", "view tabs new duplicate pane folder", Command::NewTab),
     entry("Open highlighted folder in new tab", "", "view tabs open folder", Command::OpenFolderTab),
     entry("Open highlighted folder in background tab", "", "view tabs open folder background keep focus", Command::OpenFolderBackgroundTab),
@@ -1438,6 +1441,7 @@ pub const fn map_key(press: KeyPress) -> Option<Command> {
         F7 if press.shift => Some(Command::CreateDirOther),
         F7 => Some(Command::CreateDir),
         F8 | Delete => Some(Command::RequestDelete),
+        A if press.command && press.shift => Some(Command::OpenTabs),
         A if press.command => Some(Command::SelectAll),
         E if press.command => Some(Command::EqualizePanels),
         U if press.command => Some(Command::SwapPanels),
@@ -1747,6 +1751,18 @@ mod tests {
         assert_eq!(
             map_key(press(KeyCode::Delete)),
             Some(Command::RequestDelete)
+        );
+    }
+
+    #[test]
+    fn open_tab_picker_has_a_distinct_shortcut_without_changing_select_all() {
+        let mut key = cmd_press(KeyCode::A);
+        key.shift = true;
+        assert_eq!(map_key(key), Some(Command::OpenTabs));
+        assert_eq!(map_key(cmd_press(KeyCode::A)), Some(Command::SelectAll));
+        assert_eq!(
+            filter_commands("switch folder tab")[0].command,
+            Command::OpenTabs
         );
     }
 

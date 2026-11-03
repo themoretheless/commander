@@ -1,0 +1,12 @@
+{
+  "checks": 7,
+  "tests_passed": 3549,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "tab_choices": 10,
+  "cancel_preserves_state": true,
+  "title_search": true,
+  "cross_pane_activation": true,
+  "source_hashes_verified": true,
+  "prior_receipts_verified": true
+}

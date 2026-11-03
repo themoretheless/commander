@@ -427,6 +427,61 @@ impl Workspace {
         Ok(())
     }
 
+    /// Header-only snapshots: no filesystem work, inactive activation or history cloning.
+    pub fn tab_choices(&self) -> Vec<crate::tab_search::Entry> {
+        let mut entries = Vec::with_capacity(2 * MAX_TABS);
+        for (side, tabs, visible) in [
+            (ActivePanel::Left, &self.tabs[0], &self.left),
+            (ActivePanel::Right, &self.tabs[1], &self.right),
+        ] {
+            for (index, slot) in tabs.slots.iter().enumerate() {
+                let p = slot.as_ref().unwrap_or(visible);
+                entries.push(crate::tab_search::Entry {
+                    side,
+                    index,
+                    revision: self.tab_revision(),
+                    path: p.current_path.clone(),
+                    name: p.tab_title.clone().unwrap_or_else(|| {
+                        p.current_path
+                            .file_name()
+                            .unwrap_or(p.current_path.as_os_str())
+                            .to_string_lossy()
+                            .into_owned()
+                    }),
+                    current: index == tabs.active,
+                    focused: index == tabs.active && self.active == side,
+                    protected: p.tab_close_protected,
+                    pin: p.tab_pinned_path.clone(),
+                });
+            }
+        }
+        entries
+    }
+
+    pub fn activate_tab_captured(
+        &mut self,
+        side: ActivePanel,
+        index: usize,
+        revision: u64,
+        path: &std::path::Path,
+    ) -> bool {
+        if !self.tabs_can_change()
+            || self.tab_revision() != revision
+            || self
+                .tab_snapshot(side)
+                .entries
+                .get(index)
+                .is_none_or(|tab| tab.path != path)
+        {
+            return false;
+        }
+        if self.active_tab_index(side) != index && !self.select_tab(side, index) {
+            return false;
+        }
+        self.active = side;
+        true
+    }
+
     pub fn tab_snapshot(&self, side: ActivePanel) -> SavedTabs {
         match side {
             ActivePanel::Left => self.tabs[0].saved(&self.left),
@@ -1406,6 +1461,114 @@ mod tests {
         ));
         assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
     }
+    #[test]
+    fn open_tab_choices_cover_both_groups_without_loading_and_revalidate_before_activation() {
+        let temp = TempDir::new();
+        let a = temp.dir("A");
+        let b = temp.dir("B");
+        let mut ws = Workspace::new(a.clone(), a.clone());
+        for side in [ActivePanel::Left, ActivePanel::Right] {
+            while ws.tab_count(side) < MAX_TABS {
+                assert!(ws.new_background_tab(side, b.clone()));
+            }
+        }
+        assert!(ws.set_tab_title(ActivePanel::Right, 1, "Work"));
+        assert!(ws.set_tab_close_protection(ActivePanel::Right, 1, true));
+        assert!(ws.set_tab_pinned(ActivePanel::Right, 1, true));
+        let revision = ws.tab_revision();
+        let choices = ws.tab_choices();
+        assert_eq!(choices.len(), 16);
+        assert_eq!(choices.iter().filter(|e| e.current).count(), 2);
+        assert_eq!(choices.iter().filter(|e| e.focused).count(), 1);
+        assert_eq!(ws.tab_revision(), revision);
+        let choice = choices
+            .iter()
+            .find(|e| e.side == ActivePanel::Right && e.index == 1)
+            .unwrap();
+        assert_eq!(choice.name, "Work");
+        assert!(choice.protected);
+        assert_eq!(choice.pin.as_ref(), Some(&b));
+        assert!(ws.tabs[1].slots[1].as_ref().unwrap().entries().is_empty());
+        assert!(!ws.tabs[1].slots[1].as_ref().unwrap().has_notify());
+        assert!(ws.activate_tab_captured(choice.side, choice.index, choice.revision, &choice.path));
+        assert_eq!(ws.active, ActivePanel::Right);
+        assert_eq!(ws.right.current_path, b);
+        assert_eq!(ws.active_tab_index(ActivePanel::Right), 1);
+        let same = ws.tab_choices().into_iter().find(|e| e.focused).unwrap();
+        let generation = ws.right.entries_gen();
+        assert!(ws.activate_tab_captured(same.side, same.index, same.revision, &same.path));
+        assert_eq!(ws.right.entries_gen(), generation);
+        assert!(!ws.activate_tab_captured(
+            choice.side,
+            choice.index,
+            choice.revision,
+            &choice.path
+        ));
+        let current = ws.tab_choices()[0].clone();
+        ws.left.navigate_to(b.clone());
+        assert!(!ws.activate_tab_captured(
+            current.side,
+            current.index,
+            current.revision,
+            &current.path
+        ));
+        let current = ws.tab_choices()[0].clone();
+        ws.emit_ui_request(crate::ui_request::UiRequest::Rename(b.clone()));
+        assert!(!ws.activate_tab_captured(
+            current.side,
+            current.index,
+            current.revision,
+            &current.path
+        ));
+        ws.drain_ui_requests();
+        assert!(ws.set_tab_title(ActivePanel::Left, 0, "Changed"));
+        assert!(!ws.activate_tab_captured(
+            current.side,
+            current.index,
+            current.revision,
+            &current.path
+        ));
+    }
+    #[test]
+    fn open_tab_activation_distinguishes_same_path_slots_and_preserves_native_paths() {
+        let temp = TempDir::new();
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        assert!(ws.new_background_tab(ActivePanel::Right, temp.path().into()));
+        let choices = ws.tab_choices();
+        let duplicate = choices
+            .iter()
+            .find(|e| e.side == ActivePanel::Right && e.index == 1)
+            .unwrap();
+        assert!(ws.activate_tab_captured(
+            duplicate.side,
+            duplicate.index,
+            duplicate.revision,
+            &duplicate.path
+        ));
+        assert_eq!(ws.active_tab_index(ActivePanel::Right), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let native = temp
+                .path()
+                .join(std::ffi::OsString::from_vec(vec![b'x', 255]));
+            // A native path must survive even when the host filesystem rejects its bytes.
+            assert!(ws.new_background_tab(ActivePanel::Left, native.clone()));
+            let choice = ws
+                .tab_choices()
+                .into_iter()
+                .find(|e| e.path == native)
+                .unwrap();
+            assert!(ws.activate_tab_captured(
+                choice.side,
+                choice.index,
+                choice.revision,
+                &choice.path
+            ));
+            assert_eq!(ws.left.current_path, native);
+        }
+    }
+
     #[test]
     fn parent_row_tabs_keep_source_state_and_activate_only_the_requested_destination() {
         for side in [ActivePanel::Left, ActivePanel::Right] {

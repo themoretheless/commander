@@ -5000,7 +5000,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
-            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 233)
+            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 249)
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -8135,6 +8135,109 @@ impl eframe::App for VisualQaApp {
                     button: egui::PointerButton::Primary,
                     pressed: local == 1,
                     modifiers: egui::Modifiers::NONE,
+                });
+            }
+            self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser && (233..249).contains(&self.disk_export_phase)
+        {
+            use crate::workspace::ActivePanel;
+            let phase = self.disk_export_phase;
+            let snapshot = |ws: &crate::workspace::Workspace| serde_json::json!({"left":ws.left.current_path,"right":ws.right.current_path,"left_tabs":ws.tab_snapshot(ActivePanel::Left),"right_tabs":ws.tab_snapshot(ActivePanel::Right),"focus":format!("{:?}",ws.active)});
+            if phase == 233 {
+                self.inner
+                    .ws
+                    .set_tab_title(ActivePanel::Left, 0, "Workspace Alpha");
+                std::fs::write(
+                    self.scenario_dir.join("tabs-picker-before.json"),
+                    serde_json::to_vec_pretty(&snapshot(&self.inner.ws)).unwrap(),
+                )
+                .unwrap();
+            } else if phase == 236 || phase == 245 {
+                let Some(state) = self.inner.ui.modals.palette_input.as_ref() else {
+                    return;
+                };
+                let record = state.tab_picker_snapshot();
+                let matches = record["matches"].as_array().unwrap();
+                if phase == 236
+                    && (record["input"] != "#" || matches.len() != 10 || record["selected"] != 5)
+                {
+                    return;
+                }
+                if phase == 245
+                    && (record["input"] != "#Workspace Alpha"
+                        || matches.len() != 1
+                        || matches[0]["side"] != "Left"
+                        || matches[0]["index"] != 0)
+                {
+                    return;
+                }
+                std::fs::write(
+                    self.scenario_dir.join(if phase == 236 {
+                        "tabs-picker-all.json"
+                    } else {
+                        "tabs-picker-query.json"
+                    }),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                )
+                .unwrap();
+            } else if phase == 239 || phase == 248 {
+                if self.inner.ui.modals.palette_input.is_some() {
+                    return;
+                }
+                let before: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(self.scenario_dir.join("tabs-picker-before.json")).unwrap(),
+                )
+                .unwrap();
+                let record = snapshot(&self.inner.ws);
+                if phase == 239 && record != before {
+                    return;
+                }
+                if phase == 248
+                    && (self.inner.ws.active != ActivePanel::Left
+                        || self.inner.ws.active_tab_index(ActivePanel::Left) != 0
+                        || self.inner.ws.left.current_path != self.fixture.left.join("column-A")
+                        || record["right"] != before["right"]
+                        || record["right_tabs"] != before["right_tabs"])
+                {
+                    return;
+                }
+                std::fs::write(
+                    self.scenario_dir.join(if phase == 239 {
+                        "tabs-picker-cancel.json"
+                    } else {
+                        "tabs-picker-activated.json"
+                    }),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                )
+                .unwrap();
+            } else if phase == 244 {
+                input
+                    .events
+                    .push(egui::Event::Text("#Workspace Alpha".into()));
+            } else {
+                let command = matches!(phase, 234 | 235 | 240 | 241 | 242 | 243);
+                let shift = matches!(phase, 234 | 235 | 240 | 241);
+                let modifiers = egui::Modifiers {
+                    command,
+                    mac_cmd: command,
+                    shift,
+                    ..egui::Modifiers::NONE
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: if matches!(phase, 237 | 238) {
+                        egui::Key::Escape
+                    } else if matches!(phase, 246 | 247) {
+                        egui::Key::Enter
+                    } else {
+                        egui::Key::A
+                    },
+                    physical_key: None,
+                    pressed: matches!(phase, 234 | 237 | 240 | 242 | 246),
+                    repeat: false,
+                    modifiers,
                 });
             }
             self.disk_export_phase += 1;
@@ -24653,7 +24756,7 @@ impl eframe::App for VisualQaApp {
         } else {
             TIMEOUT
         };
-        // The Miller regression now contains 233 observed interaction steps.
+        // The Miller regression now contains 249 observed interaction steps.
         // Bound a stalled step rather than the total duration of healthy
         // progress, retaining a separate hard cap for the complete scenario.
         let stalled_for = if self.scenario == Scenario::MillerBrowser {
@@ -27341,8 +27444,8 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==233 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
-                    && self.inner.ws.left.current_path==self.fixture.left.join("column-B")
+                self.disk_export_phase==249 && self.inner.ws.active==crate::workspace::ActivePanel::Left && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Left)==0 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                    && self.inner.ws.left.current_path==self.fixture.left.join("column-A")
                     && self.inner.ws.left.preview.is_none()
                     && self.fixture.left.join("column-B/Prepared destination").is_dir()
                     && std::fs::canonicalize(&self.fixture.left).is_ok_and(|path|self.inner.ws.right.current_path==path)

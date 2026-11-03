@@ -10,6 +10,8 @@ pub enum OmnibarMode<'a> {
     Command(&'a str),
     /// `@`: Favorites only, searched across the full opening snapshot.
     Favorites(&'a str),
+    /// `#`: existing tabs in both panes.
+    Tabs(&'a str),
     /// `/` or `~`: a literal folder path; `./` or `../`: a path relative to
     /// the active folder (see [`resolve_relative`]).
     Path(&'a str),
@@ -27,6 +29,8 @@ impl<'a> OmnibarMode<'a> {
             Self::Command(rest.trim())
         } else if let Some(rest) = trimmed.strip_prefix('@') {
             Self::Favorites(rest.trim())
+        } else if let Some(rest) = trimmed.strip_prefix('#') {
+            Self::Tabs(rest.trim())
         } else if let Some(rest) = trimmed.strip_prefix('?') {
             Self::Search(rest.trim())
         } else if let Some(rest) = trimmed.strip_prefix('!') {
@@ -55,6 +59,7 @@ impl<'a> OmnibarMode<'a> {
             Self::Jump(_) => "Go",
             Self::Command(_) => "Command",
             Self::Favorites(_) => "Favorites",
+            Self::Tabs(_) => "Tabs",
             Self::Path(_) => "Path",
             Self::Search(_) => "Search",
             Self::Shell(_) => "Shell",
@@ -117,11 +122,22 @@ pub fn resolve_relative(input: &str, base: &std::path::Path) -> Option<std::path
 }
 
 /// Hint row shown under an empty omnibar.
-pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  @ favorites  \u{00b7}  /, ~, ./ or quoted path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
+pub const GRAMMAR_HINT: &str = "folder name to jump  \u{00b7}  @ favorites  \u{00b7}  # tabs  \u{00b7}  /, ~, ./ or quoted path  \u{00b7}  > command  \u{00b7}  ? search  \u{00b7}  ! shell";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_selects_open_tabs_without_affecting_quoted_path_or_command_modes() {
+        assert_eq!(OmnibarMode::parse(" # work "), OmnibarMode::Tabs("work"));
+        assert_eq!(OmnibarMode::parse("#"), OmnibarMode::Tabs(""));
+        assert_eq!(
+            OmnibarMode::parse("'./#folder'"),
+            OmnibarMode::Path("'./#folder'")
+        );
+        assert_eq!(OmnibarMode::parse("> #work"), OmnibarMode::Command("#work"));
+    }
 
     #[test]
     fn quoted_path_routing_and_relative_resolution_preserve_literal_native_identity() {

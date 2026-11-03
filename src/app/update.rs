@@ -1599,6 +1599,7 @@ impl App {
             }
             UiRequest::VerifyChecksum(paths) => self.start_checksum(paths, ctx),
             UiRequest::VerifyChecksumList(path) => self.open_checksum_list(path, ctx),
+            UiRequest::OpenTabs => self.open_omnibar(ctx, "#".into()),
             UiRequest::OpenFavorites => self.open_omnibar(ctx, "@".into()),
             UiRequest::ImportFavoritesGtk => self.open_bookmark_import(),
             UiRequest::HexPreview(path) => {

@@ -1,0 +1,36 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+warning: method `tab_picker_snapshot` is never used
+  --> src/app/omnibar_dialog.rs:34:19
+   |
+33 | impl OmnibarState {
+   | ----------------- method in this implementation
+34 |     pub(crate) fn tab_picker_snapshot(&self) -> serde_json::Value {
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `commander` (bin "commander" test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 35.77s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 4 tests
+test tab_search::tests::open_tab_search_keeps_duplicates_prioritizes_names_and_bounds_the_query ... ok
+test command::tests::open_tab_picker_has_a_distinct_shortcut_without_changing_select_all ... ok
+test workspace::tabs::tests::open_tab_activation_distinguishes_same_path_slots_and_preserves_native_paths ... FAILED
+test workspace::tabs::tests::open_tab_choices_cover_both_groups_without_loading_and_revalidate_before_activation ... ok
+
+failures:
+
+---- workspace::tabs::tests::open_tab_activation_distinguishes_same_path_slots_and_preserves_native_paths stdout ----
+
+thread 'workspace::tabs::tests::open_tab_activation_distinguishes_same_path_slots_and_preserves_native_paths' (26092430) panicked at src/workspace/tabs.rs:1555:42:
+called `Result::unwrap()` on an `Err` value: Os { code: 92, kind: Uncategorized, message: "Illegal byte sequence" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    workspace::tabs::tests::open_tab_activation_distinguishes_same_path_slots_and_preserves_native_paths
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 3548 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

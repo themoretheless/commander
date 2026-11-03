@@ -78,6 +78,7 @@ pub enum UiRequest {
     VerifyChecksum(Vec<PathBuf>),
     VerifyChecksumList(PathBuf),
     OpenFavorites,
+    OpenTabs,
     ImportFavoritesGtk,
     HexPreview(PathBuf),
     HiddenFilesOutcome(crate::panel::ViewApplyOutcome),
@@ -97,7 +98,9 @@ impl UiRequest {
             Self::SavedSearch => Some(UiModal::SavedSearch),
             Self::ProjectCollections => Some(UiModal::Collections),
             Self::SelectMask => Some(UiModal::Mask),
-            Self::GoToPath | Self::Recent | Self::OpenFavorites => Some(UiModal::Palette),
+            Self::GoToPath | Self::Recent | Self::OpenFavorites | Self::OpenTabs => {
+                Some(UiModal::Palette)
+            }
             Self::RunCommand => Some(UiModal::RunCommand),
             Self::Palette => Some(UiModal::Palette),
             Self::GatherIntoFolder
@@ -140,6 +143,7 @@ impl UiRequest {
                 | Self::GoToPath
                 | Self::Recent
                 | Self::OpenFavorites
+                | Self::OpenTabs
                 | Self::Palette
                 | Self::BatchRename
                 | Self::Find

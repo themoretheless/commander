@@ -1700,6 +1700,7 @@ impl Workspace {
             Command::BeginRunBar => self.emit_ui_request(UiRequest::RunCommand),
             Command::GatherIntoFolder => self.emit_ui_request(UiRequest::GatherIntoFolder),
             Command::BeginGoToPath => self.emit_ui_request(UiRequest::GoToPath),
+            Command::OpenTabs => self.emit_ui_request(UiRequest::OpenTabs),
             Command::BeginRecent => self.emit_ui_request(UiRequest::Recent),
             Command::BeginPalette => self.emit_ui_request(UiRequest::Palette),
             Command::Undo => self.emit_ui_request(UiRequest::Undo),

@@ -1,0 +1,17 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0502]: cannot borrow `self.inner.ws` as mutable because it is also borrowed as immutable
+    --> src/visual_qa.rs:8149:17
+     |
+8147 |               let snapshot = || serde_json::json!({"left":self.inner.ws.left.current_path,"right":self.inner.ws.right.current_path,"left_tabs":self.inner.ws.ta...
+     |                              -- immutable borrow occurs here                                                                                   ------------- first borrow occurs due to use of `self.inner.ws` in closure
+8148 |               if phase == 233 {
+8149 | /                 self.inner
+8150 | |                     .ws
+8151 | |                     .set_tab_title(ActivePanel::Left, 0, "Workspace Alpha");
+     | |___________________________________________________________________________^ mutable borrow occurs here
+...
+8154 |                       serde_json::to_vec_pretty(&snapshot()).unwrap(),
+     |                                                  -------- immutable borrow later used here
+
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `commander` (bin "commander") due to 1 previous error
