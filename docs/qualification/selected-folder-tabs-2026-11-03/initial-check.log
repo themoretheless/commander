@@ -1,0 +1,18 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0559]: variant `ui_request::UiRequest::Notice` has no field named `kind`
+    --> src/workspace.rs:1197:25
+     |
+1197 |                         kind: NoticeKind::Error,
+     |                         ^^^^ `ui_request::UiRequest::Notice` does not have this field
+     |
+     = note: available fields are: `error`
+
+error[E0433]: cannot find type `NoticeKind` in this scope
+    --> src/workspace.rs:1197:31
+     |
+1197 |                         kind: NoticeKind::Error,
+     |                               ^^^^^^^^^^ use of undeclared type `NoticeKind`
+
+Some errors have detailed explanations: E0433, E0559.
+For more information about an error, try `rustc --explain E0433`.
+error: could not compile `commander` (bin "commander") due to 2 previous errors

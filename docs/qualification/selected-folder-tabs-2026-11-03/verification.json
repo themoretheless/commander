@@ -1,0 +1,13 @@
+{
+  "checks": 7,
+  "tests_passed": 3525,
+  "tests_ignored": 3,
+  "native_checks": 14,
+  "background_tab_owner_preserved": true,
+  "menu_background_verified": true,
+  "menu_foreground_verified": true,
+  "current_middle_modes": 3,
+  "selected_folder_group_verified": true,
+  "keyboard_checkpoints": 4,
+  "source_hashes_verified": true
+}

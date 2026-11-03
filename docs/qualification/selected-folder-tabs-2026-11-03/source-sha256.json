@@ -1,0 +1,10 @@
+{
+  "src/command.rs": "66efd0b8466be24ca4005efcd0f5f53ab531d74a543a39376434d9c3f4910673",
+  "src/workspace.rs": "b57a04de58de3acf15dc33c2c80a4e7579ffa2a4ff9dd218c4f6823cdc488599",
+  "src/workspace/tabs.rs": "73b6f35289c91efabc80b27a12809a2da1926dbb9e8d0489458d63eda997982e",
+  "src/panel.rs": "00215c2a615fe9e22761bf370e1ea9a14bf6cc869482704383d7e0f11d174b21",
+  "src/visual_qa.rs": "adfab786eeb17c21a9a89c18f9836095f0b695e6bb5a2a3e80dfdee4093ad65f",
+  "src/app/omnibar_dialog.rs": "10be0315ad8bb15da23270d0b996d9f27ef529b81e5095f3840cffb487874ec9",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}

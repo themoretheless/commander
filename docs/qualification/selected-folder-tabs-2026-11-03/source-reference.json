@@ -1,0 +1,7 @@
+{
+  "cohort": 6,
+  "repository": "files-community/Files",
+  "source": "https://www.files.community/docs/features/tabs",
+  "contract": "Multiple folders can be selected and opened in new tabs",
+  "adaptation": "Palette command opens selected visible directories as an ordered lazy background group, with atomic capacity refusal and preserved current panel"
+}

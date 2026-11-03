@@ -549,6 +549,50 @@ impl Workspace {
         true
     }
 
+    /// Open only selected visible directories, in display order, as one lazy group.
+    pub fn open_selected_folders_background(&mut self) -> Result<usize, String> {
+        if !self.tabs_can_change() {
+            return Err("Finish the pending operation before opening folder tabs".into());
+        }
+        let source = self.active;
+        let remaining = MAX_TABS.saturating_sub(self.tab_count(source));
+        let active = self.active_panel_ref();
+        let mut folders = Vec::new();
+        active.visit_filtered(|_, entry| {
+            if entry.is_dir && active.is_selected(&entry.path) {
+                folders.push(entry.path.clone());
+            }
+            folders.len() <= remaining
+        });
+        if folders.is_empty() {
+            return Err("Select at least one visible folder".into());
+        }
+        if folders.len() > MAX_TABS.saturating_sub(self.tab_count(source)) {
+            return Err(
+                "Not enough free tabs for all selected visible folders; no tabs opened".into(),
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        if folders
+            .iter()
+            .any(|path| !path.is_absolute() || !seen.insert(path.clone()))
+        {
+            return Err("Folder selection changed; refresh and select the folders again".into());
+        }
+        let count = folders.len();
+        let (tabs, visible) = self.tabs_and_panel(source);
+        let config = visible.view_config();
+        let prepared = folders
+            .into_iter()
+            .map(|path| Some(PanelState::new_with_view(path, config)))
+            .collect::<Vec<_>>();
+        tabs.slots
+            .splice(tabs.active + 1..tabs.active + 1, prepared);
+        self.tab_revision = self.tab_revision.wrapping_add(1);
+        *self.command_capabilities.borrow_mut() = None;
+        Ok(count)
+    }
+
     /// Validate a captured current-list folder row before changing tab ownership.
     pub(crate) fn open_listed_folder_tab(
         &mut self,
@@ -1061,6 +1105,118 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    #[test]
+    fn selected_folder_tabs_open_visible_directories_atomically_in_display_order() {
+        use crate::command::{Command, availability};
+        for mode in [
+            crate::panel::BrowserMode::List,
+            crate::panel::BrowserMode::Icons,
+            crate::panel::BrowserMode::Miller,
+        ] {
+            let temp = TempDir::new();
+            let two = temp.dir("folder-2");
+            let ten = temp.dir("folder-10");
+            let skip = temp.dir("skip");
+            let other = temp.dir("other");
+            let file = temp.file("file.txt", "keep");
+            let mut ws = Workspace::new(other.clone(), temp.path().into());
+            ws.active = ActivePanel::Right;
+            ws.right.refresh();
+            ws.right.set_browser_mode(mode);
+            ws.right.focus_child("file.txt".into());
+            for path in [&ten, &skip, &two, &file, &other.join("foreign")] {
+                ws.right.toggle_select(path.clone());
+            }
+            ws.right.set_search_query("folder- | file");
+            assert_eq!(ws.right.selected_entries().len(), 3);
+            let before = ws.tab_snapshot(ActivePanel::Right).entries[0].clone();
+            let revision = ws.right.entries_gen();
+            let tab_revision = ws.tab_revision();
+            let cursor = ws.right.cursor_entry().unwrap().path.clone();
+            let selection = ws.right.selected_paths().clone();
+            assert!(
+                availability(
+                    Command::OpenSelectedFoldersBackgroundTabs,
+                    &ws.command_context()
+                )
+                .enabled
+            );
+            ws.execute(Command::OpenSelectedFoldersBackgroundTabs);
+            assert!(ws.drain_ui_requests().is_empty());
+            let tabs = ws.tab_snapshot(ActivePanel::Right);
+            assert_eq!(tabs.active, 0);
+            assert_eq!(tabs.entries.len(), 3);
+            assert_eq!(tabs.entries[0], before);
+            assert_eq!(tabs.entries[1].path, two);
+            assert_eq!(tabs.entries[2].path, ten);
+            assert_eq!(ws.tab_revision(), tab_revision.wrapping_add(1));
+            assert_eq!(ws.right.entries_gen(), revision);
+            assert_eq!(ws.right.cursor_entry().unwrap().path, cursor);
+            assert_eq!(ws.right.selected_paths(), &selection);
+            assert_eq!(ws.left.current_path, other);
+            assert_eq!(ws.active, ActivePanel::Right);
+            assert_eq!(ws.right.search_query(), "folder- | file");
+            for index in [1, 2] {
+                let pending = ws.tabs[1].slots[index].as_ref().unwrap();
+                assert!(pending.entries().is_empty());
+                assert!(!pending.has_notify());
+                assert_eq!(pending.view_config(), before.view);
+            }
+        }
+    }
+    #[test]
+    fn selected_folder_tabs_refuse_short_capacity_pending_modal_and_empty_folder_selection() {
+        use crate::command::{Command, availability};
+        let temp = TempDir::new();
+        let a = temp.dir("A");
+        let b = temp.dir("B");
+        let file = temp.file("file.txt", "keep");
+        let mut ws = Workspace::new(temp.path().into(), temp.path().into());
+        ws.left.refresh();
+        ws.left.focus_child("A".into());
+        assert!(
+            !availability(
+                Command::OpenSelectedFoldersBackgroundTabs,
+                &ws.command_context()
+            )
+            .enabled
+        );
+        assert!(ws.open_selected_folders_background().is_err());
+        ws.left.toggle_select(file.clone());
+        assert!(
+            !availability(
+                Command::OpenSelectedFoldersBackgroundTabs,
+                &ws.command_context()
+            )
+            .enabled
+        );
+        ws.left.toggle_select(a.clone());
+        ws.left.toggle_select(b.clone());
+        ws.emit_ui_request(crate::ui_request::UiRequest::Rename(file));
+        assert!(ws.open_selected_folders_background().is_err());
+        assert_eq!(ws.tab_count(ActivePanel::Left), 1);
+        ws.drain_ui_requests();
+        while ws.tab_count(ActivePanel::Left) < MAX_TABS - 1 {
+            assert!(ws.new_background_tab(ActivePanel::Left, a.clone()));
+        }
+        let before = ws.tab_snapshot(ActivePanel::Left);
+        let revision = ws.tab_revision();
+        let disabled = availability(
+            Command::OpenSelectedFoldersBackgroundTabs,
+            &ws.command_context(),
+        );
+        assert!(!disabled.enabled);
+        assert!(disabled.reason.unwrap().contains("free tabs"));
+        assert!(ws.open_selected_folders_background().is_err());
+        assert_eq!(ws.tab_revision(), revision);
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
+        ws.execute(Command::OpenSelectedFoldersBackgroundTabs);
+        assert!(matches!(
+            &ws.drain_ui_requests()[..],
+            [crate::ui_request::UiRequest::Notice { error: true, .. }]
+        ));
+        assert_eq!(ws.tab_snapshot(ActivePanel::Left), before);
+    }
     #[test]
     fn listed_folder_tabs_revalidate_visible_directory_and_preserve_source_for_all_views() {
         for mode in [

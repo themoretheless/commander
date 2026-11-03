@@ -180,6 +180,7 @@ pub enum Command {
     GoToTab(usize),
     OpenFolderTab,
     OpenFolderBackgroundTab,
+    OpenSelectedFoldersBackgroundTabs,
     /// Navigate the other pane to the highlighted folder without moving focus.
     OpenFolderOtherPane,
     CopyTabsToOther,
@@ -430,6 +431,7 @@ pub enum CommandPredicate {
     InactiveWritable,
     AnyPaneWritable,
     CanAddTab,
+    CanAddSelectedFolderTabs,
     CanCopyTabsToOther,
     CanCloseTab,
     ActiveTabUnprotected,
@@ -461,6 +463,13 @@ impl CommandPredicate {
                     (!context.active_mutation, ACTIVE_MUTATION_REASON)
                 }
             }
+            Self::CanAddSelectedFolderTabs => (
+                context
+                    .selected_entries
+                    .saturating_sub(context.selected_visible_files)
+                    <= crate::workspace::tabs::MAX_TABS.saturating_sub(context.tab_count),
+                "Not enough free tabs for all selected visible folders",
+            ),
             Self::CanAddTab => (
                 context.tab_count < crate::workspace::tabs::MAX_TABS,
                 "This pane already has eight tabs",
@@ -703,6 +712,11 @@ pub const fn predicates(command: Command) -> &'static [CommandPredicate] {
         ReopenClosedTab => &[P::ConfirmationClosed, P::CanAddTab, P::HasClosedTab],
         NewTab => &[P::ConfirmationClosed, P::CanAddTab],
         CopyTabsToOther => &[P::ConfirmationClosed, P::CanCopyTabsToOther],
+        OpenSelectedFoldersBackgroundTabs => &[
+            P::ConfirmationClosed,
+            P::HasSelectedVisibleFolder,
+            P::CanAddSelectedFolderTabs,
+        ],
         OpenFolderTab | OpenFolderBackgroundTab => {
             &[P::ConfirmationClosed, P::CanAddTab, P::CursorIsDirectory]
         }
@@ -1044,6 +1058,7 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("New folder tab", "Cmd+T", "view tabs new duplicate pane folder", Command::NewTab),
     entry("Open highlighted folder in new tab", "", "view tabs open folder", Command::OpenFolderTab),
     entry("Open highlighted folder in background tab", "", "view tabs open folder background keep focus", Command::OpenFolderBackgroundTab),
+    entry("Open selected folders in background tabs", "", "view tabs open selected visible folders directories group batch background keep focus", Command::OpenSelectedFoldersBackgroundTabs),
     entry("Open highlighted folder in other pane", "", "navigation directory opposite target browse folder keep focus", Command::OpenFolderOtherPane),
     entry("Copy all folder tabs to other pane", "", "view tabs copy all opposite panel group background", Command::CopyTabsToOther),
     entry("Reopen closed folder tab", "Cmd+Shift+T", "view tabs reopen restore recently closed undo", Command::ReopenClosedTab),

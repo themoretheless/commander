@@ -1190,6 +1190,14 @@ impl Workspace {
             Command::CopyTabsToOther => {
                 self.copy_tabs_to_other(self.active);
             }
+            Command::OpenSelectedFoldersBackgroundTabs => {
+                if let Err(message) = self.open_selected_folders_background() {
+                    self.emit_ui_request(UiRequest::Notice {
+                        message,
+                        error: true,
+                    });
+                }
+            }
             Command::OpenFolderTab | Command::OpenFolderBackgroundTab => {
                 let path = self
                     .active_panel_ref()

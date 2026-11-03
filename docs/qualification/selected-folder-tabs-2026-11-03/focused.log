@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 33.93s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 2 tests
+test workspace::tabs::tests::selected_folder_tabs_refuse_short_capacity_pending_modal_and_empty_folder_selection ... ok
+test workspace::tabs::tests::selected_folder_tabs_open_visible_directories_atomically_in_display_order ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3526 filtered out; finished in 0.04s
+
