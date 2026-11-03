@@ -1326,6 +1326,7 @@ pub struct ContentKeep {
     pub protect_basename: bool,
     pub protect_case_sensitive: bool,
     pub modified_before: String,
+    pub candidate_globs: String,
 }
 impl Default for ContentKeep {
     fn default() -> Self {
@@ -1336,6 +1337,7 @@ impl Default for ContentKeep {
             protect_basename: false,
             protect_case_sensitive: true,
             modified_before: String::new(),
+            candidate_globs: String::new(),
         }
     }
 }
@@ -1343,7 +1345,9 @@ impl ContentKeep {
     fn label(&self) -> String {
         format!(
             "{}{} {}",
-            if self.protected_glob.lines().all(str::is_empty) {
+            if self.protected_glob.lines().all(str::is_empty)
+                && self.candidate_globs.lines().all(str::is_empty)
+            {
                 ""
             } else {
                 "at least "
@@ -1353,16 +1357,27 @@ impl ContentKeep {
         )
     }
     fn protection(&self) -> Result<Vec<crate::archive_filter::Pattern>, String> {
-        if self.protected_glob.chars().count() > 8192 {
-            return Err("Protection list exceeds 8192 characters.".into());
+        self.pattern_list(&self.protected_glob, "Protection", "protection")
+    }
+    fn candidates(&self) -> Result<Vec<crate::archive_filter::Pattern>, String> {
+        self.pattern_list(&self.candidate_globs, "Candidate", "candidate")
+    }
+    fn pattern_list(
+        &self,
+        input: &str,
+        label: &str,
+        kind: &str,
+    ) -> Result<Vec<crate::archive_filter::Pattern>, String> {
+        if input.chars().count() > 8192 {
+            return Err(format!("{label} list exceeds 8192 characters."));
         }
         let mut patterns = Vec::new();
-        for (line, glob) in self.protected_glob.lines().enumerate() {
+        for (line, glob) in input.lines().enumerate() {
             if glob.is_empty() {
                 continue;
             }
             if patterns.len() == 16 {
-                return Err("Use at most 16 nonempty protection patterns.".into());
+                return Err(format!("Use at most 16 nonempty {kind} patterns."));
             }
             patterns.push(
                 crate::archive_filter::Pattern::compile(
@@ -1374,7 +1389,7 @@ impl ContentKeep {
                         ..Default::default()
                     },
                 )
-                .map_err(|error| format!("Protection line {}: {error}", line + 1))?,
+                .map_err(|error| format!("{label} line {}: {error}", line + 1))?,
             );
         }
         Ok(patterns)
@@ -1440,13 +1455,27 @@ impl ContentKeep {
             ui.ctx()
                 .data_mut(|d| d.insert_temp(egui::Id::new("archive-protect-glob"), input.rect));
             let _ = input;
-            let basename=ui.checkbox(&mut self.protect_basename,"Filename only").on_hover_text("Match the final filename at any folder depth instead of the complete archive-relative path. Editing this option leaves selection unchanged until Select copies.");
-            let case=ui.checkbox(&mut self.protect_case_sensitive,"Match case").on_hover_text("When off, use the archive filter's lowercase-based matching for both pattern and filenames. Editing this option leaves selection unchanged until Select copies.");
+            let basename=ui.checkbox(&mut self.protect_basename,"Filename only").on_hover_text("For both pattern lists: match the final filename at any folder depth instead of the complete archive-relative path. Editing this option leaves selection unchanged until Select copies.");
+            let case=ui.checkbox(&mut self.protect_case_sensitive,"Match case").on_hover_text("For both pattern lists: when off, use the archive filter's lowercase-based matching for patterns and filenames. Editing this option leaves selection unchanged until Select copies.");
             #[cfg(feature="visual-qa")]
             ui.ctx().data_mut(|d|{d.insert_temp(egui::Id::new("archive-protect-basename"),basename.rect);d.insert_temp(egui::Id::new("archive-protect-case"),case.rect);});
             let _=(basename,case);
         });
         ui.add(egui::Label::new(egui::RichText::new("One glob per line; all matches are kept; copy count is a minimum.").small()).wrap()).on_hover_text("One archive-relative glob per line; up to 16 nonempty patterns, 256 characters each. Any matching pattern protects the member. Empty lines are ignored; spaces are literal. Filename only matches the final name at any depth; Match case controls letter case. In full-path mode, * stays within a folder and ** crosses folders. Empty disables protection. Editing the pattern leaves selection unchanged until Select copies.");
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Copy candidates (globs):");
+            let input=ui.add(egui::TextEdit::multiline(&mut self.candidate_globs)
+                .id(egui::Id::new("archive-candidate-globs-input")).desired_width(260.0).desired_rows(2).char_limit(8192)
+                .hint_text("backups/**\n*.bak"))
+                .on_hover_text("Only members matching any candidate pattern can be selected as extra copies. Empty allows every member. Nonmatching and protected members are kept and count toward the minimum. One glob per line; the same limits, Filename only and Match case options apply to both lists. Edits apply on Select copies.");
+            #[cfg(feature="visual-qa")]
+            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-candidate-globs"),input.rect));
+            let _=input;
+        });
+        ui.label(
+            egui::RichText::new("Filename only and Match case apply to both pattern lists.")
+                .small(),
+        );
         ui.horizontal_wrapped(|ui| {
             ui.label("Only groups modified before:");
             let input=ui.add(egui::TextEdit::singleline(&mut self.modified_before)
@@ -1457,7 +1486,11 @@ impl ContentKeep {
             ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-group-before"),input.rect));
             let _=input;
         });
-        let error = self.protection().err().or_else(|| self.cutoff().err());
+        let error = self
+            .protection()
+            .err()
+            .or_else(|| self.candidates().err())
+            .or_else(|| self.cutoff().err());
         if let Some(error) = &error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -1485,6 +1518,7 @@ fn select_redundant_content_groups(
         return Err("Keep at least one representative per group.".into());
     }
     let protection = keep.protection()?;
+    let candidates = keep.candidates()?;
     let cutoff = keep.cutoff()?;
     let groups = report
         .content_groups
@@ -1552,17 +1586,23 @@ fn select_redundant_content_groups(
             }
         });
         let mut protected = vec![false; group.members.len()];
-        if !protection.is_empty() {
+        if !protection.is_empty() || !candidates.is_empty() {
             for (rank, member) in group.members.iter().enumerate() {
-                let path=member.path.to_str().ok_or("Protected path matching requires UTF-8 member paths; selection was not changed.")?;
+                let path = member.path.to_str().ok_or(
+                    "Path policy matching requires UTF-8 member paths; selection was not changed.",
+                )?;
                 let lowercase = if keep.protect_case_sensitive {
                     std::borrow::Cow::Borrowed(path)
                 } else {
                     std::borrow::Cow::Owned(path.to_lowercase())
                 };
-                if protection
-                    .iter()
-                    .any(|pattern| pattern.matches(path, &lowercase))
+                if (!candidates.is_empty()
+                    && !candidates
+                        .iter()
+                        .any(|pattern| pattern.matches(path, &lowercase)))
+                    || protection
+                        .iter()
+                        .any(|pattern| pattern.matches(path, &lowercase))
                 {
                     protected[rank] = true;
                     keepers.push(rows[offset + rank]);
@@ -3356,6 +3396,116 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn archive_candidate_patterns_limit_selection_and_count_other_members_as_keepers() {
+        use super::{ContentKeep, ContentKeepOrder, select_redundant_content_groups};
+        use std::collections::BTreeSet;
+        let mut listing = listing(&[
+            "a.txt",
+            "b.bak",
+            "nested/c.txt",
+            "nested/D.TXT",
+            "unrelated",
+        ]);
+        for (id, member) in listing.members.iter_mut().enumerate() {
+            member.index = id;
+            member.size = 3;
+        }
+        let mut report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 5,
+            decoded: 15,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..4]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        for group in [None, Some(0)] {
+            for (candidates, protect, basename, case_sensitive, count, wanted) in [
+                ("", "", false, true, 1, vec![1, 2, 3, 4]),
+                ("*.bak", "", false, true, 1, vec![1, 4]),
+                ("nested/**", "", false, true, 1, vec![2, 3, 4]),
+                ("*.txt\n*.bak", "", false, true, 1, vec![0, 1, 4]),
+                ("*.TXT", "", true, false, 1, vec![0, 2, 3, 4]),
+                ("*.TXT", "", true, true, 1, vec![3, 4]),
+                ("*.txt", "a.txt", true, false, 1, vec![2, 3, 4]),
+                ("*.txt", "a.txt", true, false, 3, vec![3, 4]),
+                ("nested/**", "nested/**", false, true, 1, vec![4]),
+                ("missing", "", false, true, 1, vec![4]),
+                ("\r\n", "", false, true, 1, vec![1, 2, 3, 4]),
+            ] {
+                let keep = ContentKeep {
+                    candidate_globs: candidates.into(),
+                    protected_glob: protect.into(),
+                    protect_basename: basename,
+                    protect_case_sensitive: case_sensitive,
+                    count,
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([0, 1, 2, 3, 4]);
+                select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                    .unwrap();
+                assert_eq!(
+                    selected.into_iter().collect::<Vec<_>>(),
+                    wanted,
+                    "{candidates:?}, {protect:?}, {count}"
+                );
+            }
+            for pattern in [
+                "[".to_owned(),
+                format!("*.txt\n{}", "x".repeat(257)),
+                std::iter::repeat_n("x", 17).collect::<Vec<_>>().join("\n"),
+                "\n".repeat(8193),
+            ] {
+                let keep = ContentKeep {
+                    candidate_globs: pattern,
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([1, 4]);
+                assert!(
+                    select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                        .is_err()
+                );
+                assert_eq!(selected, BTreeSet::from([1, 4]));
+            }
+        }
+        let keep = ContentKeep {
+            candidate_globs: "*.txt".into(),
+            order: ContentKeepOrder::Last,
+            ..Default::default()
+        };
+        report.content_groups.as_mut().unwrap()[0].members[2].path = "stale".into();
+        let mut selected = BTreeSet::from([1, 4]);
+        assert!(
+            select_redundant_content_groups(&report, &listing, None, &keep, &mut selected).is_err()
+        );
+        assert_eq!(selected, BTreeSet::from([1, 4]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            report.content_groups.as_mut().unwrap()[0].members[2].path =
+                listing.members[2].path.clone();
+            let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'x', 255]));
+            listing.members[0].path = path.clone();
+            report.content_groups.as_mut().unwrap()[0].members[0].path = path;
+            assert!(
+                select_redundant_content_groups(&report, &listing, None, &keep, &mut selected)
+                    .unwrap_err()
+                    .contains("UTF-8")
+            );
+            assert_eq!(selected, BTreeSet::from([1, 4]));
+        }
+    }
+
+    #[test]
     fn archive_group_cutoff_parses_dates_offsets_fractional_and_pre_epoch_times() {
         use super::ContentKeep;
         use std::time::{Duration, UNIX_EPOCH};
@@ -3647,6 +3797,7 @@ mod tests {
                     protect_basename: basename,
                     protect_case_sensitive: case_sensitive,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 };
                 let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
                 select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
@@ -3714,6 +3865,7 @@ mod tests {
                     protect_basename: false,
                     protect_case_sensitive: true,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 };
                 let mut selected = BTreeSet::from([0, 1, 2, 3, 4, 5]);
                 select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
@@ -3739,6 +3891,7 @@ mod tests {
                         protect_basename: false,
                         protect_case_sensitive: true,
                         modified_before: String::new(),
+                        candidate_globs: String::new(),
                     },
                     &mut selected
                 )
@@ -3765,6 +3918,7 @@ mod tests {
                         protect_basename: false,
                         protect_case_sensitive: true,
                         modified_before: String::new(),
+                        candidate_globs: String::new(),
                     },
                     &mut selected
                 )
@@ -3786,6 +3940,7 @@ mod tests {
                     protect_basename: false,
                     protect_case_sensitive: true,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 },
                 &mut selected
             )
@@ -3856,6 +4011,7 @@ mod tests {
                         protect_basename: false,
                         protect_case_sensitive: true,
                         modified_before: String::new(),
+                        candidate_globs: String::new(),
                     },
                     &mut selected,
                 )
@@ -3881,6 +4037,7 @@ mod tests {
                     protect_basename: false,
                     protect_case_sensitive: true,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 },
                 &mut selected
             )
@@ -3941,6 +4098,7 @@ mod tests {
                         protect_basename: false,
                         protect_case_sensitive: true,
                         modified_before: String::new(),
+                        candidate_globs: String::new(),
                     },
                     &mut selected,
                 )
@@ -3966,6 +4124,7 @@ mod tests {
                 protect_basename: false,
                 protect_case_sensitive: true,
                 modified_before: String::new(),
+                candidate_globs: String::new(),
             },
             &mut selected,
         )
@@ -3984,6 +4143,7 @@ mod tests {
                 protect_basename: false,
                 protect_case_sensitive: true,
                 modified_before: String::new(),
+                candidate_globs: String::new(),
             },
             &mut selected,
         )
@@ -4005,6 +4165,7 @@ mod tests {
                     protect_basename: false,
                     protect_case_sensitive: true,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 },
                 &mut selected,
             )
@@ -4025,6 +4186,7 @@ mod tests {
                     protect_basename: false,
                     protect_case_sensitive: true,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 },
                 &mut selected
             )
@@ -4085,6 +4247,7 @@ mod tests {
                     protect_basename: false,
                     protect_case_sensitive: true,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 },
                 &mut selected,
             )
@@ -4104,6 +4267,7 @@ mod tests {
                     protect_basename: false,
                     protect_case_sensitive: true,
                     modified_before: String::new(),
+                    candidate_globs: String::new(),
                 },
                 &mut selected
             )

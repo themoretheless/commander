@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "url": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "feature": "DedupeConfig name/path pattern restrictions",
+  "adaptation": "Newline-separated candidate archive globs; nonmatches are retained and count toward the minimum; protection wins"
+}

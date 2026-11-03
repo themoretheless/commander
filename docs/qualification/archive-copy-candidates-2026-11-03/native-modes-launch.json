@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_protection_modes",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-copy-candidates-2026-11-03/native-captures/1793695198793966000",
+  "binary_sha256": "bf54d16913fbbfc01b1a501d5c2fe8eddcac15d1c11563d21e4ed9dd3567bf6f",
+  "core_sha256": "bf54d16913fbbfc01b1a501d5c2fe8eddcac15d1c11563d21e4ed9dd3567bf6f",
+  "wrapper_sha256": "1147f902e7724cb054d444e301d97588addb76a314d3e9a04b8c03c4f8bedaf4",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

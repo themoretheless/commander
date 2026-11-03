@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_tar_content_groups",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-copy-candidates-2026-11-03/native-captures/1793695232848224000",
+  "binary_sha256": "bf54d16913fbbfc01b1a501d5c2fe8eddcac15d1c11563d21e4ed9dd3567bf6f",
+  "core_sha256": "bf54d16913fbbfc01b1a501d5c2fe8eddcac15d1c11563d21e4ed9dd3567bf6f",
+  "wrapper_sha256": "fa24b4d2d783b243cf93f88bcd96e939812538ccbd188751a9bbd93da6697d88",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

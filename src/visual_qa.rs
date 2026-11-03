@@ -5100,7 +5100,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 52)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
-            && !(self.scenario == Scenario::ArchiveProtectionModes && self.archive_copy_phase < 178)
+            && !(self.scenario == Scenario::ArchiveProtectionModes && self.archive_copy_phase < 228)
             && !(self.scenario == Scenario::ArchiveTarContentGroups
                 && self.archive_copy_phase < 149)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
@@ -17905,6 +17905,177 @@ impl eframe::App for VisualQaApp {
             self.archive_copy_phase += 1;
             return;
         }
+        if self.scenario == Scenario::ArchiveProtectionModes
+            && (178..228).contains(&self.archive_copy_phase)
+        {
+            let phase = self.archive_copy_phase;
+            if matches!(
+                phase,
+                183 | 189 | 193 | 199 | 203 | 209 | 215 | 219 | 223 | 227
+            ) {
+                let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                    return;
+                };
+                let Some(listing) = state.listing.as_ref() else {
+                    return;
+                };
+                let candidate = match phase {
+                    183 => "",
+                    189 | 193 => "empty-*",
+                    199 | 203 => "nested/**",
+                    209 => "[",
+                    _ => "*.TXT",
+                };
+                let wanted = match phase {
+                    183 | 189 => vec![0, 2, 5, 8, 9],
+                    193 | 199 => vec![5],
+                    203 | 209 | 215 => vec![10],
+                    219 | 223 => vec![],
+                    _ => vec![0, 2, 8, 9],
+                };
+                let case_sensitive = phase < 220;
+                if !state.content_keep.modified_before.is_empty()
+                    || state.content_keep.candidate_globs != candidate
+                    || state.content_keep.protect_case_sensitive != case_sensitive
+                {
+                    self.retry_archive_input(match phase {
+                        183 => 178,
+                        189 => 184,
+                        199 => 194,
+                        209 => 204,
+                        215 => 210,
+                        223 => 220,
+                        _ => return,
+                    });
+                    return;
+                }
+                let mut indexes = state
+                    .selected
+                    .iter()
+                    .map(|id| listing.members[*id].index)
+                    .collect::<Vec<_>>();
+                indexes.sort_unstable();
+                if indexes != wanted
+                    && matches!(phase, 193 | 203 | 219 | 227)
+                    && state.error.is_none()
+                {
+                    self.retry_archive_input(phase - 3);
+                    return;
+                }
+                let enabled = ctx.data(|d| {
+                    d.get_temp::<bool>(egui::Id::new("archive-select-redundant-groups-enabled"))
+                });
+                if indexes != wanted || state.error.is_some() || enabled != Some(phase != 209) {
+                    return;
+                }
+                let record = serde_json::json!({"phase":phase,"candidate_globs":candidate,"case_sensitive":case_sensitive,"basename":state.content_keep.protect_basename,"glob":state.content_keep.protected_glob,"cutoff":state.content_keep.modified_before,"selected_indexes":indexes,"selected":state.selected,"global_enabled":enabled,"listing":listing.members.iter().enumerate().map(|(id,m)|serde_json::json!({"id":id,"index":m.index,"path":m.path})).collect::<Vec<_>>()});
+                let _ = std::fs::write(
+                    self.scenario_dir
+                        .join(format!("copy-candidates-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                self.archive_copy_phase += 1;
+                return;
+            }
+            let (id, step, text) = match phase {
+                178..=182 => (egui::Id::new("archive-group-before"), phase - 178, Some("")),
+                184..=188 => (
+                    egui::Id::new("archive-candidate-globs"),
+                    phase - 184,
+                    Some("empty-*"),
+                ),
+                190..=192 => (
+                    egui::Id::new("archive-select-redundant-groups"),
+                    phase - 190,
+                    None,
+                ),
+                194..=198 => (
+                    egui::Id::new("archive-candidate-globs"),
+                    phase - 194,
+                    Some("nested/**"),
+                ),
+                200..=202 => (
+                    egui::Id::new("archive-select-redundant-groups"),
+                    phase - 200,
+                    None,
+                ),
+                204..=208 => (
+                    egui::Id::new("archive-candidate-globs"),
+                    phase - 204,
+                    Some("["),
+                ),
+                210..=214 => (
+                    egui::Id::new("archive-candidate-globs"),
+                    phase - 210,
+                    Some("*.TXT"),
+                ),
+                216..=218 => (
+                    egui::Id::new("archive-select-redundant-groups"),
+                    phase - 216,
+                    None,
+                ),
+                220..=222 => (egui::Id::new("archive-protect-case"), phase - 220, None),
+                _ => (
+                    egui::Id::new("archive-select-redundant-groups"),
+                    phase - 224,
+                    None,
+                ),
+            };
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !egui::Rect::from_min_max(
+                    clip.min,
+                    egui::pos2(clip.right(), clip.bottom() - 100.0),
+                )
+                .contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step == 3 {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                });
+            } else if step == 4 && text == Some("") {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            } else if step == 4 {
+                input
+                    .events
+                    .push(egui::Event::Text(text.unwrap_or_default().into()));
+            } else if step > 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_copy_phase += 1;
+            return;
+        }
         if self.scenario == Scenario::ArchiveTarContentGroups && self.archive_copy_phase < 20 {
             let phase = self.archive_copy_phase;
             let Some(state) = self.inner.ui.tools.archive.as_ref() else {
@@ -23804,7 +23975,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchiveProtectionModes => self.archive_copy_phase==178 && [121,127,131,137,141,147,153,157,163,167,173,177].into_iter().all(|phase|self.scenario_dir.join(format!("group-cutoff-{phase}.json")).is_file()) && [75,79,85,91,95,101,105,111,115].into_iter().all(|phase|self.scenario_dir.join(format!("protection-list-{phase}.json")).is_file()) && [154,158,162,166,172,176,180,184,188,192,196,200,206,210].into_iter().all(|phase|self.scenario_dir.join(format!("tar-protection-mode-{phase}.json")).is_file()) && self.scenario_dir.join("modes-initial.json").is_file() && std::fs::read(self.fixture.left.join("groups.tar.gz")).is_ok_and(|bytes|bytes.as_slice()==include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice()),
+            Scenario::ArchiveProtectionModes => self.archive_copy_phase==228 && [183,189,193,199,203,209,215,219,223,227].into_iter().all(|phase|self.scenario_dir.join(format!("copy-candidates-{phase}.json")).is_file()) && [121,127,131,137,141,147,153,157,163,167,173,177].into_iter().all(|phase|self.scenario_dir.join(format!("group-cutoff-{phase}.json")).is_file()) && [75,79,85,91,95,101,105,111,115].into_iter().all(|phase|self.scenario_dir.join(format!("protection-list-{phase}.json")).is_file()) && [154,158,162,166,172,176,180,184,188,192,196,200,206,210].into_iter().all(|phase|self.scenario_dir.join(format!("tar-protection-mode-{phase}.json")).is_file()) && self.scenario_dir.join("modes-initial.json").is_file() && std::fs::read(self.fixture.left.join("groups.tar.gz")).is_ok_and(|bytes|bytes.as_slice()==include_bytes!("../docs/qualification/archive-replica-time-2026-11-03/fixtures/groups.tar.gz").as_slice()),
             Scenario::ArchiveTarContentGroups => self.archive_copy_phase==149 && [23,27,31,35].into_iter().all(|phase|self.scenario_dir.join(format!("tar-group-action-{phase}.json")).is_file()) && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json","tar-single-group.txt","tar-single-group.json","tar-redundant-selection-47.json","tar-redundant-selection-51.json","tar-keep-last.json","tar-keep-time-62.json","tar-keep-time-66.json","tar-keep-time-70.json","tar-keep-time-74.json","tar-keep-depth-78.json","tar-keep-depth-82.json","tar-keep-depth-86.json","tar-keep-depth-90.json","tar-keep-depth-94.json","tar-keep-depth-98.json","tar-protected-104.json","tar-protected-108.json","tar-protected-114.json","tar-protected-118.json","tar-protected-124.json","tar-protected-128.json","tar-protected-134.json","tar-protected-140.json","tar-protected-144.json","tar-protected-148.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
             Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
             Scenario::ArchivePassword => {
