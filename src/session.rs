@@ -674,6 +674,7 @@ mod tests {
         let keep = ContentKeep {
             count: 2,
             order: ContentKeepOrder::Newest,
+            tie_breakers: vec![ContentKeepOrder::Shallowest],
             protected_glob: "originals/**\n*.bak".into(),
             candidate_globs: "backups/**".into(),
             modified_before: "2026-01-01".into(),

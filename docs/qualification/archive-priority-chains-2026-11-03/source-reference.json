@@ -1,0 +1,6 @@
+{
+  "cohort": 85,
+  "url": "https://raw.githubusercontent.com/pkolaczk/fclones/main/fclones/src/config.rs",
+  "feature": "DedupeConfig.priority Vec<Priority>",
+  "adaptation": "Ordered archive keeper tie breakers after the main priority; original entry index is only the final fallback"
+}

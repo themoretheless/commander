@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_protection_modes",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-priority-chains-2026-11-03/native-captures/1793697795729505000",
+  "binary_sha256": "5887ef7fd481b8da9827d9fba24836905a239b48fd78673b2a994f09b0f97a04",
+  "core_sha256": "5887ef7fd481b8da9827d9fba24836905a239b48fd78673b2a994f09b0f97a04",
+  "wrapper_sha256": "f34537c2a7fb8520d544a9383cd001c3d000555124acad7f72ab519ad878faad",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

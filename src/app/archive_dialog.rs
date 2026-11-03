@@ -1372,6 +1372,38 @@ pub enum ContentKeepOrder {
     Deepest,
 }
 impl ContentKeepOrder {
+    const ALL: [Self; 6] = [
+        Self::First,
+        Self::Last,
+        Self::Newest,
+        Self::Oldest,
+        Self::Shallowest,
+        Self::Deepest,
+    ];
+    fn compare(
+        self,
+        a: &crate::archive::ArchiveMember,
+        b: &crate::archive::ArchiveMember,
+    ) -> std::cmp::Ordering {
+        match self {
+            Self::First => a.index.cmp(&b.index),
+            Self::Last => b.index.cmp(&a.index),
+            Self::Shallowest => content_path_depth(&a.path).cmp(&content_path_depth(&b.path)),
+            Self::Deepest => content_path_depth(&b.path).cmp(&content_path_depth(&a.path)),
+            Self::Newest | Self::Oldest => match (a.modified, b.modified) {
+                (Some(a), Some(b)) => {
+                    if self == Self::Newest {
+                        b.cmp(&a)
+                    } else {
+                        a.cmp(&b)
+                    }
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            },
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::First => "First entries",
@@ -1398,6 +1430,8 @@ impl ContentKeepOrder {
 pub struct ContentKeep {
     pub count: usize,
     pub order: ContentKeepOrder,
+    #[serde(default)]
+    pub tie_breakers: Vec<ContentKeepOrder>,
     pub protected_glob: String,
     pub protect_basename: bool,
     pub protect_case_sensitive: bool,
@@ -1409,6 +1443,7 @@ impl Default for ContentKeep {
         Self {
             count: 1,
             order: ContentKeepOrder::First,
+            tie_breakers: Vec::new(),
             protected_glob: String::new(),
             protect_basename: false,
             protect_case_sensitive: true,
@@ -1418,8 +1453,68 @@ impl Default for ContentKeep {
     }
 }
 impl ContentKeep {
+    fn validate_priorities(&self) -> Result<(), String> {
+        let mut seen = vec![self.order];
+        if self.tie_breakers.len() > 5 {
+            return Err("Use at most five distinct tie breakers.".into());
+        }
+        for &order in &self.tie_breakers {
+            if seen.contains(&order) {
+                return Err("Priority rules must be distinct, including the main rule.".into());
+            }
+            seen.push(order);
+        }
+        Ok(())
+    }
+    fn tie_breakers_ui(&mut self, ui: &mut egui::Ui) {
+        let summary = if self.tie_breakers.is_empty() {
+            "entry index".into()
+        } else {
+            self.tie_breakers
+                .iter()
+                .map(|order| order.short_label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let header=egui::CollapsingHeader::new(format!("Break ties: {summary}"))
+            .id_salt("archive-copy-tie-breakers").show(ui,|ui| {
+                ui.label("Rules run in order only for ties; lowest entry number is the final fallback. Edits apply on Select copies.");
+                let mut action=None;
+                for rank in 0..self.tie_breakers.len() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("{}. {}",rank+1,self.tie_breakers[rank].label()));
+                        for (kind,label,enabled) in [(0,"Up",rank>0),(1,"Down",rank+1<self.tie_breakers.len()),(2,"Remove",true)] {
+                            let button=ui.add_enabled(enabled,egui::Button::new(label));
+                            #[cfg(feature="visual-qa")]
+                            ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-tie-edit",rank,kind)),button.rect));
+                            if button.clicked(){action=Some((rank,kind));}
+                        }
+                    });
+                }
+                if let Some((rank,kind))=action {match kind {0=>self.tie_breakers.swap(rank,rank-1),1=>self.tie_breakers.swap(rank,rank+1),_=>{self.tie_breakers.remove(rank);}}}
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Add rule:");
+                    for order in ContentKeepOrder::ALL {
+                        if order==self.order || self.tie_breakers.contains(&order){continue;}
+                        let button=ui.small_button(format!("+ {}",order.short_label()));
+                        #[cfg(feature="visual-qa")]
+                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-tie-add",order.label())),button.rect));
+                        if button.clicked(){self.tie_breakers.push(order);}
+                    }
+                });
+            });
+        #[cfg(feature = "visual-qa")]
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("archive-tie-breakers"),
+                header.header_response.rect,
+            )
+        });
+        let _ = header;
+    }
     fn rememberable(&self) -> bool {
-        (1..=100_000).contains(&self.count)
+        self.validate_priorities().is_ok()
+            && (1..=100_000).contains(&self.count)
             && self.protection().is_ok()
             && self.candidates().is_ok()
             && self.cutoff().is_ok()
@@ -1540,14 +1635,16 @@ impl ContentKeep {
         ui.horizontal_wrapped(|ui| {
             ui.label("Keep copies per group:");
             ui.add(egui::DragValue::new(&mut self.count).range(1..=100_000).speed(1));
-            for order in [ContentKeepOrder::First,ContentKeepOrder::Last,ContentKeepOrder::Newest,ContentKeepOrder::Oldest,ContentKeepOrder::Shallowest,ContentKeepOrder::Deepest] {
+            for order in ContentKeepOrder::ALL {
                 let label=order.label();
-                let button=ui.selectable_value(&mut self.order,order,label).on_hover_text("First/last use original entry numbers. Newest/oldest use member timestamps declared in the archive: known dates first, missing dates last, ties by lowest original entry number. Shallowest/deepest use the number of parent folders inside the archive, with lowest original entry number for equal depths. Groups with fewer members keep them all. Apply with Select copies; changing this policy leaves selection unchanged.");
+                let button=ui.selectable_value(&mut self.order,order,label).on_hover_text("First/last use original entry numbers. Newest/oldest use member timestamps declared in the archive: known dates first, missing dates last. Shallowest/deepest count parent folders inside the archive. Ties use the ordered tie breakers, then lowest original entry number. First/last already resolve every entry, so later rules have no effect. Groups with fewer members keep them all. Apply with Select copies; changing this policy leaves selection unchanged.");
+                if button.clicked(){self.tie_breakers.retain(|&rule|rule!=order);}
                 #[cfg(feature="visual-qa")]
                 ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-keep-order",label)),button.rect));
                 let _=button;
             }
         });
+        self.tie_breakers_ui(ui);
         ui.horizontal_wrapped(|ui| {
             ui.label("Protect paths (globs):");
             let input = ui.add(
@@ -1597,7 +1694,8 @@ impl ContentKeep {
             .protection()
             .err()
             .or_else(|| self.candidates().err())
-            .or_else(|| self.cutoff().err());
+            .or_else(|| self.cutoff().err())
+            .or_else(|| self.validate_priorities().err());
         if let Some(error) = &error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -1624,6 +1722,7 @@ fn select_redundant_content_groups(
     if keep.count == 0 {
         return Err("Keep at least one representative per group.".into());
     }
+    keep.validate_priorities()?;
     let protection = keep.protection()?;
     let candidates = keep.candidates()?;
     let cutoff = keep.cutoff()?;
@@ -1662,35 +1761,17 @@ fn select_redundant_content_groups(
         }
         applicable_rows.extend_from_slice(group_rows);
         let mut ranked = group.members.iter().enumerate().collect::<Vec<_>>();
-        ranked.sort_unstable_by(|(left, a), (right, b)| match keep.order {
-            ContentKeepOrder::First => a.index.cmp(&b.index),
-            ContentKeepOrder::Last => b.index.cmp(&a.index),
-            ContentKeepOrder::Shallowest | ContentKeepOrder::Deepest => {
-                let depth = content_path_depth(&a.path).cmp(&content_path_depth(&b.path));
-                let depth = if keep.order == ContentKeepOrder::Deepest {
-                    depth.reverse()
-                } else {
-                    depth
-                };
-                depth.then_with(|| a.index.cmp(&b.index))
-            }
-            ContentKeepOrder::Newest | ContentKeepOrder::Oldest => {
-                let left = listing.members[rows[offset + left]].modified;
-                let right = listing.members[rows[offset + right]].modified;
-                let time = match (left, right) {
-                    (Some(a), Some(b)) => {
-                        if keep.order == ContentKeepOrder::Newest {
-                            b.cmp(&a)
-                        } else {
-                            a.cmp(&b)
-                        }
-                    }
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                };
-                time.then_with(|| a.index.cmp(&b.index))
-            }
+        ranked.sort_unstable_by(|(left, a), (right, b)| {
+            std::iter::once(keep.order)
+                .chain(keep.tie_breakers.iter().copied())
+                .map(|order| {
+                    order.compare(
+                        &listing.members[rows[offset + left]],
+                        &listing.members[rows[offset + right]],
+                    )
+                })
+                .find(|order| !order.is_eq())
+                .unwrap_or_else(|| a.index.cmp(&b.index))
         });
         let mut protected = vec![false; group.members.len()];
         if !protection.is_empty() || !candidates.is_empty() {
@@ -3597,6 +3678,119 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn archive_priority_chains_resolve_ties_in_order_with_stable_fallback_and_atomic_guards() {
+        use super::{ContentKeep, ContentKeepOrder as O, select_redundant_content_groups};
+        use std::{
+            collections::BTreeSet,
+            time::{Duration, UNIX_EPOCH},
+        };
+        let mut listing = listing(&["a", "b", "folder/c", "other/d", "e", "unrelated"]);
+        for (id, member) in listing.members.iter_mut().enumerate() {
+            member.index = [9, 2, 8, 4, 1, 99][id];
+            member.size = 3;
+            member.modified = [Some(100), Some(200), Some(200), Some(200), None, None][id]
+                .map(|t| UNIX_EPOCH + Duration::from_secs(t));
+        }
+        let report = crate::archive_check::Report {
+            kind: crate::archive::ArchiveKind::Tar,
+            members: 6,
+            decoded: 18,
+            strict_headers: false,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "hash".into(),
+                size: 3,
+                members: listing.members[..5]
+                    .iter()
+                    .map(|m| crate::archive_check::ContentMember {
+                        index: m.index,
+                        path: m.path.clone(),
+                        size: m.size,
+                    })
+                    .collect(),
+            }]),
+        };
+        for group in [None, Some(0)] {
+            for (order, chain, count, protected, candidates, wanted) in [
+                (O::Shallowest, vec![], 1, "", "", vec![0, 1, 2, 3, 5]),
+                (
+                    O::Shallowest,
+                    vec![O::Newest],
+                    1,
+                    "",
+                    "",
+                    vec![0, 2, 3, 4, 5],
+                ),
+                (
+                    O::Shallowest,
+                    vec![O::Newest, O::Last],
+                    1,
+                    "",
+                    "",
+                    vec![0, 2, 3, 4, 5],
+                ),
+                (
+                    O::Shallowest,
+                    vec![O::Last, O::Newest],
+                    1,
+                    "",
+                    "",
+                    vec![1, 2, 3, 4, 5],
+                ),
+                (
+                    O::Newest,
+                    vec![O::Deepest, O::Last],
+                    1,
+                    "",
+                    "",
+                    vec![0, 1, 3, 4, 5],
+                ),
+                (O::Newest, vec![O::Deepest], 1, "", "", vec![0, 1, 2, 4, 5]),
+                (O::Shallowest, vec![O::Newest], 2, "", "", vec![2, 3, 4, 5]),
+                (O::Shallowest, vec![O::Newest], 2, "e", "", vec![0, 2, 3, 5]),
+                (
+                    O::Shallowest,
+                    vec![O::Newest],
+                    1,
+                    "",
+                    "folder/*",
+                    vec![2, 5],
+                ),
+                (O::Shallowest, vec![O::Newest], usize::MAX, "", "", vec![5]),
+            ] {
+                let keep = ContentKeep {
+                    order,
+                    tie_breakers: chain,
+                    count,
+                    protected_glob: protected.into(),
+                    candidate_globs: candidates.into(),
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([5]);
+                select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                    .unwrap();
+                assert_eq!(selected.into_iter().collect::<Vec<_>>(), wanted, "{keep:?}");
+            }
+            for chain in [
+                vec![O::First],
+                vec![O::Newest, O::Newest],
+                vec![O::Newest; 6],
+            ] {
+                let keep = ContentKeep {
+                    tie_breakers: chain,
+                    ..Default::default()
+                };
+                let mut selected = BTreeSet::from([2, 5]);
+                assert!(
+                    select_redundant_content_groups(&report, &listing, group, &keep, &mut selected)
+                        .is_err()
+                );
+                assert_eq!(selected, BTreeSet::from([2, 5]));
+                assert!(keep.saved().is_null());
+            }
+        }
+    }
+
+    #[test]
     fn archive_copy_preferences_round_trip_all_orders_and_refuse_invalid_saved_rules() {
         use super::{ContentKeep, ContentKeepOrder};
         for order in [
@@ -3611,6 +3805,11 @@ mod tests {
                 let keep = ContentKeep {
                     count: 3,
                     order,
+                    tie_breakers: ContentKeepOrder::ALL
+                        .into_iter()
+                        .filter(|&rule| rule != order)
+                        .take(2)
+                        .collect(),
                     protected_glob: "originals/**\n*.bak".into(),
                     protect_basename: flag,
                     protect_case_sensitive: !flag,
@@ -3620,7 +3819,7 @@ mod tests {
                 let saved = keep.saved();
                 assert_eq!(ContentKeep::from_saved(&saved), keep);
                 assert_eq!(saved.as_object().unwrap().len(), 2);
-                assert_eq!(saved["policy"].as_object().unwrap().len(), 7);
+                assert_eq!(saved["policy"].as_object().unwrap().len(), 8);
                 for (key, value) in [
                     ("count", serde_json::json!(0)),
                     ("count", serde_json::json!(100_001)),
@@ -3629,6 +3828,14 @@ mod tests {
                     ("candidate_globs", serde_json::json!("[")),
                     ("modified_before", serde_json::json!("invalid")),
                 ] {
+                    let mut legacy = saved.clone();
+                    legacy["policy"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("tie_breakers");
+                    let mut without_chain = keep.clone();
+                    without_chain.tie_breakers.clear();
+                    assert_eq!(ContentKeep::from_saved(&legacy), without_chain);
                     let mut invalid = saved.clone();
                     invalid["policy"][key] = value;
                     assert_eq!(ContentKeep::from_saved(&invalid), ContentKeep::default());
@@ -3800,6 +4007,7 @@ mod tests {
         let keep = ContentKeep {
             candidate_globs: "*.txt".into(),
             order: ContentKeepOrder::Last,
+            tie_breakers: Vec::new(),
             ..Default::default()
         };
         report.content_groups.as_mut().unwrap()[0].members[2].path = "stale".into();
@@ -4113,6 +4321,7 @@ mod tests {
                 let keep = ContentKeep {
                     count: 1,
                     order: ContentKeepOrder::First,
+                    tie_breakers: Vec::new(),
                     protected_glob: glob.into(),
                     protect_basename: basename,
                     protect_case_sensitive: case_sensitive,
@@ -4181,6 +4390,7 @@ mod tests {
                 let keep = ContentKeep {
                     count,
                     order: ContentKeepOrder::First,
+                    tie_breakers: Vec::new(),
                     protected_glob: glob.into(),
                     protect_basename: false,
                     protect_case_sensitive: true,
@@ -4207,6 +4417,7 @@ mod tests {
                     &ContentKeep {
                         count: 1,
                         order: ContentKeepOrder::First,
+                        tie_breakers: Vec::new(),
                         protected_glob: glob,
                         protect_basename: false,
                         protect_case_sensitive: true,
@@ -4234,6 +4445,7 @@ mod tests {
                     &ContentKeep {
                         count: 1,
                         order: ContentKeepOrder::First,
+                        tie_breakers: Vec::new(),
                         protected_glob: "**".into(),
                         protect_basename: false,
                         protect_case_sensitive: true,
@@ -4256,6 +4468,7 @@ mod tests {
                 &ContentKeep {
                     count: 1,
                     order: ContentKeepOrder::First,
+                    tie_breakers: Vec::new(),
                     protected_glob: "keep/*".into(),
                     protect_basename: false,
                     protect_case_sensitive: true,
@@ -4327,6 +4540,7 @@ mod tests {
                     &ContentKeep {
                         count,
                         order,
+                        tie_breakers: Vec::new(),
                         protected_glob: String::new(),
                         protect_basename: false,
                         protect_case_sensitive: true,
@@ -4353,6 +4567,7 @@ mod tests {
                 &ContentKeep {
                     count: 1,
                     order: ContentKeepOrder::Deepest,
+                    tie_breakers: Vec::new(),
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
@@ -4414,6 +4629,7 @@ mod tests {
                     &ContentKeep {
                         count,
                         order,
+                        tie_breakers: Vec::new(),
                         protected_glob: String::new(),
                         protect_basename: false,
                         protect_case_sensitive: true,
@@ -4440,6 +4656,7 @@ mod tests {
             &ContentKeep {
                 count: 1,
                 order: ContentKeepOrder::Newest,
+                tie_breakers: Vec::new(),
                 protected_glob: String::new(),
                 protect_basename: false,
                 protect_case_sensitive: true,
@@ -4459,6 +4676,7 @@ mod tests {
             &ContentKeep {
                 count: 1,
                 order: ContentKeepOrder::Oldest,
+                tie_breakers: Vec::new(),
                 protected_glob: String::new(),
                 protect_basename: false,
                 protect_case_sensitive: true,
@@ -4481,6 +4699,7 @@ mod tests {
                 &ContentKeep {
                     count: 1,
                     order,
+                    tie_breakers: Vec::new(),
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
@@ -4502,6 +4721,7 @@ mod tests {
                 &ContentKeep {
                     count: 1,
                     order: ContentKeepOrder::Newest,
+                    tie_breakers: Vec::new(),
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
@@ -4563,6 +4783,7 @@ mod tests {
                     } else {
                         super::ContentKeepOrder::First
                     },
+                    tie_breakers: Vec::new(),
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
@@ -4583,6 +4804,7 @@ mod tests {
                 &super::ContentKeep {
                     count: 0,
                     order: super::ContentKeepOrder::First,
+                    tie_breakers: Vec::new(),
                     protected_glob: String::new(),
                     protect_basename: false,
                     protect_case_sensitive: true,
