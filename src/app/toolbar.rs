@@ -95,6 +95,7 @@ struct ToolbarCommands {
     copy_in: crate::command::CommandAvailability,
     create_dir: crate::command::CommandAvailability,
     create_dir_other: crate::command::CommandAvailability,
+    create_empty_file: crate::command::CommandAvailability,
 }
 
 impl ToolbarCommands {
@@ -107,6 +108,7 @@ impl ToolbarCommands {
             copy_in: availability(Command::CopyIntoCursorFolder, &context),
             create_dir: availability(Command::CreateDir, &context),
             create_dir_other: availability(Command::CreateDirOther, &context),
+            create_empty_file: availability(Command::CreateEmptyFile, &context),
         }
     }
 }
@@ -213,6 +215,12 @@ impl App {
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, actions: ToolbarCommands) {
+        if ui.add_enabled(actions.create_empty_file.enabled,menu_item("New empty file",crate::command::Command::CreateEmptyFile))
+            .on_disabled_hover_text(actions.create_empty_file.reason.unwrap_or_default())
+            .on_hover_text("Create an unused New File.txt, then name it. Cancel naming to keep the empty file.")
+            .clicked() {
+            self.ws.create_empty_file(); ui.close();
+        }
         if ui.add_enabled(actions.create_dir_other.enabled, menu_item("New folder in other panel", crate::command::Command::CreateDirOther))
             .on_disabled_hover_text(actions.create_dir_other.reason.unwrap_or_default())
             .on_hover_text("Create beside the other pane's current entries, then name it; keep focus and selection here")

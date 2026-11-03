@@ -1529,6 +1529,7 @@ impl Workspace {
             Command::RequestCopy => self.request_copy(),
             Command::RequestMove => self.request_move(),
             Command::CreateDir => self.create_dir(),
+            Command::CreateEmptyFile => self.create_empty_file(),
             Command::CreateDirOther => self.create_dir_in_other(),
             Command::RequestDelete => self.request_delete(),
             Command::BeginRename => {
@@ -3530,6 +3531,10 @@ impl Workspace {
     /// asynchronously through their controller poll methods.
     pub fn confirm_pending_op(&mut self, notify: impl Fn() + Send + 'static) -> bool {
         fileops::confirm_pending_op(self, notify)
+    }
+
+    pub fn create_empty_file(&mut self) {
+        fileops::create_empty_file(self)
     }
 
     pub fn create_dir(&mut self) {

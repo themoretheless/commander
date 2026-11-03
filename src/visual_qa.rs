@@ -3283,6 +3283,7 @@ struct VisualQaApp {
     per_item_stop_phase: u8,
     disk_tree_phase: u8,
     disk_export_phase: u8,
+    empty_file_phase: u8,
     disk_export_first_json: Option<String>,
     duplicate_phase: u8,
     duplicate_sort_phase: u8,
@@ -3601,6 +3602,7 @@ impl VisualQaApp {
             per_item_stop_phase: 0,
             disk_tree_phase: 0,
             disk_export_phase: 0,
+            empty_file_phase: 0,
             disk_export_first_json: None,
             duplicate_phase: 0,
             duplicate_sort_phase: 0,
@@ -5000,7 +5002,8 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::PdfRegex && self.pdf_click_phase < 22)
             && !(self.scenario == Scenario::ImagePreview && self.image_click_phase < 21)
             && !(self.scenario == Scenario::FolderTabs && self.tab_group_phase < 100)
-            && !(self.scenario == Scenario::MillerBrowser && self.disk_export_phase < 255)
+            && !(self.scenario == Scenario::MillerBrowser
+                && (self.disk_export_phase < 255 || self.empty_file_phase < 14))
             && !(self.scenario == Scenario::TabPathLabels && self.tab_group_phase < 18)
             && !(self.scenario == Scenario::RecentScope && self.recent_forget_phase < 36)
             && !(self.scenario == Scenario::RecentForget && self.recent_forget_phase < 156)
@@ -7296,6 +7299,27 @@ impl eframe::App for VisualQaApp {
                 }
                 return;
             }
+            // macOS activation can also consume the first directory-row click.
+            // Retry that exact pointer gesture only while its original owner is
+            // still visible, before any navigation succeeded; never advance by model mutation.
+            if phase == 6
+                && self.inner.ws.left.current_path == self.fixture.left
+                && self.timestamp_input_at.elapsed() >= Duration::from_millis(250)
+            {
+                let id = egui::Id::new("miller-initial-entry-retries");
+                let retries = ctx.data(|d| d.get_temp::<u8>(id)).unwrap_or(0);
+                if retries < 2 {
+                    ctx.data_mut(|d| d.insert_temp(id, retries + 1));
+                    let _ = std::fs::write(
+                        self.scenario_dir.join("initial-entry-retries.json"),
+                        format!("{}\n", retries + 1),
+                    );
+                    self.disk_export_phase = 3;
+                    self.hex_pointer_target = None;
+                    self.timestamp_input_at = Instant::now();
+                }
+                return;
+            }
             input.events.push(egui::Event::ModifiersChanged(
                 if (12..15).contains(&phase) {
                     egui::Modifiers::COMMAND
@@ -8138,6 +8162,95 @@ impl eframe::App for VisualQaApp {
                 });
             }
             self.disk_export_phase += 1;
+            return;
+        }
+        if self.scenario == Scenario::MillerBrowser
+            && self.disk_export_phase == 255
+            && self.empty_file_phase < 14
+        {
+            let phase = self.empty_file_phase;
+            let base = self.fixture.left.join("column-A");
+            let original = base.join("New File 1.txt");
+            let renamed = base.join("Draft.txt");
+            let snapshot = |app: &crate::app::App| serde_json::json!({"focus":format!("{:?}",app.ws.active),"right":app.ws.right.current_path,"left_tabs":app.ws.tab_snapshot(crate::workspace::ActivePanel::Left),"right_tabs":app.ws.tab_snapshot(crate::workspace::ActivePanel::Right)});
+            if phase == 0 {
+                std::fs::write(base.join("New File.txt"), b"existing document").unwrap();
+                std::fs::write(
+                    self.scenario_dir.join("empty-file-before.json"),
+                    serde_json::to_vec_pretty(&snapshot(&self.inner)).unwrap(),
+                )
+                .unwrap();
+            } else if phase == 3 {
+                input
+                    .events
+                    .push(egui::Event::Text(">New empty file".into()));
+            } else if phase == 7 || phase == 12 {
+                if phase == 7
+                    && self
+                        .inner
+                        .ui
+                        .modals
+                        .renaming
+                        .as_ref()
+                        .is_none_or(|s| s.path != original)
+                {
+                    return;
+                }
+                if phase == 12
+                    && (self.inner.ui.modals.renaming.is_some()
+                        || !renamed.is_file()
+                        || self
+                            .inner
+                            .ws
+                            .left
+                            .cursor_entry()
+                            .is_none_or(|e| e.path != renamed))
+                {
+                    return;
+                }
+                let path = if phase == 7 { &original } else { &renamed };
+                let mut record = snapshot(&self.inner);
+                record["path"] = serde_json::json!(path);
+                record["bytes"] = serde_json::json!(std::fs::metadata(path).unwrap().len());
+                record["collision"] =
+                    serde_json::json!(std::fs::read_to_string(base.join("New File.txt")).unwrap());
+                record["rename_path"] =
+                    serde_json::json!(self.inner.ui.modals.renaming.as_ref().map(|s| &s.path));
+                record["cursor"] =
+                    serde_json::json!(self.inner.ws.left.cursor_entry().map(|e| &e.path));
+                record["old_exists"] = serde_json::json!(original.exists());
+                std::fs::write(
+                    self.scenario_dir.join(if phase == 7 {
+                        "empty-file-created.json"
+                    } else {
+                        "empty-file-renamed.json"
+                    }),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                )
+                .unwrap();
+            } else if phase == 8 {
+                input.events.push(egui::Event::Text("Draft".into()));
+            } else if matches!(phase, 1 | 2 | 5 | 6 | 10 | 11) {
+                let command = phase == 1 || phase == 2;
+                let modifiers = egui::Modifiers {
+                    command,
+                    mac_cmd: command,
+                    ..egui::Modifiers::NONE
+                };
+                input.events.push(egui::Event::ModifiersChanged(modifiers));
+                input.events.push(egui::Event::Key {
+                    key: if command {
+                        egui::Key::K
+                    } else {
+                        egui::Key::Enter
+                    },
+                    physical_key: None,
+                    pressed: matches!(phase, 1 | 5 | 10),
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            self.empty_file_phase += 1;
             return;
         }
         if self.scenario == Scenario::MillerBrowser && (233..255).contains(&self.disk_export_phase)
@@ -24799,7 +24912,7 @@ impl eframe::App for VisualQaApp {
         } else {
             TIMEOUT
         };
-        // The Miller regression now contains 255 observed interaction steps.
+        // The Miller regression now contains 255 tab/navigation steps plus the empty-file sequence.
         // Bound a stalled step rather than the total duration of healthy
         // progress, retaining a separate hard cap for the complete scenario.
         let stalled_for = if self.scenario == Scenario::MillerBrowser {
@@ -27487,7 +27600,7 @@ impl eframe::App for VisualQaApp {
                     && self.inner.ws.closed_tab_count(ActivePanel::Right) == 0
             }
             Scenario::MillerBrowser => {
-                self.disk_export_phase==255 && self.inner.ws.active==crate::workspace::ActivePanel::Left && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Left)==0 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
+                self.disk_export_phase==255 && self.empty_file_phase==14 && self.inner.ws.active==crate::workspace::ActivePanel::Left && self.inner.ws.active_tab_index(crate::workspace::ActivePanel::Left)==0 && self.inner.ws.left.browser_mode()==crate::panel::BrowserMode::Miller
                     && self.inner.ws.left.current_path==self.fixture.left.join("column-A")
                     && self.inner.ws.left.preview.is_none()
                     && self.fixture.left.join("column-B/Prepared destination").is_dir()

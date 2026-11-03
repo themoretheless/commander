@@ -1,0 +1,11 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 36.85s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 3 tests
+test workspace::tests::empty_file_creation_refreshes_shared_views_and_rename_keeps_the_captured_path ... ok
+test workspace::tests::empty_file_creation_is_exclusive_and_preserves_the_opposite_owner ... ok
+test workspace::tests::empty_file_creation_refuses_read_only_pending_integrity_missing_and_exhausted_names ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 3553 filtered out; finished in 0.16s
+

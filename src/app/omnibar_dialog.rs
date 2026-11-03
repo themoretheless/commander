@@ -1474,7 +1474,7 @@ impl App {
                 })
                 .unwrap_or_else(|| "highlight a destination folder".to_string()),
             Command::RequestDelete => format!("{picked} item(s) to Trash"),
-            Command::CreateDir => format!("in {active_path}"),
+            Command::CreateDir | Command::CreateEmptyFile => format!("in {active_path}"),
             Command::CreateDirOther => format!("in {inactive_path} · keep focus here"),
             Command::BeginRename => active
                 .cursor_entry()

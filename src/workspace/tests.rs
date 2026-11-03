@@ -9281,3 +9281,120 @@ fn ordered_name_list_refuses_partial_count_and_swaps_original_files_with_undo_re
     assert_eq!(std::fs::read(left.path().join("a.txt")).unwrap(), b"B");
     assert_eq!(std::fs::read(left.path().join("b.txt")).unwrap(), b"A");
 }
+
+#[test]
+fn empty_file_creation_is_exclusive_and_preserves_the_opposite_owner() {
+    for side in [ActivePanel::Left, ActivePanel::Right] {
+        let (l, r) = (TempDir::new(), TempDir::new());
+        let mut ws = workspace(&l, &r);
+        ws.active = side;
+        let base = ws.active_panel_ref().current_path.clone();
+        std::fs::write(base.join("New File.txt"), b"preserve payload").unwrap();
+        std::fs::create_dir(base.join("New File 1.txt")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(base.join("absent-target"), base.join("New File 2.txt"))
+            .unwrap();
+        let opposite = ws.tab_snapshot(side.other());
+        let generation = ws.inactive_panel().entries_gen();
+        ws.execute(Command::CreateEmptyFile);
+        let path = base.join(if cfg!(unix) {
+            "New File 3.txt"
+        } else {
+            "New File 2.txt"
+        });
+        assert!(std::fs::metadata(&path).unwrap().is_file());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(
+            std::fs::read(base.join("New File.txt")).unwrap(),
+            b"preserve payload"
+        );
+        assert!(!base.join("absent-target").exists());
+        assert_eq!(ws.tab_snapshot(side.other()), opposite);
+        assert_eq!(ws.inactive_panel().entries_gen(), generation);
+        assert_eq!(ws.active, side);
+        assert_eq!(ws.active_panel_ref().cursor_entry().unwrap().path, path);
+        assert!(ws.drain_ui_requests().contains(&UiRequest::Rename(path)));
+    }
+}
+
+#[test]
+fn empty_file_creation_refreshes_shared_views_and_rename_keeps_the_captured_path() {
+    let l = TempDir::new();
+    let mut ws = Workspace::new(l.path().into(), l.path().into());
+    ws.create_empty_file();
+    let path = l.path().join("New File.txt");
+    assert!(ws.left.entries().iter().any(|e| e.path == path));
+    assert!(ws.right.entries().iter().any(|e| e.path == path));
+    assert!(
+        ws.drain_ui_requests()
+            .contains(&UiRequest::Rename(path.clone()))
+    );
+    let elsewhere = l.dir("elsewhere");
+    ws.left.navigate_to(elsewhere.clone());
+    ws.commit_rename(&path, "Renamed.txt").unwrap();
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(l.path().join("Renamed.txt")).unwrap(), b"");
+    assert!(!elsewhere.join("Renamed.txt").exists());
+}
+
+#[test]
+fn empty_file_creation_refuses_read_only_pending_integrity_missing_and_exhausted_names() {
+    let (l, r) = (TempDir::new(), TempDir::new());
+    let mut ws = workspace(&l, &r);
+    ws.command_context();
+    ws.command_capabilities
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .left_read_only = true;
+    assert!(!crate::command::availability(Command::CreateEmptyFile, &ws.command_context()).enabled);
+    ws.create_empty_file();
+    assert!(!l.path().join("New File.txt").exists());
+    ws.drain_ui_requests();
+    ws.command_capabilities
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .left_read_only = false;
+    ws.emit_ui_request(UiRequest::SelectMask);
+    ws.create_empty_file();
+    assert!(!l.path().join("New File.txt").exists());
+    ws.drain_ui_requests();
+    ws.safe_state = Some(crate::operation::SafeState::integrity(
+        crate::operation::OperationId::new(),
+        "stop".into(),
+        Vec::new(),
+    ));
+    ws.create_empty_file();
+    assert!(!l.path().join("New File.txt").exists());
+    ws.drain_ui_requests();
+    ws.safe_state = None;
+    let missing = l.path().join("missing");
+    ws.left.navigate_to(missing.clone());
+    ws.create_empty_file();
+    assert!(!missing.exists());
+    ws.drain_ui_requests();
+    ws.left.navigate_to(l.path().into());
+    for i in 0..1024 {
+        std::fs::write(
+            l.path().join(if i == 0 {
+                "New File.txt".into()
+            } else {
+                format!("New File {i}.txt")
+            }),
+            b"keep",
+        )
+        .unwrap();
+    }
+    ws.create_empty_file();
+    assert!(!l.path().join("New File 1024.txt").exists());
+    assert!(
+        ws.drain_ui_requests()
+            .iter()
+            .any(|r| matches!(r, UiRequest::Notice { error: true, .. }))
+    );
+    assert_eq!(
+        std::fs::read(l.path().join("New File 1023.txt")).unwrap(),
+        b"keep"
+    );
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "miller_browser",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/new-empty-file-2026-11-03/native-captures/1793721560949688000",
+  "binary_sha256": "3d3ddf390568282a830cd130592ced60923fa581283adbb2f01ba0ba442ddba3",
+  "core_sha256": "3d3ddf390568282a830cd130592ced60923fa581283adbb2f01ba0ba442ddba3",
+  "wrapper_sha256": "8f3718eb29908299584ae8dcc43958e8c350b0d43177f8fcd2cf3bd54583b094",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

@@ -1,0 +1,24 @@
+{
+  "created": false,
+  "destination": {
+    "cursor": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/column-B/Prepared destination",
+    "generation": 6,
+    "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/column-B",
+    "selected": []
+  },
+  "focus": "Right",
+  "rename": null,
+  "renamed": true,
+  "source": {
+    "cursor": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/Design",
+    "generation": 16,
+    "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left",
+    "selected": [
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/column-A",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/column-B",
+      "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/Design"
+    ]
+  },
+  "source_created": false,
+  "source_renamed": false
+}

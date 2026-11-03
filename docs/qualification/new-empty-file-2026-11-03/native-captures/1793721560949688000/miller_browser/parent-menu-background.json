@@ -1,0 +1,228 @@
+{
+  "focus": "Right",
+  "left": {
+    "cursor": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/column-B/Prepared destination",
+    "generation": 7,
+    "mode": "Miller",
+    "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/column-B",
+    "preview": false,
+    "selected": []
+  },
+  "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left",
+  "tabs": {
+    "active": 3,
+    "entries": [
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/Design",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/right",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "List",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left/column-A",
+        "pinned_path": {
+          "path": [
+            47,
+            118,
+            97,
+            114,
+            47,
+            102,
+            111,
+            108,
+            100,
+            101,
+            114,
+            115,
+            47,
+            106,
+            120,
+            47,
+            112,
+            115,
+            49,
+            104,
+            54,
+            50,
+            118,
+            120,
+            51,
+            103,
+            100,
+            103,
+            108,
+            121,
+            95,
+            100,
+            100,
+            119,
+            108,
+            121,
+            52,
+            109,
+            113,
+            114,
+            48,
+            48,
+            48,
+            48,
+            103,
+            110,
+            47,
+            84,
+            47,
+            99,
+            111,
+            109,
+            109,
+            97,
+            110,
+            100,
+            101,
+            114,
+            45,
+            118,
+            105,
+            115,
+            117,
+            97,
+            108,
+            45,
+            113,
+            97,
+            45,
+            54,
+            54,
+            51,
+            48,
+            56,
+            45,
+            109,
+            105,
+            108,
+            108,
+            101,
+            114,
+            95,
+            98,
+            114,
+            111,
+            119,
+            115,
+            101,
+            114,
+            47,
+            108,
+            101,
+            102,
+            116
+          ],
+          "platform": "unix"
+        },
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Miller",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "Icons",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      },
+      {
+        "path": "/private/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-66308-miller_browser/left",
+        "view": {
+          "case_sensitive_name_sort": false,
+          "density": "Comfortable",
+          "folders_by_name": false,
+          "folders_first": true,
+          "mode": "List",
+          "natural_name_sort": true,
+          "show_hidden": false,
+          "sort_col": "Name",
+          "sort_order": "Asc"
+        }
+      }
+    ]
+  }
+}
