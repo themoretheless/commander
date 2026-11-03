@@ -59,6 +59,7 @@ pub enum Command {
     SortFavorites(crate::bookmarks::FavoriteOrder),
     ImportFavoritesGtk,
     ExportFavoritesGtk,
+    ExportFavoritesXbel,
     /// Space: toggle selection and advance cursor.
     ToggleSelect,
     ToggleSelectHere,
@@ -955,8 +956,9 @@ pub const CATALOG: &[CommandEntry] = &[
     entry("Sort favorites by path", "", "navigation bookmarks hotlist natural order organize location", Command::SortFavorites(crate::bookmarks::FavoriteOrder::Path)),
     entry("Sort favorites by quick-jump slot", "", "navigation bookmarks hotlist order organize pinned slots", Command::SortFavorites(crate::bookmarks::FavoriteOrder::Slot)),
     entry("Open favorite folder", "", "navigation hotlist bookmark favorites pinned quick jump search", Command::OpenFavorites),
-    entry("Import favorites from GTK text", "", "bookmarks import favorites gtk nautilus places migrate paste", Command::ImportFavoritesGtk),
+    entry("Import favorites from GTK or XBEL", "", "bookmarks import favorites gtk nautilus xbel kde krusader dolphin places migrate paste", Command::ImportFavoritesGtk),
     entry("Copy favorites as GTK text", "", "bookmarks export favorites gtk nautilus places clipboard migrate", Command::ExportFavoritesGtk),
+    entry("Copy favorites as XBEL", "", "bookmarks export favorites xbel kde krusader dolphin xml places clipboard migrate", Command::ExportFavoritesXbel),
     entry("Recent folders", "Cmd+P", "navigation recent folders history projects", Command::BeginRecent),
     entry("Select all", "Cmd+A", "selection select all mark all", Command::SelectAll),
     entry("Invert selection", "Cmd+Shift+I", "selection invert reverse flip", Command::InvertSelection),

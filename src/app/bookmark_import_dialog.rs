@@ -1,4 +1,4 @@
-//! Review GTK bookmark text before appending to the existing Favorites store.
+//! Review GTK or XBEL bookmark text before appending to the existing Favorites store.
 use super::*;
 #[derive(Default)]
 pub struct Dialog {
@@ -40,13 +40,14 @@ impl App {
         let mut parse = false;
         let mut apply = false;
         let mut copy = false;
-        egui::Window::new("Import Favorites from GTK text").default_width(680.0)
+        let mut copy_xbel = false;
+        egui::Window::new("Import Favorites — GTK / XBEL").default_width(680.0)
             .default_pos(egui::pos2((ctx.input(|input| input.viewport_rect().right())-720.0).max(16.0),80.0))
             .open(&mut open).collapsible(false).show(ctx,|ui| {
-                ui.small("Paste GTK/Nautilus bookmark text: file:// URI, then an optional display label. Preview before adding. Existing labels and quick-jump slots are kept.");
-                ui.small("Local paths only; no directory checks, mounts or folder creation. Missing paths can be retained. Up to 64 KiB / 1000 lines.");
+                ui.small("Paste GTK/Nautilus text or XBEL XML from KDE. XBEL folders become a flat list. Preview before adding. Existing labels and quick-jump slots are kept.");
+                ui.small("Local paths only; no directory checks, mounts or folder creation. Missing paths can be retained. Up to 64 KiB; 1000 GTK lines or XBEL bookmarks.");
                 let input=source_editor(ui,&mut state.source);
-                input.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit,input.enabled(),"GTK bookmark text to import"));
+                input.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit,input.enabled(),"GTK or XBEL bookmark text to import"));
                 #[cfg(any(test,feature="visual-qa"))]
                 ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("bookmark-import-input"),input.rect));
                 if input.changed() {state.preview=None; state.error=None; state.message=None;}
@@ -67,7 +68,7 @@ impl App {
                                     let response=ui.add_enabled(row.status==crate::bookmark_exchange::Status::Ready,egui::Checkbox::new(&mut row.selected,""));
                                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox,response.enabled(),format!("Import bookmark on line {}",row.line)));
                                     #[cfg(any(test,feature="visual-qa"))]
-                                    ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("bookmark-import-row",row.line)),response.rect));
+                                    ui.ctx().data_mut(|data| {data.insert_temp(egui::Id::new(("bookmark-import-row",row.line)),response.rect);data.insert_temp(egui::Id::new(("bookmark-import-record",index)),response.rect);});
                                     ui.label(format!("{} · {}",row.line,row.status.label()));
                                     if let Some(bookmark)=&row.bookmark {ui.add(egui::Label::new(bookmark.name.escape_debug().to_string()).truncate());}
                                 });
@@ -88,6 +89,9 @@ impl App {
                 let response=ui.button("Copy GTK bookmarks"); copy=response.clicked();
                 #[cfg(any(test,feature="visual-qa"))]
                 ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("bookmark-import-export"),response.rect));
+                let response=ui.button("Copy XBEL bookmarks");copy_xbel=response.clicked();
+                #[cfg(any(test,feature="visual-qa"))]
+                ui.ctx().data_mut(|data|data.insert_temp(egui::Id::new("bookmark-import-export-xbel"),response.rect));
             });
         if !open {
             self.bookmark_import = None;
@@ -120,6 +124,10 @@ impl App {
         }
         if copy {
             self.ws.execute(crate::command::Command::ExportFavoritesGtk);
+        }
+        if copy_xbel {
+            self.ws
+                .execute(crate::command::Command::ExportFavoritesXbel);
         }
     }
 }

@@ -1,0 +1,11 @@
+{
+  "src/bookmark_exchange.rs": "370363e87887d838cbd81b03206a7f71073ccd43fac43c39c763f957b64c7a09",
+  "src/command.rs": "858285d01f91f11a4c6a2802ea671620724e80d26a688fc8fb2e92c40569787e",
+  "src/workspace.rs": "bb32a98e9767277966d3eaf38725de691a3758809c7a180812d347b207a4e7b2",
+  "src/workspace/tests.rs": "c73be640bf18ad9f0db75568e4bb0784b902b114b72032ae9561bcc453378119",
+  "src/app/bookmark_import_dialog.rs": "1b39444d16bb66d1b9f833255952a6fb99f43b3946bd98706bada6af0fb3e125",
+  "src/bookmarks.rs": "67f0ecd04485d1b02569eacccbc7c4fc2f53ecfdbc4f77c0f8f79deba8f80c4c",
+  "src/visual_qa.rs": "3ff8d94d8c44e04c5273d4d5c43287fce5d1f2053a663feca123e7123fa67811",
+  "Cargo.toml": "b46f9c890b193b58445629771785cd07f4ab868ebb2e18af2913cf4ea82c3174",
+  "Cargo.lock": "ccd73af357a6449add769db3c9e8963bbb7bac932c2e73a4b735225ff02d8496"
+}

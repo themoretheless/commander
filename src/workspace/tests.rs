@@ -366,6 +366,58 @@ file:///unchecked Unchecked
 }
 
 #[test]
+fn xbel_favorites_merge_persists_only_reviewed_new_paths_and_exports_live_store() {
+    let (left, right) = (TempDir::new(), TempDir::new());
+    let persistence = Arc::new(InjectedPersistence {
+        bytes: Mutex::new(br#"{"items":[{"name":"Old","path":"/old","slot":3}]}"#.to_vec()),
+        commits: AtomicUsize::new(0),
+    });
+    let mut ws = Workspace::with_ports_and_views(
+        left.path().into(),
+        right.path().into(),
+        [crate::panel::ViewConfig::default(); 2],
+        Arc::new(TestTrashPort),
+        Arc::new(TestFreeSpacePort),
+        persistence.clone(),
+    );
+    let source = "<xbel><bookmark href='file:///old'><title>Replacement</title></bookmark><folder><bookmark href='file:///missing/new'><title>New &amp; XML</title></bookmark><bookmark href='file:///missing/skipped'/></folder></xbel>";
+    let mut preview = crate::bookmark_exchange::parse(source, &ws.bookmarks).unwrap();
+    preview.rows[2].selected = false;
+    let panes = (ws.left.current_path.clone(), ws.right.current_path.clone());
+    assert_eq!(ws.import_favorites(source, &preview).unwrap(), 1);
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    assert_eq!(ws.bookmarks.items[0].name, "Old");
+    assert_eq!(ws.bookmarks.items[0].slot, Some(3));
+    assert_eq!(ws.bookmarks.items[1].name, "New & XML");
+    assert!(ws.bookmarks.items[1].slot.is_none());
+    assert_eq!(
+        crate::bookmarks::load_with(persistence.as_ref()).store,
+        ws.bookmarks
+    );
+    assert_eq!(ws.import_favorites(source, &preview).unwrap(), 0);
+    assert_eq!(persistence.commits.load(Ordering::Relaxed), 1);
+    ws.execute(Command::ExportFavoritesXbel);
+    let requests = ws.drain_ui_requests();
+    let Some(UiRequest::CopyText { text, label }) = requests.last() else {
+        panic!("missing XBEL export")
+    };
+    assert_eq!(label, "XBEL bookmarks");
+    let parsed =
+        crate::bookmark_exchange::parse(text, &crate::bookmarks::Bookmarks::default()).unwrap();
+    assert_eq!(parsed.rows.len(), 2);
+    assert_eq!(
+        (ws.left.current_path.clone(), ws.right.current_path.clone()),
+        panes
+    );
+    ws.bookmarks.items.clear();
+    ws.execute(Command::ExportFavoritesXbel);
+    assert!(matches!(
+        &ws.drain_ui_requests()[..],
+        [UiRequest::Notice { error: true, .. }]
+    ));
+}
+
+#[test]
 fn favorite_exchange_commands_use_text_requests_without_cursor_or_selection() {
     let (left, right) = (TempDir::new(), TempDir::new());
     let mut ws = workspace(&left, &right);

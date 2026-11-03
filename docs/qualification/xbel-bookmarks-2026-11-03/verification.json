@@ -1,0 +1,8 @@
+{
+  "checks": 7,
+  "tests_passed": 3512,
+  "tests_ignored": 3,
+  "native_gtk_control_checks": 14,
+  "native_xbel_interaction": "not exercised; model and workspace integration tested",
+  "source_hashes_verified": true
+}

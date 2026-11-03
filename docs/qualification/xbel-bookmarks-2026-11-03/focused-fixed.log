@@ -1,0 +1,107 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+error[E0277]: the trait bound `ExpandedName<'_, '_>: std::convert::From<(std::option::Option<_>, &str)>` is not satisfied
+    --> src/bookmark_exchange.rs:164:27
+     |
+ 164 |     if !root.has_tag_name((None, "xbel")) {
+     |              ------------ ^^^^^^^^^^^^^^ the trait `std::convert::From<(std::option::Option<_>, &str)>` is not implemented for `ExpandedName<'_, '_>`
+     |              |
+     |              required by a bound introduced by this call
+     |
+help: `ExpandedName<'_, '_>` implements trait `std::convert::From<T>`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:859:1
+     |
+ 859 | impl<'a, 'b> From<&'b str> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<&str>`
+...
+ 866 | impl<'a, 'b> From<(&'a str, &'b str)> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<(&str, &str)>`
+     = note: required for `(std::option::Option<_>, &str)` to implement `Into<ExpandedName<'_, '_>>`
+note: required by a bound in `roxmltree::Node::<'a, 'input>::has_tag_name`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:1024:12
+     |
+1022 |     pub fn has_tag_name<'n, 'm, N>(&self, name: N) -> bool
+     |            ------------ required by a bound in this associated function
+1023 |     where
+1024 |         N: Into<ExpandedName<'n, 'm>>,
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Node::<'a, 'input>::has_tag_name`
+
+error[E0277]: the trait bound `ExpandedName<'_, '_>: std::convert::From<(std::option::Option<_>, &str)>` is not satisfied
+    --> src/bookmark_exchange.rs:179:31
+     |
+ 179 |         if !node.has_tag_name((None, "bookmark"))
+     |                  ------------ ^^^^^^^^^^^^^^^^^^ the trait `std::convert::From<(std::option::Option<_>, &str)>` is not implemented for `ExpandedName<'_, '_>`
+     |                  |
+     |                  required by a bound introduced by this call
+     |
+help: `ExpandedName<'_, '_>` implements trait `std::convert::From<T>`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:859:1
+     |
+ 859 | impl<'a, 'b> From<&'b str> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<&str>`
+...
+ 866 | impl<'a, 'b> From<(&'a str, &'b str)> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<(&str, &str)>`
+     = note: required for `(std::option::Option<_>, &str)` to implement `Into<ExpandedName<'_, '_>>`
+note: required by a bound in `roxmltree::Node::<'a, 'input>::has_tag_name`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:1024:12
+     |
+1022 |     pub fn has_tag_name<'n, 'm, N>(&self, name: N) -> bool
+     |            ------------ required by a bound in this associated function
+1023 |     where
+1024 |         N: Into<ExpandedName<'n, 'm>>,
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Node::<'a, 'input>::has_tag_name`
+
+error[E0277]: the trait bound `ExpandedName<'_, '_>: std::convert::From<(std::option::Option<_>, &str)>` is not satisfied
+    --> src/bookmark_exchange.rs:184:41
+     |
+ 184 |                 .all(|p| p.has_tag_name((None, "folder")))
+     |                            ------------ ^^^^^^^^^^^^^^^^ the trait `std::convert::From<(std::option::Option<_>, &str)>` is not implemented for `ExpandedName<'_, '_>`
+     |                            |
+     |                            required by a bound introduced by this call
+     |
+help: `ExpandedName<'_, '_>` implements trait `std::convert::From<T>`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:859:1
+     |
+ 859 | impl<'a, 'b> From<&'b str> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<&str>`
+...
+ 866 | impl<'a, 'b> From<(&'a str, &'b str)> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<(&str, &str)>`
+     = note: required for `(std::option::Option<_>, &str)` to implement `Into<ExpandedName<'_, '_>>`
+note: required by a bound in `roxmltree::Node::<'a, 'input>::has_tag_name`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:1024:12
+     |
+1022 |     pub fn has_tag_name<'n, 'm, N>(&self, name: N) -> bool
+     |            ------------ required by a bound in this associated function
+1023 |     where
+1024 |         N: Into<ExpandedName<'n, 'm>>,
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Node::<'a, 'input>::has_tag_name`
+
+error[E0277]: the trait bound `ExpandedName<'_, '_>: std::convert::From<(std::option::Option<_>, &str)>` is not satisfied
+    --> src/bookmark_exchange.rs:194:40
+     |
+ 194 |             .filter(|n| n.has_tag_name((None, "title")))
+     |                           ------------ ^^^^^^^^^^^^^^^ the trait `std::convert::From<(std::option::Option<_>, &str)>` is not implemented for `ExpandedName<'_, '_>`
+     |                           |
+     |                           required by a bound introduced by this call
+     |
+help: `ExpandedName<'_, '_>` implements trait `std::convert::From<T>`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:859:1
+     |
+ 859 | impl<'a, 'b> From<&'b str> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<&str>`
+...
+ 866 | impl<'a, 'b> From<(&'a str, &'b str)> for ExpandedName<'a, 'b> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `std::convert::From<(&str, &str)>`
+     = note: required for `(std::option::Option<_>, &str)` to implement `Into<ExpandedName<'_, '_>>`
+note: required by a bound in `roxmltree::Node::<'a, 'input>::has_tag_name`
+    --> /Users/themoretheless/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/roxmltree-0.20.0/src/lib.rs:1024:12
+     |
+1022 |     pub fn has_tag_name<'n, 'm, N>(&self, name: N) -> bool
+     |            ------------ required by a bound in this associated function
+1023 |     where
+1024 |         N: Into<ExpandedName<'n, 'm>>,
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Node::<'a, 'input>::has_tag_name`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `commander` (bin "commander" test) due to 4 previous errors

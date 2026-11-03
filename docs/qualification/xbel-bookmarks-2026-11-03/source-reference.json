@@ -1,0 +1,14 @@
+{
+  "cohort": [
+    {
+      "rank": 4,
+      "repository": "KDE/krusader"
+    },
+    {
+      "rank": 17,
+      "repository": "KDE/dolphin"
+    }
+  ],
+  "contract": "https://api.kde.org/kbookmarkmanager.html",
+  "adaptation": "XBEL bookmark href/title exchange; flatten folders into existing Commander Favorites; no KDE metadata import"
+}

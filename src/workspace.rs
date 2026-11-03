@@ -1955,11 +1955,21 @@ impl Workspace {
             }
             Command::OpenFavorites => self.emit_ui_request(UiRequest::OpenFavorites),
             Command::ImportFavoritesGtk => self.emit_ui_request(UiRequest::ImportFavoritesGtk),
-            Command::ExportFavoritesGtk => {
-                match crate::bookmark_exchange::export(&self.bookmarks) {
+            Command::ExportFavoritesGtk | Command::ExportFavoritesXbel => {
+                let result = if matches!(cmd, Command::ExportFavoritesXbel) {
+                    crate::bookmark_exchange::export_xbel(&self.bookmarks)
+                } else {
+                    crate::bookmark_exchange::export(&self.bookmarks)
+                };
+                match result {
                     Ok(text) => self.emit_ui_request(UiRequest::CopyText {
                         text,
-                        label: "GTK bookmarks".into(),
+                        label: if matches!(cmd, Command::ExportFavoritesXbel) {
+                            "XBEL bookmarks"
+                        } else {
+                            "GTK bookmarks"
+                        }
+                        .into(),
                     }),
                     Err(message) => self.emit_ui_request(UiRequest::Notice {
                         message,

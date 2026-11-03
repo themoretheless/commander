@@ -1,0 +1,31 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 31.19s
+     Running unittests src/main.rs (target/debug/build/commander/a52f3e6d1c1ec122/out/commander-a52f3e6d1c1ec122)
+
+running 4 tests
+test bookmark_exchange::tests::xbel_nested_local_bookmarks_preserve_order_labels_status_and_review_choices ... FAILED
+test bookmark_exchange::tests::xbel_refuses_malformed_entities_depth_nodes_records_and_source_limits ... FAILED
+test bookmark_exchange::tests::xbel_export_round_trips_exact_escaped_fields_and_refuses_partial_or_lossy_output ... ok
+test workspace::tests::xbel_favorites_merge_persists_only_reviewed_new_paths_and_exports_live_store ... ok
+
+failures:
+
+---- bookmark_exchange::tests::xbel_nested_local_bookmarks_preserve_order_labels_status_and_review_choices stdout ----
+
+thread 'bookmark_exchange::tests::xbel_nested_local_bookmarks_preserve_order_labels_status_and_review_choices' (23127927) panicked at src/bookmark_exchange.rs:431:51:
+called `Result::unwrap()` on an `Err` value: "Invalid XBEL: XML with DTD detected"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- bookmark_exchange::tests::xbel_refuses_malformed_entities_depth_nodes_records_and_source_limits stdout ----
+
+thread 'bookmark_exchange::tests::xbel_refuses_malformed_entities_depth_nodes_records_and_source_limits' (23127928) panicked at src/bookmark_exchange.rs:471:13:
+<xbel xmlns='urn:foreign'><bookmark href='file:///ok'/></xbel>
+
+
+failures:
+    bookmark_exchange::tests::xbel_nested_local_bookmarks_preserve_order_labels_status_and_review_choices
+    bookmark_exchange::tests::xbel_refuses_malformed_entities_depth_nodes_records_and_source_limits
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 3511 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`
