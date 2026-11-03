@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/themoretheless/Documents/Sources/commander/docs/qualification/tar-content-groups-2026-11-03/verify.py", line 87, in <module>
+    results[scene]=dict(checks=len(m['checks']),effects=m['native_effect_calls'],frame_sha256=hashlib.sha256((directory/'frame.png').read_bytes()).hexdigest(),capture=str(directory))
+                                   ~^^^^^^^^^^
+KeyError: 'checks'

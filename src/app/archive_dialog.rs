@@ -1835,12 +1835,12 @@ impl App {
                     #[cfg(feature = "visual-qa")]
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-test"), test.rect));
                     start_check = test.clicked();
-                    if state.listing.as_ref().is_some_and(|listing| listing.kind==crate::archive::ArchiveKind::Zip) {
+                    if state.listing.is_some() {
                         let groups=ui.add_enabled(state.run.is_none() && state.extract.is_none() && state.check.is_none(),egui::Button::new("Find matching contents"))
-                            .on_hover_text("Read and verify every ZIP member, then group safe regular files by actual size and SHA-256 of decompressed contents. Requires consistent headers and unique names. Uses the password below once; 128 MiB decoded and 8 MiB identity metadata limits. No extraction or deletion.");
+                            .on_hover_text("Read every member, then group safe regular files by actual size and SHA-256. ZIP requires consistent headers and unique names, with CRC/AES verification and one-use password. TAR validates headers and compressed streams but has no payload checksum; 128 MiB decoded and 8 MiB identity metadata limits. No extraction or deletion.");
                         #[cfg(feature="visual-qa")]
                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("archive-content-groups"),groups.rect));
-                        if groups.clicked() {state.strict_zip_headers=true;start_check=true;start_content_groups=true;}
+                        if groups.clicked() {state.strict_zip_headers=state.listing.as_ref().is_some_and(|listing|listing.kind==crate::archive::ArchiveKind::Zip);start_check=true;start_content_groups=true;}
                     }
 
                     if state.listing.as_ref().is_some_and(|listing| listing.kind == crate::archive::ArchiveKind::Zip) {

@@ -283,9 +283,6 @@ fn scan(
     cancel(cancelled)?;
     progress.store(0, Ordering::Relaxed);
     let kind = crate::archive::kind_of(path).ok_or("Unsupported archive format.")?;
-    if content_groups && kind != ArchiveKind::Zip {
-        return Err("Content-group scanning currently requires ZIP/ZIPX.".into());
-    }
     let mut hashes = std::collections::BTreeMap::<(u64, [u8; 32]), Vec<ContentMember>>::new();
     let mut metadata_bytes = 0usize;
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -406,15 +403,55 @@ fn scan(
                         "Archive check incomplete: TAR logical-payload limit reached.".into(),
                     );
                 }
-                let count = drain(&mut BudgetReader {
-                    inner: &mut entry,
-                    cancelled,
-                    progress: &payload,
-                    limit,
-                })
+                let candidate = if content_groups && entry.header().entry_type().is_file() {
+                    let name = entry.path_bytes();
+                    let name = name.strip_prefix(b"./").unwrap_or(&name);
+                    crate::archive::tar_path_from_bytes(name)
+                        .filter(|path| {
+                            !name.is_empty()
+                                && name != b"."
+                                && crate::archive::is_enclosed_tar_path(path)
+                        })
+                        .map(|path| ContentMember {
+                            index: members,
+                            path,
+                            size: expected,
+                        })
+                } else {
+                    None
+                };
+                if let Some(candidate) = &candidate {
+                    metadata_bytes = metadata_bytes
+                        .saturating_add(candidate.path.as_os_str().as_encoded_bytes().len())
+                        .saturating_add(128);
+                    if metadata_bytes > metadata_limit {
+                        return Err(
+                            "Content-group metadata exceeds 8 MiB; no complete result.".into()
+                        );
+                    }
+                }
+                let mut hash = candidate.as_ref().map(|_| sha2::Sha256::new());
+                let count = drain_hash(
+                    &mut BudgetReader {
+                        inner: &mut entry,
+                        cancelled,
+                        progress: &payload,
+                        limit,
+                    },
+                    hash.as_mut(),
+                )
                 .map_err(|e| format!("Member #{members}: {e}"))?;
                 if count != expected {
                     return Err(format!("Member #{members}: truncated TAR payload"));
+                }
+                if let Some(candidate) = candidate {
+                    hashes
+                        .entry((
+                            candidate.size,
+                            hash.expect("candidate has a hasher").finalize().into(),
+                        ))
+                        .or_default()
+                        .push(candidate);
                 }
                 members += 1;
             }
@@ -1616,6 +1653,154 @@ mod tests {
                 .contains("cancelled")
         );
     }
+    #[test]
+    fn tar_content_groups_cover_all_codecs_pax_duplicate_names_and_list_identities() {
+        let temp = TempDir::new();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/qualification/tar-content-groups-2026-11-03/fixtures");
+        for name in [
+            "groups.tar",
+            "groups.tar.gz",
+            "groups.tar.bz2",
+            "groups.tar.xz",
+            "groups.tar.zst",
+        ] {
+            let path = temp.path().join(name);
+            let before = fs::read(fixtures.join(name)).unwrap();
+            fs::write(&path, &before).unwrap();
+            let report = scan(&path, &|| false, &AtomicU64::new(0), None, group_options()).unwrap();
+            assert_eq!(report.members, 11, "{name}");
+            assert!(!report.strict_headers);
+            assert!(report.summary().contains("no payload checksum"));
+            let groups = report.content_groups.unwrap();
+            assert_eq!(groups.len(), 2);
+            assert_eq!(
+                groups[0]
+                    .members
+                    .iter()
+                    .map(|m| m.index)
+                    .collect::<Vec<_>>(),
+                [4, 5]
+            );
+            assert_eq!(groups[0].size, 0);
+            assert_eq!(
+                groups[1]
+                    .members
+                    .iter()
+                    .map(|m| m.index)
+                    .collect::<Vec<_>>(),
+                [0, 2, 8, 9, 10]
+            );
+            assert_eq!(
+                groups[1].size,
+                "tar archive needle: ёж / café\n".len() as u64
+            );
+            let mut listed = Vec::new();
+            crate::archive::visit_members(
+                &path,
+                false,
+                &mut crate::archive::SearchBudget::default(),
+                || false,
+                |m| {
+                    listed.push(m.member);
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(listed.len(), 11, "{name}");
+            for group in groups {
+                for member in group.members {
+                    assert!(
+                        listed.iter().any(|listed| listed.index == member.index
+                            && listed.path == member.path
+                            && listed.size == member.size
+                            && listed.is_regular),
+                        "{name}: {}",
+                        member.path.display()
+                    );
+                }
+            }
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert!(!temp.path().join("a-same.txt").exists());
+        }
+    }
+    #[test]
+    fn tar_content_groups_consume_later_archives_and_refuse_corruption_limits_cancel() {
+        let temp = TempDir::new();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/qualification/tar-content-groups-2026-11-03/fixtures");
+        for name in [
+            "groups.tar",
+            "groups.tar.gz",
+            "groups.tar.bz2",
+            "groups.tar.xz",
+            "groups.tar.zst",
+        ] {
+            let path = temp.path().join(name);
+            let original = fs::read(fixtures.join(name)).unwrap();
+            let mut concat = original.clone();
+            concat.extend_from_slice(&original);
+            fs::write(&path, &concat).unwrap();
+            let report = scan(&path, &|| false, &AtomicU64::new(0), None, group_options()).unwrap();
+            assert_eq!(report.members, 22, "{name}");
+            assert_eq!(
+                report
+                    .content_groups
+                    .unwrap()
+                    .iter()
+                    .map(|g| g.members.len())
+                    .sum::<usize>(),
+                16
+            );
+            let mut listed = Vec::new();
+            crate::archive::visit_members(
+                &path,
+                false,
+                &mut crate::archive::SearchBudget::default(),
+                || false,
+                |m| {
+                    listed.push(m.member.index);
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(listed, (0..22).collect::<Vec<_>>(), "{name}");
+            for options in [
+                ScanOptions {
+                    limit: 512,
+                    ..group_options()
+                },
+                ScanOptions {
+                    max_members: 1,
+                    ..group_options()
+                },
+                ScanOptions {
+                    metadata_limit: 1,
+                    ..group_options()
+                },
+            ] {
+                assert!(
+                    scan(&path, &|| false, &AtomicU64::new(0), None, options).is_err(),
+                    "{name}"
+                );
+            }
+            assert!(scan(&path, &|| true, &AtomicU64::new(0), None, group_options()).is_err());
+            let offset = if name == "groups.tar" {
+                concat.len() / 2
+            } else if name.ends_with("bz2") {
+                concat.len() - 3
+            } else {
+                concat.len() - 1
+            };
+            concat[offset] ^= 0xff;
+            fs::write(&path, &concat).unwrap();
+            assert!(
+                scan(&path, &|| false, &AtomicU64::new(0), None, group_options()).is_err(),
+                "{name}"
+            );
+        }
+    }
+
     fn tar_bytes(data: &[u8]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
         for name in ["first.bin", "second.bin"] {

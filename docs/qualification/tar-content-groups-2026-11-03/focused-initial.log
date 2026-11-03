@@ -1,0 +1,25 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 29.56s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 2 tests
+test archive_check::tests::tar_content_groups_consume_later_archives_and_refuse_corruption_limits_cancel ... FAILED
+test archive_check::tests::tar_content_groups_cover_all_codecs_pax_duplicate_names_and_list_identities ... ok
+
+failures:
+
+---- archive_check::tests::tar_content_groups_consume_later_archives_and_refuse_corruption_limits_cancel stdout ----
+
+thread 'archive_check::tests::tar_content_groups_consume_later_archives_and_refuse_corruption_limits_cancel' (19908976) panicked at src/archive_check.rs:1746:13:
+assertion `left == right` failed
+  left: 16
+ right: 14
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    archive_check::tests::tar_content_groups_consume_later_archives_and_refuse_corruption_limits_cancel
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 3460 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--bin commander`

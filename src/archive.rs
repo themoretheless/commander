@@ -392,7 +392,7 @@ pub fn tar_reader<'a>(
     let file = CancellableInput { file, cancelled };
     match kind {
         ArchiveKind::Tar => Ok(Box::new(file)),
-        ArchiveKind::TarGz => Ok(Box::new(flate2::read::GzDecoder::new(file))),
+        ArchiveKind::TarGz => Ok(Box::new(flate2::read::MultiGzDecoder::new(file))),
         ArchiveKind::TarBz2 => Ok(Box::new(bzip2::read::MultiBzDecoder::new(file))),
         ArchiveKind::TarXz => {
             let stream = xz2::stream::Stream::new_stream_decoder(
@@ -411,17 +411,12 @@ pub fn tar_reader<'a>(
     }
 }
 
-/// Integrity checks also consume every gzip member, including trailing frames.
+/// Integrity checks and listings share complete concatenated-stream decoding.
 pub fn tar_check_reader<'a>(
     file: fs::File,
     kind: ArchiveKind,
     cancelled: &'a dyn Fn() -> bool,
 ) -> Result<Box<dyn Read + 'a>, String> {
-    if kind == ArchiveKind::TarGz {
-        return Ok(Box::new(flate2::read::MultiGzDecoder::new(
-            CancellableInput { file, cancelled },
-        )));
-    }
     tar_reader(file, kind, cancelled)
 }
 
@@ -447,6 +442,7 @@ fn visit_tar(
         cancelled: &cancelled,
     };
     let mut archive = tar::Archive::new(reader);
+    archive.set_ignore_zeros(true);
     let entries = archive
         .entries()
         .map_err(|error| format!("Could not list {}: {error}", archive_path.display()))?;
@@ -581,12 +577,12 @@ fn tar_name_from_bytes(bytes: &[u8]) -> std::ffi::OsString {
 }
 
 #[cfg(unix)]
-fn tar_path_from_bytes(bytes: &[u8]) -> Option<PathBuf> {
+pub fn tar_path_from_bytes(bytes: &[u8]) -> Option<PathBuf> {
     Some(PathBuf::from(tar_name_from_bytes(bytes)))
 }
 
 #[cfg(not(unix))]
-fn tar_path_from_bytes(bytes: &[u8]) -> Option<PathBuf> {
+pub fn tar_path_from_bytes(bytes: &[u8]) -> Option<PathBuf> {
     String::from_utf8(bytes.to_vec()).ok().map(PathBuf::from)
 }
 
@@ -631,7 +627,7 @@ fn collect_listing_lines(
 /// A tar member name is safe to show and extract only when every component
 /// is a plain name: no `..`, no root or drive prefix (GNU tar lists absolute
 /// members with their leading `/`), matching ZIP's `enclosed_name`.
-fn is_enclosed_tar_path(path: &Path) -> bool {
+pub fn is_enclosed_tar_path(path: &Path) -> bool {
     path.components()
         .all(|component| matches!(component, std::path::Component::Normal(_)))
 }

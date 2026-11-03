@@ -332,6 +332,7 @@ enum Scenario {
     ArchiveMetadata,
     ArchivePassword,
     ArchiveContentGroups,
+    ArchiveTarContentGroups,
     ArchiveBrowser,
     ArchiveFuzzy,
     ArchiveExport,
@@ -369,6 +370,7 @@ impl Scenario {
             Self::ArchiveMetadata | Self::ArchivePassword | Self::ArchiveContentGroups => {
                 Some(ArchiveKind::Zip)
             }
+            Self::ArchiveTarContentGroups => Some(ArchiveKind::TarGz),
             Self::ArchiveBzip2 => Some(ArchiveKind::TarBz2),
             Self::ArchiveXz => Some(ArchiveKind::TarXz),
             Self::ArchiveZstd => Some(ArchiveKind::TarZstd),
@@ -380,6 +382,7 @@ impl Scenario {
             Self::ArchiveMetadata => "metadata.ZIPX",
             Self::ArchivePassword => "password.ZIPX",
             Self::ArchiveContentGroups => "groups.ZIPX",
+            Self::ArchiveTarContentGroups => "groups.tar.gz",
             Self::ArchiveBzip2 => "sample.tar.bz2",
             Self::ArchiveXz => "sample.tar.xz",
             Self::ArchiveZstd => "sample.tar.zst",
@@ -403,7 +406,7 @@ impl Scenario {
             _ => None,
         }
     }
-    const ALL: [Self; 140] = [
+    const ALL: [Self; 141] = [
         Self::DesktopBase,
         Self::CopyDetails,
         Self::IconsGrid,
@@ -534,6 +537,7 @@ impl Scenario {
         Self::ArchiveMetadata,
         Self::ArchivePassword,
         Self::ArchiveContentGroups,
+        Self::ArchiveTarContentGroups,
         Self::ArchiveBrowser,
         Self::ArchiveFuzzy,
         Self::ArchiveExport,
@@ -685,6 +689,7 @@ impl Scenario {
             Self::ArchiveMetadata => "archive_metadata",
             Self::ArchivePassword => "archive_password",
             Self::ArchiveContentGroups => "archive_content_groups",
+            Self::ArchiveTarContentGroups => "archive_tar_content_groups",
             Self::ArchiveBrowser => "archive_browser",
             Self::ArchiveFuzzy => "archive_fuzzy",
             Self::ArchiveExport => "archive_export",
@@ -831,6 +836,7 @@ impl Scenario {
             | Self::ArchiveMetadata
             | Self::ArchivePassword
             | Self::ArchiveContentGroups
+            | Self::ArchiveTarContentGroups
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -987,6 +993,7 @@ impl Scenario {
             | Self::ArchiveMetadata
             | Self::ArchivePassword
             | Self::ArchiveContentGroups
+            | Self::ArchiveTarContentGroups
             | Self::ArchiveBrowser
             | Self::ArchiveFuzzy
             | Self::ArchiveExport
@@ -2590,6 +2597,15 @@ fn main() {
             std::fs::write(left.join("preview.rs"), code)
                 .map_err(|error| format!("could not create code fixture: {error}"))?;
         }
+        if scenario == Scenario::ArchiveTarContentGroups {
+            std::fs::write(
+                left.join("groups.tar.gz"),
+                include_bytes!(
+                    "../docs/qualification/tar-content-groups-2026-11-03/fixtures/groups.tar.gz"
+                ),
+            )
+            .map_err(|e| e.to_string())?;
+        }
         if scenario == Scenario::ArchiveContentGroups {
             use std::io::Write;
             let path = left.join("groups.ZIPX");
@@ -2728,6 +2744,7 @@ fn main() {
                 Scenario::ArchiveMetadata
                     | Scenario::ArchivePassword
                     | Scenario::ArchiveContentGroups
+                    | Scenario::ArchiveTarContentGroups
             )
         {
             let create_archive = || -> std::io::Result<()> {
@@ -5036,6 +5053,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 52)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
+            && !(self.scenario == Scenario::ArchiveTarContentGroups && self.archive_copy_phase < 20)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -16860,6 +16878,162 @@ impl eframe::App for VisualQaApp {
                 }
             }
         }
+        if self.scenario == Scenario::ArchiveTarContentGroups && self.archive_copy_phase <= 20 {
+            let phase = self.archive_copy_phase;
+            let Some(state) = self.inner.ui.tools.archive.as_ref() else {
+                return;
+            };
+            if state.listing.is_none() {
+                return;
+            }
+            if matches!(phase, 3 | 7) {
+                if state.check.is_some() {
+                    return;
+                }
+                let Some(Ok(report)) = &state.check_result else {
+                    return;
+                };
+                if report.kind != crate::archive::ArchiveKind::TarGz
+                    || report.strict_headers
+                    || report.members != 11
+                    || !report.content_groups.as_ref().is_some_and(|groups| {
+                        groups.len() == 2
+                            && groups.iter().map(|g| g.members.len()).sum::<usize>() == 7
+                    })
+                {
+                    return;
+                }
+                let listing = state.listing.as_ref().unwrap();
+                let mut selected_indexes = state
+                    .selected
+                    .iter()
+                    .filter_map(|id| listing.members.get(*id).map(|m| m.index))
+                    .collect::<Vec<_>>();
+                selected_indexes.sort_unstable();
+                if phase == 7 && selected_indexes != [0, 2, 4, 5, 8, 9, 10] {
+                    return;
+                }
+                let unchanged=std::fs::read(self.fixture.left.join("groups.tar.gz")).ok().as_deref()==Some(include_bytes!("../docs/qualification/tar-content-groups-2026-11-03/fixtures/groups.tar.gz").as_slice());
+                if !unchanged
+                    || [
+                        "a-same.txt",
+                        "z-same.txt",
+                        "dup.txt",
+                        "empty-one",
+                        "empty-two",
+                        "different.txt",
+                        "nested",
+                    ]
+                    .into_iter()
+                    .any(|name| self.fixture.left.join(name).exists())
+                {
+                    return;
+                }
+                let record = serde_json::json!({"kind":report.kind.label(),"strict_headers":report.strict_headers,"members":report.members,"decoded":report.decoded,"groups":report.content_groups,"selected":state.selected,"selected_indexes":selected_indexes,"source_unchanged":unchanged,"no_extracted_files":true,"listing":listing.members.iter().enumerate().map(|(id,m)|serde_json::json!({"id":id,"index":m.index,"path":m.path,"size":m.size,"regular":m.is_regular})).collect::<Vec<_>>()});
+                let _ = std::fs::write(
+                    self.scenario_dir
+                        .join(format!("tar-content-groups-{phase}.json")),
+                    serde_json::to_vec_pretty(&record).unwrap(),
+                );
+                if phase == 7 {
+                    let _ = std::fs::copy(
+                        self.fixture.left.join("groups.tar.gz"),
+                        self.scenario_dir.join("fixture.tar.gz"),
+                    );
+                }
+                self.archive_copy_phase += 1;
+                return;
+            }
+            if matches!(phase, 11 | 20) {
+                let observed = ctx.data(|d| {
+                    d.get_temp::<(String, Vec<PathBuf>, bool, egui::Rect)>(egui::Id::new(
+                        "archive-rendered-content-group",
+                    ))
+                });
+                let Some((digest, paths, visible, rect)) = observed else {
+                    return;
+                };
+                if !visible {
+                    if let Some(clip) =
+                        ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                    {
+                        input.events.push(egui::Event::PointerMoved(clip.center()));
+                        input.events.push(egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            phase: egui::TouchPhase::Move,
+                            delta: egui::vec2(
+                                0.0,
+                                if rect.top() < clip.top() { 80.0 } else { -80.0 },
+                            ),
+                            modifiers: Default::default(),
+                        });
+                    }
+                    return;
+                }
+                if phase == 11 {
+                    let _ = std::fs::write(
+                        self.scenario_dir.join("tar-group-rendered.json"),
+                        serde_json::to_vec_pretty(
+                            &serde_json::json!({"sha256":digest,"paths":paths,"visible":visible}),
+                        )
+                        .unwrap(),
+                    );
+                    self.archive_copy_phase += 1;
+                }
+                return;
+            }
+            if matches!(phase, 15 | 19) {
+                let (count, name) = if phase == 15 {
+                    (1, "tar-content-report.txt")
+                } else {
+                    (2, "tar-content-report.json")
+                };
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || !self.recorded_clipboard_dump(name)
+                {
+                    return;
+                }
+                self.archive_copy_phase += 1;
+                return;
+            }
+            let (name, step) = match phase {
+                0..=2 => ("archive-content-groups", phase),
+                4..=6 => ("archive-select-content-groups", phase - 4),
+                8..=10 => ("archive-content-groups-details", phase - 8),
+                12..=14 => ("Copy check report", phase - 12),
+                _ => ("Copy check report JSON", phase - 16),
+            };
+            let id = egui::Id::new(name);
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !clip.contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_copy_phase += 1;
+        }
         if self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 20 {
             let phase = self.archive_copy_phase;
             let Some(state) = self.inner.ui.tools.archive.as_ref() else {
@@ -20021,6 +20195,7 @@ impl eframe::App for VisualQaApp {
                 Scenario::ArchiveMetadata
                     | Scenario::ArchivePassword
                     | Scenario::ArchiveContentGroups
+                    | Scenario::ArchiveTarContentGroups
             )
             && let Some(state) = self.inner.ui.tools.archive.as_mut()
             && state.listing.is_some()
@@ -21819,6 +21994,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
+            Scenario::ArchiveTarContentGroups => self.archive_copy_phase==20 && ["tar-content-groups-3.json","tar-content-groups-7.json","tar-group-rendered.json","tar-content-report.txt","tar-content-report.json"].into_iter().all(|name|self.scenario_dir.join(name).is_file()) && ctx.data(|d|d.get_temp::<(String,Vec<PathBuf>,bool,egui::Rect)>(egui::Id::new("archive-rendered-content-group")).is_some_and(|(_,_,visible,_)|visible)),
             Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
             Scenario::ArchivePassword => {
                 self.archive_copy_phase == 55
@@ -22369,7 +22545,7 @@ struct NativeEffectCalls {
 const fn expected_clipboard_writes(scenario: Scenario) -> usize {
     match scenario {
         Scenario::ArchivePassword => 4,
-        Scenario::ArchiveContentGroups => 2,
+        Scenario::ArchiveContentGroups | Scenario::ArchiveTarContentGroups => 2,
         Scenario::SymlinkWorkflow
         | Scenario::HexMatchCopy
         | Scenario::DuplicateSort
@@ -22798,7 +22974,7 @@ mod tests {
         for scenario in Scenario::ALL {
             let expected = match scenario {
                 Scenario::ArchivePassword => 4,
-                Scenario::ArchiveContentGroups => 2,
+                Scenario::ArchiveContentGroups | Scenario::ArchiveTarContentGroups => 2,
                 Scenario::SymlinkWorkflow
                 | Scenario::HexMatchCopy
                 | Scenario::DuplicateSort
@@ -22993,6 +23169,7 @@ mod tests {
                 "archive_metadata",
                 "archive_password",
                 "archive_content_groups",
+                "archive_tar_content_groups",
                 "archive_browser",
                 "archive_fuzzy",
                 "archive_export",
