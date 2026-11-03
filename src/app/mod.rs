@@ -468,6 +468,7 @@ pub struct DiskUsageState {
 }
 
 pub struct ArchiveState {
+    pub strict_zip_headers: bool,
     /// Runtime only; moved into the archive operation worker and cleared on start.
     pub password: zeroize::Zeroizing<String>,
     pub check: Option<crate::archive_check::Run>,

@@ -1,0 +1,2 @@
+# Preserve raw diagnostic spacing.
+*.log -text -diff

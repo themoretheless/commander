@@ -1476,6 +1476,7 @@ impl App {
         );
         self.ui.tools.replace_on(side);
         self.ui.tools.archive = Some(ArchiveState {
+            strict_zip_headers: false,
             password: zeroize::Zeroizing::new(String::new()),
             check: None,
             check_result: None,
@@ -1750,6 +1751,13 @@ impl App {
                     #[cfg(feature = "visual-qa")]
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-test"), test.rect));
                     start_check = test.clicked();
+                    if state.listing.as_ref().is_some_and(|listing| listing.kind == crate::archive::ArchiveKind::Zip) {
+                        let strict = ui.add_enabled(state.check.is_none() && state.extract.is_none(), egui::Checkbox::new(&mut state.strict_zip_headers, "Strict ZIP headers"))
+                            .on_hover_text("Also compare local and central headers and reject duplicate names. Some permissive ZIP archives fail this stricter check.");
+                        #[cfg(feature = "visual-qa")]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-strict-headers"), strict.rect));
+                        let _ = strict;
+                    }
                     if let Some(run) = &state.check {
                         ui.spinner();
                         ui.label(format!("Checking… {} decoded bytes", run.progress.load(std::sync::atomic::Ordering::Relaxed)));
@@ -2588,6 +2596,7 @@ impl App {
             state.check = Some(crate::archive_check::start(
                 state.path.clone(),
                 Some(std::mem::take(&mut state.password)),
+                state.strict_zip_headers,
                 std::sync::Arc::new(move || repaint.request_repaint()),
             ));
         }

@@ -1,0 +1,10 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 34.48s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 2 tests
+test archive_check::tests::strict_zip_headers_reject_inconsistency_before_payload_reads ... ok
+test archive_check::tests::strict_zip_headers_accept_valid_encryption_and_descriptors ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3437 filtered out; finished in 0.02s
+

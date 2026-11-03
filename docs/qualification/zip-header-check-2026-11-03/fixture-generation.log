@@ -1,0 +1,44 @@
+/opt/homebrew/Cellar/python@3.15/3.15.2/Frameworks/Python.framework/Versions/3.15/lib/python3.15/zipfile/__init__.py:1755: UserWarning: Duplicate name: 'same.txt'
+  return self._open_to_write(zinfo, force_zip64=force_zip64)
+{
+  "normal": {
+    "sha256": "f3b2ae97b375281c32f029bd6929a9d1b918a185ab9d16f572ac4adebe1cea8a",
+    "external_exit": 0
+  },
+  "name": {
+    "sha256": "54483305641a6d0a205525c1d5df6220f27171ad82659fab642f79ca1fb4a668",
+    "external_exit": 0
+  },
+  "method": {
+    "sha256": "32caa3926757db045773468bb53206c17b1a7bc7cf577dbdf54450ff55514999",
+    "external_exit": 2
+  },
+  "encrypted": {
+    "sha256": "6f304bb5c83ca38f5d4599362642da8bb5d2bcb39983e17c9021146406951fd3",
+    "external_exit": 255
+  },
+  "descriptor": {
+    "sha256": "ac8132e2d841e18ff1c2e54aa24baf8df81fd4b511355dce3c4034c08a678022",
+    "external_exit": 2
+  },
+  "timestamp": {
+    "sha256": "87270bbe1ec99661477bad837a5ca3d697eff87a86f911d3244d5cd87f1773ca",
+    "external_exit": 0
+  },
+  "crc": {
+    "sha256": "d1edef318dcf5b350e6cde4e135d57b5c87be46cf997db26fde41029e17ca0a7",
+    "external_exit": 2
+  },
+  "packed-size": {
+    "sha256": "b655b48975a9127559371d9133f7e26a2892c6d1224c09abfaeda989d9f77a8a",
+    "external_exit": 2
+  },
+  "size": {
+    "sha256": "0d61bfd8498ea27624228ba78b731578257f3f0d637eaea309148e26e65981c2",
+    "external_exit": 2
+  },
+  "duplicates": {
+    "sha256": "2f6273a0b25a3678f17f336fade9da020de25b81f5ee5019efaeb06d7f88f70e",
+    "external_exit": 0
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "archive_metadata",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-header-check-2026-11-03/native-captures/1793672400237072000",
+  "binary_sha256": "73bc6c5590aaf0db295e3d759dd4fa8fbaf2cfe73e2dfced7c34deb66310282e",
+  "core_sha256": "73bc6c5590aaf0db295e3d759dd4fa8fbaf2cfe73e2dfced7c34deb66310282e",
+  "wrapper_sha256": "acaf03fac1f70dd8aeb0346fd5c4b595f3ce918c672608b20d98f1198267149c",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}

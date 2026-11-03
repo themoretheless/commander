@@ -17,11 +17,12 @@ pub struct Report {
     pub kind: ArchiveKind,
     pub members: usize,
     pub decoded: u64,
+    pub strict_headers: bool,
 }
 impl Report {
     pub fn summary(&self) -> String {
         format!(
-            "Last {} check completed · {} members · {} decoded bytes · {}",
+            "Last {} check completed · {} members · {} decoded bytes · {}{}",
             self.kind.label(),
             self.members,
             self.decoded,
@@ -29,6 +30,11 @@ impl Report {
                 "ZIP CRC/size checks; AES authentication when present"
             } else {
                 "TAR headers/stream; TAR has no payload checksum"
+            },
+            if self.strict_headers {
+                " · strict ZIP headers"
+            } else {
+                ""
             }
         )
     }
@@ -150,6 +156,23 @@ pub fn check_with_password(
         MAX_MEMBERS_PER_RUN,
     )
 }
+/// Check ZIP header identity and payloads; non-ZIP archives keep their normal checks.
+pub fn check_strict(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &AtomicU64,
+    password: Option<&[u8]>,
+) -> Result<Report, String> {
+    check_options(
+        path,
+        cancelled,
+        progress,
+        password,
+        MAX_DECODED,
+        MAX_MEMBERS_PER_RUN,
+        true,
+    )
+}
 fn check_with_limits(
     path: &Path,
     cancelled: &dyn Fn() -> bool,
@@ -166,6 +189,25 @@ fn check_with_password_limits(
     password: Option<&[u8]>,
     limit: u64,
     max_members: usize,
+) -> Result<Report, String> {
+    check_options(
+        path,
+        cancelled,
+        progress,
+        password,
+        limit,
+        max_members,
+        false,
+    )
+}
+fn check_options(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &AtomicU64,
+    password: Option<&[u8]>,
+    limit: u64,
+    max_members: usize,
+    strict_headers: bool,
 ) -> Result<Report, String> {
     cancel(cancelled)?;
     progress.store(0, Ordering::Relaxed);
@@ -199,6 +241,10 @@ fn check_with_password_limits(
         }
         if zip.has_overlapping_files().map_err(|e| e.to_string())? {
             return Err("ZIP contains overlapping file data.".into());
+        }
+        if strict_headers {
+            zip.validate_header_consistency()
+                .map_err(|e| format!("Strict ZIP header check: {e}"))?;
         }
         for index in 0..zip.len() {
             cancel(cancelled)?;
@@ -272,6 +318,7 @@ fn check_with_password_limits(
         kind,
         members,
         decoded: progress.load(Ordering::Relaxed),
+        strict_headers: strict_headers && kind == ArchiveKind::Zip,
     })
 }
 
@@ -293,6 +340,7 @@ impl Drop for Run {
 pub fn start(
     path: std::path::PathBuf,
     password: Option<zeroize::Zeroizing<String>>,
+    strict_headers: bool,
     notify: crate::archive::Notify,
 ) -> Run {
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -301,16 +349,25 @@ pub fn start(
     let worker_progress = Arc::clone(&progress);
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = if let Some(password) = password {
+        let cancelled = || flag.load(Ordering::Acquire);
+        let result = if strict_headers {
+            check_strict(
+                &path,
+                &cancelled,
+                &worker_progress,
+                password.as_ref().map(|p| p.as_bytes()),
+            )
+        } else if let Some(password) = &password {
             check_with_password(
                 &path,
-                &|| flag.load(Ordering::Acquire),
+                &cancelled,
                 &worker_progress,
                 Some(password.as_bytes()),
             )
         } else {
-            check(&path, &|| flag.load(Ordering::Acquire), &worker_progress)
+            check(&path, &cancelled, &worker_progress)
         };
+        drop(password);
         let _ = sender.send(result);
         notify();
     });
@@ -335,6 +392,149 @@ mod tests {
             ))
             .as_slice()
         };
+    }
+    #[test]
+    fn strict_zip_headers_keep_worker_limits_cancellation_and_duplicate_policy() {
+        let temp = TempDir::new();
+        let path = temp.path().join("input.zipx");
+        fs::write(&path, fixture!("aes-utf8-password", ".zipx")).unwrap();
+        let run = start(
+            path.clone(),
+            Some(zeroize::Zeroizing::new("fixture-пароль-ёж".into())),
+            true,
+            Arc::new(|| {}),
+        );
+        let report = run
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(report.strict_headers);
+        let progress = AtomicU64::new(0);
+        let error = check_options(
+            &path,
+            &|| false,
+            &progress,
+            Some("fixture-пароль-ёж".as_bytes()),
+            1,
+            100,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("limit"));
+        assert!(
+            check_strict(&path, &|| true, &progress, None)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        fs::write(
+            &path,
+            include_bytes!(
+                "../docs/qualification/zip-header-check-2026-11-03/fixtures/duplicates.zip"
+            ),
+        )
+        .unwrap();
+        let normal = check(&path, &|| false, &progress).unwrap();
+        assert!(!normal.strict_headers);
+        let error = check_strict(&path, &|| false, &progress, None).unwrap_err();
+        assert!(error.contains("duplicate"), "{error}");
+        assert_eq!(progress.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn strict_zip_headers_reject_inconsistency_before_payload_reads() {
+        for (name, bytes) in [
+            (
+                "name",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/name.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "method",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/method.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "encrypted",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/encrypted.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "descriptor",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/descriptor.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "timestamp",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/timestamp.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "crc",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/crc.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "packed-size",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/packed-size.zip"
+                )
+                .as_slice(),
+            ),
+            (
+                "size",
+                include_bytes!(
+                    "../docs/qualification/zip-header-check-2026-11-03/fixtures/size.zip"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("mutant.zip");
+            fs::write(&path, bytes).unwrap();
+            let progress = AtomicU64::new(0);
+            let normal =
+                check(&path, &|| false, &progress).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!normal.strict_headers);
+            let error = check_strict(&path, &|| false, &progress, None).unwrap_err();
+            assert!(error.contains("header"), "{name}: {error}");
+            assert_eq!(progress.load(Ordering::Relaxed), 0, "{name}");
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn strict_zip_headers_accept_valid_encryption_and_descriptors() {
+        for bytes in [
+            include_bytes!("../docs/qualification/zip-header-check-2026-11-03/fixtures/normal.zip")
+                .as_slice(),
+            fixture!("lzma-descriptor", ".zipx"),
+            fixture!("aes-descriptor", ".zipx"),
+            fixture!("aes-ppmd-3-v2", ".zipx"),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("valid.zipx");
+            fs::write(&path, bytes).unwrap();
+            let report = check_strict(
+                &path,
+                &|| false,
+                &AtomicU64::new(0),
+                Some(b"fixture-password"),
+            )
+            .unwrap();
+            assert!(report.strict_headers);
+            assert!(report.summary().contains("strict ZIP headers"));
+        }
     }
     #[test]
     fn password_integrity_requires_every_member_and_aggregate_budget() {
@@ -848,6 +1048,7 @@ mod tests {
             let run = start(
                 path,
                 Some(zeroize::Zeroizing::new(password.into())),
+                false,
                 Arc::new(|| {}),
             );
             let report = run
@@ -1232,7 +1433,7 @@ mod tests {
         let temp = TempDir::new();
         let path = temp.path().join("check.zip");
         zip_file(&path, b"abc");
-        let run = start(path.clone(), None, Arc::new(|| {}));
+        let run = start(path.clone(), None, false, Arc::new(|| {}));
         assert_eq!(
             run.receiver
                 .recv_timeout(std::time::Duration::from_secs(5))
@@ -1241,7 +1442,7 @@ mod tests {
                 .members,
             1
         );
-        let other = start(path, None, Arc::new(|| {}));
+        let other = start(path, None, false, Arc::new(|| {}));
         let first_flag = Arc::clone(&run.cancelled);
         let other_flag = Arc::clone(&other.cancelled);
         drop(run);
