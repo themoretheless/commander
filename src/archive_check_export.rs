@@ -47,6 +47,8 @@ struct JsonReport<'a> {
     error: Option<&'a str>,
     content_comparison: Option<&'static str>,
     content_groups: Option<&'a [crate::archive_check::ContentGroup]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_group_index: Option<usize>,
 }
 
 /// Error-mode metadata is captured at operation start; a success uses its actual
@@ -57,6 +59,37 @@ pub fn format(
     requested_strict: Option<bool>,
     recorded_at: Option<&chrono::DateTime<chrono::Utc>>,
     format: Format,
+) -> Result<String, String> {
+    format_scoped(path, result, requested_strict, recorded_at, format, None)
+}
+
+/// Export exactly one retained group, independent of view pages and row selection.
+pub fn format_group(
+    path: &Path,
+    result: &Result<Report, String>,
+    recorded_at: Option<&chrono::DateTime<chrono::Utc>>,
+    group: usize,
+    format: Format,
+) -> Result<String, String> {
+    if result
+        .as_ref()
+        .ok()
+        .and_then(|r| r.content_groups.as_ref())
+        .and_then(|g| g.get(group))
+        .is_none()
+    {
+        return Err("Archive content group is unavailable; nothing copied.".into());
+    }
+    format_scoped(path, result, None, recorded_at, format, Some(group))
+}
+
+fn format_scoped(
+    path: &Path,
+    result: &Result<Report, String>,
+    requested_strict: Option<bool>,
+    recorded_at: Option<&chrono::DateTime<chrono::Utc>>,
+    format: Format,
+    group_index: Option<usize>,
 ) -> Result<String, String> {
     let path_text = path
         .to_str()
@@ -88,7 +121,8 @@ pub fn format(
     let groups = result
         .as_ref()
         .ok()
-        .and_then(|report| report.content_groups.as_deref());
+        .and_then(|report| report.content_groups.as_deref())
+        .map(|groups| group_index.map_or(groups, |rank| &groups[rank..rank + 1]));
     if let Some(groups) = groups {
         for group in groups {
             for member in &group.members {
@@ -113,6 +147,7 @@ pub fn format(
                 error,
                 content_comparison: groups.map(|_| "sha256_and_size"),
                 content_groups: groups,
+                content_group_index: group_index,
             };
             serde_json::to_writer_pretty(&mut output, &value).map_err(|e| e.to_string())?;
             output.write_all(b"\n").map_err(|e| e.to_string())?;
@@ -123,6 +158,13 @@ pub fn format(
                 .map_err(|e| e.to_string())?;
             serde_json::to_writer(&mut output, path_text).map_err(|e| e.to_string())?;
             write!(&mut output,"\nFormat: {}\nRecorded at: {}\nStatus: {status}\nStrict ZIP headers: {}\nMembers: {}\nDecoded bytes: {}\n",kind.unwrap_or("unavailable"),at.as_deref().unwrap_or("unavailable"),strict.map(|v|v.to_string()).as_deref().unwrap_or("unavailable"),members.map(|v|v.to_string()).as_deref().unwrap_or("unavailable"),decoded.map(|v|v.to_string()).as_deref().unwrap_or("unavailable")).map_err(|e|e.to_string())?;
+            if let Some(rank) = group_index {
+                writeln!(
+                    &mut output,
+                    "Scope: content group #{rank} (counts above describe the complete scan)"
+                )
+                .map_err(|e| e.to_string())?;
+            }
             if let Some(groups) = groups {
                 writeln!(
                     &mut output,
@@ -131,6 +173,7 @@ pub fn format(
                 )
                 .map_err(|e| e.to_string())?;
                 for (id, group) in groups.iter().enumerate() {
+                    let id = group_index.unwrap_or(id);
                     write!(&mut output, "Group #{id}\nSHA-256: ").map_err(|e| e.to_string())?;
                     serde_json::to_writer(&mut output, &group.sha256).map_err(|e| e.to_string())?;
                     writeln!(
@@ -193,6 +236,93 @@ mod tests {
             }]),
         })
     }
+    #[test]
+    fn scoped_groups_keep_output_limits_and_refuse_lossy_paths() {
+        let mut report = grouped_report();
+        report.as_mut().unwrap().content_groups.as_mut().unwrap()[0].members[0].path =
+            "x".repeat(MAX_BYTES).into();
+        for format in Format::ALL {
+            assert!(format_group(Path::new("archive.zip"), &report, None, 0, format).is_err());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            report.as_mut().unwrap().content_groups.as_mut().unwrap()[0].members[0].path =
+                std::ffi::OsString::from_vec(vec![0xff]).into();
+            for format in Format::ALL {
+                assert!(
+                    format_group(Path::new("archive.zip"), &report, None, 0, format)
+                        .unwrap_err()
+                        .contains("UTF-8")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_groups_preserve_original_rank_and_complete_members() {
+        let mut report = grouped_report();
+        let r = report.as_mut().unwrap();
+        let group = r.content_groups.as_mut().unwrap();
+        group.insert(
+            0,
+            crate::archive_check::ContentGroup {
+                sha256: "excluded".into(),
+                size: 0,
+                members: Vec::new(),
+            },
+        );
+        for index in 10..31 {
+            group[1].members.push(crate::archive_check::ContentMember {
+                index,
+                path: format!("entry-{index}").into(),
+                size: 3,
+            });
+        }
+        let value: serde_json::Value = serde_json::from_str(
+            &format_group(Path::new("archive.zip"), &report, None, 1, Format::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["schema"], "commander.archive-check/v1");
+        assert_eq!(value["content_group_index"], 1);
+        assert_eq!(value["members"], 2); // Full scan metadata stays unchanged.
+        assert_eq!(value["content_groups"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["content_groups"][0]["members"]
+                .as_array()
+                .unwrap()
+                .len(),
+            23
+        );
+        assert_eq!(value["content_groups"][0]["members"][22]["index"], 30);
+        let text = format_group(Path::new("archive.zip"), &report, None, 1, Format::Text).unwrap();
+        assert!(text.contains("Scope: content group #1"));
+        assert!(text.contains("Content groups: 1\nGroup #1\n"));
+        assert!(!text.contains("excluded"));
+        assert!(text.contains("Entry #30 (3 bytes): \"entry-30\""));
+        let all: serde_json::Value = serde_json::from_str(
+            &format(Path::new("archive.zip"), &report, None, None, Format::Json).unwrap(),
+        )
+        .unwrap();
+        assert!(all.get("content_group_index").is_none());
+        assert_eq!(all["content_groups"].as_array().unwrap().len(), 2);
+        for format in Format::ALL {
+            assert!(
+                format_group(Path::new("archive.zip"), &report, None, usize::MAX, format).is_err()
+            );
+            assert!(
+                format_group(
+                    Path::new("archive.zip"),
+                    &Err("incomplete".into()),
+                    None,
+                    0,
+                    format
+                )
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn content_groups_export_exact_identities_escape_lines_and_distinguish_unrequested_empty() {
         let mut report = grouped_report();

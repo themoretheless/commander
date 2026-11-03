@@ -1,0 +1,11 @@
+# Export one archive content group — 2026-11-03
+
+Each retained SHA-256 group now has Copy group report / Copy group JSON. These copy the complete group across all view pages, independently of member selection. Existing whole-check report actions still include all groups. No archive rereads, password arguments or group clones are involved: the shared formatter borrows one slice through its bounded writer.
+
+Scoped JSON uses commander.archive-check/v1 with additive content_group_index (the original zero-based retained group rank); content_groups contains exactly one complete group. The field is absent from ordinary full reports. members/decoded_bytes/status/strict_headers/recorded_at continue to describe the completed scan. Scoped text explicitly explains this and preserves the original Group # number. Unsupported group ranks, incomplete/unrequested scans, non-UTF-8 paths and oversized output refuse before clipboard dispatch. The existing 4 MiB aggregate cap and JSON-escaped text paths remain shared.
+
+Two Rust regressions qualify a nonzero original group rank, all 23 members despite ten-member view pages, escaped identities, unchanged full-report scope, unavailable/incomplete refusals, UTF-8 refusal and bounded output in both formats. All seven gates passed: audit, build, 3465 tests passed / 0 failed / 3 ignored, strict clippy, ordinary check, fmt, diff.
+
+The TAR native scenario retains prior scan/render/group-selection/full-export phases, then clicks both new buttons on group 1. It records four exact clipboard effects; the independent verifier checks its five members against Python tarfile iteration and source hashes, the original rank, full-scan counters and exclusion of the empty group. ZIP regression retains exactly two full-report effects. Both scenes pass 14/14 checks; both final frames were visually inspected. Captures use the final binary hash and source-sha256.json records qualified source files.
+
+Reproduce with run_checks.py, prepare_capture.py plus CUA launch for each scene, then verify.py. Direct report file save, combined arbitrary multi-group export and archive deletion proposals remain open. Hash-plus-size matching remains distinct from pairwise byte comparison.

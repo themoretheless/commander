@@ -1,0 +1,9 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 28.63s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 1 test
+test archive_check_export::tests::scoped_groups_preserve_original_rank_and_complete_members ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3466 filtered out; finished in 0.00s
+

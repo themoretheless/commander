@@ -2016,6 +2016,12 @@ impl App {
                                         ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-content-group-selection",_rank,select)),button.rect));
                                         if button.clicked(){select_content_group=Some((_rank,select));}
                                     }
+                                    for (format,label) in [(crate::archive_check_export::Format::Text,"Copy group report"),(crate::archive_check_export::Format::Json,"Copy group JSON")] {
+                                        let button=ui.small_button(label).on_hover_text("Copy every retained member of this group, including other pages. Scan totals remain complete-scan metadata; the report identifies this group's original index.");
+                                        #[cfg(feature="visual-qa")]
+                                        ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-content-group-export",_rank,label)),button.rect));
+                                        if button.clicked(){copy_check_report=Some(crate::archive_check_export::format_group(&state.path,result,state.check_recorded_at.as_ref(),_rank,format));}
+                                    }
                                 });
                             }
                         });
