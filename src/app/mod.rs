@@ -474,6 +474,7 @@ pub struct DiskUsageState {
 }
 
 pub struct ArchiveState {
+    pub content_group_view: archive_dialog::ContentGroupView,
     pub selection_history: archive_dialog::SelectionHistory,
     pub content_keep: archive_dialog::ContentKeep,
     pub content_group_page: usize,

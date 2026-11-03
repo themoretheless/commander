@@ -1,0 +1,77 @@
+{
+  "cutoff": "1970-01-01T00:06:40Z",
+  "glob": "",
+  "global_enabled": true,
+  "listing": [
+    {
+      "id": 0,
+      "index": 2,
+      "path": "a-same.txt"
+    },
+    {
+      "id": 1,
+      "index": 3,
+      "path": "different.txt"
+    },
+    {
+      "id": 2,
+      "index": 8,
+      "path": "dup.txt"
+    },
+    {
+      "id": 3,
+      "index": 9,
+      "path": "dup.txt"
+    },
+    {
+      "id": 4,
+      "index": 4,
+      "path": "empty-one"
+    },
+    {
+      "id": 5,
+      "index": 5,
+      "path": "empty-two"
+    },
+    {
+      "id": 6,
+      "index": 1,
+      "path": "folder/"
+    },
+    {
+      "id": 7,
+      "index": 7,
+      "path": "hard"
+    },
+    {
+      "id": 8,
+      "index": 10,
+      "path": "nested/long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-ёж.txt"
+    },
+    {
+      "id": 9,
+      "index": 6,
+      "path": "sym"
+    },
+    {
+      "id": 10,
+      "index": 0,
+      "path": "z-same.txt"
+    }
+  ],
+  "phase": 177,
+  "selected": [
+    0,
+    2,
+    3,
+    5,
+    10
+  ],
+  "selected_indexes": [
+    0,
+    2,
+    5,
+    8,
+    9
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "cohort": 81,
+  "url": "https://raw.githubusercontent.com/qarmin/czkawka/master/instructions/Instruction_Krokiet.md",
+  "feature": "Grouped results Sort action",
+  "adaptation": "Archive group display order by extra uncompressed payload, member size, copy count or original scan order"
+}

@@ -74,6 +74,79 @@ fn content_group_pager(
     )
 }
 
+fn content_group_sort_label(sort: crate::dedup::GroupSort) -> &'static str {
+    use crate::dedup::GroupSort;
+    match sort {
+        GroupSort::Scan => "Scan order",
+        GroupSort::Savings => "Extra payload bytes",
+        GroupSort::Size => "Member size",
+        GroupSort::Copies => "Copies",
+    }
+}
+fn content_group_order(
+    groups: &[crate::archive_check::ContentGroup],
+    sort: crate::dedup::GroupSort,
+) -> Vec<usize> {
+    use crate::dedup::GroupSort;
+    let mut order = (0..groups.len()).collect::<Vec<_>>();
+    if sort != GroupSort::Scan {
+        order.sort_unstable_by(|&a, &b| {
+            let extra = |group: &crate::archive_check::ContentGroup| {
+                u128::from(group.size) * group.members.len().saturating_sub(1) as u128
+            };
+            let comparison = match sort {
+                GroupSort::Savings => extra(&groups[b]).cmp(&extra(&groups[a])),
+                GroupSort::Size => groups[b].size.cmp(&groups[a].size),
+                GroupSort::Copies => groups[b].members.len().cmp(&groups[a].members.len()),
+                GroupSort::Scan => std::cmp::Ordering::Equal,
+            };
+            comparison.then_with(|| a.cmp(&b))
+        });
+    }
+    order
+}
+/// Cached display permutation only; every action keeps its original scan rank.
+#[derive(Default)]
+pub struct ContentGroupView {
+    sort: crate::dedup::GroupSort,
+    order: Vec<usize>,
+    ready: bool,
+}
+impl ContentGroupView {
+    fn invalidate(&mut self) {
+        self.order.clear();
+        self.ready = false;
+    }
+    fn indices(&mut self, groups: &[crate::archive_check::ContentGroup]) -> &[usize] {
+        if !self.ready {
+            self.order = content_group_order(groups, self.sort);
+            self.ready = true;
+        }
+        &self.order
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, page: &mut usize) {
+        let previous = self.sort;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Group order:");
+            for sort in crate::dedup::GroupSort::ALL {
+                let label=content_group_sort_label(sort);
+                let button=ui.selectable_value(&mut self.sort,sort,label).on_hover_text("Display only; actions and exports keep original scan identities. Numeric modes show largest first, with stable scan-order ties. Extra payload bytes = member size × (copies − 1), assuming one keeper. This is uncompressed payload, not compressed disk savings; protection and replica rules may retain more copies.");
+                #[cfg(feature="visual-qa")]
+                ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new(("archive-group-sort",label)),button.rect));
+                let _=button;
+            }
+        });
+        if self.sort != previous {
+            self.invalidate();
+            *page = 0;
+        }
+    }
+    #[cfg(feature = "visual-qa")]
+    pub(crate) fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"sort":content_group_sort_label(self.sort),"order":self.order})
+    }
+}
+
 const MAX_ARCHIVE_HISTORY: usize = 64;
 const MAX_ARCHIVE_HISTORY_BYTES: usize = 256 * 1024;
 #[derive(Clone)]
@@ -2259,6 +2332,7 @@ impl App {
         );
         self.ui.tools.replace_on(side);
         self.ui.tools.archive = Some(ArchiveState {
+            content_group_view: ContentGroupView::default(),
             selection_history: SelectionHistory::default(),
             content_group_page: 0,
             content_keep: self.archive_keep_preferences.clone(),
@@ -2331,6 +2405,7 @@ impl App {
             if let Some(result) = result {
                 state.check = None;
                 state.check_result = Some(result);
+                state.content_group_view.invalidate();
                 state.content_group_page = 0;
                 state.content_member_pages.clear();
                 state.check_recorded_at = Some(chrono::Utc::now());
@@ -2620,8 +2695,11 @@ impl App {
                         if redundant.clicked(){select_redundant_groups=Some(None);}
 
                         let details=egui::CollapsingHeader::new(format!("Matching content groups ({})",groups.len())).show(ui,|ui| {
+                            state.content_group_view.ui(ui,&mut state.content_group_page);
                             let range=content_group_pager(ui,groups.len(), &mut state.content_group_page);
-                            for (_rank,group) in groups.iter().enumerate().skip(range.start).take(range.len()) {
+                            let order=state.content_group_view.indices(groups);
+                            for &_rank in &order[range] {
+                                let group=&groups[_rank];
                                 let _title=ui.label(format!("SHA-256 {} · {} bytes · {} members",group.sha256,group.size,group.members.len()));
                                 #[cfg(feature="visual-qa")]
                                 let (mut painted,mut rect,mut paths)=(ui.clip_rect().contains_rect(_title.rect),_title.rect,Vec::new());
@@ -3495,6 +3573,7 @@ impl App {
         } else if start_check && let Some(state) = self.ui.tools.archive.as_mut() {
             let repaint = ctx.clone();
             state.check_result = None;
+            state.content_group_view.invalidate();
             state.content_group_page = 0;
             state.content_member_pages.clear();
             state.check_recorded_at = None;
@@ -3677,6 +3756,70 @@ fn left_cell(ui: &mut egui::Ui, width: f32, height: f32, label: egui::Label) -> 
 
 #[cfg(test)]
 mod tests {
+    fn sort_group(size: u64, copies: usize) -> crate::archive_check::ContentGroup {
+        crate::archive_check::ContentGroup {
+            size,
+            sha256: format!("{size}-{copies}"),
+            members: (0..copies)
+                .map(|index| crate::archive_check::ContentMember {
+                    index,
+                    path: format!("member-{index}").into(),
+                    size,
+                })
+                .collect(),
+        }
+    }
+    #[test]
+    fn archive_group_sort_uses_wide_payload_keys_and_preserves_scan_identities() {
+        use crate::dedup::GroupSort as S;
+        let groups = vec![
+            sort_group(10, 4),
+            sort_group(20, 2),
+            sort_group(0, 10),
+            sort_group(10, 4),
+            sort_group(u64::MAX, 3),
+            sort_group(u64::MAX, 2),
+        ];
+        let before = serde_json::to_value(&groups).unwrap();
+        for (sort, wanted) in [
+            (S::Scan, vec![0, 1, 2, 3, 4, 5]),
+            (S::Savings, vec![4, 5, 0, 3, 1, 2]),
+            (S::Size, vec![4, 5, 1, 0, 3, 2]),
+            (S::Copies, vec![2, 0, 3, 4, 1, 5]),
+        ] {
+            assert_eq!(super::content_group_order(&groups, sort), wanted);
+            assert_eq!(serde_json::to_value(&groups).unwrap(), before);
+        }
+        assert!(super::content_group_order(&[], S::Savings).is_empty());
+        assert_eq!(
+            super::content_group_order(&[sort_group(0, 0)], S::Savings),
+            vec![0]
+        );
+    }
+    #[test]
+    fn archive_group_view_pages_cover_original_ranks_and_rebuild_after_same_size_scan() {
+        use super::ContentGroupView;
+        use crate::dedup::GroupSort;
+        let mut groups = (0..201).map(|i| sort_group(i, 2)).collect::<Vec<_>>();
+        let mut view = ContentGroupView {
+            sort: GroupSort::Size,
+            ..Default::default()
+        };
+        let mut seen = Vec::new();
+        for mut page in 0..3 {
+            let range = super::content_group_page_range(groups.len(), &mut page);
+            seen.extend_from_slice(&view.indices(&groups)[range]);
+        }
+        assert_eq!(seen, (0..201).rev().collect::<Vec<_>>());
+        groups[0].size = 1000;
+        view.invalidate();
+        assert_eq!(view.indices(&groups)[0], 0);
+        assert_eq!(view.sort, GroupSort::Size);
+        view.sort = GroupSort::Scan;
+        view.invalidate();
+        assert_eq!(view.indices(&groups), (0..201).collect::<Vec<_>>());
+    }
+
     #[test]
     fn archive_priority_chains_resolve_ties_in_order_with_stable_fallback_and_atomic_guards() {
         use super::{ContentKeep, ContentKeepOrder as O, select_redundant_content_groups};
