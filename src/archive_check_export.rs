@@ -34,6 +34,21 @@ impl Write for Output {
         Ok(())
     }
 }
+#[derive(serde::Serialize)]
+struct JsonReport<'a> {
+    schema: &'static str,
+    archive: &'a str,
+    archive_format: Option<&'static str>,
+    recorded_at: Option<&'a str>,
+    status: &'static str,
+    strict_headers: Option<bool>,
+    members: Option<usize>,
+    decoded_bytes: Option<u64>,
+    error: Option<&'a str>,
+    content_comparison: Option<&'static str>,
+    content_groups: Option<&'a [crate::archive_check::ContentGroup]>,
+}
+
 /// Error-mode metadata is captured at operation start; a success uses its actual
 /// report mode. Quoted text fields keep control characters from injecting lines.
 pub fn format(
@@ -70,10 +85,35 @@ pub fn format(
         "incomplete"
     };
     let at = recorded_at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let groups = result
+        .as_ref()
+        .ok()
+        .and_then(|report| report.content_groups.as_deref());
+    if let Some(groups) = groups {
+        for group in groups {
+            for member in &group.members {
+                if member.path.to_str().is_none() {
+                    return Err("Archive check report requires UTF-8 member paths; no lossy name was copied.".into());
+                }
+            }
+        }
+    }
     let mut output = Output(Vec::new());
     match format {
         Format::Json => {
-            let value = serde_json::json!({"schema":"commander.archive-check/v1","archive":path_text,"archive_format":kind,"recorded_at":at,"status":status,"strict_headers":strict,"members":members,"decoded_bytes":decoded,"error":error});
+            let value = JsonReport {
+                schema: "commander.archive-check/v1",
+                archive: path_text,
+                archive_format: kind,
+                recorded_at: at.as_deref(),
+                status,
+                strict_headers: strict,
+                members,
+                decoded_bytes: decoded,
+                error,
+                content_comparison: groups.map(|_| "sha256_and_size"),
+                content_groups: groups,
+            };
             serde_json::to_writer_pretty(&mut output, &value).map_err(|e| e.to_string())?;
             output.write_all(b"\n").map_err(|e| e.to_string())?;
         }
@@ -83,6 +123,39 @@ pub fn format(
                 .map_err(|e| e.to_string())?;
             serde_json::to_writer(&mut output, path_text).map_err(|e| e.to_string())?;
             write!(&mut output,"\nFormat: {}\nRecorded at: {}\nStatus: {status}\nStrict ZIP headers: {}\nMembers: {}\nDecoded bytes: {}\n",kind.unwrap_or("unavailable"),at.as_deref().unwrap_or("unavailable"),strict.map(|v|v.to_string()).as_deref().unwrap_or("unavailable"),members.map(|v|v.to_string()).as_deref().unwrap_or("unavailable"),decoded.map(|v|v.to_string()).as_deref().unwrap_or("unavailable")).map_err(|e|e.to_string())?;
+            if let Some(groups) = groups {
+                writeln!(
+                    &mut output,
+                    "Content comparison: SHA-256 and size\nContent groups: {}",
+                    groups.len()
+                )
+                .map_err(|e| e.to_string())?;
+                for (id, group) in groups.iter().enumerate() {
+                    write!(&mut output, "Group #{id}\nSHA-256: ").map_err(|e| e.to_string())?;
+                    serde_json::to_writer(&mut output, &group.sha256).map_err(|e| e.to_string())?;
+                    writeln!(
+                        &mut output,
+                        "\nGroup size (bytes): {}\nGroup members: {}",
+                        group.size,
+                        group.members.len()
+                    )
+                    .map_err(|e| e.to_string())?;
+                    for member in &group.members {
+                        write!(
+                            &mut output,
+                            "Entry #{} ({} bytes): ",
+                            member.index, member.size
+                        )
+                        .map_err(|e| e.to_string())?;
+                        serde_json::to_writer(
+                            &mut output,
+                            member.path.to_str().expect("member UTF-8 checked above"),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        output.write_all(b"\n").map_err(|e| e.to_string())?;
+                    }
+                }
+            }
             if let Some(error) = error {
                 output.write_all(b"Error: ").map_err(|e| e.to_string())?;
                 serde_json::to_writer(&mut output, error).map_err(|e| e.to_string())?;
@@ -96,6 +169,87 @@ pub fn format(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn grouped_report() -> Result<Report, String> {
+        Ok(Report {
+            kind: crate::archive::ArchiveKind::Zip,
+            members: 2,
+            decoded: 6,
+            strict_headers: true,
+            content_groups: Some(vec![crate::archive_check::ContentGroup {
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into(),
+                size: 3,
+                members: vec![
+                    crate::archive_check::ContentMember {
+                        index: 7,
+                        path: "ёж\nGroup #9".into(),
+                        size: 3,
+                    },
+                    crate::archive_check::ContentMember {
+                        index: 9,
+                        path: "other".into(),
+                        size: 3,
+                    },
+                ],
+            }]),
+        })
+    }
+    #[test]
+    fn content_groups_export_exact_identities_escape_lines_and_distinguish_unrequested_empty() {
+        let mut report = grouped_report();
+        let text = format(Path::new("archive.zip"), &report, None, None, Format::Text).unwrap();
+        assert!(text.contains("Content groups: 1\nGroup #0\nSHA-256: "));
+        assert!(text.contains("Entry #7 (3 bytes): \"ёж\\nGroup #9\""));
+        assert!(!text.lines().any(|line| line == "Group #9"));
+        let json = format(Path::new("archive.zip"), &report, None, None, Format::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["content_comparison"], "sha256_and_size");
+        assert_eq!(value["content_groups"][0]["members"][0]["index"], 7);
+        assert_eq!(
+            value["content_groups"][0]["members"][0]["path"],
+            "ёж\nGroup #9"
+        );
+        report.as_mut().unwrap().content_groups = Some(Vec::new());
+        let empty: serde_json::Value = serde_json::from_str(
+            &format(Path::new("archive.zip"), &report, None, None, Format::Json).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(empty["content_groups"], serde_json::json!([]));
+        report.as_mut().unwrap().content_groups = None;
+        let ordinary: serde_json::Value = serde_json::from_str(
+            &format(Path::new("archive.zip"), &report, None, None, Format::Json).unwrap(),
+        )
+        .unwrap();
+        assert!(ordinary["content_groups"].is_null() && ordinary["content_comparison"].is_null());
+    }
+    #[test]
+    fn oversized_group_reports_refuse_both_formats_without_truncation() {
+        let mut report = grouped_report();
+        report.as_mut().unwrap().content_groups.as_mut().unwrap()[0].members[0].path =
+            "\n".repeat(MAX_BYTES / 2).into();
+        for mode in Format::ALL {
+            assert!(
+                format(Path::new("archive.zip"), &report, None, None, mode)
+                    .unwrap_err()
+                    .contains("4 MiB")
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_group_member_paths_are_refused_without_lossy_replacement() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut report = grouped_report();
+        report.as_mut().unwrap().content_groups.as_mut().unwrap()[0].members[0].path =
+            std::ffi::OsString::from_vec(vec![b'x', 255]).into();
+        for mode in Format::ALL {
+            assert!(
+                format(Path::new("archive.zip"), &report, None, None, mode)
+                    .unwrap_err()
+                    .contains("UTF-8 member")
+            );
+        }
+    }
+
     #[test]
     fn successful_report_exports_actual_mode_counts_and_timestamp() {
         let report = Ok(Report {

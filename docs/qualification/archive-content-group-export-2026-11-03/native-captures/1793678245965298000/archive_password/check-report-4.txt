@@ -1,0 +1,13 @@
+{
+  "schema": "commander.archive-check/v1",
+  "archive": "/var/folders/jx/ps1h62vx3gdgly_ddwly4mqr0000gn/T/commander-visual-qa-18367-archive_password/left/password.ZIPX",
+  "archive_format": "ZIP",
+  "recorded_at": "2026-11-03T03:57:42Z",
+  "status": "complete",
+  "strict_headers": true,
+  "members": 1,
+  "decoded_bytes": 4352,
+  "error": null,
+  "content_comparison": null,
+  "content_groups": null
+}

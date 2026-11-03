@@ -5035,7 +5035,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
             && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 52)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
-            && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 24)
+            && !(self.scenario == Scenario::ArchiveContentGroups && self.archive_copy_phase < 32)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
             && let Some(row) = ProbeSnapshot::read(ctx).left_row
@@ -17038,6 +17038,60 @@ impl eframe::App for VisualQaApp {
             }
             self.archive_copy_phase += 1;
         }
+        if self.scenario == Scenario::ArchiveContentGroups
+            && (24..32).contains(&self.archive_copy_phase)
+        {
+            let phase = self.archive_copy_phase;
+            if matches!(phase, 27 | 31) {
+                let (count, name) = if phase == 27 {
+                    (1, "content-group-report.txt")
+                } else {
+                    (2, "content-group-report.json")
+                };
+                if self.counters.clipboard.load(Ordering::Relaxed) != count
+                    || !self.recorded_clipboard_dump(name)
+                {
+                    return;
+                }
+                self.archive_copy_phase += 1;
+                return;
+            }
+            let (label, step) = if phase < 27 {
+                ("Copy check report", phase - 24)
+            } else {
+                ("Copy check report JSON", phase - 28)
+            };
+            let id = egui::Id::new(label);
+            let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(id)) else {
+                return;
+            };
+            if let Some(clip) =
+                ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("archive-sheet-clip")))
+                && !clip.contains_rect(rect.shrink(0.5))
+            {
+                input.events.push(egui::Event::PointerMoved(clip.center()));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: egui::vec2(0.0, if rect.top() < clip.top() { 80.0 } else { -80.0 }),
+                    modifiers: Default::default(),
+                });
+                return;
+            }
+            input.events.push(egui::Event::PointerMoved(rect.center()));
+            if step == 0 && !self.hex_target_settled(id, rect) {
+                return;
+            }
+            if step != 0 {
+                input.events.push(egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 1,
+                    modifiers: Default::default(),
+                });
+            }
+            self.archive_copy_phase += 1;
+        }
         if self.scenario == Scenario::ArchivePassword
             && matches!(self.archive_copy_phase, 38 | 41 | 52 | 55)
         {
@@ -21765,7 +21819,7 @@ impl eframe::App for VisualQaApp {
                         .is_some()
                     && crate::image_preview::zoom(&ctx, "right") == Some(2.0)
             }
-            Scenario::ArchiveContentGroups => self.archive_copy_phase==24 && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
+            Scenario::ArchiveContentGroups => self.archive_copy_phase==32 && self.scenario_dir.join("content-group-report.txt").is_file() && self.scenario_dir.join("content-group-report.json").is_file() && self.scenario_dir.join("content-group-rendered.json").is_file() && [7,15,19].into_iter().all(|phase|self.scenario_dir.join(format!("content-groups-{phase}.json")).is_file()) && self.inner.ui.tools.archive.as_ref().is_some_and(|state|state.check.is_none() && state.password.is_empty() && state.selected.iter().copied().collect::<Vec<_>>()==[1,2,3]),
             Scenario::ArchivePassword => {
                 self.archive_copy_phase == 55
                     && (1..=4).all(|index|self.scenario_dir.join(format!("check-report-{index}.txt")).is_file())
@@ -22315,6 +22369,7 @@ struct NativeEffectCalls {
 const fn expected_clipboard_writes(scenario: Scenario) -> usize {
     match scenario {
         Scenario::ArchivePassword => 4,
+        Scenario::ArchiveContentGroups => 2,
         Scenario::SymlinkWorkflow
         | Scenario::HexMatchCopy
         | Scenario::DuplicateSort
@@ -22743,6 +22798,7 @@ mod tests {
         for scenario in Scenario::ALL {
             let expected = match scenario {
                 Scenario::ArchivePassword => 4,
+                Scenario::ArchiveContentGroups => 2,
                 Scenario::SymlinkWorkflow
                 | Scenario::HexMatchCopy
                 | Scenario::DuplicateSort

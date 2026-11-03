@@ -21,13 +21,13 @@ pub struct Report {
     pub strict_headers: bool,
     pub content_groups: Option<Vec<ContentGroup>>,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ContentMember {
     pub index: usize,
     pub path: std::path::PathBuf,
     pub size: u64,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ContentGroup {
     pub sha256: String,
     pub size: u64,
