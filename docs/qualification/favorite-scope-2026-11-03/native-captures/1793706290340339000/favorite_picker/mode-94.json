@@ -1,0 +1,8 @@
+{
+  "error": "regex parse error:\n    [\n    ^\nerror: unclosed character class",
+  "indices": [],
+  "mode": "Regex",
+  "phase": 94,
+  "query": "@[",
+  "total": 0
+}

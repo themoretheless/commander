@@ -8,6 +8,23 @@ pub struct Matches {
     pub error: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    #[default]
+    Both,
+    Name,
+    Path,
+}
+impl Scope {
+    pub const ALL: [Self; 3] = [Self::Both, Self::Name, Self::Path];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Both => "Name + path",
+            Self::Name => "Name",
+            Self::Path => "Full path",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchMode {
     #[default]
     Fuzzy,
@@ -54,7 +71,17 @@ pub fn rank(store: &Bookmarks, query: &str) -> Matches {
 pub fn rank_case(store: &Bookmarks, query: &str, mode: CaseMode) -> Matches {
     rank_options(store, query, mode, SearchMode::Fuzzy)
 }
+#[cfg(test)]
 pub fn rank_options(store: &Bookmarks, query: &str, mode: CaseMode, search: SearchMode) -> Matches {
+    rank_scope(store, query, mode, search, Scope::Both)
+}
+pub fn rank_scope(
+    store: &Bookmarks,
+    query: &str,
+    mode: CaseMode,
+    search: SearchMode,
+    scope: Scope,
+) -> Matches {
     let query = query.trim();
     if query.chars().take(129).count() > 128 {
         return Matches {
@@ -98,16 +125,20 @@ pub fn rank_options(store: &Bookmarks, query: &str, mode: CaseMode, search: Sear
         .enumerate()
         .filter_map(|(index, bookmark)| {
             if let Some(pattern) = &pattern {
-                let name = pattern.matches(&bookmark.name, &bookmark.name.to_lowercase());
-                let path = !name
+                let name = scope != Scope::Path
+                    && pattern.matches(&bookmark.name, &bookmark.name.to_lowercase());
+                let path = scope != Scope::Name
+                    && !name
                     && bookmark
                         .path
                         .to_str()
                         .is_some_and(|path| pattern.matches(path, &path.to_lowercase()));
                 return (name || path).then_some((index, name, 0));
             }
-            let name = crate::fuzzy::score_case(query, &bookmark.name, sensitive);
-            let path = if name.is_none() {
+            let name = (scope != Scope::Path)
+                .then(|| crate::fuzzy::score_case(query, &bookmark.name, sensitive))
+                .flatten();
+            let path = if scope != Scope::Name && name.is_none() {
                 crate::fuzzy::score_case(query, &bookmark.path.to_string_lossy(), sensitive)
             } else {
                 None
@@ -135,7 +166,7 @@ pub fn rank_options(store: &Bookmarks, query: &str, mode: CaseMode, search: Sear
 }
 #[derive(Default)]
 pub struct Cache {
-    query: Option<(String, CaseMode, SearchMode)>,
+    query: Option<(String, CaseMode, SearchMode, Scope)>,
     pub matches: Matches,
 }
 impl Cache {
@@ -147,6 +178,7 @@ impl Cache {
     pub fn refresh_case(&mut self, store: &Bookmarks, query: &str, mode: CaseMode) -> bool {
         self.refresh_options(store, query, mode, SearchMode::Fuzzy)
     }
+    #[cfg(test)]
     pub fn refresh_options(
         &mut self,
         store: &Bookmarks,
@@ -154,19 +186,150 @@ impl Cache {
         mode: CaseMode,
         search: SearchMode,
     ) -> bool {
-        if self.query.as_ref().is_some_and(|(cached, case, matching)| {
-            cached == query && *case == mode && *matching == search
-        }) {
+        self.refresh_scope(store, query, mode, search, Scope::Both)
+    }
+    pub fn refresh_scope(
+        &mut self,
+        store: &Bookmarks,
+        query: &str,
+        mode: CaseMode,
+        search: SearchMode,
+        scope: Scope,
+    ) -> bool {
+        if self
+            .query
+            .as_ref()
+            .is_some_and(|(cached, case, matching, field)| {
+                cached == query && *case == mode && *matching == search && *field == scope
+            })
+        {
             return false;
         }
-        self.matches = rank_options(store, query, mode, search);
-        self.query = Some((query.into(), mode, search));
+        self.matches = rank_scope(store, query, mode, search, scope);
+        self.query = Some((query.into(), mode, search, scope));
         true
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scopes_apply_to_every_matching_mode_and_keep_original_store_indices() {
+        let mut store = Bookmarks::default();
+        store.add("Target", "/elsewhere");
+        store.add("Alias", "/Target");
+        store.add("Target", "/Target-two");
+        for mode in SearchMode::ALL {
+            let q = match mode {
+                SearchMode::Glob => "**/Target*",
+                SearchMode::Regex => "Target",
+                _ => "Target",
+            };
+            let run = |scope| rank_scope(&store, q, CaseMode::Ignore, mode, scope).indices;
+            assert_eq!(run(Scope::Name), [0, 2]);
+            if mode == SearchMode::Exact {
+                assert!(run(Scope::Path).is_empty());
+                assert_eq!(run(Scope::Both), [0, 2]);
+            } else {
+                assert_eq!(
+                    run(Scope::Path),
+                    if mode == SearchMode::Fuzzy {
+                        vec![2, 1]
+                    } else {
+                        vec![1, 2]
+                    }
+                );
+                assert_eq!(run(Scope::Both), [0, 2, 1]);
+            }
+            assert_eq!(
+                rank_scope(&store, "", CaseMode::Match, mode, Scope::Path).indices,
+                [0, 1, 2]
+            );
+        }
+        assert_eq!(
+            rank_scope(
+                &store,
+                "/Target",
+                CaseMode::Match,
+                SearchMode::Exact,
+                Scope::Path
+            )
+            .indices,
+            [1]
+        );
+        assert_eq!(
+            rank_scope(
+                &store,
+                "target",
+                CaseMode::Match,
+                SearchMode::Literal,
+                Scope::Path
+            )
+            .total,
+            0
+        );
+        assert_eq!(
+            rank_scope(
+                &store,
+                "target",
+                CaseMode::Smart,
+                SearchMode::Literal,
+                Scope::Path
+            )
+            .indices,
+            [1, 2]
+        );
+        assert_eq!(
+            rank_scope(
+                &store,
+                "TARGET",
+                CaseMode::Smart,
+                SearchMode::Literal,
+                Scope::Path
+            )
+            .total,
+            0
+        );
+    }
+    #[test]
+    fn scope_changes_recompute_unchanged_queries_and_keep_caps_errors_and_store_intact() {
+        let mut store = Bookmarks::default();
+        for i in 0..150 {
+            store.add(format!("Saved {i}"), format!("/many/{i}"));
+        }
+        let before = store.clone();
+        let mut cache = Cache::default();
+        for scope in [Scope::Both, Scope::Name, Scope::Path] {
+            assert!(cache.refresh_scope(
+                &store,
+                "/many",
+                CaseMode::Ignore,
+                SearchMode::Literal,
+                scope
+            ));
+            let expected = if scope == Scope::Name { 0 } else { 150 };
+            assert_eq!(cache.matches.total, expected);
+            assert_eq!(cache.matches.indices.len(), expected.min(100));
+            assert!(!cache.refresh_scope(
+                &store,
+                "/many",
+                CaseMode::Ignore,
+                SearchMode::Literal,
+                scope
+            ));
+            assert!(cache.refresh_scope(&store, "[", CaseMode::Ignore, SearchMode::Regex, scope));
+            assert!(cache.matches.error.is_some() && cache.matches.indices.is_empty());
+            assert!(cache.refresh_scope(
+                &store,
+                "/many",
+                CaseMode::Ignore,
+                SearchMode::Literal,
+                scope
+            ));
+            assert!(cache.matches.error.is_none());
+        }
+        assert_eq!(store, before);
+    }
     #[test]
     fn pattern_modes_match_complete_fields_or_substrings_without_fuzzy_fallback() {
         let mut store = Bookmarks::default();

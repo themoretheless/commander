@@ -20,6 +20,7 @@ pub struct OmnibarState {
     pub(crate) assigning_slot: bool,
     pub(crate) favorites: crate::bookmarks::Bookmarks,
     pub(crate) favorite_cache: crate::favorite_search::Cache,
+    pub(crate) favorite_scope: crate::favorite_search::Scope,
     pub(crate) favorite_mode: crate::favorite_search::SearchMode,
     pub(crate) favorite_case: crate::favorite_search::CaseMode,
     pub(crate) favorite_target: crate::workspace::FavoriteTarget,
@@ -54,6 +55,21 @@ enum OmniRow {
     AssignSlot(u8),
 }
 
+fn favorite_scope_controls(ui: &mut egui::Ui, scope: &mut crate::favorite_search::Scope) -> bool {
+    let before = *scope;
+    ui.horizontal_wrapped(|ui| {
+        ui.small("Search in:");
+        for value in crate::favorite_search::Scope::ALL {
+            let response = ui.selectable_value(scope, value, value.label()).on_hover_text("Name matches the saved favorite label. Full path matches the complete saved folder path. Name + path ranks label matches first. Applies to every matching and letter-case mode; resets on close. No folder checks.");
+            #[cfg(any(test, feature="visual-qa"))]
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("favorite-picker-scope",value.label())),response.rect));
+            #[cfg(not(any(test, feature="visual-qa")))]
+            let _ = response;
+        }
+    });
+    *scope != before
+}
+
 fn favorite_mode_controls(
     ui: &mut egui::Ui,
     mode: &mut crate::favorite_search::SearchMode,
@@ -62,7 +78,7 @@ fn favorite_mode_controls(
     ui.horizontal_wrapped(|ui| {
         ui.small("Matching:");
         for value in crate::favorite_search::SearchMode::ALL {
-            let response = ui.selectable_value(mode, value, value.label()).on_hover_text("Match favorite label first, then its full path. Literal searches a substring; Exact and Glob match the whole field. Glob * stays within a path component; ** can cross folders; ? matches one UTF-8 byte. Regex uses Rust regex syntax. Invalid patterns show no results. Resets on close.");
+            let response = ui.selectable_value(mode, value, value.label()).on_hover_text("Match the selected favorite fields. Literal searches a substring; Exact and Glob match the whole field. Glob * stays within a path component; ** can cross folders; ? matches one UTF-8 byte. Regex uses Rust regex syntax. Invalid patterns show no results. Resets on close.");
             #[cfg(any(test, feature="visual-qa"))]
             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("favorite-picker-mode", value.label())), response.rect));
             #[cfg(not(any(test, feature="visual-qa")))]
@@ -424,6 +440,7 @@ impl App {
             favorite_cache: Default::default(),
             favorite_case: Default::default(),
             favorite_mode: Default::default(),
+            favorite_scope: Default::default(),
             favorite_target: crate::workspace::FavoriteTarget::CurrentPanel,
             favorite_submit: None,
         });
@@ -600,11 +617,12 @@ impl App {
             }
             OmnibarMode::Favorites(query) => {
                 let state = self.ui.modals.palette_input.as_mut().unwrap();
-                state.favorite_cache.refresh_options(
+                state.favorite_cache.refresh_scope(
                     &state.favorites,
                     query,
                     state.favorite_case,
                     state.favorite_mode,
+                    state.favorite_scope,
                 );
                 rows = state
                     .favorite_cache
@@ -778,7 +796,8 @@ impl App {
                 if let OmnibarMode::Favorites(query)=mode {
                     let mode_changed = favorite_mode_controls(ui, &mut state.favorite_mode);
                     let case_changed = favorite_case_controls(ui, &mut state.favorite_case);
-                    if mode_changed || case_changed {
+                    let scope_changed = favorite_scope_controls(ui, &mut state.favorite_scope);
+                    if mode_changed || case_changed || scope_changed {
                         // Rows were ranked before drawing controls. Retire them until
                         // the next frame; Enter must never open an old-mode match.
                         rows.clear();
@@ -801,7 +820,7 @@ impl App {
                             let _=response;
                         }
                     });
-                    ui.small(format!("{} name/path · {} of {} matches · {} Favorites in the opening snapshot",state.favorite_mode.label(),rows.len(),state.favorite_cache.matches.total,state.favorites.items.len()));
+                    ui.small(format!("{} · {} · {} of {} matches · {} Favorites in the opening snapshot",state.favorite_mode.label(),state.favorite_scope.label(),rows.len(),state.favorite_cache.matches.total,state.favorites.items.len()));
                     if let Some(error)=&state.favorite_cache.matches.error { ui.colored_label(t.accent_red,error); }
                     if state.favorite_cache.matches.total>rows.len() {ui.small("Showing the first 100 results; type a name or path to narrow the full list.");}
                     if query.chars().take(129).count()>128 {ui.small("Favorites search is limited to 128 characters.");}

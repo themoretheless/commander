@@ -1,0 +1,7 @@
+{
+  "cohort": 77,
+  "repository": "sharkdp/fd",
+  "source": "https://raw.githubusercontent.com/sharkdp/fd/master/doc/fd.1",
+  "contract": "--full-path chooses full path instead of filename matching",
+  "adaptation": "Explicit saved favorite label / full path / both field selection; preserve label-first default"
+}

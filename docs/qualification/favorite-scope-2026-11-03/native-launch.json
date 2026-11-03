@@ -1,0 +1,8 @@
+{
+  "scenario": "favorite_picker",
+  "out": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/favorite-scope-2026-11-03/native-captures/1793706290340339000",
+  "binary_sha256": "0c162b5d52d4f04d190a051d22d5581537a97a50a46150de3777602e7a821ba1",
+  "core_sha256": "0c162b5d52d4f04d190a051d22d5581537a97a50a46150de3777602e7a821ba1",
+  "wrapper_sha256": "13fc8b4094f28944fba098bd3ae0902791ed08e6af155dc18f8b171a2c352643",
+  "plist_sha256": "e8703a1cf528f3c9b8fdec9b72b7a6e1e8d94883b181ad1cd45c62f27bcf92a9"
+}
