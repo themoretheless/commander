@@ -468,7 +468,7 @@ pub struct DiskUsageState {
 }
 
 pub struct ArchiveState {
-    /// Runtime only; moved into the extraction worker and cleared on start.
+    /// Runtime only; moved into the archive operation worker and cleared on start.
     pub password: zeroize::Zeroizing<String>,
     pub check: Option<crate::archive_check::Run>,
     pub check_result: Option<Result<crate::archive_check::Report, String>>,

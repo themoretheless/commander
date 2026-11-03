@@ -1,0 +1,28 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "e4059009db3ddb792986883305c3a2456181f593b44cc74c0a837f1a0e9fb349",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-password-check-2026-11-03/native-captures/1793671003507415000/archive_metadata"
+  },
+  "archive_password": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "d0ead6acca1f9f2f58726a2883d6b4e4d9d0346c4858ff279260786839788805",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/archive-password-check-2026-11-03/native-captures/1793670948682560000/archive_password"
+  }
+}

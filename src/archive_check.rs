@@ -26,7 +26,7 @@ impl Report {
             self.members,
             self.decoded,
             if self.kind == ArchiveKind::Zip {
-                "ZIP CRC checks"
+                "ZIP CRC/size checks; AES authentication when present"
             } else {
                 "TAR headers/stream; TAR has no payload checksum"
             }
@@ -133,10 +133,37 @@ pub fn check(
 ) -> Result<Report, String> {
     check_with_limits(path, cancelled, progress, MAX_DECODED, MAX_MEMBERS_PER_RUN)
 }
+/// The borrowed password is used only during this check and never appears in
+/// reports. None preserves the password-free read-only checking path.
+pub fn check_with_password(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &AtomicU64,
+    password: Option<&[u8]>,
+) -> Result<Report, String> {
+    check_with_password_limits(
+        path,
+        cancelled,
+        progress,
+        password,
+        MAX_DECODED,
+        MAX_MEMBERS_PER_RUN,
+    )
+}
 fn check_with_limits(
     path: &Path,
     cancelled: &dyn Fn() -> bool,
     progress: &AtomicU64,
+    limit: u64,
+    max_members: usize,
+) -> Result<Report, String> {
+    check_with_password_limits(path, cancelled, progress, None, limit, max_members)
+}
+fn check_with_password_limits(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &AtomicU64,
+    password: Option<&[u8]>,
     limit: u64,
     max_members: usize,
 ) -> Result<Report, String> {
@@ -175,7 +202,7 @@ fn check_with_limits(
         }
         for index in 0..zip.len() {
             cancel(cancelled)?;
-            let mut entry = crate::zip_reader::open(&mut zip, index)
+            let mut entry = crate::zip_reader::open_with_password(&mut zip, index, password)
                 .map_err(|e| format!("Member #{index}: {e}"))?;
             if entry.size() > limit.saturating_sub(progress.load(Ordering::Relaxed)) {
                 return Err("Archive check incomplete: 128 MiB decoded-byte limit reached.".into());
@@ -263,14 +290,27 @@ impl Drop for Run {
         self.cancelled.store(true, Ordering::Release);
     }
 }
-pub fn start(path: std::path::PathBuf, notify: crate::archive::Notify) -> Run {
+pub fn start(
+    path: std::path::PathBuf,
+    password: Option<zeroize::Zeroizing<String>>,
+    notify: crate::archive::Notify,
+) -> Run {
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&cancelled);
     let progress = Arc::new(AtomicU64::new(0));
     let worker_progress = Arc::clone(&progress);
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = check(&path, &|| flag.load(Ordering::Acquire), &worker_progress);
+        let result = if let Some(password) = password {
+            check_with_password(
+                &path,
+                &|| flag.load(Ordering::Acquire),
+                &worker_progress,
+                Some(password.as_bytes()),
+            )
+        } else {
+            check(&path, &|| flag.load(Ordering::Acquire), &worker_progress)
+        };
         let _ = sender.send(result);
         notify();
     });
@@ -286,6 +326,543 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use std::io::Write;
+    macro_rules! fixture {
+        ($name:literal, $extension:literal) => {
+            include_bytes!(concat!(
+                "../docs/qualification/zip-password-2026-11-03/fixtures/",
+                $name,
+                $extension
+            ))
+            .as_slice()
+        };
+    }
+    #[test]
+    fn password_integrity_requires_every_member_and_aggregate_budget() {
+        let temp = TempDir::new();
+        let path = temp.path().join("mixed.zipx");
+        let progress = AtomicU64::new(0);
+        fs::write(
+            &path,
+            include_bytes!(
+                "../docs/qualification/archive-password-check-2026-11-03/fixtures/mixed.zipx"
+            ),
+        )
+        .unwrap();
+        let report =
+            check_with_password(&path, &|| false, &progress, Some(b"fixture-password")).unwrap();
+        let first = fixture!("expected", ".txt").len() as u64;
+        let total = first + fixture!("aes-ppmd-3-v2", ".txt").len() as u64;
+        assert_eq!(report.members, 2);
+        assert_eq!(report.decoded, total);
+        let error = check_with_password_limits(
+            &path,
+            &|| false,
+            &progress,
+            Some(b"fixture-password"),
+            first + 1,
+            100,
+        )
+        .unwrap_err();
+        assert!(error.contains("limit"));
+        assert_eq!(progress.load(Ordering::Relaxed), first);
+        fs::write(
+            &path,
+            include_bytes!(
+                "../docs/qualification/archive-password-check-2026-11-03/fixtures/late-failure.zipx"
+            ),
+        )
+        .unwrap();
+        let error = check_with_password(&path, &|| false, &progress, Some(b"fixture-password"))
+            .unwrap_err();
+        assert!(
+            error.contains("Member #1") && error.contains("authentication"),
+            "{error}"
+        );
+        assert!(progress.load(Ordering::Relaxed) >= first);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn password_integrity_checks_all_codecs_strengths_and_versions_without_writes() {
+        for (name, bytes, expected) in [
+            (
+                "stored",
+                fixture!("stored", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-stored-128",
+                fixture!("aes-stored-128", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-stored-128-v1",
+                fixture!("aes-stored-128-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-stored-192",
+                fixture!("aes-stored-192", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-stored-192-v1",
+                fixture!("aes-stored-192-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-stored-256",
+                fixture!("aes-stored-256", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-stored-256-v1",
+                fixture!("aes-stored-256-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "deflate",
+                fixture!("deflate", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate-128",
+                fixture!("aes-deflate-128", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate-128-v1",
+                fixture!("aes-deflate-128-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate-192",
+                fixture!("aes-deflate-192", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate-192-v1",
+                fixture!("aes-deflate-192-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate-256",
+                fixture!("aes-deflate-256", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate-256-v1",
+                fixture!("aes-deflate-256-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "bzip2",
+                fixture!("bzip2", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-bzip2-128",
+                fixture!("aes-bzip2-128", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-bzip2-128-v1",
+                fixture!("aes-bzip2-128-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-bzip2-192",
+                fixture!("aes-bzip2-192", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-bzip2-192-v1",
+                fixture!("aes-bzip2-192-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-bzip2-256",
+                fixture!("aes-bzip2-256", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-bzip2-256-v1",
+                fixture!("aes-bzip2-256-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "deflate64",
+                fixture!("deflate64", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate64-128",
+                fixture!("aes-deflate64-128", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate64-128-v1",
+                fixture!("aes-deflate64-128-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate64-192",
+                fixture!("aes-deflate64-192", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate64-192-v1",
+                fixture!("aes-deflate64-192-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate64-256",
+                fixture!("aes-deflate64-256", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            (
+                "aes-deflate64-256-v1",
+                fixture!("aes-deflate64-256-v1", ".zip"),
+                fixture!("expected", ".txt"),
+            ),
+            ("lzma", fixture!("lzma", ".zipx"), fixture!("lzma", ".txt")),
+            ("xz", fixture!("xz", ".zipx"), fixture!("xz", ".txt")),
+            ("zstd", fixture!("zstd", ".zipx"), fixture!("zstd", ".txt")),
+            (
+                "zstd-legacy",
+                fixture!("zstd-legacy", ".zipx"),
+                fixture!("zstd-legacy", ".txt"),
+            ),
+            ("ppmd", fixture!("ppmd", ".zipx"), fixture!("ppmd", ".txt")),
+            (
+                "aes-lzma-1-v1",
+                fixture!("aes-lzma-1-v1", ".zipx"),
+                fixture!("aes-lzma-1-v1", ".txt"),
+            ),
+            (
+                "aes-lzma-1-v2",
+                fixture!("aes-lzma-1-v2", ".zipx"),
+                fixture!("aes-lzma-1-v2", ".txt"),
+            ),
+            (
+                "aes-lzma-2-v1",
+                fixture!("aes-lzma-2-v1", ".zipx"),
+                fixture!("aes-lzma-2-v1", ".txt"),
+            ),
+            (
+                "aes-lzma-2-v2",
+                fixture!("aes-lzma-2-v2", ".zipx"),
+                fixture!("aes-lzma-2-v2", ".txt"),
+            ),
+            (
+                "aes-lzma-3-v1",
+                fixture!("aes-lzma-3-v1", ".zipx"),
+                fixture!("aes-lzma-3-v1", ".txt"),
+            ),
+            (
+                "aes-lzma-3-v2",
+                fixture!("aes-lzma-3-v2", ".zipx"),
+                fixture!("aes-lzma-3-v2", ".txt"),
+            ),
+            (
+                "aes-xz-1-v1",
+                fixture!("aes-xz-1-v1", ".zipx"),
+                fixture!("aes-xz-1-v1", ".txt"),
+            ),
+            (
+                "aes-xz-1-v2",
+                fixture!("aes-xz-1-v2", ".zipx"),
+                fixture!("aes-xz-1-v2", ".txt"),
+            ),
+            (
+                "aes-xz-2-v1",
+                fixture!("aes-xz-2-v1", ".zipx"),
+                fixture!("aes-xz-2-v1", ".txt"),
+            ),
+            (
+                "aes-xz-2-v2",
+                fixture!("aes-xz-2-v2", ".zipx"),
+                fixture!("aes-xz-2-v2", ".txt"),
+            ),
+            (
+                "aes-xz-3-v1",
+                fixture!("aes-xz-3-v1", ".zipx"),
+                fixture!("aes-xz-3-v1", ".txt"),
+            ),
+            (
+                "aes-xz-3-v2",
+                fixture!("aes-xz-3-v2", ".zipx"),
+                fixture!("aes-xz-3-v2", ".txt"),
+            ),
+            (
+                "aes-zstd-1-v1",
+                fixture!("aes-zstd-1-v1", ".zipx"),
+                fixture!("aes-zstd-1-v1", ".txt"),
+            ),
+            (
+                "aes-zstd-1-v2",
+                fixture!("aes-zstd-1-v2", ".zipx"),
+                fixture!("aes-zstd-1-v2", ".txt"),
+            ),
+            (
+                "aes-zstd-2-v1",
+                fixture!("aes-zstd-2-v1", ".zipx"),
+                fixture!("aes-zstd-2-v1", ".txt"),
+            ),
+            (
+                "aes-zstd-2-v2",
+                fixture!("aes-zstd-2-v2", ".zipx"),
+                fixture!("aes-zstd-2-v2", ".txt"),
+            ),
+            (
+                "aes-zstd-3-v1",
+                fixture!("aes-zstd-3-v1", ".zipx"),
+                fixture!("aes-zstd-3-v1", ".txt"),
+            ),
+            (
+                "aes-zstd-3-v2",
+                fixture!("aes-zstd-3-v2", ".zipx"),
+                fixture!("aes-zstd-3-v2", ".txt"),
+            ),
+            (
+                "aes-legacy-1-v1",
+                fixture!("aes-legacy-1-v1", ".zipx"),
+                fixture!("aes-legacy-1-v1", ".txt"),
+            ),
+            (
+                "aes-legacy-1-v2",
+                fixture!("aes-legacy-1-v2", ".zipx"),
+                fixture!("aes-legacy-1-v2", ".txt"),
+            ),
+            (
+                "aes-legacy-2-v1",
+                fixture!("aes-legacy-2-v1", ".zipx"),
+                fixture!("aes-legacy-2-v1", ".txt"),
+            ),
+            (
+                "aes-legacy-2-v2",
+                fixture!("aes-legacy-2-v2", ".zipx"),
+                fixture!("aes-legacy-2-v2", ".txt"),
+            ),
+            (
+                "aes-legacy-3-v1",
+                fixture!("aes-legacy-3-v1", ".zipx"),
+                fixture!("aes-legacy-3-v1", ".txt"),
+            ),
+            (
+                "aes-legacy-3-v2",
+                fixture!("aes-legacy-3-v2", ".zipx"),
+                fixture!("aes-legacy-3-v2", ".txt"),
+            ),
+            (
+                "aes-ppmd-1-v1",
+                fixture!("aes-ppmd-1-v1", ".zipx"),
+                fixture!("aes-ppmd-1-v1", ".txt"),
+            ),
+            (
+                "aes-ppmd-1-v2",
+                fixture!("aes-ppmd-1-v2", ".zipx"),
+                fixture!("aes-ppmd-1-v2", ".txt"),
+            ),
+            (
+                "aes-ppmd-2-v1",
+                fixture!("aes-ppmd-2-v1", ".zipx"),
+                fixture!("aes-ppmd-2-v1", ".txt"),
+            ),
+            (
+                "aes-ppmd-2-v2",
+                fixture!("aes-ppmd-2-v2", ".zipx"),
+                fixture!("aes-ppmd-2-v2", ".txt"),
+            ),
+            (
+                "aes-ppmd-3-v1",
+                fixture!("aes-ppmd-3-v1", ".zipx"),
+                fixture!("aes-ppmd-3-v1", ".txt"),
+            ),
+            (
+                "aes-ppmd-3-v2",
+                fixture!("aes-ppmd-3-v2", ".zipx"),
+                fixture!("aes-ppmd-3-v2", ".txt"),
+            ),
+            (
+                "lzma-descriptor",
+                fixture!("lzma-descriptor", ".zipx"),
+                fixture!("lzma-descriptor", ".txt"),
+            ),
+            (
+                "aes-descriptor",
+                fixture!("aes-descriptor", ".zipx"),
+                fixture!("aes-descriptor", ".txt"),
+            ),
+            (
+                "aes-lzma-empty",
+                fixture!("aes-lzma-empty", ".zipx"),
+                fixture!("aes-lzma-empty", ".txt"),
+            ),
+            (
+                "aes-xz-empty",
+                fixture!("aes-xz-empty", ".zipx"),
+                fixture!("aes-xz-empty", ".txt"),
+            ),
+            (
+                "aes-ppmd-empty",
+                fixture!("aes-ppmd-empty", ".zipx"),
+                fixture!("aes-ppmd-empty", ".txt"),
+            ),
+            (
+                "aes-directory",
+                fixture!("aes-directory", ".zipx"),
+                fixture!("aes-directory", ".txt"),
+            ),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("input.ZIPX");
+            fs::write(&path, bytes).unwrap();
+            let progress = AtomicU64::new(0);
+            let report =
+                check_with_password(&path, &|| false, &progress, Some(b"fixture-password"))
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(report.kind, ArchiveKind::Zip);
+            assert_eq!(report.members, 1, "{name}");
+            assert_eq!(report.decoded, expected.len() as u64, "{name}");
+            assert_eq!(progress.load(Ordering::Relaxed), report.decoded);
+            assert_eq!(fs::read(&path).unwrap(), bytes, "{name}: source modified");
+            assert_eq!(
+                fs::read_dir(temp.path()).unwrap().count(),
+                1,
+                "{name}: extraction side effects"
+            );
+        }
+    }
+    #[test]
+    fn password_integrity_never_completes_on_password_or_payload_failure() {
+        for (name, bytes, password, text) in [
+            (
+                "missing",
+                fixture!("aes-ppmd-3-v2", ".zipx"),
+                None,
+                "password",
+            ),
+            (
+                "wrong",
+                fixture!("aes-ppmd-3-v2", ".zipx"),
+                Some(b"wrong-password".as_slice()),
+                "password",
+            ),
+            (
+                "custom tail",
+                fixture!("aes-ppmd-tail-bad-tag", ".zipx"),
+                Some(b"fixture-password".as_slice()),
+                "authentication",
+            ),
+            (
+                "standard tag",
+                fixture!("aes-stored-bad-tag", ".zip"),
+                Some(b"fixture-password".as_slice()),
+                "",
+            ),
+            (
+                "standard size",
+                fixture!("aes-stored-bad-size", ".zip"),
+                Some(b"fixture-password".as_slice()),
+                "size",
+            ),
+            (
+                "custom CRC",
+                fixture!("aes-ae1-bad-crc", ".zipx"),
+                Some(b"fixture-password".as_slice()),
+                "CRC",
+            ),
+            (
+                "directory tag",
+                fixture!("aes-directory-bad-tag", ".zipx"),
+                Some(b"fixture-password".as_slice()),
+                "",
+            ),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("input.zipx");
+            fs::write(&path, bytes).unwrap();
+            let error =
+                check_with_password(&path, &|| false, &AtomicU64::new(0), password).unwrap_err();
+            assert!(error.contains(text), "{name}: {error}");
+            assert!(!error.contains("fixture-password") && !error.contains("wrong-password"));
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
+    }
+    #[test]
+    fn password_integrity_preserves_budgets_cancellation_and_source_stamp() {
+        let temp = TempDir::new();
+        let path = temp.path().join("input.zipx");
+        let bytes = fixture!("aes-ppmd-tail", ".zipx");
+        fs::write(&path, bytes).unwrap();
+        let progress = AtomicU64::new(0);
+        for (limit, members) in [(1, 100), (128 * 1024 * 1024, 0)] {
+            let error = check_with_password_limits(
+                &path,
+                &|| false,
+                &progress,
+                Some(b"fixture-password"),
+                limit,
+                members,
+            )
+            .unwrap_err();
+            assert!(error.contains("limit"), "{error}");
+        }
+        let error = check_with_password(
+            &path,
+            &|| progress.load(Ordering::Relaxed) > 0,
+            &progress,
+            Some(b"fixture-password"),
+        )
+        .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        fs::write(&path, fixture!("aes-ppmd-3-v2", ".zipx")).unwrap();
+        progress.store(0, Ordering::Relaxed);
+        let changed = std::cell::Cell::new(false);
+        let error = check_with_password(
+            &path,
+            &|| {
+                if progress.load(Ordering::Relaxed) > 0 && !changed.replace(true) {
+                    fs::rename(&path, temp.path().join("old.zipx")).unwrap();
+                    fs::write(&path, b"replacement").unwrap();
+                }
+                false
+            },
+            &progress,
+            Some(b"fixture-password"),
+        )
+        .unwrap_err();
+        assert!(changed.get() && error.contains("changed"), "{error}");
+    }
+    #[test]
+    fn password_integrity_worker_accepts_empty_and_utf8_passwords() {
+        for (bytes, password) in [
+            (fixture!("aes-empty-password", ".zipx"), ""),
+            (fixture!("aes-utf8-password", ".zipx"), "fixture-пароль-ёж"),
+        ] {
+            let temp = TempDir::new();
+            let path = temp.path().join("input.zipx");
+            fs::write(&path, bytes).unwrap();
+            let run = start(
+                path,
+                Some(zeroize::Zeroizing::new(password.into())),
+                Arc::new(|| {}),
+            );
+            let report = run
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(report.members, 1);
+            assert_eq!(
+                report.decoded,
+                fixture!("aes-utf8-password", ".txt").len() as u64
+            );
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
+    }
     #[test]
     fn ppmd_integrity_keeps_decoded_byte_limit_and_cancellation() {
         let temp = TempDir::new();
@@ -655,7 +1232,7 @@ mod tests {
         let temp = TempDir::new();
         let path = temp.path().join("check.zip");
         zip_file(&path, b"abc");
-        let run = start(path.clone(), Arc::new(|| {}));
+        let run = start(path.clone(), None, Arc::new(|| {}));
         assert_eq!(
             run.receiver
                 .recv_timeout(std::time::Duration::from_secs(5))
@@ -664,7 +1241,7 @@ mod tests {
                 .members,
             1
         );
-        let other = start(path, Arc::new(|| {}));
+        let other = start(path, None, Arc::new(|| {}));
         let first_flag = Arc::clone(&run.cancelled);
         let other_flag = Arc::clone(&other.cancelled);
         drop(run);

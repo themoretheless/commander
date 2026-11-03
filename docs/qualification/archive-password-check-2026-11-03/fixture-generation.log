@@ -1,0 +1,10 @@
+{
+  "mixed": {
+    "sha256": "64435d2421a32783253f659ac9df27940b23cdfdac936aef9d3bf0fb2381c62d",
+    "external_exit": 0
+  },
+  "late-failure": {
+    "sha256": "03717641305d9e44a2f6b29d5aaacded7448b577284f57a20e5cc3e9c0972b9b",
+    "external_exit": 2
+  }
+}

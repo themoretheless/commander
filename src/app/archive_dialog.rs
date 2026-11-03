@@ -1746,7 +1746,9 @@ impl App {
                 }
                 ui.horizontal_wrapped(|ui| {
                     let test = ui.add_enabled(state.listing.is_some() && state.run.is_none() && state.extract.is_none() && state.check.is_none(), egui::Button::new("Test archive"))
-                        .on_hover_text("Read and check all members without extraction. ZIP CRC / TAR headers and compressed stream checks, limited to 128 MiB decoded data.");
+                        .on_hover_text("Read every member without extraction, using the ZIP password below when needed. Limited to 128 MiB decoded data.");
+                    #[cfg(feature = "visual-qa")]
+                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-test"), test.rect));
                     start_check = test.clicked();
                     if let Some(run) = &state.check {
                         ui.spinner();
@@ -1757,8 +1759,18 @@ impl App {
                 });
                 if let Some(result) = &state.check_result {
                     match result {
-                        Ok(report) => { ui.label(report.summary()); }
-                        Err(error) => { ui.colored_label(ui.visuals().error_fg_color, format!("Check not completed: {error}")); }
+                        Ok(report) => {
+                            let label = ui.label(report.summary());
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-check-result"), label.rect));
+                            let _ = label;
+                        }
+                        Err(error) => {
+                            let label = ui.colored_label(ui.visuals().error_fg_color, format!("Check not completed: {error}"));
+                            #[cfg(feature = "visual-qa")]
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("archive-check-result"), label.rect));
+                            let _ = label;
+                        }
                     }
                 }
                 let status = if state.extract.is_some() {
@@ -2465,7 +2477,7 @@ impl App {
                     if listing.kind == crate::archive::ArchiveKind::Zip
                         && listing.members.iter().any(|member| member.zip_info.as_ref().is_some_and(|info| info.encrypted))
                     {
-                        ui.add_enabled_ui(state.extract.is_none(), |ui| {
+                        ui.add_enabled_ui(state.extract.is_none() && state.check.is_none(), |ui| {
                             let _ = archive_password_input(ui, &mut state.password);
                         });
                     }
@@ -2575,6 +2587,7 @@ impl App {
             state.check_result = None;
             state.check = Some(crate::archive_check::start(
                 state.path.clone(),
+                Some(std::mem::take(&mut state.password)),
                 std::sync::Arc::new(move || repaint.request_repaint()),
             ));
         }
@@ -2671,13 +2684,13 @@ fn archive_password_input(
             .id_salt("archive-extraction-password")
             .password(true)
             .desired_width(180.0)
-            .hint_text("For this extraction")
+            .hint_text("For this operation")
             .show(ui);
         #[cfg(feature = "visual-qa")]
         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("archive-password-input"), (output.response.rect, output.response.id)));
         output.state.clear_undoer();
         output.state.store(ui.ctx(), output.response.id);
-        output.response.response.on_hover_text("ZIP password (ZipCrypto or AES), used only for this extraction. Cleared when extraction starts or the archive pane closes.")
+        output.response.response.on_hover_text("ZIP password (ZipCrypto or AES), used only for extraction or integrity checking. Cleared when either operation starts or the archive pane closes.")
     }).inner
 }
 

@@ -1,0 +1,12 @@
+   Compiling commander v0.2.0 (/Users/themoretheless/Documents/Sources/commander)
+    Finished `test` profile [unoptimized] target(s) in 41.82s
+     Running unittests src/main.rs (target/debug/build/commander/8572bc5246c6488e/out/commander-8572bc5246c6488e)
+
+running 4 tests
+test archive_check::tests::password_integrity_worker_accepts_empty_and_utf8_passwords ... ok
+test archive_check::tests::password_integrity_preserves_budgets_cancellation_and_source_stamp ... ok
+test archive_check::tests::password_integrity_never_completes_on_password_or_payload_failure ... ok
+test archive_check::tests::password_integrity_checks_all_codecs_strengths_and_versions_without_writes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3432 filtered out; finished in 0.75s
+
