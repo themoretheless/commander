@@ -1,0 +1,10 @@
+{
+  "src/archive.rs": "f4b2841b2860472a9c69f47138234275470a3e21ad8bef1fbb05d8a7c282993f",
+  "src/archive_export.rs": "c37bdfff8ca67f0838225f154245e1d1ad042d7ca6a44e3e2452e3a39fcd8aec",
+  "src/app/archive_dialog.rs": "d7e5bc172f2623fa00614e0e36aee11029d304515d508edba98ce87647380f98",
+  "src/visual_qa.rs": "1a76bc610f92f7dad6704c9ef7a60cd852282980be4bdf11ba9f7ed7ad5f2785",
+  "src/zip_reader.rs": "6f0b98307a4ed76b3da4e13bb31a7f7033f4dee4792b9bdabb1533469b90946d",
+  "src/zip_reader/aes.rs": "ab936287332b57a046e2957afbb2eb98659eaf0b29311f68eb3c02c9ff10d1b5",
+  "Cargo.toml": "31849c33a854be13849630880d2ea12cec69c83573d896476d2efb4637f87045",
+  "Cargo.lock": "04a0f3e352461b6e04a2f164f118bbc72e1e028fa841b64c9650ee8920ac84b6"
+}

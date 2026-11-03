@@ -1341,11 +1341,10 @@ fn member_details(
                 .as_ref()
                 .map(|info| {
                     if info.encrypted {
-                        "Yes (password required)"
+                        format!("Yes ({}, password required)", info.encryption)
                     } else {
-                        "No"
+                        "No".to_owned()
                     }
-                    .to_owned()
                 })
                 .unwrap_or_else(|| "Unavailable (not recorded per member)".into()),
         ),
@@ -2958,10 +2957,14 @@ mod tests {
         member.zip_info = Some(crate::archive::ZipMemberInfo {
             compression: "Deflated".into(),
             encrypted: true,
+            encryption: "ZipCrypto".into(),
         });
         let fields = super::member_details(crate::archive::ArchiveKind::Zip, member);
         assert_eq!(fields[6], ("Compression method", "Deflated".into()));
-        assert_eq!(fields[7], ("Encrypted", "Yes (password required)".into()));
+        assert_eq!(
+            fields[7],
+            ("Encrypted", "Yes (ZipCrypto, password required)".into())
+        );
         member.zip_info.as_mut().unwrap().encrypted = false;
         assert_eq!(
             super::member_details(crate::archive::ArchiveKind::Zip, member)[7].1,

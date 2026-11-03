@@ -13,6 +13,15 @@ pub(super) struct Settings {
     key_bytes: usize,
     pub(super) check_crc: bool,
 }
+impl Settings {
+    pub(super) fn label(self) -> String {
+        format!(
+            "WinZip AES-{} (AE-{})",
+            self.key_bytes * 8,
+            if self.check_crc { 1 } else { 2 }
+        )
+    }
+}
 pub(super) fn settings<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> io::Result<Option<Settings>> {
     let mut settings = None;
     for field in entry.extra_data_fields() {

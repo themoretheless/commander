@@ -1,0 +1,28 @@
+{
+  "archive_metadata": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 0,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "3f38473e44232a8e1f5c7343be64e6ceab3634fa2b1774df6f6a0c78ce01bda4",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-encryption-metadata-2026-11-03/native-captures/1793674246616806000/archive_metadata"
+  },
+  "archive_export": {
+    "checks": 14,
+    "effects": {
+      "context_menu": 0,
+      "deferred_menu": 0,
+      "clipboard": 5,
+      "opener": 0,
+      "trash": 0,
+      "free_space": 0
+    },
+    "frame_sha256": "950b63675cdd7d7dade098f741d537d0e7f6c18fb4a493ec959ce2cbbdabfbec",
+    "capture": "/Users/themoretheless/Documents/Sources/commander/docs/qualification/zip-encryption-metadata-2026-11-03/native-captures/1793674279116576000/archive_export"
+  }
+}

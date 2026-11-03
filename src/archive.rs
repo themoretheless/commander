@@ -46,6 +46,7 @@ impl ArchiveKind {
 pub struct ZipMemberInfo {
     pub compression: String,
     pub encrypted: bool,
+    pub encryption: String,
 }
 
 #[derive(Clone, Debug)]
@@ -284,6 +285,7 @@ pub fn visit_members(
                         format!("{:?}", raw.compression())
                     },
                     encrypted: raw.encrypted(),
+                    encryption: crate::zip_reader::encryption_label(&raw),
                 }),
                 tar_name: None,
                 modified: zip_member_modified(&raw),
@@ -3323,6 +3325,7 @@ mod tests {
             let info = member.zip_info.as_ref().unwrap();
             assert_eq!(info.compression, member.path.to_str().unwrap());
             assert!(!info.encrypted);
+            assert_eq!(info.encryption, "None");
         }
         // Change both headers to an unsupported method and set the encryption
         // bit. The payload deliberately remains undecodable: listing must only
@@ -3346,8 +3349,60 @@ mod tests {
         for member in listing.members {
             let info = member.zip_info.unwrap();
             assert!(info.encrypted);
+            assert_eq!(info.encryption, "ZipCrypto");
             assert!(info.compression.contains("222"), "{}", info.compression);
         }
+    }
+
+    #[test]
+    fn zip_encryption_metadata_reports_all_aes_strengths_and_versions_without_passwords() {
+        let temp = TempDir::new();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/qualification/zip-password-2026-11-03/fixtures");
+        for bits in [128, 192, 256] {
+            for version in [1, 2] {
+                let name = format!(
+                    "aes-stored-{bits}{}.zip",
+                    if version == 1 { "-v1" } else { "" }
+                );
+                let path = temp.path().join(&name);
+                fs::copy(fixtures.join(name), &path).unwrap();
+                let listing = list_archive(path, &AtomicBool::new(false)).unwrap();
+                assert_eq!(listing.unreadable_members, 0);
+                assert_eq!(listing.members.len(), 1);
+                let info = listing.members[0].zip_info.as_ref().unwrap();
+                assert!(info.encrypted);
+                assert_eq!(info.encryption, format!("WinZip AES-{bits} (AE-{version})"));
+            }
+        }
+    }
+
+    #[test]
+    fn zip_encryption_metadata_never_calls_strong_flags_zipcrypto() {
+        let temp = TempDir::new();
+        let path = temp.path().join("strong.zipx");
+        let mut bytes = include_bytes!(
+            "../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-256.zip"
+        )
+        .to_vec();
+        for offset in 0..bytes.len().saturating_sub(10) {
+            let flag = if bytes[offset..].starts_with(b"PK\x03\x04") {
+                Some(offset + 6)
+            } else if bytes[offset..].starts_with(b"PK\x01\x02") {
+                Some(offset + 8)
+            } else {
+                None
+            };
+            if let Some(flag) = flag {
+                bytes[flag] |= 0x40;
+            }
+        }
+        fs::write(&path, bytes).unwrap();
+        let listing = list_archive(path, &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            listing.members[0].zip_info.as_ref().unwrap().encryption,
+            "Unknown (strong-encryption flag)"
+        );
     }
 
     #[test]

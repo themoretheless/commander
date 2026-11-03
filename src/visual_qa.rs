@@ -2635,6 +2635,13 @@ fn main() {
                     .as_slice(),
                 ))?;
                 writer.raw_copy_file_rename(ppmd.by_index_raw(0)?, "j-ppmd.txt")?;
+                let mut aes = zip::ZipArchive::new(std::io::Cursor::new(
+                    include_bytes!(
+                        "../docs/qualification/zip-password-2026-11-03/fixtures/aes-stored-256.zip"
+                    )
+                    .as_slice(),
+                ))?;
+                writer.raw_copy_file_rename(aes.by_index_raw(0)?, "k-aes.txt")?;
                 writer.finish()?;
                 let mut bytes = std::fs::read(&path)?;
                 for offset in 0..bytes.len().saturating_sub(46) {
@@ -3560,7 +3567,7 @@ impl VisualQaApp {
 
     fn archive_export_csv(&self, selected: bool) -> String {
         let mut text = String::from(
-            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted\n",
+            "Archive,Index,Path,Kind,Size (bytes),Packed (bytes),Modified,Listing truncated,Compression method,Encrypted,Encryption method\n",
         );
         let rows: &[(usize, &str, usize)] = if selected {
             &[(0, "docs/notes.txt", 30)]
@@ -3573,7 +3580,7 @@ impl VisualQaApp {
         };
         for (index, path, size) in rows {
             text.push_str(&format!(
-                "{},{index},{path},file,{size},,1970-01-01T00:00:37Z,false,,\n",
+                "{},{index},{path},file,{size},,1970-01-01T00:00:37Z,false,,,\n",
                 self.fixture.left.join("sample.tar").display()
             ));
         }
@@ -4963,7 +4970,7 @@ impl eframe::App for VisualQaApp {
             && !(self.scenario == Scenario::ArchiveExport && self.archive_copy_phase < 43)
             && !(self.scenario == Scenario::ArchiveBrowser && self.archive_copy_phase < 35)
             && !(self.scenario == Scenario::ArchiveFuzzy && self.archive_copy_phase < 7)
-            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 33)
+            && !(self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 36)
             && !(self.scenario == Scenario::ArchivePassword && self.archive_copy_phase < 55)
             && !(self.scenario == Scenario::RegexPreview && self.regex_click_phase < 6)
             && self.capture_probes.is_empty()
@@ -16969,7 +16976,7 @@ impl eframe::App for VisualQaApp {
             return;
         }
         if self.scenario == Scenario::ArchiveMetadata
-            && self.archive_copy_phase == 33
+            && self.archive_copy_phase == 36
             && ctx
                 .data(|d| {
                     d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
@@ -16990,14 +16997,14 @@ impl eframe::App for VisualQaApp {
                 modifiers: Default::default(),
             });
         }
-        if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 33 {
+        if self.scenario == Scenario::ArchiveMetadata && self.archive_copy_phase < 36 {
             let phase = self.archive_copy_phase;
             let observed = ctx.data(|d| {
                 d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new(
                     "archive-rendered-details",
                 ))
             });
-            if matches!(phase, 6 | 9 | 12 | 15 | 18 | 21 | 24 | 27 | 30) {
+            if matches!(phase, 6 | 9 | 12 | 15 | 18 | 21 | 24 | 27 | 30 | 33) {
                 let expected = match phase {
                     6 => "a-stored.txt",
                     9 => "b-deflated.txt",
@@ -17007,7 +17014,8 @@ impl eframe::App for VisualQaApp {
                     21 => "f-lzma.txt",
                     24 => "g-xz.txt",
                     27 => "h-zstd93.txt",
-                    _ => "i-zstd20.txt",
+                    30 => "i-zstd20.txt",
+                    _ => "j-ppmd.txt",
                 };
                 if !self
                     .scenario_dir
@@ -17051,7 +17059,8 @@ impl eframe::App for VisualQaApp {
                 21..=23 => ("g-xz.txt", phase - 21),
                 24..=26 => ("h-zstd93.txt", phase - 24),
                 27..=29 => ("i-zstd20.txt", phase - 27),
-                _ => ("j-ppmd.txt", phase - 30),
+                30..=32 => ("j-ppmd.txt", phase - 30),
+                _ => ("k-aes.txt", phase - 33),
             };
             let id = if target.is_empty() {
                 egui::Id::new("archive-details-header")
@@ -21243,9 +21252,9 @@ impl eframe::App for VisualQaApp {
             }
             Scenario::ArchiveMetadata => {
                 let observed = ctx.data(|d| d.get_temp::<(PathBuf, Vec<(String, String, bool)>)>(egui::Id::new("archive-rendered-details")));
-                let ready = self.archive_copy_phase == 33 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("j-ppmd.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Ppmd" && rows[7].1 == "No");
-                if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-j-ppmd.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
-                ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file() && self.scenario_dir.join("metadata-d-bzip2.txt.json").is_file() && self.scenario_dir.join("metadata-e-deflate64.txt.json").is_file() && self.scenario_dir.join("metadata-f-lzma.txt.json").is_file() && self.scenario_dir.join("metadata-g-xz.txt.json").is_file() && self.scenario_dir.join("metadata-h-zstd93.txt.json").is_file() && self.scenario_dir.join("metadata-i-zstd20.txt.json").is_file()
+                let ready = self.archive_copy_phase == 36 && observed.as_ref().is_some_and(|(path, rows)| path == Path::new("k-aes.txt") && rows.len() == 8 && rows.iter().all(|(_,_,visible)| *visible) && rows[6].1 == "Stored" && rows[7].1 == "Yes (WinZip AES-256 (AE-2), password required)");
+                if ready { let _ = std::fs::write(self.scenario_dir.join("metadata-k-aes.txt.json"), serde_json::to_vec_pretty(&observed).unwrap()); }
+                ready && self.scenario_dir.join("metadata-a-stored.txt.json").is_file() && self.scenario_dir.join("metadata-b-deflated.txt.json").is_file() && self.scenario_dir.join("metadata-c-encrypted.txt.json").is_file() && self.scenario_dir.join("metadata-d-bzip2.txt.json").is_file() && self.scenario_dir.join("metadata-e-deflate64.txt.json").is_file() && self.scenario_dir.join("metadata-f-lzma.txt.json").is_file() && self.scenario_dir.join("metadata-g-xz.txt.json").is_file() && self.scenario_dir.join("metadata-h-zstd93.txt.json").is_file() && self.scenario_dir.join("metadata-i-zstd20.txt.json").is_file() && self.scenario_dir.join("metadata-j-ppmd.txt.json").is_file()
             }
             Scenario::ArchiveFuzzy => {
                 self.archive_copy_phase == 7

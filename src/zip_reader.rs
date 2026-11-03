@@ -378,6 +378,20 @@ pub fn open_with_password<'a, R: Read + Seek>(
     })
 }
 
+/// Declared central-directory encryption; does not authenticate payloads.
+pub fn encryption_label<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> String {
+    if entry.flags().as_u16() & 0x40 != 0 {
+        return "Unknown (strong-encryption flag)".into();
+    }
+    match aes::settings(entry) {
+        Ok(Some(settings)) if entry.encrypted() => settings.label(),
+        Ok(Some(_)) => "Inconsistent (AES metadata without encrypted flag)".into(),
+        Ok(None) if entry.encrypted() => "ZipCrypto".into(),
+        Ok(None) => "None".into(),
+        Err(_) => "Unknown (invalid AES metadata)".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
