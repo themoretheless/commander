@@ -135,27 +135,22 @@ fn cache() -> &'static Mutex<ConflictRuleBook> {
     CACHE.get_or_init(|| Mutex::new(load_store()))
 }
 
-fn persist() -> &'static crate::persistence::FsPersist {
-    static PERSIST: OnceLock<crate::persistence::FsPersist> = OnceLock::new();
-    PERSIST.get_or_init(crate::persistence::FsPersist::default)
-}
-
 fn load_store() -> ConflictRuleBook {
-    load_store_at(persist(), &store_path())
+    load_store_at(crate::persistence::default_fs_persist(), &store_path())
 }
 
 /// A store that exists but cannot be read loads empty and blocks saves, so
 /// it is reported through persistence health instead of vanishing silently.
 fn load_store_at(persist: &dyn crate::persistence::Persist, path: &Path) -> ConflictRuleBook {
-    let loaded = crate::persistence::load_enveloped::<ConflictRuleBook>(persist, path, STORE);
-    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
-        crate::persistence::record_unreadable("Conflict rules");
-    }
-    loaded.value.unwrap_or_default()
+    crate::persistence::load_enveloped_or_default(persist, path, STORE, "Conflict rules")
 }
 
 fn save_store(store: &ConflictRuleBook) -> bool {
-    save_store_at(persist(), &store_path(), store)
+    save_store_at(
+        crate::persistence::default_fs_persist(),
+        &store_path(),
+        store,
+    )
 }
 
 /// Failed or blocked saves reach persistence health (and its error toast);
@@ -165,19 +160,7 @@ fn save_store_at(
     path: &Path,
     store: &ConflictRuleBook,
 ) -> bool {
-    let mut loaded = crate::persistence::load_enveloped::<ConflictRuleBook>(persist, path, STORE);
-    crate::persistence::report_save(
-        "Conflict rules",
-        crate::persistence::save_enveloped(
-            persist,
-            path,
-            STORE,
-            store,
-            &mut loaded.gate,
-            crate::persistence::SaveIntent::Explicit,
-        ),
-    )
-    .is_some()
+    crate::persistence::save_enveloped_explicit(persist, path, STORE, "Conflict rules", store)
 }
 
 pub fn load() -> ConflictRuleBook {

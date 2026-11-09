@@ -465,7 +465,7 @@ pub fn ephemeral_persist() -> Arc<dyn Persist> {
     Arc::new(EphemeralPersist::default())
 }
 
-fn default_fs_persist() -> &'static FsPersist {
+pub fn default_fs_persist() -> &'static FsPersist {
     static PERSIST: OnceLock<FsPersist> = OnceLock::new();
     PERSIST.get_or_init(FsPersist::default)
 }
@@ -861,6 +861,37 @@ pub fn load_enveloped<T: DeserializeOwned>(
             },
         },
     }
+}
+
+/// Load a store that falls back to its default. A store that exists but
+/// cannot be read is recorded under `label` in persistence health (and blocks
+/// later saves) instead of vanishing silently.
+pub fn load_enveloped_or_default<T: DeserializeOwned + Default>(
+    persist: &dyn Persist,
+    path: &Path,
+    spec: StoreSpec,
+    label: &'static str,
+) -> T {
+    let loaded = load_enveloped::<T>(persist, path, spec);
+    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
+        record_unreadable(label);
+    }
+    loaded.value.unwrap_or_default()
+}
+
+/// Save a whole store on an explicit user action. Failed or blocked saves
+/// (a corrupt or unreadable file is never overwritten) reach persistence
+/// health under `label`; `false` when nothing was committed.
+pub fn save_enveloped_explicit<T: Serialize + DeserializeOwned>(
+    persist: &dyn Persist,
+    path: &Path,
+    spec: StoreSpec,
+    label: &'static str,
+    store: &T,
+) -> bool {
+    let mut gate = load_enveloped::<T>(persist, path, spec).gate;
+    let saved = save_enveloped(persist, path, spec, store, &mut gate, SaveIntent::Explicit);
+    report_save(label, saved).is_some()
 }
 
 /// Load a store that must never fall back to defaults (operation journal,

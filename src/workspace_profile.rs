@@ -236,7 +236,7 @@ impl Editor {
     }
     pub(crate) fn open_at(path: PathBuf) -> Self {
         Self {
-            book: load_store_at(persist(), &path),
+            book: load_store_at(crate::persistence::default_fs_persist(), &path),
             name: String::new(),
             selected: None,
             error: None,
@@ -247,7 +247,12 @@ impl Editor {
         }
     }
     pub fn commit(&mut self, next: ProfileBook) -> Result<(), String> {
-        commit_if_unchanged_at(persist(), &self.path, &self.book, &next)?;
+        commit_if_unchanged_at(
+            crate::persistence::default_fs_persist(),
+            &self.path,
+            &self.book,
+            &next,
+        )?;
         self.book = next;
         self.error = None;
         if self.path == store_path() {
@@ -313,7 +318,7 @@ impl Editor {
     }
 
     pub fn reload(&mut self) {
-        self.book = load_store_at(persist(), &self.path);
+        self.book = load_store_at(crate::persistence::default_fs_persist(), &self.path);
         self.selected = None;
         self.error = None;
     }
@@ -352,27 +357,22 @@ fn cache() -> &'static Mutex<ProfileBook> {
     CACHE.get_or_init(|| Mutex::new(load_store()))
 }
 
-fn persist() -> &'static crate::persistence::FsPersist {
-    static PERSIST: OnceLock<crate::persistence::FsPersist> = OnceLock::new();
-    PERSIST.get_or_init(crate::persistence::FsPersist::default)
-}
-
 fn load_store() -> ProfileBook {
-    load_store_at(persist(), &store_path())
+    load_store_at(crate::persistence::default_fs_persist(), &store_path())
 }
 
 /// A store that exists but cannot be read loads empty and blocks saves, so
 /// it is reported through persistence health instead of vanishing silently.
 fn load_store_at(persist: &dyn crate::persistence::Persist, path: &Path) -> ProfileBook {
-    let loaded = crate::persistence::load_enveloped::<ProfileBook>(persist, path, STORE);
-    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
-        crate::persistence::record_unreadable("Workspace profiles");
-    }
-    loaded.value.unwrap_or_default()
+    crate::persistence::load_enveloped_or_default(persist, path, STORE, "Workspace profiles")
 }
 
 fn save_store(store: &ProfileBook) -> bool {
-    save_store_at(persist(), &store_path(), store)
+    save_store_at(
+        crate::persistence::default_fs_persist(),
+        &store_path(),
+        store,
+    )
 }
 
 /// Failed or blocked saves reach persistence health (and its error toast);
@@ -382,19 +382,7 @@ fn save_store_at(
     path: &Path,
     store: &ProfileBook,
 ) -> bool {
-    let mut loaded = crate::persistence::load_enveloped::<ProfileBook>(persist, path, STORE);
-    crate::persistence::report_save(
-        "Workspace profiles",
-        crate::persistence::save_enveloped(
-            persist,
-            path,
-            STORE,
-            store,
-            &mut loaded.gate,
-            crate::persistence::SaveIntent::Explicit,
-        ),
-    )
-    .is_some()
+    crate::persistence::save_enveloped_explicit(persist, path, STORE, "Workspace profiles", store)
 }
 
 pub fn load() -> ProfileBook {
