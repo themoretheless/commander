@@ -284,21 +284,14 @@ fn dragged_split_ratio(
 /// The keyboard focus ring (a double outline, as on file rows) for a
 /// widget whose own frame is hidden, so tabbing to it stays visible.
 fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, t: &crate::theme::ThemeColors) {
-    if !response.has_focus() {
-        return;
+    if response.has_focus() {
+        super::file_list::paint_focus_ring(
+            ui.painter(),
+            response.rect,
+            crate::theme::ROUNDING_SM,
+            t,
+        );
     }
-    ui.painter().rect_stroke(
-        response.rect,
-        crate::theme::ROUNDING_SM,
-        Stroke::new(2.0, t.text_primary),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().rect_stroke(
-        response.rect.shrink(2.0),
-        crate::theme::ROUNDING_SM,
-        Stroke::new(1.0, t.bg_panel),
-        egui::StrokeKind::Inside,
-    );
 }
 
 fn clipped_label(text: &str, max_chars: usize) -> String {

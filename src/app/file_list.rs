@@ -587,16 +587,21 @@ fn paint_cursor_marker(painter: &egui::Painter, rect: egui::Rect, t: &ThemeColor
 
 /// Keyboard focus ring: a 2px outline with an inner halo, so it reads on
 /// both the cursor fill and the plain row background.
-fn paint_focus_ring(painter: &egui::Painter, rect: egui::Rect, t: &ThemeColors) {
+pub(super) fn paint_focus_ring(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    rounding: CornerRadius,
+    t: &ThemeColors,
+) {
     painter.rect_stroke(
-        rect.shrink(2.0),
-        CornerRadius::ZERO,
+        rect,
+        rounding,
         Stroke::new(2.0, t.text_primary),
         egui::StrokeKind::Inside,
     );
     painter.rect_stroke(
-        rect.shrink(4.0),
-        CornerRadius::ZERO,
+        rect.shrink(2.0),
+        rounding,
         Stroke::new(1.0, t.bg_panel),
         egui::StrokeKind::Inside,
     );
@@ -838,7 +843,7 @@ impl App {
                     }
                     if up_row.has_focus() {
                         claim_row_focus(ui, panel_side, &up_row);
-                        paint_focus_ring(ui.painter(), up_row.rect, t);
+                        paint_focus_ring(ui.painter(), up_row.rect.shrink(2.0), CornerRadius::ZERO, t);
                     }
 
                     if is_cursor_on_up && panel.scroll_to_cursor() {
@@ -1345,7 +1350,7 @@ impl App {
                     }
                     if row_resp.has_focus() {
                         claim_row_focus(ui, panel_side, &row_resp);
-                        paint_focus_ring(ui.painter(), full_rect, t);
+                        paint_focus_ring(ui.painter(), full_rect.shrink(2.0), CornerRadius::ZERO, t);
                     }
 
                     // Content
