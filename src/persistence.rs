@@ -584,6 +584,11 @@ pub enum Committed {
     NotDurable,
 }
 
+/// `skip_serializing_if` predicate that keeps default-false flags out of stored JSON.
+pub const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Record a store save in the health counters and classify it; `None` when
 /// nothing was committed.
 pub fn report_save(

@@ -58,7 +58,7 @@ pub struct CapabilityDiagnostic {
 pub fn collect(paths: &[PathBuf]) -> CapabilityDiagnostic {
     CapabilityDiagnostic {
         schema: SCHEMA,
-        generated_at_secs: now_secs(),
+        generated_at_secs: crate::clock::now_secs(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         volumes: paths
             .iter()
@@ -206,7 +206,7 @@ pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
     let directory = crate::fs_util::config_dir().join("diagnostics");
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create diagnostics directory: {error}"))?;
-    let path = directory.join(format!("capabilities-{}.json", now_millis()));
+    let path = directory.join(format!("capabilities-{}.json", crate::clock::now_millis()));
     export_to(&path, &collect(paths))?;
     Ok(path)
 }
@@ -236,18 +236,6 @@ fn describe_commit_error(error: &crate::persistence::PreCommitError) -> String {
         PreCommitError::Conflict => "the file changed while it was being written".to_string(),
         PreCommitError::Io { stage, source, .. } => format!("could not {stage}: {source}"),
     }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
-fn now_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis())
 }
 
 #[cfg(test)]

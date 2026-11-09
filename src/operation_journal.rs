@@ -481,12 +481,6 @@ fn journal_path() -> PathBuf {
     crate::fs_util::config_dir().join("operation-journal.json")
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
 fn migrate_and_validate(mut journal: Journal) -> Result<Journal, String> {
     let source_schema = journal.schema;
     for operation in &mut journal.operations {
@@ -1013,7 +1007,7 @@ fn step_key(spec: &TransferSpec, index: usize, destination: &Path) -> Idempotenc
 
 pub fn begin(spec: &TransferSpec) -> Result<(), String> {
     mutate(|journal| {
-        let now = now_secs();
+        let now = crate::clock::now_secs();
         if spec.rollback_cleanup.is_some() != spec.rollback_cleanup_identity.is_some() {
             return Err(
                 "Operation-created rollback containers require an ownership identity".to_string(),
@@ -1229,7 +1223,7 @@ fn update_step(
         }
         let step = step_mut(&mut operation.steps, key)?;
         update(step)?;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })
 }
@@ -1339,7 +1333,7 @@ pub fn prepare_replacement(
             phase: ReplacementPhase::Prepared,
         };
         step.replacement = Some(prepared.clone());
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(prepared)
     })
 }
@@ -1539,7 +1533,7 @@ pub fn prepare_placement(
             phase: PlacementPhase::Prepared,
         };
         step.placement = Some(prepared.clone());
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(prepared)
     })
 }
@@ -1649,7 +1643,7 @@ pub fn mark_completed(
         step.checkpoint = None;
         step.fast_path = Some(fast_path);
         step.failure = None;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(step.replacement.clone())
     })?;
 
@@ -1862,7 +1856,7 @@ pub fn finish(operation_id: &OperationId, status: OperationStatus) -> Result<(),
             .status
             .transition(event)
             .map_err(|error| error.to_string())?;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })
 }
@@ -2035,7 +2029,7 @@ fn reconcile_prepared_replacements(operation_id: &OperationId) -> Result<(), Str
                 ));
             }
             journal_step.replacement = None;
-            operation.updated_at_secs = now_secs();
+            operation.updated_at_secs = crate::clock::now_secs();
             Ok(())
         })?;
     }
@@ -2110,7 +2104,7 @@ fn complete_interrupted_overwrite_placement(
             step.fast_path = Some(crate::transfer_tuning::FastPath::Resumed);
         }
         step.failure = None;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })?;
 
@@ -2146,7 +2140,7 @@ fn release_overwrite_backup(
         }
         step.replacement = None;
         step.staging = None;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })
 }
@@ -2279,7 +2273,7 @@ fn clear_failed_placement(
         step.placement = None;
         step.staging = None;
         step.checkpoint = None;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })
 }
@@ -2321,7 +2315,7 @@ fn complete_interrupted_placement(
         step.failure = None;
         step.placement = None;
         step.staging = None;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })
 }
@@ -2818,7 +2812,7 @@ fn prepare_rollback_receipt(
             restored_destination: None,
         };
         step.rollback = Some(receipt.clone());
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(receipt)
     })
 }
@@ -3119,7 +3113,7 @@ fn rollback_created_container(record: &OperationRecord, plan: &mut RepairPlan) {
                 .find(|operation| operation.id == record.id)
                 .ok_or_else(|| format!("Unknown operation {}", record.id.0))?;
             operation.rollback_cleanup_quarantine = Some(quarantine.clone());
-            operation.updated_at_secs = now_secs();
+            operation.updated_at_secs = crate::clock::now_secs();
             Ok(())
         })
     {
@@ -3250,7 +3244,7 @@ fn replace_container_quarantine(
             return Err("Rollback container quarantine changed before cleanup".to_string());
         }
         operation.rollback_cleanup_quarantine = Some(fresh.to_path_buf());
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })
 }
@@ -3262,7 +3256,7 @@ fn clear_container_quarantine(operation_id: &OperationId, quarantine: &Path) -> 
             return Err("Rollback container quarantine changed before cleanup".to_string());
         }
         operation.rollback_cleanup_quarantine = None;
-        operation.updated_at_secs = now_secs();
+        operation.updated_at_secs = crate::clock::now_secs();
         Ok(())
     })
 }
@@ -3376,7 +3370,7 @@ fn settle_incomplete_steps_for_rollback(
                     ));
                 }
             }
-            operation.updated_at_secs = now_secs();
+            operation.updated_at_secs = crate::clock::now_secs();
             Ok(())
         })?;
     }

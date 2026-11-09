@@ -648,15 +648,10 @@ fn publish_open_frames(stack: &[Frame], nodes: &mut [RawNode]) {
     }
 }
 
-#[cfg(unix)]
 fn device_of(path: &Path) -> Option<u64> {
-    use std::os::unix::fs::MetadataExt;
-    fs::metadata(path).ok().map(|metadata| metadata.dev())
-}
-
-#[cfg(not(unix))]
-fn device_of(_path: &Path) -> Option<u64> {
-    None
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| crate::fs_util::device_of(&metadata))
 }
 
 /// Whether a directory lives on a different device than the scanned root.

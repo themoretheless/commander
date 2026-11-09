@@ -443,22 +443,22 @@ pub struct RenameRule {
     /// Treat `find` as a regular expression instead of a literal substring.
     pub regex: bool,
     /// Case-insensitive matching uses the regex engine's Unicode simple folding.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "crate::persistence::is_false")]
     pub ignore_case: bool,
     /// Replace only the leftmost occurrence in the selected name component.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "crate::persistence::is_false")]
     pub first_only: bool,
     /// In regex mode, insert replacement text literally instead of expanding captures.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "crate::persistence::is_false")]
     pub literal_replacement: bool,
     /// Trim Unicode whitespace from the final complete name.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "crate::persistence::is_false")]
     pub trim_spaces: bool,
     /// Replace slash/NUL in the final target; empty text removes them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invalid_char_replacement: Option<String>,
     /// Collapse identical consecutive non-alphanumeric graphemes in the final name.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "crate::persistence::is_false")]
     pub collapse_repeats: bool,
     #[serde(skip_serializing_if = "NameNormalization::is_keep")]
     pub normalization: NameNormalization,
@@ -478,10 +478,6 @@ pub struct RenameRule {
     pub number_format: NumberFormat,
     #[serde(skip_serializing_if = "NumberPosition::is_after")]
     pub number_position: NumberPosition,
-}
-
-fn is_false(value: &bool) -> bool {
-    !value
 }
 
 fn compile_pattern(value: &str, rule: &RenameRule) -> Result<Option<regex::Regex>, String> {

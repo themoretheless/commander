@@ -20,13 +20,13 @@ pub struct SavedTab {
     pub title: Option<String>,
     #[serde(
         default,
-        skip_serializing_if = "is_false",
+        skip_serializing_if = "crate::persistence::is_false",
         deserialize_with = "deserialize_protection"
     )]
     pub close_protected: bool,
     #[serde(
         default,
-        skip_serializing_if = "is_false",
+        skip_serializing_if = "crate::persistence::is_false",
         deserialize_with = "deserialize_protection"
     )]
     pub full_path_label: bool,
@@ -102,9 +102,6 @@ mod pinned_path {
     }
 }
 
-fn is_false(value: &bool) -> bool {
-    !value
-}
 fn deserialize_protection<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<bool, D::Error> {
