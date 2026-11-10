@@ -4869,6 +4869,9 @@ fn large_listing_hot_paths() {
     report(&mut panel, "visible selected count+size", &mut |p| {
         std::hint::black_box((p.visible_selected_count(), p.visible_selected_size()));
     });
+    report(&mut panel, "footer summary (first, then cached)", &mut |p| {
+        std::hint::black_box(p.visible_selection_summary());
+    });
     report(&mut panel, "is_selected over every row", &mut |p| {
         let selected = p
             .filtered_iter()

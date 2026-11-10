@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -854,6 +855,14 @@ pub struct PanelState {
     /// recorded when the read resolves, and dropped when the folder is gone.
     pending_visit: Option<PathBuf>,
     last_size_sort_revision: u64,
+    selection_summary_cache: RefCell<Option<SelectionSummaryCache>>,
+}
+
+/// The footer's visible-selection summary and what it was computed from.
+struct SelectionSummaryCache {
+    key: SelectionViewKey,
+    sizes: Arc<SizeSnapshot>,
+    summary: (usize, u64, bool),
 }
 
 impl PanelState {
@@ -900,6 +909,7 @@ impl PanelState {
             change_provenance: crate::change_provenance::RowProvenance::default(),
             pending_visit: None,
             last_size_sort_revision: 0,
+            selection_summary_cache: RefCell::new(None),
         }
     }
 
@@ -1767,6 +1777,50 @@ impl PanelState {
         } else {
             Ok(self.selected_entries())
         }
+    }
+
+    /// Selected rows in the filtered view and their total display size, plus
+    /// whether any selected folder is still being measured (it counts as 0 B
+    /// until then). Recomputed only when the listing, filter, selection or
+    /// measured sizes change, so the footer can ask for it every frame.
+    pub fn visible_selection_summary(&self) -> (usize, u64, bool) {
+        if self.selected_count() == 0 {
+            return (0, 0, false);
+        }
+        let key = self.selection_view_key();
+        let sizes = self.size_snapshot();
+        if let Some(cache) = &*self.selection_summary_cache.borrow()
+            && cache.key == key
+            && Arc::ptr_eq(&cache.sizes, &sizes)
+        {
+            return cache.summary;
+        }
+        let summary = self.visible_selection_summary_with(&sizes);
+        *self.selection_summary_cache.borrow_mut() = Some(SelectionSummaryCache {
+            key,
+            sizes,
+            summary,
+        });
+        summary
+    }
+
+    pub(crate) fn visible_selection_summary_with(
+        &self,
+        sizes: &SizeSnapshot,
+    ) -> (usize, u64, bool) {
+        self.visible_selected()
+            .fold((0, 0, false), |(count, size, pending), entry| {
+                (
+                    count + 1,
+                    size.saturating_add(sizes.display_size(entry)),
+                    // Folder symlinks are never walked (as in folder_overview),
+                    // so they count as 0 B rather than as still measuring.
+                    pending
+                        || (entry.is_dir
+                            && !entry.is_symlink()
+                            && sizes.size_of(&entry.path).is_none()),
+                )
+            })
     }
 
     pub fn visible_selected_count(&self) -> usize {

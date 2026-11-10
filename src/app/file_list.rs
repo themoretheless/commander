@@ -124,41 +124,6 @@ fn drop_target_writable(
     writable
 }
 
-/// Selected rows in the filtered view and their total display size, in one
-/// pass, plus whether any selected folder is still being measured (it
-/// counts as 0 B until then). Skipped entirely (no hash lookups) when
-/// nothing is selected.
-fn visible_selection_summary(panel: &PanelState) -> (usize, u64, bool) {
-    if panel.selected_count() == 0 {
-        return (0, 0, false);
-    }
-    selection_summary_with(panel, &panel.size_snapshot())
-}
-
-fn selection_summary_with(
-    panel: &PanelState,
-    sizes: &crate::panel::SizeSnapshot,
-) -> (usize, u64, bool) {
-    let entries = panel.entries();
-    panel
-        .filtered_indices()
-        .iter()
-        .filter_map(|&index| entries.get(index))
-        .filter(|entry| panel.is_selected(&entry.path))
-        .fold((0, 0, false), |(count, size, pending), entry| {
-            (
-                count + 1,
-                size.saturating_add(sizes.display_size(entry)),
-                // Folder symlinks are never walked (as in folder_overview),
-                // so they count as 0 B rather than as still measuring.
-                pending
-                    || (entry.is_dir
-                        && !entry.is_symlink()
-                        && sizes.size_of(&entry.path).is_none()),
-            )
-        })
-}
-
 /// The selection's size for the footer. While a selected folder is still
 /// being measured the total is a lower bound, shown as "≥ X…" (or "…"
 /// before anything is known), like the folder total's "…". A folder the
@@ -1747,7 +1712,7 @@ impl App {
                             let total = panel.entries().len();
                             let selected_total = panel.selected_count();
                             let (selected_visible, selected_bytes, selected_pending) =
-                                visible_selection_summary(panel);
+                                panel.visible_selection_summary();
                             // One pass for the folder total plus its largest/oldest entry.
                             let overview = panel.folder_overview();
                             let filters_active = crate::panel::filter_is_active(
@@ -1985,8 +1950,7 @@ mod tests {
         drop_target_writable, empty_state, filter_footer, folder_changed, folder_extremes,
         follow_cursor_focus, grid_row_index, highlight_name_job, map_ranges_to_display,
         name_char_budget, name_column_width, parent_row_label, refocus_decision, row_click_kind,
-        row_content_height, row_spoken_label, selection_footer, selection_size_label,
-        selection_summary_with, visible_rows, visible_selection_summary,
+        row_content_height, row_spoken_label, selection_footer, selection_size_label, visible_rows,
     };
 
     #[test]
@@ -2048,14 +2012,14 @@ mod tests {
         std::fs::write(temp.path().join("c.txt"), "c").expect("write c");
         let mut panel = crate::panel::PanelState::new(temp.path().to_path_buf());
         panel.refresh();
-        assert_eq!(visible_selection_summary(&panel), (0, 0, false));
+        assert_eq!(panel.visible_selection_summary(), (0, 0, false));
         panel.toggle_select(temp.path().join("a.txt"));
         panel.toggle_select(temp.path().join("b.log"));
-        assert_eq!(visible_selection_summary(&panel), (2, 8, false));
+        assert_eq!(panel.visible_selection_summary(), (2, 8, false));
         assert_eq!(panel.visible_selected_count(), 2);
         assert_eq!(panel.visible_selected_size(), 8);
         panel.set_search_query("txt");
-        assert_eq!(visible_selection_summary(&panel), (1, 3, false));
+        assert_eq!(panel.visible_selection_summary(), (1, 3, false));
         assert_eq!(panel.visible_selected_count(), 1);
     }
 
@@ -2070,7 +2034,10 @@ mod tests {
         panel.toggle_select(temp.path().join("sub"));
         // No folder measured yet.
         let unmeasured = crate::panel::SizeSnapshot::default();
-        assert_eq!(selection_summary_with(&panel, &unmeasured), (2, 3, true));
+        assert_eq!(
+            panel.visible_selection_summary_with(&unmeasured),
+            (2, 3, true)
+        );
         assert_eq!(selection_size_label(3, true), "\u{2265} 3 B\u{2026}");
         assert_eq!(selection_size_label(0, true), "\u{2026}");
         assert_eq!(selection_size_label(3, false), "3 B");
@@ -2089,7 +2056,10 @@ mod tests {
         panel.toggle_select(temp.path().join("link"));
         let unmeasured = crate::panel::SizeSnapshot::default();
         // The link is never walked, so the total is final, not pending.
-        assert_eq!(selection_summary_with(&panel, &unmeasured), (2, 3, false));
+        assert_eq!(
+            panel.visible_selection_summary_with(&unmeasured),
+            (2, 3, false)
+        );
     }
 
     #[test]
