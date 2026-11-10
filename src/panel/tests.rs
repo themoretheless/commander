@@ -4811,3 +4811,69 @@ fn browser_mode_follows_folder_memory_without_losing_selection() {
     assert_eq!(panel.browser_mode(), BrowserMode::Icons);
     assert!(panel.is_selected(&file));
 }
+
+#[test]
+#[ignore = "manual benchmark: cargo test --release large_listing_hot_paths -- --ignored --nocapture"]
+fn large_listing_hot_paths() {
+    const ROWS: usize = 100_000;
+    let extensions = ["txt", "rs", "jpg", "md", "tar.gz"];
+    let entries = (0..ROWS)
+        .map(|index| {
+            let extension = extensions[index % extensions.len()];
+            let mut entry = entry(
+                &format!("file-{index:06}.{extension}"),
+                index % 10 == 0,
+                index as u64,
+            );
+            entry.extension = extension.rsplit('.').next().unwrap_or_default().into();
+            entry
+        })
+        .collect();
+    let mut panel = panel_with(entries);
+    fn report(panel: &mut PanelState, label: &str, f: &mut dyn FnMut(&mut PanelState)) {
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            f(panel);
+        }
+        println!("{label:<34} {:>10.3?}", started.elapsed() / 5);
+    }
+    report(&mut panel, "filter cold `file-0`", &mut |p| {
+        p.set_search_query("");
+        p.filtered_count();
+        p.set_search_query("file-0");
+        std::hint::black_box(p.filtered_count());
+    });
+    report(&mut panel, "filter typing f/fi/fil/file/file-0", &mut |p| {
+        for query in ["f", "fi", "fil", "file", "file-0"] {
+            p.set_search_query(query);
+            std::hint::black_box(p.filtered_count());
+        }
+    });
+    report(&mut panel, "filter `txt || rs`", &mut |p| {
+        p.set_search_query("txt || rs");
+        std::hint::black_box(p.filtered_count());
+        p.set_search_query("");
+    });
+    for column in [
+        SortColumn::Name,
+        SortColumn::Kind,
+        SortColumn::Size,
+        SortColumn::Extension,
+    ] {
+        report(&mut panel, &format!("sort {column:?}"), &mut |p| {
+            p.set_sort(column)
+        });
+    }
+    panel.set_search_query("");
+    panel.select_all();
+    report(&mut panel, "visible selected count+size", &mut |p| {
+        std::hint::black_box((p.visible_selected_count(), p.visible_selected_size()));
+    });
+    report(&mut panel, "is_selected over every row", &mut |p| {
+        let selected = p
+            .filtered_iter()
+            .filter(|entry| p.is_selected(&entry.path))
+            .count();
+        std::hint::black_box(selected);
+    });
+}
