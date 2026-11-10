@@ -22,7 +22,6 @@ pub(super) fn listing_ui(
     rows_height: f32,
     dest: &std::path::Path,
 ) -> ListingActions {
-    let ctx = &ui.ctx().clone();
     let mut actions = ListingActions::default();
     let Some(listing) = &state.listing else {
         return actions;
@@ -229,7 +228,7 @@ pub(super) fn listing_ui(
                 _ => "Copy listing metadata only, without extracting or reading member contents.",
             });
             #[cfg(feature = "visual-qa")]
-            ctx.data_mut(|data| data.insert_temp(egui::Id::new(("archive-copy-format", format.label())), response.rect));
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("archive-copy-format", format.label())), response.rect));
             #[cfg(not(feature = "visual-qa"))]
             let _ = response;
         }
@@ -238,7 +237,7 @@ pub(super) fn listing_ui(
             let response = ui.add_enabled(count > 0, egui::Button::new(format!("{label} ({count})")))
                 .on_hover_text(if selected_only { "Copy every selected real member, including outside this folder/filter, in current sort order. No extraction." } else { "Copy visible real members in displayed order; synthetic navigation folders are excluded. No extraction." });
             #[cfg(feature = "visual-qa")]
-            ctx.data_mut(|data| data.insert_temp(egui::Id::new(("archive-copy", selected_only)), response.rect));
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("archive-copy", selected_only)), response.rect));
             if response.clicked() {
                 let rows = state.member_filter.copy_rows(listing, &state.selected, selected_only);
                 actions.copy_members = Some(crate::archive_export::format(&state.path, listing, &rows, state.copy_format).map(|text| (text, count)));
