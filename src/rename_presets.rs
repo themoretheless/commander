@@ -9,15 +9,12 @@ const MAX_FIELD: usize = 4096;
 pub struct Preset {
     pub name: String,
     pub rule: RenameRule,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "crate::persistence::is_false")]
     pub at_launch: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct Presets(Vec<Preset>);
-fn is_false(value: &bool) -> bool {
-    !*value
-}
 fn key(name: &str) -> String {
     name.trim().to_lowercase().nfc().collect()
 }

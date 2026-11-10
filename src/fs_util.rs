@@ -240,6 +240,18 @@ pub fn sync_parent_namespace(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// The device a file lives on, for staying on one filesystem.
+#[cfg(unix)]
+pub fn device_of(metadata: &std::fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.dev())
+}
+
+#[cfg(not(unix))]
+pub const fn device_of(_metadata: &std::fs::Metadata) -> Option<u64> {
+    None
+}
+
 /// Total size in bytes of all files under `path` (parallel walk).
 #[cfg(test)]
 pub fn dir_size_recursive(path: &Path) -> u64 {

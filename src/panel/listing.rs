@@ -153,36 +153,56 @@ impl ListingState {
         now: SystemTime,
     ) -> Arc<[usize]> {
         let query = crate::name_filter::normalized_query(query);
-        {
+        let narrowed_from = {
             let cache = self.filter_cache.borrow();
             let time_valid = cache.valid_until.is_none_or(|deadline| now < deadline);
             let indices_valid = cache
                 .indices
                 .last()
                 .is_none_or(|index| *index < self.entries.len());
-            if cache.revision == self.revision
-                && cache.query == query
+            let reusable = cache.revision == self.revision
                 && cache.facets == facets
                 && time_valid
-                && indices_valid
-            {
+                && indices_valid;
+            if reusable && cache.query == query {
                 return Arc::clone(&cache.indices);
             }
-        }
+            // A fuzzy pattern that only gained characters matches a subset of
+            // what it matched before, so only the previous hits are rescanned.
+            (reusable
+                && query.starts_with(cache.query.as_str())
+                && crate::name_filter::is_fuzzy_query(&cache.query)
+                && crate::name_filter::is_fuzzy_query(query))
+            .then(|| (Arc::clone(&cache.indices), cache.valid_until))
+        };
 
         let _latency =
             crate::measurement::LatencyGuard::new(crate::measurement::MetricName::FilterResponse);
-        let no_facets = facets.is_empty();
-        let indices: Arc<[usize]> = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| crate::name_filter::is_match(query, &entry.name))
-            .filter(|(_, entry)| no_facets || facet_matches(entry, &facets, now))
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>()
-            .into();
-        let valid_until = next_age_transition(&self.entries, facets, now);
+        let matcher = crate::name_filter::NameMatcher::new(query, false);
+        let (indices, valid_until): (Arc<[usize]>, _) = match narrowed_from {
+            Some((previous, valid_until)) => (
+                previous
+                    .iter()
+                    .copied()
+                    .filter(|&index| matcher.is_match(&self.entries[index].name))
+                    .collect::<Vec<_>>()
+                    .into(),
+                valid_until,
+            ),
+            None => {
+                let no_facets = facets.is_empty();
+                let indices = self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| matcher.is_match(&entry.name))
+                    .filter(|(_, entry)| no_facets || facet_matches(entry, &facets, now))
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>()
+                    .into();
+                (indices, next_age_transition(&self.entries, facets, now))
+            }
+        };
         *self.filter_cache.borrow_mut() = FilterCache {
             revision: self.revision,
             query: query.to_string(),
@@ -254,6 +274,44 @@ mod tests {
             modified: Some(modified),
             modified_str: String::new(),
             size_str: String::new(),
+        }
+    }
+
+    #[test]
+    fn typing_narrows_from_previous_hits_exactly_like_a_full_rescan() {
+        let names = [
+            "file-1.txt",
+            "File-2.rs",
+            "fi le",
+            "notes.md",
+            "^a$",
+            "a | b",
+            "f",
+            "éfil",
+            "test.rs",
+        ];
+        let mut listing = ListingState::default();
+        listing.replace_for_test(
+            names
+                .into_iter()
+                .map(|name| entry(name, UNIX_EPOCH))
+                .collect(),
+        );
+        let full = |query: &str| -> Vec<usize> {
+            let matcher = crate::name_filter::NameMatcher::new(
+                crate::name_filter::normalized_query(query),
+                false,
+            );
+            (0..names.len())
+                .filter(|&i| matcher.is_match(names[i]))
+                .collect()
+        };
+        for query in [
+            "", "f", "fi", "fil", "file", "file ", "file |", "file | n", "f", "f ", "f i", "!",
+            "!f", "'f", "'fi", "^", "^a", "^a$", "t", "te", "test.rs$", "", "e", "é", "éf",
+        ] {
+            let snapshot = listing.filtered_snapshot_at(query, FacetSet::default(), UNIX_EPOCH);
+            assert_eq!(&*snapshot, full(query).as_slice(), "query {query:?}");
         }
     }
 

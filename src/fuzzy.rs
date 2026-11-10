@@ -45,33 +45,44 @@ pub fn fold_case(character: char, case_sensitive: bool) -> char {
     }
 }
 
-/// Whether `query` is a case-insensitive subsequence of `candidate`. Allocates
-/// nothing and computes no score, for the filter hot path that runs over every
-/// entry. An empty (or whitespace-only) query matches everything.
+/// Whether `query` is a case-insensitive subsequence of `candidate`. An empty
+/// (or whitespace-only) query matches everything.
+#[cfg(test)]
 pub fn is_match(query: &str, candidate: &str) -> bool {
     is_match_case(query, candidate, false)
 }
 
 pub fn is_match_case(query: &str, candidate: &str, case_sensitive: bool) -> bool {
-    let mut q = query
-        .trim()
-        .chars()
-        .map(|c| fold_case(c, case_sensitive))
-        .peekable();
-    if q.peek().is_none() {
+    is_folded_subsequence(
+        query.trim().chars().map(|c| fold_case(c, case_sensitive)),
+        candidate,
+        case_sensitive,
+    )
+}
+
+/// Whether the already case-folded `pattern` is a subsequence of `candidate`.
+/// Allocates nothing and computes no score, for filters that run over every
+/// entry.
+pub fn is_folded_subsequence(
+    pattern: impl Iterator<Item = char>,
+    candidate: &str,
+    case_sensitive: bool,
+) -> bool {
+    let mut pattern = pattern.peekable();
+    if pattern.peek().is_none() {
         return true;
     }
     for c in candidate.chars() {
-        match q.peek() {
-            Some(&qc) => {
-                if fold_case(c, case_sensitive) == qc {
-                    q.next();
+        match pattern.peek() {
+            Some(&expected) => {
+                if fold_case(c, case_sensitive) == expected {
+                    pattern.next();
                 }
             }
             None => return true,
         }
     }
-    q.peek().is_none()
+    pattern.peek().is_none()
 }
 
 /// Score `candidate` against `query` with a case-insensitive subsequence match.

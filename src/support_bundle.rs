@@ -174,7 +174,7 @@ pub(crate) fn build(
     versions: &[crate::version_store::VersionRecord],
     collection_warnings: Vec<String>,
 ) -> SupportBundle {
-    let generated_at_secs = now_secs();
+    let generated_at_secs = crate::clock::now_secs();
     let redactor = Redactor::new();
     let operation_spans_truncated = operations.len() > MAX_OPERATION_SPANS;
     let operation_start = operations.len().saturating_sub(MAX_OPERATION_SPANS);
@@ -286,7 +286,10 @@ pub fn export(paths: &[PathBuf]) -> Result<PathBuf, String> {
     let directory = crate::fs_util::config_dir().join("support-bundles");
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create support bundle directory: {error}"))?;
-    let path = directory.join(format!("commander-support-{}.json", now_millis()));
+    let path = directory.join(format!(
+        "commander-support-{}.json",
+        crate::clock::now_millis()
+    ));
     export_to(&path, &collect(paths))?;
     Ok(path)
 }
@@ -302,7 +305,8 @@ pub fn export_encrypted(
     ttl_secs: u64,
 ) -> Result<(PathBuf, crate::encrypted_bundle::EncryptedBundleManifest), String> {
     let config_dir = crate::fs_util::config_dir();
-    let path = crate::encrypted_bundle::default_export_path(&config_dir, now_millis());
+    let path =
+        crate::encrypted_bundle::default_export_path(&config_dir, crate::clock::now_millis());
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("Could not create support bundle directory: {error}"))?;
@@ -311,7 +315,7 @@ pub fn export_encrypted(
     let preview = plaintext_preview(&bundle);
     let json = serde_json::to_vec_pretty(&bundle)
         .map_err(|error| format!("Could not encode support bundle: {error}"))?;
-    let created_at_secs = now_secs();
+    let created_at_secs = crate::clock::now_secs();
     let manifest = crate::encrypted_bundle::export_to(
         &path,
         &json,
@@ -353,18 +357,6 @@ fn export_to(path: &Path, bundle: &SupportBundle) -> Result<(), String> {
             path.display()
         ))
     }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
-fn now_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis())
 }
 
 #[cfg(test)]

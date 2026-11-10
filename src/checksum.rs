@@ -125,6 +125,7 @@ impl AlgorithmSet {
             .into_iter()
             .filter(move |a| self.contains(*a))
     }
+    #[cfg(feature = "visual-qa")]
     pub fn single(self) -> Option<Algorithm> {
         if self.len() == 1 {
             self.iter().next()

@@ -92,3 +92,10 @@ objc = "0.2"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 arboard = { version = "3", default-features = false }
+
+[profile.release]
+# Worker threads rely on unwinding (catch_unwind in transfer, workload and
+# preview jobs), so the panic strategy stays at the default.
+lto = "fat"
+codegen-units = 1
+strip = true

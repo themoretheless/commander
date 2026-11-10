@@ -198,6 +198,9 @@ fn copy_file_buffered_inner(
 
     let mut buf = vec![0u8; buf_len];
     let mut copied = offset;
+    // The running digest only feeds published checkpoints; tree children
+    // pass no sink and skip hashing their bytes.
+    let hashing = checkpoints.is_some();
     let mut next_checkpoint = offset.saturating_add(CHECKPOINT_INTERVAL);
 
     loop {
@@ -227,7 +230,9 @@ fn copy_file_buffered_inner(
             break;
         }
         writer.write_all(&buf[..n])?;
-        content_hasher.update(&buf[..n]);
+        if hashing {
+            content_hasher.update(&buf[..n]);
+        }
         copied = copied.saturating_add(n as u64);
 
         // The throttle sleep can last many seconds per chunk on a slow limit,

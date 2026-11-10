@@ -25,6 +25,7 @@ mod checksum;
 mod checksum_list;
 mod checksum_list_view;
 mod clipboard;
+mod clock;
 mod cmdtemplate;
 mod code_preview;
 mod collections;

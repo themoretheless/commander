@@ -56,28 +56,23 @@ fn cache() -> &'static Mutex<TrustStore> {
     CACHE.get_or_init(|| Mutex::new(load_store()))
 }
 
-fn persist() -> &'static crate::persistence::FsPersist {
-    static PERSIST: OnceLock<crate::persistence::FsPersist> = OnceLock::new();
-    PERSIST.get_or_init(crate::persistence::FsPersist::default)
-}
-
 fn load_store() -> TrustStore {
-    load_store_at(persist(), &store_path())
+    load_store_at(crate::persistence::default_fs_persist(), &store_path())
 }
 
 /// A store that exists but cannot be read leaves every root Trusted, so the
 /// user is warned through persistence health instead of silently losing
 /// Restricted/Untrusted labels.
 fn load_store_at(persist: &dyn crate::persistence::Persist, path: &Path) -> TrustStore {
-    let loaded = crate::persistence::load_enveloped::<TrustStore>(persist, path, STORE);
-    if loaded.value.is_none() && loaded.gate.status().fails_closed() {
-        crate::persistence::record_unreadable("Trust");
-    }
-    loaded.value.unwrap_or_default()
+    crate::persistence::load_enveloped_or_default(persist, path, STORE, "Trust")
 }
 
 fn save_store(store: &TrustStore) -> bool {
-    save_store_at(persist(), &store_path(), store)
+    save_store_at(
+        crate::persistence::default_fs_persist(),
+        &store_path(),
+        store,
+    )
 }
 
 /// Whether `store` reached disk. A failure (including a corrupt or
@@ -89,16 +84,7 @@ fn save_store_at(
     path: &Path,
     store: &TrustStore,
 ) -> bool {
-    let mut loaded = crate::persistence::load_enveloped::<TrustStore>(persist, path, STORE);
-    let saved = crate::persistence::save_enveloped(
-        persist,
-        path,
-        STORE,
-        store,
-        &mut loaded.gate,
-        crate::persistence::SaveIntent::Explicit,
-    );
-    crate::persistence::report_save("Trust labels", saved).is_some()
+    crate::persistence::save_enveloped_explicit(persist, path, STORE, "Trust labels", store)
 }
 
 fn normalize_root(path: &Path) -> String {

@@ -64,7 +64,25 @@ fn literal_range(
         .needle
         .chars()
         .map(|c| crate::fuzzy::fold_case(c, case_sensitive));
-    let length = literal.needle.chars().count();
+    folded_literal_range(
+        pattern,
+        literal.start,
+        literal.end,
+        candidate,
+        case_sensitive,
+    )
+}
+
+/// Char range of the first place `pattern` (already case-folded) occurs in
+/// `candidate`, honouring the `^` and `$` anchors.
+fn folded_literal_range(
+    pattern: impl Iterator<Item = char> + Clone,
+    anchored_start: bool,
+    anchored_end: bool,
+    candidate: &str,
+    case_sensitive: bool,
+) -> Option<(usize, usize)> {
+    let length = pattern.clone().count();
     let mut remaining = candidate.chars();
     let mut start = 0;
     loop {
@@ -73,11 +91,11 @@ fn literal_range(
             chars
                 .next()
                 .is_some_and(|actual| crate::fuzzy::fold_case(actual, case_sensitive) == expected)
-        }) && (!literal.end || chars.next().is_none())
+        }) && (!anchored_end || chars.next().is_none())
         {
             return Some((start, start + length));
         }
-        if literal.start {
+        if anchored_start {
             return None;
         }
         remaining.next()?;
@@ -188,13 +206,11 @@ fn valid_expression_branch(query: &str) -> bool {
 }
 
 fn branch_is_match(query: &str, candidate: &str, case_sensitive: bool) -> bool {
-    if !valid_expression_branch(query) {
-        return false;
-    }
-    match conjunctions(query) {
-        Some(mut terms) => terms.all(|term| single_is_match(term, candidate, case_sensitive)),
-        None => single_is_match(query, candidate, case_sensitive),
-    }
+    compile_branch(query, case_sensitive).is_some_and(|terms| {
+        terms
+            .iter()
+            .all(|term| term.matches(candidate, case_sensitive))
+    })
 }
 
 fn branch_ranges(query: &str, candidate: &str, case_sensitive: bool) -> Vec<(usize, usize)> {
@@ -229,36 +245,120 @@ pub fn is_fuzzy_query(query: &str) -> bool {
         && literal_pattern(query).is_none()
 }
 
-fn single_is_match(query: &str, candidate: &str, case_sensitive: bool) -> bool {
-    if !query.trim_start().starts_with('\'') && !valid_branch(query.trim()) {
-        return false;
-    }
-    match literal_pattern(query) {
-        Some(pattern) => {
-            literal_range(pattern, candidate, case_sensitive).is_some() != pattern.negated
-        }
-        None => {
-            if case_sensitive {
-                crate::fuzzy::is_match_case(query, candidate, true)
-            } else {
-                crate::fuzzy::is_match(query, candidate)
-            }
-        }
-    }
-}
-
+#[cfg(test)]
 pub fn is_match(query: &str, candidate: &str) -> bool {
     is_match_case(query, candidate, false)
 }
 
 pub fn is_match_case(query: &str, candidate: &str, case_sensitive: bool) -> bool {
-    if let Some(mut branches) = alternatives(query) {
-        return !branches
-            .clone()
-            .any(|branch| branch.is_empty() || !valid_expression_branch(branch))
-            && branches.any(|branch| branch_is_match(branch, candidate, case_sensitive));
+    NameMatcher::new(query, case_sensitive).is_match(candidate)
+}
+
+/// One case-folded term of a parsed filter.
+enum Term {
+    Literal {
+        needle: Vec<char>,
+        start: bool,
+        end: bool,
+        negated: bool,
+    },
+    Fuzzy(Vec<char>),
+    Never,
+}
+
+impl Term {
+    fn compile(query: &str, case_sensitive: bool) -> Self {
+        if !query.trim_start().starts_with('\'') && !valid_branch(query.trim()) {
+            return Self::Never;
+        }
+        let fold = |c| crate::fuzzy::fold_case(c, case_sensitive);
+        match literal_pattern(query) {
+            Some(pattern) => Self::Literal {
+                needle: pattern.needle.chars().map(fold).collect(),
+                start: pattern.start,
+                end: pattern.end,
+                negated: pattern.negated,
+            },
+            None => Self::Fuzzy(query.trim().chars().map(fold).collect()),
+        }
     }
-    branch_is_match(query, candidate, case_sensitive)
+
+    fn matches(&self, candidate: &str, case_sensitive: bool) -> bool {
+        match self {
+            Self::Literal {
+                needle,
+                start,
+                end,
+                negated,
+            } => {
+                folded_literal_range(
+                    needle.iter().copied(),
+                    *start,
+                    *end,
+                    candidate,
+                    case_sensitive,
+                )
+                .is_some()
+                    != *negated
+            }
+            Self::Fuzzy(pattern) => crate::fuzzy::is_folded_subsequence(
+                pattern.iter().copied(),
+                candidate,
+                case_sensitive,
+            ),
+            Self::Never => false,
+        }
+    }
+}
+
+/// `None` when the branch is malformed and can match nothing.
+fn compile_branch(query: &str, case_sensitive: bool) -> Option<Vec<Term>> {
+    if !valid_expression_branch(query) {
+        return None;
+    }
+    Some(match conjunctions(query) {
+        Some(terms) => terms
+            .map(|term| Term::compile(term, case_sensitive))
+            .collect(),
+        None => vec![Term::compile(query, case_sensitive)],
+    })
+}
+
+/// A filter expression parsed once, for matching many names: alternatives
+/// of conjunctions of literal or fuzzy terms.
+pub struct NameMatcher {
+    branches: Vec<Vec<Term>>,
+    case_sensitive: bool,
+}
+
+impl NameMatcher {
+    pub fn new(query: &str, case_sensitive: bool) -> Self {
+        let branches = match alternatives(query) {
+            Some(branches)
+                if branches
+                    .clone()
+                    .any(|branch| branch.is_empty() || !valid_expression_branch(branch)) =>
+            {
+                Vec::new()
+            }
+            Some(branches) => branches
+                .filter_map(|branch| compile_branch(branch, case_sensitive))
+                .collect(),
+            None => compile_branch(query, case_sensitive).into_iter().collect(),
+        };
+        Self {
+            branches,
+            case_sensitive,
+        }
+    }
+
+    pub fn is_match(&self, candidate: &str) -> bool {
+        self.branches.iter().any(|terms| {
+            terms
+                .iter()
+                .all(|term| term.matches(candidate, self.case_sensitive))
+        })
+    }
 }
 
 pub fn matched_ranges(query: &str, candidate: &str) -> Vec<(usize, usize)> {

@@ -679,18 +679,6 @@ pub(super) fn publish_cached_size_if_current(
     true
 }
 
-/// The device a directory lives on, for staying on one filesystem.
-#[cfg(unix)]
-fn device_of(metadata: &fs::Metadata) -> Option<u64> {
-    use std::os::unix::fs::MetadataExt;
-    Some(metadata.dev())
-}
-
-#[cfg(not(unix))]
-const fn device_of(_metadata: &fs::Metadata) -> Option<u64> {
-    None
-}
-
 /// Identity of a file with more than one hard link, so the walk counts its
 /// bytes once however many links point at it.
 #[cfg(unix)]
@@ -828,12 +816,15 @@ pub(super) fn dir_size_walk_until(
     let mut pending = vec![path.to_path_buf()];
     let mut total = 0u64;
     let mut complete = true;
-    let device = fs::metadata(path).ok().as_ref().and_then(device_of);
+    let device = fs::metadata(path)
+        .ok()
+        .as_ref()
+        .and_then(crate::fs_util::device_of);
     let parent_device = path
         .parent()
         .and_then(|parent| fs::metadata(parent).ok())
         .as_ref()
-        .and_then(device_of);
+        .and_then(crate::fs_util::device_of);
     if device.is_some()
         && parent_device.is_some()
         && device != parent_device
@@ -877,7 +868,12 @@ pub(super) fn dir_size_walk_until(
             };
             if file_type.is_dir() {
                 let other_device = device.is_some()
-                    && entry.metadata().ok().as_ref().and_then(device_of) != device;
+                    && entry
+                        .metadata()
+                        .ok()
+                        .as_ref()
+                        .and_then(crate::fs_util::device_of)
+                        != device;
                 if !other_device {
                     pending.push(entry.path());
                 }

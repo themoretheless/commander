@@ -110,7 +110,7 @@ pub fn set_store_quota(quota: VersionStoreQuota) {
 
 pub fn store_usage() -> crate::version_dedup::VersionStoreUsage {
     let root = versions_dir();
-    let loaded = load_manifest_deep_with(manifest_persist(), &root);
+    let loaded = load_manifest_deep_with(crate::persistence::default_fs_persist(), &root);
     if loaded.blocked {
         return crate::version_dedup::VersionStoreUsage {
             bytes_quota: store_quota().max_bytes,
@@ -162,11 +162,6 @@ fn legacy_payload_usage(manifest: &VersionManifest) -> Option<(u64, usize)> {
         }
     }
     Some((bytes, files))
-}
-
-fn manifest_persist() -> &'static crate::persistence::FsPersist {
-    static PERSIST: OnceLock<crate::persistence::FsPersist> = OnceLock::new();
-    PERSIST.get_or_init(crate::persistence::FsPersist::default)
 }
 
 fn manifest_transaction() -> &'static Mutex<()> {
@@ -262,7 +257,7 @@ fn preserve_at_inner(
         );
         failure
     })?;
-    let persist = manifest_persist();
+    let persist = crate::persistence::default_fs_persist();
     // Fast preflight under the manifest lock avoids copying for a replay or a
     // blocked store. The authoritative state is loaded and checked again at
     // commit because another preservation can finish while this one copies.
@@ -553,7 +548,7 @@ pub fn discard_record(record: &VersionRecord) -> Result<(), String> {
 
 #[cfg_attr(test, allow(dead_code))]
 pub fn discard_record_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
-    let persist = manifest_persist();
+    let persist = crate::persistence::default_fs_persist();
     let _manifest_guard = crate::lock_util::recover(manifest_transaction());
     let mut loaded = load_manifest_with(persist, root);
     if loaded.blocked {
@@ -785,7 +780,7 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
             record.original.display()
         ));
     }
-    let loaded = load_manifest_with(manifest_persist(), root);
+    let loaded = load_manifest_with(crate::persistence::default_fs_persist(), root);
     if loaded.blocked {
         return Err(
             "Version manifest is unreadable or incompatible; restore is blocked".to_string(),
@@ -872,7 +867,7 @@ fn restore_at(root: &Path, record: &VersionRecord) -> Result<(), String> {
 /// instead of showing none.
 pub fn records_for(operation_id: &OperationId) -> Result<Vec<VersionRecord>, String> {
     let root = versions_dir();
-    let loaded = load_manifest_with(manifest_persist(), &root);
+    let loaded = load_manifest_with(crate::persistence::default_fs_persist(), &root);
     if loaded.blocked {
         return Err(format!(
             "Version manifest in {} is unreadable or incompatible; preserved versions are hidden",
@@ -892,7 +887,7 @@ pub fn records_for(operation_id: &OperationId) -> Result<Vec<VersionRecord>, Str
 /// report "no versions" when the store could not be read.
 pub fn records_or_blocked() -> Result<Vec<VersionRecord>, String> {
     let root = versions_dir();
-    let loaded = load_manifest_with(manifest_persist(), &root);
+    let loaded = load_manifest_with(crate::persistence::default_fs_persist(), &root);
     if loaded.blocked {
         Err(format!(
             "version manifest is {}",
@@ -1222,7 +1217,7 @@ fn note_manifest_blocked(manifest: &Path, blocked: bool) -> bool {
 
 #[cfg(test)]
 fn load_manifest(root: &Path) -> VersionManifest {
-    load_manifest_with(manifest_persist(), root).manifest
+    load_manifest_with(crate::persistence::default_fs_persist(), root).manifest
 }
 
 fn save_manifest_with(
@@ -1614,7 +1609,7 @@ mod tests {
         let usage = store_usage();
         assert!(usage.blocked);
         assert!(usage.label().contains("unreadable"), "{}", usage.label());
-        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(load_manifest_with(crate::persistence::default_fs_persist(), &versions).blocked);
         assert!(
             !note_manifest_blocked(&path, true),
             "repeated blocked loads must not publish the issue again"
@@ -1951,12 +1946,14 @@ mod tests {
         std::fs::rename(replacement, &record.stored).unwrap();
         std::fs::remove_file(&original).unwrap();
 
-        let loaded = load_manifest_with(manifest_persist(), &versions);
+        let loaded = load_manifest_with(crate::persistence::default_fs_persist(), &versions);
 
         assert!(!loaded.blocked, "ordinary listing is structural-only");
         assert!(restore_at(&versions, &record).is_err());
         assert!(discard_record_at(&versions, &record).is_err());
-        assert!(load_manifest_deep_with(manifest_persist(), &versions).blocked);
+        assert!(
+            load_manifest_deep_with(crate::persistence::default_fs_persist(), &versions).blocked
+        );
         let _guard = use_test_versions_dir(versions.clone());
         assert!(store_usage().blocked);
         assert!(record.stored.exists());
@@ -1986,7 +1983,7 @@ mod tests {
         .unwrap();
         std::fs::write(manifest_path(&versions), &legacy).unwrap();
 
-        let loaded = load_manifest_with(manifest_persist(), &versions);
+        let loaded = load_manifest_with(crate::persistence::default_fs_persist(), &versions);
 
         assert!(!loaded.blocked);
         assert_eq!(
@@ -2151,11 +2148,11 @@ mod tests {
                 .cmp(&b.created_at_secs)
                 .then_with(|| a.key.0.cmp(&b.key.0))
         });
-        let mut loaded = load_manifest_with(manifest_persist(), &versions);
+        let mut loaded = load_manifest_with(crate::persistence::default_fs_persist(), &versions);
         assert_eq!(loaded.manifest.records.len(), 3);
 
         prune_manifest(
-            manifest_persist(),
+            crate::persistence::default_fs_persist(),
             &versions,
             &loaded.manifest,
             &mut loaded.gate,
@@ -2217,7 +2214,7 @@ mod tests {
         let source = temp.file("source.txt", "payload");
         let operation = OperationId("future-preserve".to_string());
 
-        let loaded = load_manifest_with(manifest_persist(), &versions);
+        let loaded = load_manifest_with(crate::persistence::default_fs_persist(), &versions);
         assert!(loaded.blocked);
         assert_eq!(
             loaded.gate.status(),
@@ -2259,7 +2256,7 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_manifest_with(manifest_persist(), &versions);
+        let loaded = load_manifest_with(crate::persistence::default_fs_persist(), &versions);
         assert!(loaded.blocked);
         assert!(discard_record_at(&versions, &record).is_err());
         assert!(restore_at(&versions, &record).is_err());
@@ -2286,7 +2283,7 @@ mod tests {
         .unwrap();
         std::fs::write(&path, &bytes).unwrap();
 
-        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(load_manifest_with(crate::persistence::default_fs_persist(), &versions).blocked);
         assert!(discard_record_at(&versions, &record).is_err());
         assert!(restore_at(&versions, &record).is_err());
         assert_eq!(std::fs::read(path).unwrap(), bytes);
@@ -2323,7 +2320,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(load_manifest_with(crate::persistence::default_fs_persist(), &versions).blocked);
         assert!(discard_record_at(&versions, &first).is_err());
         assert!(first.stored.exists());
         assert!(second.stored.exists());
@@ -2356,7 +2353,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(load_manifest_with(manifest_persist(), &versions).blocked);
+        assert!(load_manifest_with(crate::persistence::default_fs_persist(), &versions).blocked);
         assert!(discard_record_at(&versions, &record).is_err());
         assert_eq!(std::fs::read_to_string(payload).unwrap(), "protected");
     }
