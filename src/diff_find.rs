@@ -133,7 +133,7 @@ impl Find {
             // Consume before TextEdit: single-line Enter otherwise surrenders focus.
             let enter = ui.ctx().memory(|m| m.has_focus(query_id()))
                 && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            let response = ui.add(
+            let _response = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
                     .id(query_id())
                     .hint_text("Find in diff")
@@ -142,8 +142,9 @@ impl Find {
             );
 
             #[cfg(any(test, feature = "visual-qa"))]
-            ui.ctx()
-                .data_mut(|data| data.insert_temp(egui::Id::new("diff-find-query"), response.rect));
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new("diff-find-query"), _response.rect)
+            });
             ui.checkbox(&mut self.case, "Match case");
             ui.checkbox(&mut self.words, "Whole words");
             ui.checkbox(&mut self.regex, "Regex");
