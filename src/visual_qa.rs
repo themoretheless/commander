@@ -25179,6 +25179,10 @@ impl eframe::App for VisualQaApp {
         self.frames = self.frames.saturating_add(1);
         let timeout = if self.scenario == Scenario::SearchResults {
             Duration::from_secs(30)
+        } else if self.scenario == Scenario::FolderTabs {
+            // The 100-step pointer script can take over 20 seconds on CI
+            // runners rendering about five frames per second.
+            Duration::from_secs(45)
         } else if self.scenario == Scenario::ArchivePriorityChains {
             // This regression now validates 231 UI/receipt steps before capture.
             // Keep every assertion; allow the expanded sheet and pending screenshot
