@@ -5,6 +5,8 @@ use super::*;
 use crate::panel::format_size;
 use std::time::SystemTime;
 
+mod index_panel;
+mod results;
 mod state;
 
 impl FindCopyFormat {
@@ -578,20 +580,11 @@ impl App {
         let mut run_now = rerun_on_fresh_index;
         let mut edited = false;
         let mut save = false;
-        let mut reveal = None;
-        let mut open_path = None;
-        let mut open_tab = None;
-        let mut open_selected_tabs = None;
-        let mut copy_result_paths = None;
         let tab_side = self.ws.active;
+        let mut result_actions = results::ResultActions::default();
         let mut replay = None;
         let mut remove_predicate = None;
         let mut root_change = None;
-        let mut explanation_change = None;
-        let mut hide_result = None;
-        let mut hide_selected_results = false;
-        let mut select_result = None;
-        let mut context_select_only = None;
         let mut index_enabled_change = None;
         let mut index_rebuild = false;
         let mut index_apply_exclusions = false;
@@ -712,14 +705,14 @@ impl App {
                         && ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
                     if background_enter {
                         if let Some(path) = state.highlighted_result_target(SystemTime::now()) {
-                            open_tab = Some((tab_side, path));
+                            result_actions.open_tab = Some((tab_side, path));
                         }
                         response.request_focus();
                     } else if response.lost_focus()
                         && ui.input(|input| input.key_pressed(egui::Key::Enter))
                     {
                         if state.highlighted_result.is_some() {
-                            reveal = state.highlighted_result_target(SystemTime::now());
+                            result_actions.reveal = state.highlighted_result_target(SystemTime::now());
                         } else {
                             run_now = true;
                         }
@@ -868,125 +861,9 @@ impl App {
                     }
 
                     if state.index_details_open {
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            let phase_color = match index_status.phase {
-                                crate::content_index::IndexPhase::Error => t.accent_red,
-                                crate::content_index::IndexPhase::Building
-                                | crate::content_index::IndexPhase::WaitingForIdle => {
-                                    t.accent_warning
-                                }
-                                crate::content_index::IndexPhase::Ready => t.accent,
-                                _ => t.text_muted,
-                            };
-                            ui.label(
-                                egui::RichText::new("Content index")
-                                    .size(11.0)
-                                    .strong()
-                                    .color(t.text_secondary),
-                            );
-                            ui.label(
-                                egui::RichText::new(index_phase_label(index_status.phase))
-                                    .size(11.0)
-                                    .color(phase_color),
-                            );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui
-                                    .add_enabled(index_status.enabled, egui::Button::new("Rebuild"))
-                                    .clicked()
-                                {
-                                    index_rebuild = true;
-                                }
-                            });
-                        });
-
-                        if matches!(
-                            index_status.phase,
-                            crate::content_index::IndexPhase::Building
-                                | crate::content_index::IndexPhase::WaitingForIdle
-                        ) {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} scanned  |  {} indexed",
-                                        index_status.progress.scanned,
-                                        index_status.progress.indexed
-                                    ))
-                                    .size(11.0)
-                                    .color(t.text_muted),
-                                );
-                            });
-                        }
-
-                        let coverage = index_status.coverage_percent();
-                        ui.add(
-                            egui::ProgressBar::new((coverage / 100.0).clamp(0.0, 1.0)).text(
-                                format!(
-                                    "{coverage:.0}% text coverage  |  {} files  |  {}",
-                                    index_status.progress.files_seen,
-                                    format_size(index_status.progress.content_bytes as u64)
-                                ),
-                            ),
-                        );
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Freshness: {}",
-                                    index_freshness(index_status.built_at_secs)
-                                ))
-                                .size(10.0)
-                                .color(t.text_muted),
-                            );
-                            if let Some(skipped) = index_skipped_summary(
-                                index_status.skipped_binary,
-                                index_status.skipped_large,
-                                index_status.skipped_unreadable,
-                                index_status.skipped_quota,
-                            ) {
-                                ui.label(
-                                    egui::RichText::new(skipped).size(10.0).color(t.text_muted),
-                                )
-                                .on_hover_text(format!(
-                                    "Text is indexed for files up to {} and up to {} in total",
-                                    format_size(crate::content_index::MAX_FILE_BYTES),
-                                    format_size(crate::content_index::MAX_CONTENT_BYTES as u64)
-                                ));
-                            }
-                            if index_status.truncated {
-                                ui.label(
-                                    egui::RichText::new("Document cap reached")
-                                        .size(10.0)
-                                        .color(t.accent_warning),
-                                );
-                            }
-                        });
-                        if let Some(error) = &index_status.last_error {
-                            ui.label(egui::RichText::new(error).size(10.0).color(t.accent_red));
-                        }
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Excluded paths ({})",
-                                    index_status.excluded_roots.len()
-                                ))
-                                .size(10.0)
-                                .color(t.text_muted),
-                            );
-                            if ui.button("Apply").clicked() {
-                                index_apply_exclusions = true;
-                            }
-                        });
-                        ui.add(
-                            egui::TextEdit::multiline(&mut state.index_exclusions)
-                                .desired_rows(2)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("cache\nbuild"),
-                        );
-                        ui.add_space(4.0);
-                        ui.separator();
+                        let index_actions = index_panel::index_details_ui(ui, state, t, &index_status);
+                        index_rebuild |= index_actions.rebuild;
+                        index_apply_exclusions |= index_actions.apply_exclusions;
                     }
 
                     ui.add_space(6.0);
@@ -1137,7 +1014,7 @@ impl App {
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("find-copy-result-paths"), copy.rect));
                         if copy.clicked() {
-                            copy_result_paths = state.prepare_result_copy(clock,false).map(|(text, count)| (text, count, state.result_copy_format));
+                            result_actions.copy_result_paths = state.prepare_result_copy(clock,false).map(|(text, count)| (text, count, state.result_copy_format));
                             ui.memory_mut(|memory| memory.request_focus(egui::Id::new("find-query-editor")));
                         }
                         let selected_count = state.visible_selected_result_count();
@@ -1146,7 +1023,7 @@ impl App {
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("find-copy-selected-paths"), copy_selected.rect));
                         if copy_selected.clicked() {
-                            copy_result_paths = state.prepare_result_copy(clock,true).map(|(text, count)| (text, count, state.result_copy_format));
+                            result_actions.copy_result_paths = state.prepare_result_copy(clock,true).map(|(text, count)| (text, count, state.result_copy_format));
                             ui.memory_mut(|memory| memory.request_focus(egui::Id::new("find-query-editor")));
                         }
                         let remember = ui.add_enabled(selected_count > 0 && state.results_match_current_root(),
@@ -1174,7 +1051,7 @@ impl App {
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("find-open-selected-tabs"), open_selected.rect));
                         if open_selected.clicked() {
-                            open_selected_tabs = Some((tab_side, state.selected_result_tab_targets(clock)));
+                            result_actions.open_selected_tabs = Some((tab_side, state.selected_result_tab_targets(clock)));
                             ui.memory_mut(|memory| memory.request_focus(egui::Id::new("find-query-editor")));
                         }
                         let hide_selected = ui.add_enabled(selected_count > 0,
@@ -1183,7 +1060,7 @@ impl App {
                         #[cfg(feature = "visual-qa")]
                         ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("find-hide-selected-results"), hide_selected.rect));
                         if hide_selected.clicked() {
-                            hide_selected_results = true;
+                            result_actions.hide_selected_results = true;
                             ui.memory_mut(|memory| memory.request_focus(egui::Id::new("find-query-editor")));
                         }
                         if selected_count > 0 && ui.small_button("Clear selection").clicked() {
@@ -1200,192 +1077,7 @@ impl App {
                             }
                         }
                     });
-                    let indices = state.visible_result_order(clock);
-                    #[cfg(feature="visual-qa")]
-                    ui.ctx().data_mut(|d|d.insert_temp(egui::Id::new("find-rendered-order"),indices.clone()));
-                    let pivot = state.time_pivot;
-                    let row_height = result_row_height(pivot != crate::search::TimePivot::None);
-                    let root = state.root.clone();
-                    let open_explanation = state.explanation_open.clone();
-                    state.highlighted_result =
-                        state.highlighted_result.filter(|&row| row < indices.len());
-                    let mut results_scroll = egui::ScrollArea::vertical()
-                        .id_salt("search-results")
-                        .auto_shrink([false, false])
-                        .max_height((ui.available_height() - 90.0).max(140.0));
-                    if state.highlight_scroll_pending {
-                        let offset = state.highlighted_result.unwrap_or(0) as f32 * row_height;
-                        results_scroll = results_scroll.vertical_scroll_offset(offset);
-                        state.highlight_scroll_pending = false;
-                    }
-                    results_scroll.show_rows(ui, row_height, indices.len(), |ui, rows| {
-                        for row in rows {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(ui.available_width(), row_height),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    ui.set_min_height(row_height);
-                                    let index = indices[row];
-                                    let hit = &state.results[index];
-                                    let key = explain_key(hit);
-                                    let path = hit.reveal_path().to_path_buf();
-                                    let relative = hit.relative_to(&root).display().to_string();
-                                    let relative=match crate::display_name::visible_controls(&relative) {
-                                        std::borrow::Cow::Borrowed(_)=>relative,
-                                        std::borrow::Cow::Owned(visible)=>visible,
-                                    };
-                                    let size = if hit.entry.is_dir {
-                                        String::new()
-                                    } else {
-                                        format_size(hit.entry.size)
-                                    };
-                                    let explanation = hit.explanation.summary();
-                                    if pivot != crate::search::TimePivot::None {
-                                        let bucket = crate::search::time_bucket(hit, pivot, clock);
-                                        let previous = row.checked_sub(1).map(|prior_row| {
-                                            crate::search::time_bucket(
-                                                &state.results[indices[prior_row]],
-                                                pivot,
-                                                clock,
-                                            )
-                                        });
-                                        if previous != Some(bucket) {
-                                            ui.label(
-                                                egui::RichText::new(bucket.label())
-                                                    .size(10.0)
-                                                    .strong()
-                                                    .color(t.text_muted),
-                                            );
-                                        } else {
-                                            ui.add_space(12.0);
-                                        }
-                                    } else {
-                                        ui.add_space(4.0);
-                                    }
-                                    ui.horizontal(|ui| {
-                                        let mut selected = state.selected_results.contains(&hit.location);
-                                        let checkbox = ui.checkbox(&mut selected, "").on_hover_text("Select result for Copy selected; Shift-click adds a visible range");
-                                        checkbox.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, selected, format!("Select result: {relative}")));
-                                        #[cfg(feature = "visual-qa")]
-                                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("find-select-result", relative.as_str())), checkbox.rect));
-                                        if checkbox.changed() {
-                                            select_result = Some((hit.location.clone(), ui.input(|input| input.modifiers.shift)));
-                                        }
-                                        let response = ui
-                                            .add_sized(
-                                                [(ui.available_width() - 190.0).max(0.0), 22.0],
-                                                egui::Label::new(
-                                                    egui::RichText::new(&relative)
-                                                        .size(12.0)
-                                                        .color(t.text_secondary)
-                                                        .background_color(
-                                                            if state.highlighted_result == Some(row) || state.selected_results.contains(&hit.location)
-                                                            {
-                                                                ui.visuals().selection.bg_fill
-                                                            } else {
-                                                                egui::Color32::TRANSPARENT
-                                                            },
-                                                        ),
-                                                )
-                                                .truncate()
-                                                .sense(Sense::click()),
-                                            )
-                                            .on_hover_text(
-                                                "Click to show in the panel, double-click to open; Cmd-click toggles selection, Shift-click adds a range; right-click for actions",
-                                            );
-                                        #[cfg(feature = "visual-qa")]
-                                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("find-result-row", relative.as_str())), response.rect));
-                                        response.widget_info(|| {
-                                            egui::WidgetInfo::labeled(
-                                                egui::WidgetType::Button,
-                                                true,
-                                                format!("Reveal {relative}"),
-                                            )
-                                        });
-                                        if response.secondary_clicked() && !state.selected_results.contains(&hit.location) {
-                                            context_select_only = Some(hit.location.clone());
-                                        }
-                                        response.context_menu(|ui| {
-                                            let mut menu_action = false;
-                                            if ui.button("Reveal in panel").clicked() { reveal = Some(path.clone()); ui.close(); menu_action = true; }
-                                            if ui.add_enabled(!hit.entry.is_dir, egui::Button::new("Open file")).clicked() { open_path = Some(path.clone()); ui.close(); menu_action = true; }
-                                            if ui.button("Open background tab").clicked() { open_tab = Some((tab_side, path.clone())); ui.close(); menu_action = true; }
-                                            if ui.button("Open selected tabs").clicked() {
-                                                let targets = if state.selected_results.contains(&hit.location) { state.selected_result_tab_targets(clock) } else { vec![path.clone()] };
-                                                open_selected_tabs = Some((tab_side, targets)); ui.close(); menu_action = true;
-                                            }
-                                            ui.separator();
-                                            let copy_path = ui.button("Copy full path");
-                                            #[cfg(feature = "visual-qa")]
-                                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("find-context-copy-path", relative.as_str())), copy_path.rect));
-                                            if copy_path.clicked() {
-                                                copy_result_paths = Some((crate::clipboard::format(std::slice::from_ref(&hit.entry.path), crate::clipboard::PathStyle::FullPath, None), 1, FindCopyFormat::Paths));
-                                                ui.close(); menu_action = true;
-                                            }
-                                            let copy_name = ui.button("Copy name");
-                                            #[cfg(feature = "visual-qa")]
-                                            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("find-context-copy-name", relative.as_str())), copy_name.rect));
-                                            if copy_name.clicked() {
-                                                copy_result_paths = Some((crate::clipboard::format(std::slice::from_ref(&hit.entry.path), crate::clipboard::PathStyle::NameOnly, None), 1, FindCopyFormat::Names));
-                                                ui.close(); menu_action = true;
-                                            }
-                                            ui.separator();
-                                            if ui.button("Hide result").clicked() { hide_result = Some(hit.location.clone()); ui.close(); menu_action = true; }
-                                            if ui.button("Hide selected").clicked() {
-                                                if state.selected_results.contains(&hit.location) { hide_selected_results = true; } else { hide_result = Some(hit.location.clone()); }
-                                                ui.close(); menu_action = true;
-                                            }
-                                            if ui.button("Why matched").clicked() { explanation_change = Some(Some(key.clone())); ui.close(); menu_action = true; }
-                                            if menu_action { ui.memory_mut(|memory| memory.request_focus(egui::Id::new("find-query-editor"))); }
-                                        });
-                                        let modifiers = ui.input(|input| input.modifiers);
-                                        if response.double_clicked() && !hit.entry.is_dir && !modifiers.command && !modifiers.shift {
-                                            open_path = Some(path.clone());
-                                        }
-                                        if response.clicked() {
-                                            if modifiers.command || modifiers.shift {
-                                                select_result = Some((hit.location.clone(), modifiers.shift));
-                                            } else {
-                                                reveal = Some(path);
-                                            }
-                                        }
-                                        ui.label(
-                                            egui::RichText::new(size)
-                                                .size(10.0)
-                                                .color(t.text_muted),
-                                        );
-                                        let tab = ui.small_button("Tab").on_hover_text("Reveal in a new background tab; keep Search open (Cmd+Enter for keyboard selection)");
-                                        tab.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open background tab: {relative}")));
-                                        #[cfg(feature = "visual-qa")]
-                                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("find-background-tab", relative.as_str())), tab.rect));
-                                        if tab.clicked() { open_tab = Some((tab_side, hit.reveal_path().to_path_buf())); }
-                                        let hide = ui.small_button("×").on_hover_text("Hide this search result; the file is not changed");
-                                        #[cfg(feature = "visual-qa")]
-                                        ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new(("find-hide-result", relative.as_str())), hide.rect));
-                                        hide.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Hide result: {relative}")));
-                                        if hide.clicked() {
-                                            hide_result = Some(hit.location.clone());
-                                        }
-                                        let explaining = open_explanation.as_ref() == Some(&key);
-                                        let why = ui
-                                            .add(egui::Button::selectable(explaining, "?").small())
-                                            .on_hover_text(&explanation);
-                                        why.widget_info(|| {
-                                            egui::WidgetInfo::selected(
-                                                egui::WidgetType::Button,
-                                                true,
-                                                explaining,
-                                                format!("Why matched: {relative}"),
-                                            )
-                                        });
-                                        if why.clicked() {
-                                            explanation_change = Some((!explaining).then_some(key));
-                                        }
-                                    });
-                                },
-                            );
-                        }
-                    });
+                    results::results_ui(ui, state, t, clock, tab_side, &mut result_actions);
 
                     if state.ran
                         && !state.searching()
@@ -1455,7 +1147,7 @@ impl App {
             self.ui.modals.find = None;
             return;
         }
-        if let Some((text, count, format)) = copy_result_paths {
+        if let Some((text, count, format)) = result_actions.copy_result_paths {
             self.write_clipboard(
                 &text,
                 &if format == FindCopyFormat::DetailsJson {
@@ -1466,21 +1158,23 @@ impl App {
                 ctx,
             );
         }
-        if let Some(location) = context_select_only
+        if let Some(location) = result_actions.context_select_only
             && let Some(state) = self.ui.modals.find.as_mut()
         {
             state.select_only_result(location, SystemTime::now());
         }
-        if let Some((location, range)) = select_result
+        if let Some((location, range)) = result_actions.select_result
             && let Some(state) = self.ui.modals.find.as_mut()
         {
             state.select_result(location, range, SystemTime::now());
         }
-        if hide_selected_results && let Some(state) = self.ui.modals.find.as_mut() {
+        if result_actions.hide_selected_results
+            && let Some(state) = self.ui.modals.find.as_mut()
+        {
             state.hide_selected_results();
             ctx.request_repaint();
         }
-        if let Some(location) = hide_result
+        if let Some(location) = result_actions.hide_result
             && let Some(state) = self.ui.modals.find.as_mut()
         {
             state.hide_result(location);
@@ -1585,7 +1279,7 @@ impl App {
         {
             edited |= state.remove_predicate(index);
         }
-        if let Some(value) = explanation_change
+        if let Some(value) = result_actions.explanation_change
             && let Some(state) = self.ui.modals.find.as_mut()
         {
             state.explanation_open = value;
@@ -1601,23 +1295,23 @@ impl App {
         if run_now {
             self.begin_find_search(ctx);
         }
-        if let Some((side, targets)) = open_selected_tabs {
+        if let Some((side, targets)) = result_actions.open_selected_tabs {
             let opened = self.ws.reveal_in_background_tabs(side, targets);
             if let Some(state) = self.ui.modals.find.as_mut() {
                 state.result_action_error = (!opened).then(|| "No tabs opened: the group exceeds available tab slots, a target is invalid, or an operation blocks tab changes".to_string());
             }
         }
-        if let Some((side, path)) = open_tab {
+        if let Some((side, path)) = result_actions.open_tab {
             let opened = self.ws.reveal_in_background_tab(side, path);
             if let Some(state) = self.ui.modals.find.as_mut() {
                 state.result_action_error = (!opened)
                     .then(|| "Could not open a tab: tab limit or a pending operation".to_string());
             }
         }
-        if let Some(path) = reveal {
+        if let Some(path) = result_actions.reveal {
             self.ws.reveal(&path);
         }
-        if let Some(path) = open_path {
+        if let Some(path) = result_actions.open_path {
             self.open_external(crate::ports::OpenRequest::OpenPath(path), ctx);
         }
         if save {
