@@ -754,7 +754,7 @@ mod tests {
 
         let entry = entry_for(&source);
         assert_eq!(
-            find_conflicts(&[entry.clone()], dst.path()),
+            find_conflicts(std::slice::from_ref(&entry), dst.path()),
             vec![entry.name]
         );
         assert!(existing.exists());
