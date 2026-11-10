@@ -361,7 +361,7 @@ impl PanelState {
     /// Build rows from a directory iterator. A child that vanished between
     /// readdir and stat is simply not listed: it is gone, not unreadable,
     /// so it must not turn the whole read into a partial one.
-    fn read_dir_entries(
+    pub(super) fn read_dir_entries(
         entries: impl Iterator<Item = std::io::Result<fs::DirEntry>>,
         show_hidden: bool,
     ) -> DirectoryRead {
