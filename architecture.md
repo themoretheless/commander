@@ -165,20 +165,27 @@ policy.
 
 ### Size hot-spots
 
-Line counts are approximate on current `main` (2026-09-14). Ideal coordination
-facades are ~600–800 lines once byte-path/tests and coherent command modules
-are extracted; the open PR stack below is the path there, not another field
-shuffle.
+Line counts on `refactor/structure-and-perf` (2026-11-10). Inline test modules
+moved to sibling `tests.rs` files, and the large files were split into
+concern-named submodules (`search/{providers,compiled_query,worker}`,
+`operation_journal/{validate,reconcile,resume,repair,inventory}`,
+`archive/{tar_archive,zip_extract}`, `image_cache/{text_preview,native_loaders}`,
+`panel/{loading,smart_select,masks}`, `workspace/commands`, and per-section UI
+modules under `app/{archive_dialog,find_dialog,update}/`). Ideal coordination
+facades stay ~600-800 lines.
 
 | File | Lines | Note |
 | --- | --- | --- |
-| `src/transfer.rs` | ~3,050 | Public progress/spec facade; byte-copy primitives live under `transfer::{buffered,sparse,parallel_tree}` |
-| `src/panel.rs` | 4,553 | Coordination facade; mutable listing/view/selection/watcher/size state is already delegated |
-| `src/operation_journal.rs` | ~3,090 | Durable transitions, proof validation, migration, and recovery; production facade only |
-| `src/operation_journal/tests.rs` | ~1,545 | Fault/model suite intentionally separated (workspace-style `#[cfg(test)] mod tests;`); journal Persist envelope round-trip/revision tests included; content-index envelope and fuller cross-process CAS remain follow-ups |
-| `src/workspace/tests.rs` | 3,468 | Integration/fault suite intentionally separated from the production facade |
-| `src/workspace.rs` | ~2,800 | Two-panel orchestration; fileops facades + queue/delete/space/undo controllers |
-| `src/app/update.rs` | 2,118 | Per-frame hub and typed request dispatcher; dialog buffers live in `UiState` |
+| `src/workspace.rs` | 3,749 | Two-panel orchestration; `execute` dispatches, multi-step arms live in `workspace/commands.rs` |
+| `src/app/update.rs` | 2,292 | Per-frame hub; checksum, context menu and overlays live in `app/update/` |
+| `src/panel.rs` | 1,903 | Coordination facade; loading, smart selection and masks are `impl PanelState` submodules |
+| `src/operation_journal.rs` | 1,602 | Durable transitions; validation, reconciliation, resume, repair and inventory are submodules |
+| `src/workspace/tabs.rs` | 1,499 | Tab model and commands |
+| `src/hex_preview.rs` | 1,384 | Viewer state and window; paging, encoding and shortcuts are submodules |
+| `src/app/find_dialog.rs` | 1,356 | Find window; state, index panel and result list are submodules |
+| `src/transfer.rs` | 1,273 | Public progress/spec facade; byte-copy primitives live under `transfer::{buffered,sparse,parallel_tree}` |
+| `src/workspace/tests.rs` | 9,400 | Integration/fault suite intentionally separated from the production facade |
+| `src/operation_journal/tests.rs` | 3,157 | Fault/model suite intentionally separated |
 
 ## Agent/critic remediation sequence (2026-07-21 to 2026-07-28)
 

@@ -167,3 +167,30 @@ the Activity strip builds on the dialog chrome and the feedback facade.
 
 In total that is 24 commits of roughly 100–400 lines each, plus about 10 from
 phase 0 and the phase 5 features. None of it changes behavior until phase 5.
+
+## Follow-up round (2026-11-10, branch `refactor/structure-and-perf`)
+
+Behavior-preserving; each step is its own commit and passed fmt, clippy
+(`--all-targets --all-features -D warnings`) and the full test suite.
+
+| Step | Result |
+| --- | --- |
+| Release profile | fat LTO, one codegen unit, stripped; unwinding kept for `catch_unwind` workers |
+| Inline tests out | 12 files moved their `mod tests` to sibling `tests.rs` (about 38K lines) |
+| Shared helpers | `clock::{now_secs, now_millis}`, `persistence::is_false`, `fs_util::device_of`, one focus-ring painter |
+| Store boilerplate | `persistence::{default_fs_persist, load_enveloped_or_default, save_enveloped_explicit}` for trust, conflict rules and profiles |
+| Large-file splits | search, operation journal, archive, image cache, hex preview, query, rename, panel, archive/find dialogs, app update |
+| Giant functions | `Workspace::execute` 950 -> 408 lines, `show_archive_tool` 1263 -> 414, `show_find_dialog` 1135 -> 826, `HexViewer::show` 794 -> 603 |
+| Pane filter | `name_filter::NameMatcher` parses once; growing fuzzy queries narrow previous hits (100K rows: 10.6 ms -> 3.6 ms cold, 28.7 ms -> 6.5 ms for five keystrokes) |
+| Selection footer | `PanelState::visible_selection_summary` cached by listing, filter, selection and size snapshot |
+| Buffered copy | blake3 runs only when a checkpoint sink consumes the digest |
+
+Not done in this round, by decision: moving `FileEntry` out of `panel` to
+break the panel/query/search/image_cache cycles, separating egui from core
+modules (`keybindings`, `image_cache`, `sync_profiles`, `template_exchange`)
+with an import test, grouping the flat `src/` into bounded-context folders,
+splitting `visual_qa.rs`, and the remaining legacy stores (`transfer_tuning`,
+`smart_folder`, `collections`, `cmdtemplate`), whose on-disk format would
+change. An unstable sort for listings was measured and rejected: it is about
+2.5x slower than the stable sort on 100K entries because swapping whole
+entries costs more than merging presorted runs.
