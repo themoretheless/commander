@@ -6210,6 +6210,8 @@ fn toggle_info_on_a_folder_uses_its_measured_size() {
             "folder never measured: {}",
             size_wait_diagnostics(&ws.left, &folder)
         );
+        // Drive deferred size retries as the app does on each frame.
+        ws.left.poll_fs_changes();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     ws.left.set_cursor(row_of(&ws.left, "box"));
@@ -6654,7 +6656,7 @@ fn treemap_orders_by_size_using_measured_folder_sizes() {
     l.file("three.bin", "123");
     let folder = l.dir("box");
     l.file("box/ten.bin", "1234567890");
-    let ws = workspace(&l, &r);
+    let mut ws = workspace(&l, &r);
     // Generous: background size workers share the machine with the whole
     // parallel suite, and a loaded CI runner can take seconds to reach them.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -6664,6 +6666,8 @@ fn treemap_orders_by_size_using_measured_folder_sizes() {
             "folder never measured: {}",
             size_wait_diagnostics(&ws.left, &folder)
         );
+        // Drive deferred size retries as the app does on each frame.
+        ws.left.poll_fs_changes();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
