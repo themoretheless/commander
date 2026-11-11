@@ -2730,6 +2730,11 @@ impl PanelState {
             .folder_overview(self.entries_gen(), self.listing.entries())
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed_folder_measurement(&self, path: PathBuf, size: u64, count: usize) {
+        self.sizes.insert_for_test(path, size, count);
+    }
+
     pub fn size_snapshot(&self) -> Arc<SizeSnapshot> {
         self.sizes.snapshot()
     }

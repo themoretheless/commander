@@ -606,7 +606,7 @@ impl SizeIndex {
     }
 
     #[cfg(test)]
-    fn insert_for_test(&self, path: PathBuf, size: u64, count: usize) {
+    pub(super) fn insert_for_test(&self, path: PathBuf, size: u64, count: usize) {
         let _boundary = lock_recover(scan_commit_boundary());
         lock_recover(&self.sizes).insert(path.clone(), size);
         lock_recover(&self.counts).insert(path, count);
